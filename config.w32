@@ -1,0 +1,41 @@
+// vim:ft=javascript
+
+ARG_ENABLE('async', 'Enable True Async API', 'no');
+ARG_WITH('async_libuv', 'Build True Async API with libuv support', 'no');
+
+if (PHP_ASYNC == "yes") {
+    EXTENSION("async", "async.c coroutine.c scope.c scheduler.c exceptions.c iterator.c async_API.c");
+    ADD_SOURCES("ext/async","zend_common.c");
+    ADD_SOURCES("ext/async/internal", "allocator.c circular_buffer.c");
+
+    ADD_FLAG("CFLAGS", "/D PHP_ASYNC");
+
+    PHP_INSTALL_HEADERS("ext/async", "php_async.h");
+    PHP_INSTALL_HEADERS("ext/async", "coroutine.h");
+    PHP_INSTALL_HEADERS("ext/async", "scope.h");
+    PHP_INSTALL_HEADERS("ext/async", "scheduler.h");
+    PHP_INSTALL_HEADERS("ext/async", "exceptions.h");
+    PHP_INSTALL_HEADERS("ext/async", "iterator.h");
+    PHP_INSTALL_HEADERS("ext/async", "async_API.h");
+}
+
+if (PHP_ASYNC_LIBUV == "yes") {
+    if (PHP_ASYNC != "yes") {
+        ERROR("libuv requires True Async API to be enabled. Use --enable-async");
+    } else {
+        if (CHECK_HEADER_ADD_INCLUDE("libuv/uv.h", "CFLAGS_UV", PHP_PHP_BUILD + "\\include")
+            && CHECK_LIB("libuv.lib", "libuv")) {
+
+            PHP_INSTALL_HEADERS("ext/async", "libuv_reactor.h");
+
+            ADD_SOURCES("ext/async", "libuv_reactor.c");
+            ADD_FLAG("CFLAGS", "/D PHP_ASYNC_LIBUV");
+            ADD_FLAG("LIBS", "libuv.lib Dbghelp.lib Userenv.lib");
+        } else {
+            ERROR("Libuv components are not found. The search was performed in the directory: '" + PHP_PHP_BUILD +
+                  "'.\nTo compile PHP TRUE ASYNC with LibUV:\n" +
+                  "1. Copy files from 'libuv\\include' to '" + PHP_PHP_BUILD + "\\include\\libuv\\'\n" +
+                  "2. Build libuv.lib and copy it to '" + PHP_PHP_BUILD + "\\lib\\'");
+        }
+    }
+}

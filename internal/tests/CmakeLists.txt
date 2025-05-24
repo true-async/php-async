@@ -1,0 +1,62 @@
+cmake_minimum_required(VERSION 3.10)
+
+project(async_tests C)
+
+set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+set(SRC_DIR "${CMAKE_SOURCE_DIR}/../")
+set(TEST_DIR "${CMAKE_SOURCE_DIR}")
+set(PHP_MAIN_DIR "${CMAKE_SOURCE_DIR}/../../main")
+set(ZEND_MAIN_DIR "${CMAKE_SOURCE_DIR}/../../Zend")
+set(TSRM_DIR "${CMAKE_SOURCE_DIR}/../../TSRM")
+set(WIN32_DIR "${CMAKE_SOURCE_DIR}/../../win32")
+set(PHP_DIR "${CMAKE_SOURCE_DIR}/../../")
+
+foreach(DIR ${PHP_DIR} ${PHP_MAIN_DIR} ${ZEND_MAIN_DIR} ${SRC_DIR} ${TEST_DIR})
+    if(NOT EXISTS ${DIR})
+        message(FATAL_ERROR "Directory not found: ${DIR}")
+    endif()
+endforeach()
+
+file(GLOB_RECURSE SRC_FILES "${SRC_DIR}/*.c")
+file(GLOB TEST_FILES "${TEST_DIR}/*.c")
+
+add_executable(circular_buffer_tests
+        ${SRC_DIR}/circular_buffer.c
+        ${SRC_DIR}/allocator.c
+        ${TEST_DIR}/circular_buffer_test.c
+)
+
+enable_testing()
+add_test(NAME CircularBufferTests COMMAND circular_buffer_tests)
+
+add_library(project_includes INTERFACE)
+target_include_directories(project_includes INTERFACE
+    ${PHP_DIR}
+    ${PHP_MAIN_DIR}
+    ${ZEND_MAIN_DIR}
+    ${SRC_DIR}
+    ${TSRM_DIR}
+    ${WIN32_DIR}
+    ${TEST_DIR}
+)
+
+add_library(project_definitions INTERFACE)
+target_compile_definitions(project_definitions INTERFACE
+        ASYNC_UNIT_TESTS
+        ZEND_DEBUG
+        PHP_ASYNC
+        ZTS
+        PHP_WIN32
+        ZEND_WIN32
+        _WIN32
+)
+
+target_link_libraries(circular_buffer_tests PRIVATE project_includes project_definitions)
+
+if(MSVC)
+    target_compile_options(circular_buffer_tests PRIVATE /W4)
+else()
+    target_compile_options(circular_buffer_tests PRIVATE -Wall -Wextra -pedantic)
+endif()

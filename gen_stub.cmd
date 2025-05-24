@@ -1,0 +1,1 @@
+php ..\..\build\gen_stub.php
