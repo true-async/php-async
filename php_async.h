@@ -18,6 +18,14 @@
 
 #include <php.h>
 
+#ifdef PHP_ASYNC_LIBUV
+#ifdef PHP_WIN32
+#include "libuv/uv.h"
+#else
+#include <uv.h>
+#endif
+#endif
+
 #include "coroutine.h"
 #include "internal/circular_buffer.h"
 
@@ -60,8 +68,20 @@ ZEND_BEGIN_MODULE_GLOBALS(async)
 	/* The main flow stack */
 	zend_vm_stack main_vm_stack;
 
-	/* Link to the reactor structure */
-	void * reactor;
+#ifdef PHP_ASYNC_LIBUV
+	/* The reactor */
+	uv_loop_t uvloop;
+	bool reactor_started;
+#ifdef PHP_WIN32
+	uv_thread_t * watcherThread;
+	HANDLE ioCompletionPort;
+	unsigned int countWaitingDescriptors;
+	bool isRunning;
+	uv_async_t * uvloop_wakeup;
+	/* Circular buffer of libuv_process_t ptr */
+	circular_buffer_t * pid_queue;
+#endif
+#endif
 
 	#ifdef PHP_WIN32
 	#endif
@@ -70,6 +90,7 @@ ZEND_END_MODULE_GLOBALS(async)
 ZEND_EXTERN_MODULE_GLOBALS(async)
 
 #define ASYNC_G(v) ZEND_MODULE_GLOBALS_ACCESSOR(async, v)
+#define ASYNC_GLOBALS ZEND_MODULE_GLOBALS_BULK(async)
 
 # if defined(ZTS) && defined(COMPILE_DL_ASYNC)
 ZEND_TSRMLS_CACHE_EXTERN()

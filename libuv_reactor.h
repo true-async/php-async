@@ -16,8 +16,8 @@
 #ifndef LIBUV_REACTOR_H
 #define LIBUV_REACTOR_H
 
-#define LIBUV_REACTOR_VERSION "0.5.0 (libuv 1.44.2)"
-#define LIBUV_REACTOR_NAME "Libuv Reactor 0.5.0 (libuv 1.44.2)"
+#define LIBUV_REACTOR_VERSION "0.5.0"
+#define LIBUV_REACTOR_NAME "Libuv Reactor 0.5.0"
 #include <Zend/zend_async_API.h>
 
 #ifdef PHP_WIN32

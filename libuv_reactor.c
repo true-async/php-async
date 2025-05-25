@@ -20,43 +20,30 @@
 #include "php_async.h"
 #include "zend_common.h"
 
-typedef struct
-{
-	uv_loop_t loop;
-#ifdef PHP_WIN32
-	uv_thread_t * watcherThread;
-	HANDLE ioCompletionPort;
-	unsigned int countWaitingDescriptors;
-	bool isRunning;
-	uv_async_t * uvloop_wakeup;
-	/* Circular buffer of libuv_process_t ptr */
-	circular_buffer_t * pid_queue;
-#endif
-} libuv_reactor_t;
-
 static void libuv_reactor_stop_with_exception(void);
 
-#define UVLOOP ((uv_loop_t *) ASYNC_G(reactor))
-#define LIBUV_REACTOR ((libuv_reactor_t *) ASYNC_G(reactor))
-#define WATCHER ((libuv_reactor_t *) ASYNC_G(reactor))->watcherThread
+#define UVLOOP (&ASYNC_G(uvloop))
+#define LIBUV_REACTOR ((zend_async_globals *) ASYNC_GLOBALS)
+#define LIBUV_REACTOR_VAR zend_async_globals *reactor = LIBUV_REACTOR;
+#define LIBUV_REACTOR_VAR_FROM(var) zend_async_globals *reactor = (zend_async_globals *) var;
+#define WATCHER ASYNC_G(watcherThread)
 #define IF_EXCEPTION_STOP_REACTOR if (UNEXPECTED(EG(exception) != NULL)) { libuv_reactor_stop_with_exception(); }
 
 /* {{{ libuv_reactor_startup */
 void libuv_reactor_startup(void)
 {
-	if (ASYNC_G(reactor) != NULL) {
+	if (ASYNC_G(reactor_started)) {
 		return;
 	}
 
-	ASYNC_G(reactor) = pecalloc(1, sizeof(libuv_reactor_t), 1);
-	const int result = uv_loop_init(ASYNC_G(reactor));
+	const int result = uv_loop_init(UVLOOP);
 
 	if (result != 0) {
 		async_throw_error("Failed to initialize loop: %s", uv_strerror(result));
 		return;
 	}
 
-	uv_loop_set_data(ASYNC_G(reactor), ASYNC_G(reactor));
+	uv_loop_set_data(UVLOOP, ASYNC_GLOBALS);
 }
 /* }}} */
 
@@ -70,16 +57,15 @@ static void libuv_reactor_stop_with_exception(void)
 /* {{{ libuv_reactor_shutdown */
 void libuv_reactor_shutdown(void)
 {
-	if (EXPECTED(ASYNC_G(reactor) != NULL)) {
+	if (EXPECTED(ASYNC_G(reactor_started))) {
 
 		if (uv_loop_alive(UVLOOP) != 0) {
 			// need to finish handlers
 			uv_run(UVLOOP, UV_RUN_ONCE);
 		}
 
-		uv_loop_close(ASYNC_G(reactor));
-		pefree(ASYNC_G(reactor), 1);
-		ASYNC_G(reactor) = NULL;
+		uv_loop_close(UVLOOP);
+		ASYNC_G(reactor_started) = false;
 	}
 }
 /* }}} */
@@ -513,7 +499,7 @@ zend_async_signal_event_t* libuv_new_signal_event(int signum, size_t size)
 #ifdef PHP_WIN32
 static void process_watcher_thread(void * args)
 {
-	libuv_reactor_t *reactor = (libuv_reactor_t *) args;
+	LIBUV_REACTOR_VAR_FROM(args);
 
 	ULONG_PTR completionKey;
 
@@ -566,7 +552,7 @@ static void libuv_stop_process_watcher(void);
 
 static void on_process_event(uv_async_t *handle)
 {
-	libuv_reactor_t * reactor = LIBUV_REACTOR;
+	LIBUV_REACTOR_VAR;
 
 	if (reactor->pid_queue == NULL || circular_buffer_is_empty(reactor->pid_queue)) {
 		return;
@@ -608,7 +594,7 @@ static void libuv_start_process_watcher(void)
 		return;
 	}
 
-	libuv_reactor_t * reactor = LIBUV_REACTOR;
+	LIBUV_REACTOR_VAR;
 
 	// Create IoCompletionPort
 	reactor->ioCompletionPort = CreateIoCompletionPort(
@@ -663,7 +649,7 @@ static void libuv_stop_process_watcher(void)
 		return;
 	}
 
-	libuv_reactor_t * reactor = LIBUV_REACTOR;
+	LIBUV_REACTOR_VAR;
 
 	reactor->isRunning = false;
 

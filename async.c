@@ -39,7 +39,7 @@ zend_class_entry * async_ce_timeout = NULL;
 
 static zend_object *async_timeout_create(zend_ulong ms, bool is_periodic);
 
-#define THROW_IF_SCHEDULER_CONTEXT if (UNEXPECTED(ZEND_ASYNC_IS_SCHEDULER_CONTEXT)) {				\
+#define THROW_IF_SCHEDULER_CONTEXT if (UNEXPECTED(ZEND_ASYNC_IS_SCHEDULER_CONTEXT)) {		\
 		async_throw_error("The operation cannot be executed in the scheduler context");		\
 		RETURN_THROWS();																	\
 	}
@@ -661,7 +661,7 @@ static PHP_GINIT_FUNCTION(async)
 	circular_buffer_ctor(&async_globals->coroutine_queue, 128, sizeof(zend_coroutine_t *), &zend_std_allocator);
 	zend_hash_init(&async_globals->coroutines, 128, NULL, NULL, 0);
 
-	async_globals->reactor = NULL;
+	async_globals->reactor_started = false;
 }
 
 /* {{{ PHP_GSHUTDOWN_FUNCTION */
