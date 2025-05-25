@@ -52,5 +52,9 @@ void async_register_coroutine_ce(void);
 zend_coroutine_t *new_coroutine(zend_async_scope_t *scope);
 void async_coroutine_cleanup(zend_fiber_context *context);
 void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t * coroutine);
+bool async_context_set(const char *str_key, zend_object *obj_key, zval *value);
+bool async_context_get(const char *str_key, zend_object *obj_key, zval *result);
+bool async_context_has(const char *str_key, zend_object *obj_key);
+bool async_context_delete(const char *str_key, zend_object *obj_key);
 
 #endif //COROUTINE_H
