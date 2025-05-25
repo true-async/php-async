@@ -783,7 +783,11 @@ void async_api_register(void)
 		get_coroutines,
 		add_microtask,
 		get_awaiting_info,
-		async_get_exception_ce
+		async_get_exception_ce,
+		async_context_set,
+		async_context_get,
+		async_context_has,
+		async_context_delete
 	);
 
 	zend_string_release(module);

@@ -40,6 +40,10 @@ struct _async_coroutine_s {
 	/* Active fiber vm stack. */
 	zend_vm_stack vm_stack;
 
+	/* Context storage: key-value map for coroutine context (lazy initialization) */
+	HashTable *context_values;     /* Storage for actual values */
+	HashTable *context_obj_keys;   /* Storage for object keys to hold references */
+
 	/* PHP object handle. */
 	zend_object std;
 };
