@@ -1,9 +1,14 @@
 // vim:ft=javascript
 
-ARG_ENABLE('async', 'Enable True Async API', 'no');
-ARG_WITH('async_libuv', 'Build True Async API with libuv support', 'no');
+ARG_ENABLE('async', 'Enable True Async', 'no');
+ARG_WITH('async_libuv', 'Build True Async with libuv support', 'yes');
 
 if (PHP_ASYNC == "yes") {
+
+    if (!PHP_ASYNC_API || PHP_ASYNC_API != "yes") {
+        ERROR("PHP TRUE ASYNC API is required. Please configure PHP with --enable-experimental-async-api.");
+    }
+
     EXTENSION("async", "async.c coroutine.c scope.c scheduler.c exceptions.c iterator.c async_API.c");
     ADD_SOURCES("ext/async","zend_common.c");
     ADD_SOURCES("ext/async/internal", "allocator.c circular_buffer.c");

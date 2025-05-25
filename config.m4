@@ -1,14 +1,19 @@
 PHP_ARG_ENABLE([async],
-  [whether to enable True Async API],
+  [whether to enable True Async],
   [AS_HELP_STRING([--enable-async],
-    [Enable True Async API])])
+    [Enable True Async])])
 
 PHP_ARG_WITH([async_libuv],
   [for True Async LibUV support],
   [AS_HELP_STRING([--with-async-libuv],
-    [Build True Async API with LibUv support])])
+    [Build True Async with LibUv support])], yes)
 
 if test "$PHP_ASYNC" = "yes"; then
+
+  if test "$PHP_ASYNC_API" != "yes"; then
+    AC_MSG_ERROR([PHP TRUE ASYNC API is required. Please configure PHP with --enable-experimental-async-api])
+  fi
+
   dnl Define a symbol for C code.
   AC_DEFINE([PHP_ASYNC], 1, [Enable True Async API])
 
