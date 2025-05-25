@@ -305,17 +305,29 @@ zend_array *get_awaiting_info(zend_coroutine_t *coroutine)
 	return NULL;
 }
 
-static zend_class_entry* async_get_exception_ce(zend_async_exception_type type)
+static zend_class_entry* async_get_class_ce(zend_async_class type)
 {
 	switch (type) {
+		case ZEND_ASYNC_CLASS_COROUTINE:
+			return async_ce_coroutine;
+		case ZEND_ASYNC_CLASS_SCOPE:
+			return async_ce_scope;
+		case ZEND_ASYNC_CLASS_TIMEOUT:
+			return async_ce_timeout;
+		case ZEND_ASYNC_EXCEPTION_DEFAULT:
+			return async_ce_async_exception;
 		case ZEND_ASYNC_EXCEPTION_CANCELLATION:
 			return async_ce_cancellation_exception;
 		case ZEND_ASYNC_EXCEPTION_TIMEOUT:
 			return async_ce_timeout_exception;
+		case ZEND_ASYNC_EXCEPTION_INPUT_OUTPUT:
+			return async_ce_input_output_exception;
 		case ZEND_ASYNC_EXCEPTION_POLL:
 			return async_ce_poll_exception;
+		case ZEND_ASYNC_EXCEPTION_DNS:
+			return async_ce_dns_exception;
 		default:
-			return async_ce_async_exception;
+			return NULL;
 	}
 }
 
@@ -783,7 +795,7 @@ void async_api_register(void)
 		get_coroutines,
 		add_microtask,
 		get_awaiting_info,
-		async_get_exception_ce,
+		async_get_class_ce,
 		async_context_set,
 		async_context_get,
 		async_context_has,
