@@ -23,7 +23,6 @@
 #include "zend_common.h"
 #include "zend_exceptions.h"
 #include "zend_ini.h"
-#include <stddef.h>
 
 #define METHOD(name) PHP_METHOD(Async_Coroutine, name)
 
@@ -148,14 +147,12 @@ void async_coroutine_cleanup(zend_fiber_context *context)
 	
 	// Cleanup context storage
 	if (coroutine->context_values != NULL) {
-		zend_hash_destroy(coroutine->context_values);
-		efree(coroutine->context_values);
+		zend_array_destroy(coroutine->context_values);
 		coroutine->context_values = NULL;
 	}
 	
 	if (coroutine->context_obj_keys != NULL) {
-		zend_hash_destroy(coroutine->context_obj_keys);
-		efree(coroutine->context_obj_keys);
+		zend_array_destroy(coroutine->context_obj_keys);
 		coroutine->context_obj_keys = NULL;
 	}
 
@@ -475,32 +472,25 @@ void async_register_coroutine_ce(void)
 }
 
 //////////////////////////////////////////////////////////////////////
-/* Context API Implementation */
+/// Context API Implementation
 //////////////////////////////////////////////////////////////////////
 
 static void init_context_tables(async_coroutine_t *coroutine)
 {
 	if (coroutine->context_values == NULL) {
-		coroutine->context_values = emalloc(sizeof(HashTable));
-		zend_hash_init(coroutine->context_values, 8, NULL, ZVAL_PTR_DTOR, 0);
+		coroutine->context_values = zend_new_array(0);
 	}
 	
 	if (coroutine->context_obj_keys == NULL) {
-		coroutine->context_obj_keys = emalloc(sizeof(HashTable));
-		zend_hash_init(coroutine->context_obj_keys, 8, NULL, ZVAL_PTR_DTOR, 0);
+		coroutine->context_obj_keys = zend_new_array(0);
 	}
-}
-
-static zend_always_inline async_coroutine_t *get_current_async_coroutine(void)
-{
-	zend_coroutine_t *base = ZEND_ASYNC_CURRENT_COROUTINE;
-	return base ? (async_coroutine_t *)((char *)base - offsetof(async_coroutine_t, coroutine)) : NULL;
 }
 
 bool async_context_set(const char *str_key, zend_object *obj_key, zval *value)
 {
-	async_coroutine_t *coroutine = get_current_async_coroutine();
-	if (coroutine == NULL) {
+	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (UNEXPECTED(coroutine == NULL)) {
 		return false;
 	}
 	
@@ -512,14 +502,13 @@ bool async_context_set(const char *str_key, zend_object *obj_key, zval *value)
 		Z_TRY_ADDREF_P(value);
 	} else if (obj_key != NULL) {
 		// Object key - use object pointer as hash key
-		zend_ulong obj_handle = (zend_ulong)obj_key;
-		zend_hash_index_update(coroutine->context_values, obj_handle, value);
+		zend_hash_index_update(coroutine->context_values, obj_key->handle, value);
 		Z_TRY_ADDREF_P(value);
 		
 		// Store object reference to keep it alive
 		zval obj_val;
 		ZVAL_OBJ(&obj_val, obj_key);
-		zend_hash_index_update(coroutine->context_obj_keys, obj_handle, &obj_val);
+		zend_hash_index_update(coroutine->context_obj_keys, obj_key->handle, &obj_val);
 		Z_TRY_ADDREF(obj_val);
 	} else {
 		return false;
@@ -530,12 +519,13 @@ bool async_context_set(const char *str_key, zend_object *obj_key, zval *value)
 
 bool async_context_get(const char *str_key, zend_object *obj_key, zval *result)
 {
-	async_coroutine_t *coroutine = get_current_async_coroutine();
-	if (coroutine == NULL || coroutine->context_values == NULL) {
+	const async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (UNEXPECTED(coroutine == NULL || coroutine->context_values == NULL)) {
 		ZVAL_NULL(result);
 		return false;
 	}
-	
+
 	zval *found = NULL;
 	
 	if (str_key != NULL) {
@@ -543,8 +533,7 @@ bool async_context_get(const char *str_key, zend_object *obj_key, zval *result)
 		found = zend_hash_str_find(coroutine->context_values, str_key, strlen(str_key));
 	} else if (obj_key != NULL) {
 		// Object key
-		zend_ulong obj_handle = (zend_ulong)obj_key;
-		found = zend_hash_index_find(coroutine->context_values, obj_handle);
+		found = zend_hash_index_find(coroutine->context_values, obj_key->handle);
 	}
 	
 	if (found != NULL) {
@@ -558,8 +547,9 @@ bool async_context_get(const char *str_key, zend_object *obj_key, zval *result)
 
 bool async_context_has(const char *str_key, zend_object *obj_key)
 {
-	async_coroutine_t *coroutine = get_current_async_coroutine();
-	if (coroutine == NULL || coroutine->context_values == NULL) {
+	const async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (UNEXPECTED(coroutine == NULL || coroutine->context_values == NULL)) {
 		return false;
 	}
 	
@@ -568,8 +558,7 @@ bool async_context_has(const char *str_key, zend_object *obj_key)
 		return zend_hash_str_exists(coroutine->context_values, str_key, strlen(str_key));
 	} else if (obj_key != NULL) {
 		// Object key
-		zend_ulong obj_handle = (zend_ulong)obj_key;
-		return zend_hash_index_exists(coroutine->context_values, obj_handle);
+		return zend_hash_index_exists(coroutine->context_values, obj_key->handle);
 	}
 	
 	return false;
@@ -577,8 +566,9 @@ bool async_context_has(const char *str_key, zend_object *obj_key)
 
 bool async_context_delete(const char *str_key, zend_object *obj_key)
 {
-	async_coroutine_t *coroutine = get_current_async_coroutine();
-	if (coroutine == NULL || coroutine->context_values == NULL) {
+	const async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (UNEXPECTED(coroutine == NULL || coroutine->context_values == NULL)) {
 		return false;
 	}
 	
@@ -589,12 +579,11 @@ bool async_context_delete(const char *str_key, zend_object *obj_key)
 		deleted = (zend_hash_str_del(coroutine->context_values, str_key, strlen(str_key)) == SUCCESS);
 	} else if (obj_key != NULL) {
 		// Object key
-		zend_ulong obj_handle = (zend_ulong)obj_key;
-		deleted = (zend_hash_index_del(coroutine->context_values, obj_handle) == SUCCESS);
+		deleted = (zend_hash_index_del(coroutine->context_values, obj_key->handle) == SUCCESS);
 		
 		if (deleted && coroutine->context_obj_keys != NULL) {
 			// Also remove from object keys storage
-			zend_hash_index_del(coroutine->context_obj_keys, obj_handle);
+			zend_hash_index_del(coroutine->context_obj_keys, obj_key->handle);
 		}
 	}
 	
