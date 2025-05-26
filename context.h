@@ -24,16 +24,23 @@ struct _async_context_s {
 	zend_async_context_t base;
 	HashTable values;
 	HashTable keys;
+	async_context_t *parent;
 	zend_object std;
 };
 
 bool async_context_find(async_context_t * context, zval *key, zval *result);
+bool async_context_find_local(async_context_t * context, zval *key, zval *result);
 bool async_context_set(async_context_t * context, zval *key, zval *value);
 bool async_context_has(async_context_t * context, zval *key);
+bool async_context_has_local(async_context_t * context, zval *key);
 bool async_context_delete(async_context_t * context, zval *key);
 
-async_context_t *async_context_create(zend_async_context_t *parent_context);
+async_context_t *async_context_create(async_context_t *parent_context);
 void async_context_dispose(async_context_t *context);
+
+// Class entry
+extern zend_class_entry *async_ce_context;
+void async_register_context_ce(void);
 
 
 #endif //CONTEXT_H
