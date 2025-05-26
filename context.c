@@ -179,7 +179,7 @@ void async_context_dispose(async_context_t *context)
 
 zend_class_entry *async_ce_context = NULL;
 
-#define METHOD(name) PHP_METHOD(Async_Context, name)
+#define METHOD(name) ZEND_METHOD(Async_Context, name)
 
 METHOD(find)
 {
