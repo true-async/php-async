@@ -14,6 +14,8 @@
   +----------------------------------------------------------------------+
 */
 #include "coroutine.h"
+
+#include "context.h"
 #include "coroutine_arginfo.h"
 #include "exceptions.h"
 #include "php_async.h"
@@ -472,7 +474,7 @@ void async_register_coroutine_ce(void)
 }
 
 //////////////////////////////////////////////////////////////////////
-/// Context API Implementation
+/// Coroutine Context API
 //////////////////////////////////////////////////////////////////////
 
 static void init_context_tables(async_coroutine_t *coroutine)
@@ -486,106 +488,49 @@ static void init_context_tables(async_coroutine_t *coroutine)
 	}
 }
 
-bool async_context_set(const char *str_key, zend_object *obj_key, zval *value)
+bool async_coroutine_context_set(zend_coroutine_t * z_coroutine, zend_string *str_key, zend_object *obj_key, zval *value)
 {
-	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
+	async_coroutine_t * coroutine = (async_coroutine_t *) (z_coroutine != NULL ? z_coroutine : ZEND_ASYNC_CURRENT_COROUTINE);
 
 	if (UNEXPECTED(coroutine == NULL)) {
 		return false;
 	}
 	
 	init_context_tables(coroutine);
-	
-	if (str_key != NULL) {
-		// String key
-		zend_hash_str_update(coroutine->context_values, str_key, strlen(str_key), value);
-		Z_TRY_ADDREF_P(value);
-	} else if (obj_key != NULL) {
-		// Object key - use object pointer as hash key
-		zend_hash_index_update(coroutine->context_values, obj_key->handle, value);
-		Z_TRY_ADDREF_P(value);
-		
-		// Store object reference to keep it alive
-		zval obj_val;
-		ZVAL_OBJ(&obj_val, obj_key);
-		zend_hash_index_update(coroutine->context_obj_keys, obj_key->handle, &obj_val);
-		Z_TRY_ADDREF(obj_val);
-	} else {
-		return false;
-	}
-	
-	return true;
+
+	return async_context_set(coroutine->context_values, coroutine->context_obj_keys, str_key, obj_key, value);
 }
 
-bool async_context_get(const char *str_key, zend_object *obj_key, zval *result)
+bool async_coroutine_context_get(zend_coroutine_t * z_coroutine, zend_string *str_key, zend_object *obj_key, zval *result)
 {
-	const async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
+	async_coroutine_t * coroutine = (async_coroutine_t *) (z_coroutine != NULL ? z_coroutine : ZEND_ASYNC_CURRENT_COROUTINE);
 
 	if (UNEXPECTED(coroutine == NULL || coroutine->context_values == NULL)) {
 		ZVAL_NULL(result);
 		return false;
 	}
 
-	zval *found = NULL;
-	
-	if (str_key != NULL) {
-		// String key
-		found = zend_hash_str_find(coroutine->context_values, str_key, strlen(str_key));
-	} else if (obj_key != NULL) {
-		// Object key
-		found = zend_hash_index_find(coroutine->context_values, obj_key->handle);
-	}
-	
-	if (found != NULL) {
-		ZVAL_COPY(result, found);
-		return true;
-	}
-	
-	ZVAL_NULL(result);
-	return false;
+	return async_context_get(coroutine->context_values, str_key, obj_key, result);
 }
 
-bool async_context_has(const char *str_key, zend_object *obj_key)
+bool async_coroutine_context_has(zend_coroutine_t * z_coroutine, zend_string *str_key, zend_object *obj_key)
 {
-	const async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
+	async_coroutine_t * coroutine = (async_coroutine_t *) (z_coroutine != NULL ? z_coroutine : ZEND_ASYNC_CURRENT_COROUTINE);
 
 	if (UNEXPECTED(coroutine == NULL || coroutine->context_values == NULL)) {
 		return false;
 	}
-	
-	if (str_key != NULL) {
-		// String key
-		return zend_hash_str_exists(coroutine->context_values, str_key, strlen(str_key));
-	} else if (obj_key != NULL) {
-		// Object key
-		return zend_hash_index_exists(coroutine->context_values, obj_key->handle);
-	}
-	
-	return false;
+
+	return async_context_has(coroutine->context_values, str_key, obj_key);
 }
 
-bool async_context_delete(const char *str_key, zend_object *obj_key)
+bool async_coroutine_context_delete(zend_coroutine_t * z_coroutine, zend_string *str_key, zend_object *obj_key)
 {
-	const async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
+	async_coroutine_t * coroutine = (async_coroutine_t *) (z_coroutine != NULL ? z_coroutine : ZEND_ASYNC_CURRENT_COROUTINE);
 
 	if (UNEXPECTED(coroutine == NULL || coroutine->context_values == NULL)) {
 		return false;
 	}
-	
-	bool deleted = false;
-	
-	if (str_key != NULL) {
-		// String key
-		deleted = (zend_hash_str_del(coroutine->context_values, str_key, strlen(str_key)) == SUCCESS);
-	} else if (obj_key != NULL) {
-		// Object key
-		deleted = (zend_hash_index_del(coroutine->context_values, obj_key->handle) == SUCCESS);
-		
-		if (deleted && coroutine->context_obj_keys != NULL) {
-			// Also remove from object keys storage
-			zend_hash_index_del(coroutine->context_obj_keys, obj_key->handle);
-		}
-	}
-	
-	return deleted;
+
+	return async_context_delete(coroutine->context_values, coroutine->context_obj_keys, str_key, obj_key);
 }
