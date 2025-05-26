@@ -23,6 +23,7 @@
 #include "scheduler.h"
 #include "exceptions.h"
 #include "scope.h"
+#include "context.h"
 #include "async_API.h"
 #include "async_arginfo.h"
 #include "zend_interfaces.h"
@@ -684,12 +685,12 @@ ZEND_MINIT_FUNCTION(async)
 	async_register_timeout_ce();
 	async_register_scope_ce();
 	async_register_coroutine_ce();
+	async_register_context_ce();
 	async_register_exceptions_ce();
 	//async_register_notifier_ce();
 	//async_register_handlers_ce();
 	//async_register_channel_ce();
 	//async_register_iterator_ce();
-	//async_register_context_ce();
 	//async_register_future_ce();
 
 	async_scheduler_startup();
