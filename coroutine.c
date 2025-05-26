@@ -147,16 +147,6 @@ void async_coroutine_cleanup(zend_fiber_context *context)
 	EG(vm_stack) = current_stack;
 	coroutine->execute_data = NULL;
 	
-	// Cleanup context storage
-	if (coroutine->context_values != NULL) {
-		zend_array_destroy(coroutine->context_values);
-		coroutine->context_values = NULL;
-	}
-	
-	if (coroutine->context_obj_keys != NULL) {
-		zend_array_destroy(coroutine->context_obj_keys);
-		coroutine->context_obj_keys = NULL;
-	}
 
 	OBJ_RELEASE(&coroutine->std);
 }
@@ -431,10 +421,6 @@ static zend_object *coroutine_object_create(zend_class_entry *class_entry)
 
 	coroutine->flags = ZEND_FIBER_STATUS_INIT;
 	coroutine->coroutine.extended_data = NULL;
-	
-	// Initialize context storage pointers to NULL (lazy initialization)
-	coroutine->context_values = NULL;
-	coroutine->context_obj_keys = NULL;
 
 	zend_object_std_init(&coroutine->std, class_entry);
 	object_properties_init(&coroutine->std, class_entry);
@@ -477,60 +463,54 @@ void async_register_coroutine_ce(void)
 /// Coroutine Context API
 //////////////////////////////////////////////////////////////////////
 
-static void init_context_tables(async_coroutine_t *coroutine)
-{
-	if (coroutine->context_values == NULL) {
-		coroutine->context_values = zend_new_array(0);
-	}
-	
-	if (coroutine->context_obj_keys == NULL) {
-		coroutine->context_obj_keys = zend_new_array(0);
-	}
-}
 
-bool async_coroutine_context_set(zend_coroutine_t * z_coroutine, zend_string *str_key, zend_object *obj_key, zval *value)
+bool async_coroutine_context_set(zend_coroutine_t * z_coroutine, zval *key, zval *value)
 {
 	async_coroutine_t * coroutine = (async_coroutine_t *) (z_coroutine != NULL ? z_coroutine : ZEND_ASYNC_CURRENT_COROUTINE);
 
-	if (UNEXPECTED(coroutine == NULL)) {
+	if (UNEXPECTED(coroutine == NULL || coroutine->coroutine.context == NULL)) {
 		return false;
 	}
-	
-	init_context_tables(coroutine);
 
-	return async_context_set(coroutine->context_values, coroutine->context_obj_keys, str_key, obj_key, value);
+	return coroutine->coroutine.context->set(coroutine->coroutine.context, key, value);
 }
 
-bool async_coroutine_context_get(zend_coroutine_t * z_coroutine, zend_string *str_key, zend_object *obj_key, zval *result)
+bool async_coroutine_context_get(zend_coroutine_t * z_coroutine, zval *key, zval *result)
 {
 	async_coroutine_t * coroutine = (async_coroutine_t *) (z_coroutine != NULL ? z_coroutine : ZEND_ASYNC_CURRENT_COROUTINE);
 
-	if (UNEXPECTED(coroutine == NULL || coroutine->context_values == NULL)) {
+	if (UNEXPECTED(coroutine == NULL || coroutine->coroutine.context == NULL)) {
 		ZVAL_NULL(result);
 		return false;
 	}
 
-	return async_context_get(coroutine->context_values, str_key, obj_key, result);
+	coroutine->coroutine.context->find(coroutine->coroutine.context, key, result);
+	return !Z_ISNULL_P(result);
 }
 
-bool async_coroutine_context_has(zend_coroutine_t * z_coroutine, zend_string *str_key, zend_object *obj_key)
+bool async_coroutine_context_has(zend_coroutine_t * z_coroutine, zval *key)
 {
 	async_coroutine_t * coroutine = (async_coroutine_t *) (z_coroutine != NULL ? z_coroutine : ZEND_ASYNC_CURRENT_COROUTINE);
 
-	if (UNEXPECTED(coroutine == NULL || coroutine->context_values == NULL)) {
+	if (UNEXPECTED(coroutine == NULL || coroutine->coroutine.context == NULL)) {
 		return false;
 	}
 
-	return async_context_has(coroutine->context_values, str_key, obj_key);
+	zval result;
+	coroutine->coroutine.context->find(coroutine->coroutine.context, key, &result);
+	bool found = !Z_ISNULL(result);
+	zval_ptr_dtor(&result);
+	return found;
 }
 
-bool async_coroutine_context_delete(zend_coroutine_t * z_coroutine, zend_string *str_key, zend_object *obj_key)
+bool async_coroutine_context_delete(zend_coroutine_t * z_coroutine, zval *key)
 {
 	async_coroutine_t * coroutine = (async_coroutine_t *) (z_coroutine != NULL ? z_coroutine : ZEND_ASYNC_CURRENT_COROUTINE);
 
-	if (UNEXPECTED(coroutine == NULL || coroutine->context_values == NULL)) {
+	if (UNEXPECTED(coroutine == NULL || coroutine->coroutine.context == NULL)) {
 		return false;
 	}
 
-	return async_context_delete(coroutine->context_values, coroutine->context_obj_keys, str_key, obj_key);
+	coroutine->coroutine.context->unset(coroutine->coroutine.context, key);
+	return true;
 }
