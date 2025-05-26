@@ -472,7 +472,8 @@ bool async_coroutine_context_set(zend_coroutine_t * z_coroutine, zval *key, zval
 		return false;
 	}
 
-	return coroutine->coroutine.context->set(coroutine->coroutine.context, key, value);
+	coroutine->coroutine.context->set(coroutine->coroutine.context, key, value);
+	return true;
 }
 
 bool async_coroutine_context_get(zend_coroutine_t * z_coroutine, zval *key, zval *result)
