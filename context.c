@@ -74,9 +74,10 @@ bool async_context_has(async_context_t * context, zval *key)
 	} else if (Z_TYPE_P(key) == IS_OBJECT) {
 		// Object key
 		return zend_hash_index_exists(&context->values, Z_OBJ_P(key)->handle);
+	} else {
+		async_throw_error("Context key must be a string or an object");
+		return false;
 	}
-
-	return false;
 }
 
 bool async_context_delete(async_context_t * context, zval *key)
@@ -94,6 +95,9 @@ bool async_context_delete(async_context_t * context, zval *key)
 			// Also remove from object keys storage
 			zend_hash_index_del(&context->keys, Z_OBJ_P(key)->handle);
 		}
+	} else {
+		async_throw_error("Context key must be a string or an object");
+		return false;
 	}
 
 	return deleted;
@@ -112,7 +116,7 @@ async_context_t *async_context_create(zend_async_context_t *parent_context)
 	context->base.set = (zend_async_context_set_t)async_context_set;
 	context->base.unset = (zend_async_context_unset_t)async_context_delete;
 	context->base.dispose = (zend_async_context_dispose_t)async_context_dispose;
-	context->base.offset = offsetof(async_context_t, std);
+	context->base.offset = XtOffsetOf(async_context_t, std);
 	
 	// Initialize std object
 	zend_object_std_init(&context->std, NULL);
