@@ -64,15 +64,19 @@ zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object * scope_provider)
 
 	if (scope == NULL) {
 
-		if (UNEXPECTED(ZEND_ASYNC_CURRENT_SCOPE == NULL)) {
-			ZEND_ASYNC_CURRENT_SCOPE = async_new_scope(NULL);
+		if (UNEXPECTED(ZEND_ASYNC_CURRENT_SCOPE == NULL && ZEND_ASYNC_MAIN_SCOPE == NULL)) {
+			ZEND_ASYNC_MAIN_SCOPE = async_new_scope(NULL);
 
 			if (UNEXPECTED(EG(exception))) {
 				return NULL;
 			}
 		}
 
-		scope = ZEND_ASYNC_CURRENT_SCOPE;
+		if (EXPECTED(ZEND_ASYNC_CURRENT_SCOPE != NULL)) {
+			scope = ZEND_ASYNC_CURRENT_SCOPE;
+		} else {
+			scope = ZEND_ASYNC_MAIN_SCOPE;
+		}
 	}
 
 	if (UNEXPECTED(scope == NULL)) {

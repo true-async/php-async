@@ -436,13 +436,20 @@ void async_scheduler_launch(void)
 	// We also carefully normalize the state of the main coroutine as
 	// if it had actually been started via the spawn function.
 	//
-	async_scope_t * main_scope = (async_scope_t *) ZEND_ASYNC_NEW_SCOPE(NULL);
+
+	if (ZEND_ASYNC_MAIN_SCOPE == NULL) {
+		ZEND_ASYNC_MAIN_SCOPE = async_new_scope(NULL);
+
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			return;
+		}
+	}
 
 	if (UNEXPECTED(EG(exception) != NULL)) {
 		return;
 	}
 
-	async_coroutine_t * main_coroutine = (async_coroutine_t *) ZEND_ASYNC_NEW_COROUTINE(&main_scope->scope);
+	async_coroutine_t * main_coroutine = (async_coroutine_t *) ZEND_ASYNC_NEW_COROUTINE(ZEND_ASYNC_MAIN_SCOPE);
 
 	if (UNEXPECTED(EG(exception) != NULL)) {
 		return;
@@ -520,6 +527,8 @@ void async_scheduler_main_coroutine_suspend(void)
 		efree(ASYNC_G(main_transfer));
 		ASYNC_G(main_transfer) = NULL;
 	}
+
+	ZEND_ASYNC_MAIN_SCOPE = NULL;
 }
 
 #define TRY_HANDLE_SUSPEND_EXCEPTION() \
