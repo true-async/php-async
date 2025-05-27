@@ -372,9 +372,25 @@ static void coroutine_object_destroy(zend_object *object)
 	}
 
 	if (coroutine->coroutine.fcall) {
-		zval_ptr_dtor(&coroutine->coroutine.fcall->fci.function_name);
-		efree(coroutine->coroutine.fcall);
+
+		zend_fcall_t * fcall = coroutine->coroutine.fcall;
 		coroutine->coroutine.fcall = NULL;
+
+		if (fcall->fci.param_count) {
+			for (uint32_t i = 0; i < fcall->fci.param_count; i++) {
+				zval_ptr_dtor(&fcall->fci.params[i]);
+			}
+
+			efree(fcall->fci.params);
+		}
+
+		if (fcall->fci.named_params) {
+			GC_DELREF(fcall->fci.named_params);
+			fcall->fci.named_params = NULL;
+		}
+
+		zval_ptr_dtor(&fcall->fci.function_name);
+		efree(fcall);
 	}
 
 	if (coroutine->coroutine.filename) {
