@@ -20,6 +20,7 @@
 #include "scheduler.h"
 #include "php_async.h"
 #include "exceptions.h"
+#include "scope.h"
 #include "zend_common.h"
 
 void async_scheduler_startup(void)
@@ -43,7 +44,9 @@ zend_always_inline static void execute_microtasks(void)
 			task->handler(task);
 		}
 
-		task->ref_count--;
+		if (task->ref_count > 0) {
+			task->ref_count--;
+		}
 
 		if (task->ref_count <= 0) {
 			task->dtor(task);
@@ -433,8 +436,13 @@ void async_scheduler_launch(void)
 	// We also carefully normalize the state of the main coroutine as
 	// if it had actually been started via the spawn function.
 	//
+	async_scope_t * main_scope = (async_scope_t *) ZEND_ASYNC_NEW_SCOPE(NULL);
 
-	async_coroutine_t * main_coroutine = (async_coroutine_t *) ZEND_ASYNC_NEW_COROUTINE(NULL);
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		return;
+	}
+
+	async_coroutine_t * main_coroutine = (async_coroutine_t *) ZEND_ASYNC_NEW_COROUTINE(&main_scope->scope);
 
 	if (UNEXPECTED(EG(exception) != NULL)) {
 		return;

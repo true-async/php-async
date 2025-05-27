@@ -430,6 +430,11 @@ static zend_object *coroutine_object_create(zend_class_entry *class_entry)
 
 zend_coroutine_t *new_coroutine(zend_async_scope_t *scope)
 {
+	if (UNEXPECTED(scope == NULL)) {
+		async_throw_error("Cannot create a coroutine without a scope");
+		return NULL;
+	}
+
 	zend_object * object = coroutine_object_create(async_ce_coroutine);
 
 	if (UNEXPECTED(EG(exception))) {
