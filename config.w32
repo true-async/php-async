@@ -5,12 +5,16 @@ ARG_WITH('async_libuv', 'Build True Async with libuv support', 'yes');
 
 if (PHP_ASYNC == "yes") {
 
+    if(typeof PHP_ASYNC_API == "undefined" && typeof PHP_EXPERIMENTAL_ASYNC_API != "undefined") {
+        var PHP_ASYNC_API = PHP_EXPERIMENTAL_ASYNC_API;
+    }
+
     if (!PHP_ASYNC_API || PHP_ASYNC_API != "yes") {
         ERROR("PHP TRUE ASYNC API is required. Please configure PHP with --enable-experimental-async-api.");
     }
 
     EXTENSION("async", "async.c coroutine.c scope.c scheduler.c exceptions.c iterator.c async_API.c");
-    ADD_SOURCES("ext/async","zend_common.c");
+    ADD_SOURCES("ext/async","zend_common.c context.c");
     ADD_SOURCES("ext/async/internal", "allocator.c circular_buffer.c");
 
     ADD_FLAG("CFLAGS", "/D PHP_ASYNC");
@@ -22,6 +26,7 @@ if (PHP_ASYNC == "yes") {
     PHP_INSTALL_HEADERS("ext/async", "exceptions.h");
     PHP_INSTALL_HEADERS("ext/async", "iterator.h");
     PHP_INSTALL_HEADERS("ext/async", "async_API.h");
+    PHP_INSTALL_HEADERS("ext/async", "context.h");
 }
 
 if (PHP_ASYNC_LIBUV == "yes") {
