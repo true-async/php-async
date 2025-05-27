@@ -15,6 +15,7 @@
 */
 #include "async_API.h"
 
+#include "context.h"
 #include "exceptions.h"
 #include "iterator.h"
 #include "php_async.h"
@@ -787,6 +788,7 @@ void async_api_register(void)
 		false,
 		new_coroutine,
 		async_new_scope,
+		(zend_async_new_context_t)async_context_new,
 		spawn,
 		suspend,
 		resume,

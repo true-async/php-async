@@ -481,12 +481,13 @@ bool async_coroutine_context_get(zend_coroutine_t * z_coroutine, zval *key, zval
 	async_coroutine_t * coroutine = (async_coroutine_t *) (z_coroutine != NULL ? z_coroutine : ZEND_ASYNC_CURRENT_COROUTINE);
 
 	if (UNEXPECTED(coroutine == NULL || coroutine->coroutine.context == NULL)) {
-		ZVAL_NULL(result);
+		if (result != NULL) {
+			ZVAL_NULL(result);
+		}
 		return false;
 	}
 
-	coroutine->coroutine.context->find(coroutine->coroutine.context, key, result);
-	return !Z_ISNULL_P(result);
+	return coroutine->coroutine.context->find(coroutine->coroutine.context, key, result, false);
 }
 
 bool async_coroutine_context_has(zend_coroutine_t * z_coroutine, zval *key)
@@ -497,11 +498,7 @@ bool async_coroutine_context_has(zend_coroutine_t * z_coroutine, zval *key)
 		return false;
 	}
 
-	zval result;
-	coroutine->coroutine.context->find(coroutine->coroutine.context, key, &result);
-	bool found = !Z_ISNULL(result);
-	zval_ptr_dtor(&result);
-	return found;
+	return coroutine->coroutine.context->find(coroutine->coroutine.context, key, NULL, false);
 }
 
 bool async_coroutine_context_delete(zend_coroutine_t * z_coroutine, zval *key)
@@ -512,6 +509,5 @@ bool async_coroutine_context_delete(zend_coroutine_t * z_coroutine, zval *key)
 		return false;
 	}
 
-	coroutine->coroutine.context->unset(coroutine->coroutine.context, key);
-	return true;
+	return coroutine->coroutine.context->unset(coroutine->coroutine.context, key);
 }
