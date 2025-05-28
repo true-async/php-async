@@ -352,15 +352,19 @@ void start_graceful_shutdown(void)
 		return;
 	}
 
-	if (EG(exception) == NULL) {
+	ZEND_ASYNC_GRACEFUL_SHUTDOWN = true;
+
+	// If the exit exception is not defined, we will define it.
+	if (EG(exception) == NULL && ZEND_ASYNC_EXIT_EXCEPTION == NULL) {
 		async_throw_error("Graceful shutdown mode is activated");
 	}
 
-	ZEND_ASYNC_GRACEFUL_SHUTDOWN = true;
-	ZEND_ASYNC_EXIT_EXCEPTION = EG(exception);
-	GC_ADDREF(EG(exception));
+	if (EG(exception) != NULL) {
+		ZEND_ASYNC_EXIT_EXCEPTION = EG(exception);
+		GC_ADDREF(EG(exception));
+		zend_clear_exception();
+	}
 
-	zend_clear_exception();
 	cancel_queued_coroutines();
 
 	if (UNEXPECTED(EG(exception) != NULL)) {
@@ -370,6 +374,8 @@ void start_graceful_shutdown(void)
 		GC_ADDREF(EG(exception));
 		zend_clear_exception();
 	}
+
+	// After exiting this function, EG(exception) must be 100% clean.
 }
 
 static void finally_shutdown(void)
@@ -528,7 +534,28 @@ void async_scheduler_main_coroutine_suspend(void)
 		ASYNC_G(main_transfer) = NULL;
 	}
 
+	// The main Scope object must already be destroyed at this point.
+	// Here we additionally remove the dead reference to it to avoid any ambiguous state.
 	ZEND_ASYNC_MAIN_SCOPE = NULL;
+
+	//
+	// By leaving this function, we terminate the execution of the PHP script.
+	// This is the exit point for ASYNC.
+	//
+
+	zend_object * exit_exception = ZEND_ASYNC_EXIT_EXCEPTION;
+	ZEND_ASYNC_EXIT_EXCEPTION = NULL;
+
+	//
+	// Before exiting completely, we rethrow the exit exception
+	// that was raised somewhere in other coroutines.
+	//
+	if (EG(exception) != NULL && exit_exception != NULL) {
+		zend_exception_set_previous(EG(exception), exit_exception);
+		GC_DELREF(exit_exception);
+	} else if (exit_exception != NULL) {
+		zend_throw_exception_internal(exit_exception);
+	}
 }
 
 #define TRY_HANDLE_SUSPEND_EXCEPTION() \
@@ -557,6 +584,39 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 	}
 
 	ZEND_ASYNC_SCHEDULER_HEARTBEAT;
+
+	//
+	// The async_scheduler_coroutine_suspend function is called
+	// with the transfer parameter not null when the current coroutine finishes execution.
+	// This means that the transfer structure may contain an exception object
+	// if the coroutine ended with an error.
+	// We are required to handle this situation.
+	//
+	if (UNEXPECTED(transfer != NULL && transfer->flags & ZEND_FIBER_TRANSFER_FLAG_ERROR)) {
+
+		zend_object * exception = Z_OBJ(transfer->value);
+		ZEND_ASSERT(Z_TYPE(transfer->value) == IS_OBJECT && "The transfer value must be an exception object");
+
+		transfer->flags = 0; // Reset the flags to avoid reprocessing the exception
+		ZVAL_NULL(&transfer->value); // Reset the transfer value to avoid memory leaks
+
+		if (ZEND_ASYNC_EXIT_EXCEPTION != NULL) {
+			zend_exception_set_previous(exception, ZEND_ASYNC_EXIT_EXCEPTION);
+			GC_DELREF(ZEND_ASYNC_EXIT_EXCEPTION);
+			ZEND_ASYNC_EXIT_EXCEPTION = exception;
+		} else {
+			ZEND_ASYNC_EXIT_EXCEPTION = exception;
+		}
+
+		if(ZEND_ASYNC_GRACEFUL_SHUTDOWN) {
+			finally_shutdown();
+		} else {
+			start_graceful_shutdown();
+		}
+
+		switch_to_scheduler(transfer);
+		return;
+	}
 
 	ZEND_ASYNC_SCHEDULER_CONTEXT = true;
 
@@ -650,7 +710,6 @@ void async_scheduler_main_loop(void)
 	ZEND_ASSERT(ZEND_ASYNC_REACTOR_LOOP_ALIVE() == false && "The event loop must be stopped");
 
 	zend_object * exit_exception = ZEND_ASYNC_EXIT_EXCEPTION;
-	ZEND_ASYNC_EXIT_EXCEPTION = NULL;
 
 	async_scheduler_dtor();
 
@@ -662,7 +721,5 @@ void async_scheduler_main_loop(void)
 		zend_clear_exception();
 	}
 
-	if (exit_exception != NULL) {
-		zend_throw_exception_internal(exit_exception);
-	}
+	// Here we are guaranteed to exit the coroutine without exceptions.
 }

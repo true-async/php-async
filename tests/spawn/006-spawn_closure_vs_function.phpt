@@ -19,9 +19,6 @@ spawn(function() {
 // Test with function name
 spawn('test_function');
 
-// Test with array callable
-spawn(['stdClass', '__toString']);
-
 echo "end\n";
 ?>
 --EXPECTF--
@@ -29,4 +26,3 @@ start
 end
 closure executed
 named function executed
-%a

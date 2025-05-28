@@ -168,9 +168,9 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 
 		zend_clear_exception();
 
-		if (instanceof_function(EG(exception)->ce, async_ce_cancellation_exception)
-			|| zend_is_graceful_exit(EG(exception))
-			|| zend_is_unwind_exit(EG(exception))) {
+		if (instanceof_function(exception->ce, zend_ce_cancellation_exception)
+			|| zend_is_graceful_exit(exception)
+			|| zend_is_unwind_exit(exception)) {
 			OBJ_RELEASE(exception);
 			exception = NULL;
 		}
@@ -210,7 +210,7 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 	if (EXPECTED(ZEND_ASYNC_SCHEDULER != &coroutine->coroutine)) {
 		// Permanently remove the coroutine from the Scheduler.
 		if (UNEXPECTED(zend_hash_index_del(&ASYNC_G(coroutines), coroutine->std.handle) == FAILURE)) {
-			async_throw_error("Failed to remove coroutine from the list");
+			zend_error(E_CORE_ERROR, "Failed to remove coroutine from the list");
 		}
 
 		// Decrease the active coroutine count if the coroutine is not a zombie.
@@ -297,10 +297,16 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(zend_fiber_transfer *transfer)
 	//
 	if (UNEXPECTED(&coroutine->coroutine == ZEND_ASYNC_SCHEDULER)) {
 		if (transfer != ASYNC_G(main_transfer)) {
+
+			if (UNEXPECTED(Z_TYPE(transfer->value) == IS_OBJECT)) {
+				zval_ptr_dtor(&transfer->value);
+				zend_error(E_CORE_WARNING, "The transfer value must be NULL when the main coroutine is resumed");
+			}
+
 			transfer->context = ASYNC_G(main_transfer)->context;
 			transfer->flags = ASYNC_G(main_transfer)->flags;
 			ZVAL_COPY_VALUE(&transfer->value, &ASYNC_G(main_transfer)->value);
-			ZVAL_UNDEF(&ASYNC_G(main_transfer)->value);
+			ZVAL_NULL(&ASYNC_G(main_transfer)->value);
 		}
 
 		return;
