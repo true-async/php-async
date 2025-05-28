@@ -13,7 +13,7 @@ register_shutdown_function(function() {
             echo "should not execute\n";
         });
         echo "spawn succeeded\n";
-    } catch (Error $e) {
+    } catch (Async\AsyncException $e) {
         echo "Error: " . $e->getMessage() . "\n";
     }
     
@@ -33,5 +33,5 @@ start
 end
 normal spawn works
 shutdown handler start
-Error: Cannot spawn a coroutine when async is disabled
+Error: The operation cannot be executed while async is off
 shutdown handler end

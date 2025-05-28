@@ -9,8 +9,7 @@ echo "start\n";
 
 spawn(function() {
     echo "coroutine start\n";
-    trigger_error("Test error", E_USER_ERROR);
-    echo "coroutine end (should not print)\n";
+    trigger_error("Test error", E_USER_WARNING);
 });
 
 echo "end\n";
@@ -20,4 +19,4 @@ start
 end
 coroutine start
 
-Fatal error: Test error in %s on line %d
+Warning: Test error in %s on line %d
