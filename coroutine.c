@@ -260,6 +260,7 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(zend_fiber_transfer *transfer)
 
 		if (EXPECTED(coroutine->coroutine.internal_entry == NULL))
 		{
+			ZEND_ASSERT(coroutine->coroutine.fcall != NULL && "Coroutine function call is not set");
 			coroutine->coroutine.fcall->fci.retval = &coroutine->coroutine.result;
 
 			zend_call_function(&coroutine->coroutine.fcall->fci, &coroutine->coroutine.fcall->fci_cache);
@@ -341,7 +342,7 @@ static zend_string* coroutine_info(zend_async_event_t *event)
 
 	zend_string * zend_coroutine_name = zend_coroutine_callable_name(&coroutine->coroutine);
 
-	if (coroutine->coroutine.waker != NULL) {
+	if (ZEND_COROUTINE_SUSPENDED(&coroutine->coroutine)) {
 		return zend_strpprintf(0,
 			"Coroutine %d spawned at %s:%d, suspended at %s:%d (%s)",
 			coroutine->std.handle,

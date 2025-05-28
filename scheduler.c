@@ -73,7 +73,7 @@ zend_always_inline static void execute_microtasks(void)
  */
 static zend_always_inline void define_transfer(async_coroutine_t *coroutine, zend_object * exception, zend_fiber_transfer *transfer)
 {
-	if (UNEXPECTED(coroutine->context.handle == NULL
+	if (UNEXPECTED(coroutine->context.status == ZEND_FIBER_STATUS_INIT
 		&& zend_fiber_init_context(&coroutine->context, async_ce_coroutine, async_coroutine_execute, EG(fiber_stack_size)) == FAILURE)) {
 		zend_throw_error(NULL, "Failed to initialize coroutine context");
 		return;
@@ -110,7 +110,7 @@ static zend_always_inline void switch_context(async_coroutine_t *coroutine, zend
 		.flags = exception != NULL ? ZEND_FIBER_TRANSFER_FLAG_ERROR : 0,
 	};
 
-	if (coroutine->context.handle == NULL
+	if (coroutine->context.status == ZEND_FIBER_STATUS_INIT
 		&& zend_fiber_init_context(&coroutine->context, async_ce_coroutine, async_coroutine_execute, EG(fiber_stack_size)) == FAILURE) {
 		zend_throw_error(NULL, "Failed to initialize coroutine context");
 		return;
@@ -190,11 +190,15 @@ static bool execute_next_coroutine(zend_fiber_transfer *transfer)
 		return false;
 	}
 
-	waker->status = ZEND_ASYNC_WAKER_NO_STATUS;
-
+	waker->status = ZEND_ASYNC_WAKER_RESULT;
 	zend_object * error = waker->error;
-	waker->error = NULL;
-	zend_async_waker_destroy(coroutine);
+
+	// The Waker object can be destroyed immediately if the result is an error.
+	// It will be delivered to the coroutine as an exception.
+	if (error != NULL) {
+		waker->error = NULL;
+		zend_async_waker_destroy(coroutine);
+	}
 
 	if (transfer != NULL) {
 		define_transfer(async_coroutine, error, transfer);
@@ -451,7 +455,6 @@ static void finally_shutdown(void)
 	}
 }
 
-static void async_scheduler_launch(void);
 void async_scheduler_main_loop(void);
 
 #define TRY_HANDLE_EXCEPTION() \
@@ -531,6 +534,9 @@ void async_scheduler_launch(void)
 
 	// Copy the main coroutine context
 	main_coroutine->context = *EG(main_fiber_context);
+	// Set the current fiber context to the main coroutine context
+	EG(current_fiber_context) = &main_coroutine->context;
+
 	zend_fiber_switch_blocked();
 
 	// Normalize the main coroutine state

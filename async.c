@@ -50,6 +50,13 @@ static zend_object *async_timeout_create(zend_ulong ms, bool is_periodic);
 		RETURN_THROWS();																	\
 	}
 
+#define SCHEDULER_LAUNCH if (UNEXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == NULL)) {		\
+		async_scheduler_launch();														\
+		if (UNEXPECTED(EG(exception) != NULL)) {										\
+			RETURN_THROWS();															\
+		}																				\
+	}
+
 PHP_FUNCTION(Async_spawn)
 {
 	THROW_IF_ASYNC_OFF;
@@ -182,10 +189,12 @@ PHP_FUNCTION(Async_await)
 		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
 	ZEND_PARSE_PARAMETERS_END();
 
+	SCHEDULER_LAUNCH;
+
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
 	if (UNEXPECTED(coroutine == NULL)) {
-		return;
+		RETURN_NULL();
 	}
 
 	zend_async_waker_new(coroutine);
@@ -224,7 +233,7 @@ PHP_FUNCTION(Async_await)
 		ZVAL_COPY(return_value, &coroutine->waker->result);
 	}
 
-	coroutine->waker->dtor(coroutine);
+	zend_async_waker_destroy(coroutine);
 }
 
 PHP_FUNCTION(Async_awaitAny)
@@ -493,7 +502,7 @@ PHP_FUNCTION(Async_delay)
 
 	ZEND_ASYNC_SUSPEND();
 
-	coroutine->waker->dtor(coroutine);
+	zend_async_waker_destroy(coroutine);
 }
 
 PHP_FUNCTION(Async_timeout)

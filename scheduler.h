@@ -25,6 +25,7 @@ void async_scheduler_shutdown(void);
 
 void start_graceful_shutdown(void);
 
+void async_scheduler_launch(void);
 /**
  * A function that is called when control needs to be transferred from a coroutine to the Scheduler.
  * In reality, no context switch occurs.
