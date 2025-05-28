@@ -58,6 +58,19 @@ zend_always_inline static void execute_microtasks(void)
 	}
 }
 
+/**
+ * Defines a transfer object for the coroutine context.
+ *
+ * This function is used to return control from a coroutine FOR THE LAST TIME.
+ * If you only need to suspend coroutines, you should use the `switch_context()` function.
+ *
+ * This function initializes the coroutine context if it is not already initialized,
+ * and sets the transfer value to the provided exception or NULL.
+ *
+ * @param coroutine The coroutine to define the transfer for.
+ * @param exception The exception to pass, or NULL if no exception is to be passed.
+ * @param transfer The transfer object to define.
+ */
 static zend_always_inline void define_transfer(async_coroutine_t *coroutine, zend_object * exception, zend_fiber_transfer *transfer)
 {
 	if (UNEXPECTED(coroutine->context.handle == NULL
@@ -78,6 +91,18 @@ static zend_always_inline void define_transfer(async_coroutine_t *coroutine, zen
 	ZEND_ASYNC_CURRENT_COROUTINE = &coroutine->coroutine;
 }
 
+/**
+ * Switches the context to the given coroutine, optionally passing an exception.
+ *
+ * If the coroutine context is not initialized, it will be initialized first.
+ * If an exception is provided, it will be set in the transfer value.
+ *
+ * IMPORTANT! This function must be called ONLY if the coroutine being switched from is not finishing its execution.
+ * If the coroutine is yielding control for the **last time**, then you must use define_transfer().
+ *
+ * @param coroutine The coroutine to switch to.
+ * @param exception The exception to pass, or NULL if no exception is to be passed.
+ */
 static zend_always_inline void switch_context(async_coroutine_t *coroutine, zend_object * exception)
 {
 	zend_fiber_transfer transfer = {
@@ -123,6 +148,15 @@ static zend_always_inline async_coroutine_t * next_coroutine(void)
 	return coroutine;
 }
 
+/**
+ * Executes the next coroutine in the queue.
+ *
+ * If the coroutine is not ready to be executed, it will return false.
+ * If the coroutine is finished, it will clean up and return true.
+ *
+ * @param transfer The transfer object to define the context for the coroutine.
+ * @return true if a coroutine was executed or cleaned up, false otherwise.
+ */
 static bool execute_next_coroutine(zend_fiber_transfer *transfer)
 {
 	async_coroutine_t *async_coroutine = next_coroutine();
@@ -187,6 +221,18 @@ static bool execute_next_coroutine(zend_fiber_transfer *transfer)
 	return true;
 }
 
+/**
+ * Switches to the scheduler coroutine.
+ *
+ * This method is used to transfer control to the special internal Scheduler coroutine.
+ * The transfer parameter can be NULL for temporary suspension.
+ * However, if the current coroutine is losing control PERMANENTLY, you must provide transfer.
+ *
+ * If the transfer object is provided, it will define the transfer for the scheduler.
+ * If no transfer is provided, it will switch to the scheduler context without defining a transfer.
+ *
+ * @param transfer The transfer object to define for the scheduler, or NULL if not needed.
+ */
 static zend_always_inline void switch_to_scheduler(zend_fiber_transfer *transfer)
 {
 	async_coroutine_t *async_coroutine = (async_coroutine_t *) ZEND_ASYNC_SCHEDULER;
@@ -524,6 +570,10 @@ void async_scheduler_launch(void)
 	ZEND_ASYNC_ACTIVATE;
 }
 
+/**
+ * A special function that is called when the main coroutine permanently loses the execution flow.
+ * Exiting this function means that the entire PHP script has finished.
+ */
 void async_scheduler_main_coroutine_suspend(void)
 {
 	if (UNEXPECTED(ZEND_ASYNC_SCHEDULER == NULL)) {
@@ -544,6 +594,10 @@ void async_scheduler_main_coroutine_suspend(void)
 
 	OBJ_RELEASE(&coroutine->std);
 
+	//
+	// At this point, we transfer control to any other coroutines.
+	// When we regain control, it means the PHP script has finished.
+	//
 	async_scheduler_coroutine_suspend(NULL);
 
 	if (ASYNC_G(main_transfer)) {
