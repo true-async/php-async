@@ -165,6 +165,8 @@ static bool execute_next_coroutine(zend_fiber_transfer *transfer)
 	if (transfer != NULL) {
 		define_transfer(async_coroutine, error, transfer);
 		return true;
+	} else if (ZEND_ASYNC_CURRENT_COROUTINE == coroutine) {
+		return true;
 	} else {
 		switch_context(async_coroutine, error);
 	}
@@ -455,7 +457,8 @@ void async_scheduler_launch(void)
 		return;
 	}
 
-	async_coroutine_t * main_coroutine = (async_coroutine_t *) ZEND_ASYNC_NEW_COROUTINE(ZEND_ASYNC_MAIN_SCOPE);
+	zend_async_scope_t * scope = ZEND_ASYNC_MAIN_SCOPE;
+	async_coroutine_t * main_coroutine = (async_coroutine_t *) ZEND_ASYNC_NEW_COROUTINE(scope);
 
 	if (UNEXPECTED(EG(exception) != NULL)) {
 		return;
@@ -463,6 +466,20 @@ void async_scheduler_launch(void)
 
 	if (UNEXPECTED(main_coroutine == NULL)) {
 		async_throw_error("Failed to create the main coroutine");
+		return;
+	}
+
+	zval options;
+	ZVAL_UNDEF(&options);
+	scope->before_coroutine_enqueue(&main_coroutine->coroutine, scope, &options);
+	zval_dtor(&options);
+
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		return;
+	}
+
+	scope->after_coroutine_enqueue(&main_coroutine->coroutine, scope);
+	if (UNEXPECTED(EG(exception) != NULL)) {
 		return;
 	}
 
@@ -567,6 +584,50 @@ void async_scheduler_main_coroutine_suspend(void)
 		start_graceful_shutdown(); \
 	}
 
+void async_scheduler_coroutine_enqueue(zend_coroutine_t * coroutine)
+{
+	/**
+	 * Note that the Scheduler is initialized after the first use of suspend,
+	 * not at the start of the Zend engine.
+	 */
+	if (UNEXPECTED(coroutine == NULL && ZEND_ASYNC_SCHEDULER == NULL)) {
+		async_scheduler_launch();
+
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			return;
+		}
+
+		coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+		ZEND_ASSERT(coroutine != NULL && "The current coroutine must be initialized");
+	}
+
+	// If the transfer is NULL, it means that the coroutine is being resumed
+	// That’s why we’re adding it to the queue.
+	// coroutine->waker->status != ZEND_ASYNC_WAKER_WAITING means not need to add to queue twice
+	if (coroutine != NULL
+		&& (coroutine->waker == NULL
+			|| (coroutine->waker != NULL
+				&& coroutine->waker->status != ZEND_ASYNC_WAKER_WAITING)
+			)
+	) {
+		if (coroutine->waker == NULL) {
+			zend_async_waker_t *waker = zend_async_waker_new(coroutine);
+			if (UNEXPECTED(EG(exception))) {
+				async_throw_error("Failed to create waker for coroutine");
+				return;
+			}
+
+			coroutine->waker = waker;
+		}
+
+		coroutine->waker->status = ZEND_ASYNC_WAKER_QUEUED;
+
+		if (UNEXPECTED(circular_buffer_push(&ASYNC_G(coroutine_queue), &coroutine, true)) == FAILURE) {
+			async_throw_error("Failed to enqueue coroutine");
+		}
+	}
+}
+
 void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 {
 	ZEND_ASSERT(EG(exception) == NULL && "The current exception must be NULL");
@@ -645,7 +706,13 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 		}
 
 	if (EXPECTED(is_next_coroutine)) {
-		execute_next_coroutine(transfer);
+		//
+		// The execute_next_coroutine() may fail to transfer control to another coroutine for various reasons.
+		// In that case, it returns false, and we are then required to yield control to the scheduler.
+		//
+		if (false == execute_next_coroutine(transfer) && EG(exception) == NULL) {
+			switch_to_scheduler(transfer);
+		}
 	} else {
 		switch_to_scheduler(transfer);
 	}

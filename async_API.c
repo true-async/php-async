@@ -195,35 +195,6 @@ void suspend(const bool from_main)
 	async_scheduler_coroutine_suspend(NULL);
 }
 
-void enqueue_coroutine(zend_coroutine_t * coroutine)
-{
-	// If the transfer is NULL, it means that the coroutine is being resumed
-	// That’s why we’re adding it to the queue.
-	// coroutine->waker->status != ZEND_ASYNC_WAKER_WAITING means not need to add to queue twice
-	if (coroutine != NULL
-		&& (coroutine->waker == NULL
-			|| (coroutine->waker != NULL
-				&& coroutine->waker->status != ZEND_ASYNC_WAKER_WAITING)
-			)
-	) {
-		if (coroutine->waker == NULL) {
-			zend_async_waker_t *waker = zend_async_waker_new(coroutine);
-			if (UNEXPECTED(EG(exception))) {
-				async_throw_error("Failed to create waker for coroutine");
-				return;
-			}
-
-			coroutine->waker = waker;
-		}
-
-		coroutine->waker->status = ZEND_ASYNC_WAKER_QUEUED;
-
-		if (UNEXPECTED(circular_buffer_push(&ASYNC_G(coroutine_queue), &coroutine, true)) == FAILURE) {
-			async_throw_error("Failed to enqueue coroutine");
-		}
-	}
-}
-
 void resume(zend_coroutine_t *coroutine, zend_object * error, const bool transfer_error)
 {
 	if (UNEXPECTED(coroutine->waker == NULL)) {
@@ -824,7 +795,7 @@ void async_api_register(void)
 		(zend_async_new_context_t)async_context_new,
 		spawn,
 		suspend,
-		enqueue_coroutine,
+		async_scheduler_coroutine_enqueue,
 		resume,
 		cancel,
 		graceful_shutdown,

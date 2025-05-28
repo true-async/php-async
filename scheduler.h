@@ -34,6 +34,7 @@ void start_graceful_shutdown(void);
  */
 void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer);
 void async_scheduler_main_coroutine_suspend(void);
+void async_scheduler_coroutine_enqueue(zend_coroutine_t * coroutine);
 
 END_EXTERN_C()
 
