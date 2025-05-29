@@ -47,11 +47,12 @@ extern zend_class_entry * async_ce_timeout;
 
 typedef struct
 {
-	zend_async_event_t event;
 	/* Reactor original handle */
 	zend_async_event_dispose_t reactor_dispose;
 	zend_object std;
-} async_timeout_t;
+} async_timeout_ext_t;
+
+#define ASYNC_TIMEOUT_FROM_EVENT(ev) ((async_timeout_ext_t *)((char *)(ev) + (ev)->extra_offset))
 
 #define ASYNC_TIMEOUT_FROM_OBJ(obj) ((async_timeout_t *)((char *)(obj) - XtOffsetOf(async_timeout_t, std)))
 #define Z_ASYNC_TIMEOUT_P(zv)  ASYNC_TIMEOUT_FROM_OBJ(Z_OBJ_P(zv))

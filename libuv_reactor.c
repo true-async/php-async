@@ -237,12 +237,14 @@ static void libuv_poll_dispose(zend_async_event_t *event)
 
 /* {{{ libuv_new_poll_event */
 zend_async_poll_event_t* libuv_new_poll_event(
-	zend_file_descriptor_t fh, zend_socket_t socket, async_poll_event events, size_t size
+	zend_file_descriptor_t fh, zend_socket_t socket, async_poll_event events, size_t extra_size
 )
 {
 	START_REACTOR_OR_RETURN_NULL;
 
-	async_poll_event_t *poll = pecalloc(1, size != 0 ? size : sizeof(async_poll_event_t), 0);
+	async_poll_event_t *poll = pecalloc(1, extra_size != 0 ?
+							sizeof(async_poll_event_t) + extra_size :
+							sizeof(async_poll_event_t), 0);
 
 	int error = 0;
 
@@ -273,6 +275,7 @@ zend_async_poll_event_t* libuv_new_poll_event(
 	// Link the handle to the loop.
 	poll->uv_handle.data = poll;
 	poll->event.events = events;
+	poll->event.base.extra_offset = sizeof(async_poll_event_t);
 
 	// Initialize the event methods
 	poll->event.base.add_callback = libuv_add_callback;
@@ -286,9 +289,9 @@ zend_async_poll_event_t* libuv_new_poll_event(
 /* }}} */
 
 /* {{{ libuv_new_socket_event */
-zend_async_poll_event_t* libuv_new_socket_event(zend_socket_t socket, async_poll_event events, size_t size)
+zend_async_poll_event_t* libuv_new_socket_event(zend_socket_t socket, async_poll_event events, size_t extra_size)
 {
-	return libuv_new_poll_event(ZEND_FD_NULL, socket, events, size);
+	return libuv_new_poll_event(ZEND_FD_NULL, socket, events, extra_size);
 }
 /* }}} */
 
@@ -380,11 +383,13 @@ static void libuv_timer_dispose(zend_async_event_t *event)
 /* }}} */
 
 /* {{{ libuv_new_timer_event */
-zend_async_timer_event_t* libuv_new_timer_event(const zend_ulong timeout, const bool is_periodic, size_t size)
+zend_async_timer_event_t* libuv_new_timer_event(const zend_ulong timeout, const bool is_periodic, size_t extra_size)
 {
 	START_REACTOR_OR_RETURN_NULL;
 
-	async_timer_event_t *event = pecalloc(1, size != 0 ? size : sizeof(async_timer_event_t), 0);
+	async_timer_event_t *event = pecalloc(
+		1, extra_size != 0 ? sizeof(async_timer_event_t) + extra_size : sizeof(async_timer_event_t), 0
+	);
 
 	const int error = uv_timer_init(UVLOOP, &event->uv_handle);
 
@@ -397,6 +402,7 @@ zend_async_timer_event_t* libuv_new_timer_event(const zend_ulong timeout, const 
 	event->uv_handle.data = event;
 	event->event.timeout = timeout;
 	event->event.is_periodic = is_periodic;
+	event->event.base.extra_offset = sizeof(async_timer_event_t);
 
 	event->event.base.add_callback = libuv_add_callback;
 	event->event.base.del_callback = libuv_remove_callback;
@@ -495,11 +501,13 @@ static void libuv_signal_dispose(zend_async_event_t *event)
 /* }}} */
 
 /* {{{ libuv_new_signal_event */
-zend_async_signal_event_t* libuv_new_signal_event(int signum, size_t size)
+zend_async_signal_event_t* libuv_new_signal_event(int signum, size_t extra_size)
 {
 	START_REACTOR_OR_RETURN_NULL;
 
-    async_signal_event_t *signal = pecalloc(1, size != 0 ? size : sizeof(async_signal_event_t), 0);
+    async_signal_event_t *signal = pecalloc(
+    	1, extra_size != 0 ? sizeof(async_signal_event_t) + extra_size : sizeof(async_signal_event_t), 0
+	);
 
     const int error = uv_signal_init(UVLOOP, &signal->uv_handle);
 
@@ -511,6 +519,7 @@ zend_async_signal_event_t* libuv_new_signal_event(int signum, size_t size)
 
     signal->uv_handle.data = signal;
     signal->event.signal = signum;
+	signal->event.base.extra_offset = sizeof(async_signal_event_t);
 
     signal->event.base.add_callback = libuv_add_callback;
     signal->event.base.del_callback = libuv_remove_callback;
@@ -821,12 +830,16 @@ static void libuv_process_event_dispose(zend_async_event_t *event)
 /* }}} */
 
 /* {{{ libuv_new_process_event */
-zend_async_process_event_t * libuv_new_process_event(zend_process_t process_handle, size_t size)
+zend_async_process_event_t * libuv_new_process_event(zend_process_t process_handle, size_t extra_size)
 {
 	START_REACTOR_OR_RETURN_NULL;
 
-	async_process_event_t *process_event = pecalloc(1, size != 0 ? size : sizeof(async_process_event_t), 0);
+	async_process_event_t *process_event = pecalloc(
+		1, extra_size != 0 ? sizeof(async_process_event_t) + extra_size : sizeof(async_process_event_t), 0
+	);
+
 	process_event->event.process = process_handle;
+	process_event->event.base.extra_offset = sizeof(async_process_event_t);
 
 	process_event->event.base.add_callback = libuv_add_callback;
 	process_event->event.base.del_callback = libuv_remove_callback;
@@ -843,7 +856,7 @@ zend_async_process_event_t * libuv_new_process_event(zend_process_t process_hand
 /////////////////////////////////////////////////////////////////////////////////
 
 /* {{{ libuv_new_thread_event */
-zend_async_thread_event_t * libuv_new_thread_event(zend_async_thread_entry_t entry, void *arg, size_t size)
+zend_async_thread_event_t * libuv_new_thread_event(zend_async_thread_entry_t entry, void *arg, size_t extra_size)
 {
     //TODO: libuv_new_thread_event
 	// We need to design a mechanism for creating a Thread and running a function
@@ -971,11 +984,13 @@ static void libuv_filesystem_dispose(zend_async_event_t *event)
 /* }}} */
 
 /* {{{ libuv_new_filesystem_event */
-zend_async_filesystem_event_t* libuv_new_filesystem_event(zend_string * path, const unsigned int flags, size_t size)
+zend_async_filesystem_event_t* libuv_new_filesystem_event(zend_string * path, const unsigned int flags, size_t extra_size)
 {
 	START_REACTOR_OR_RETURN_NULL;
 
-    async_filesystem_event_t *fs_event = pecalloc(1, size != 0 ? size : sizeof(async_filesystem_event_t), 0);
+    async_filesystem_event_t *fs_event = pecalloc(
+    	1, extra_size != 0 ? sizeof(async_filesystem_event_t) + extra_size : sizeof(async_filesystem_event_t), 0
+	);
 
     const int error = uv_fs_event_init(UVLOOP, &fs_event->uv_handle);
 
@@ -988,6 +1003,7 @@ zend_async_filesystem_event_t* libuv_new_filesystem_event(zend_string * path, co
     fs_event->uv_handle.data = fs_event;
     fs_event->event.path = zend_string_copy(path);
     fs_event->event.flags = flags;
+	fs_event->event.base.extra_offset = sizeof(async_filesystem_event_t);
 
     fs_event->event.base.add_callback = libuv_add_callback;
     fs_event->event.base.del_callback = libuv_remove_callback;
@@ -1085,11 +1101,13 @@ static void libuv_dns_nameinfo_dispose(zend_async_event_t *event)
 /* }}} */
 
 /* {{{ libuv_getnameinfo */
-static zend_async_dns_nameinfo_t * libuv_getnameinfo(const struct sockaddr *addr, int flags, size_t size)
+static zend_async_dns_nameinfo_t * libuv_getnameinfo(const struct sockaddr *addr, int flags, size_t extra_size)
 {
 	START_REACTOR_OR_RETURN_NULL;
 
-	async_dns_nameinfo_t *name_info = pecalloc(1, size != 0 ? size : sizeof(async_dns_nameinfo_t), 0);
+	async_dns_nameinfo_t *name_info = pecalloc(
+		1, extra_size != 0 ? sizeof(async_dns_nameinfo_t) + extra_size : sizeof(async_dns_nameinfo_t), 0
+	);
 
 	const int error = uv_getnameinfo(
 		UVLOOP, &name_info->uv_handle, on_nameinfo_event, (const struct sockaddr*) &addr, flags
@@ -1102,6 +1120,7 @@ static zend_async_dns_nameinfo_t * libuv_getnameinfo(const struct sockaddr *addr
 	}
 
 	name_info->uv_handle.data = name_info;
+	name_info->event.base.extra_offset = sizeof(async_dns_nameinfo_t);
 
 	name_info->event.base.add_callback = libuv_add_callback;
 	name_info->event.base.del_callback = libuv_remove_callback;
@@ -1185,11 +1204,15 @@ static void libuv_dns_getaddrinfo_dispose(zend_async_event_t *event)
 /* }}} */
 
 /* {{{ libuv_getaddrinfo */
-static zend_async_dns_addrinfo_t* libuv_getaddrinfo(const char *node, const char *service, const struct addrinfo *hints, size_t size)
+static zend_async_dns_addrinfo_t* libuv_getaddrinfo(
+	const char *node, const char *service, const struct addrinfo *hints, size_t extra_size
+)
 {
 	START_REACTOR_OR_RETURN_NULL;
 
-	async_dns_addrinfo_t *addr_info = pecalloc(1, size != 0 ? size : sizeof(async_dns_nameinfo_t), 0);
+	async_dns_addrinfo_t *addr_info = pecalloc(
+		1, extra_size != 0 ? sizeof(async_dns_nameinfo_t) + extra_size : sizeof(async_dns_nameinfo_t), 0
+	);
 
 	const int error = uv_getaddrinfo(
 		UVLOOP, &addr_info->uv_handle, on_addrinfo_event, node, service, hints
@@ -1202,6 +1225,7 @@ static zend_async_dns_addrinfo_t* libuv_getaddrinfo(const char *node, const char
 	}
 
 	addr_info->uv_handle.data = addr_info;
+	addr_info->event.base.extra_offset = sizeof(async_dns_nameinfo_t);
 
 	addr_info->event.base.add_callback = libuv_add_callback;
 	addr_info->event.base.del_callback = libuv_remove_callback;

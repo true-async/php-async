@@ -398,6 +398,28 @@ static void cancel_queued_coroutines(void)
 	zend_exception_restore();
 }
 
+void async_scheduler_start_waker_events(zend_async_waker_t * waker)
+{
+	ZEND_ASSERT(waker != NULL && "Waker is NULL in async_scheduler_start_waker_events");
+
+	zval * current;
+	ZEND_HASH_FOREACH_VAL(&waker->events, current) {
+		const zend_async_waker_trigger_t * trigger = Z_PTR_P(current);
+		trigger->event->start(trigger->event);
+	} ZEND_HASH_FOREACH_END();
+}
+
+void async_scheduler_stop_waker_events(zend_async_waker_t * waker)
+{
+	ZEND_ASSERT(waker != NULL && "Waker is NULL in async_scheduler_stop_waker_events");
+
+	zval * current;
+	ZEND_HASH_FOREACH_VAL(&waker->events, current) {
+		const zend_async_waker_trigger_t * trigger = Z_PTR_P(current);
+		trigger->event->stop(trigger->event);
+	} ZEND_HASH_FOREACH_END();
+}
+
 void start_graceful_shutdown(void)
 {
 	if (ZEND_ASYNC_GRACEFUL_SHUTDOWN) {
@@ -692,6 +714,11 @@ void async_scheduler_coroutine_enqueue(zend_coroutine_t * coroutine)
 		if (UNEXPECTED(circular_buffer_push(&ASYNC_G(coroutine_queue), &coroutine, true)) == FAILURE) {
 			async_throw_error("Failed to enqueue coroutine");
 		}
+
+		//
+		// We stop all events as soon as the coroutine is ready to run.
+		//
+		async_scheduler_stop_waker_events(coroutine->waker);
 	}
 }
 
@@ -712,6 +739,16 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 	}
 
 	ZEND_ASYNC_SCHEDULER_HEARTBEAT;
+
+	//
+	// Before suspending the coroutine,
+	// we start all its Waker-events.
+	// This causes timers to start, POLL objects to begin waiting for events, and so on.
+	//
+	if (transfer == NULL && ZEND_ASYNC_CURRENT_COROUTINE != NULL && ZEND_ASYNC_CURRENT_COROUTINE->waker != NULL) {
+		async_scheduler_start_waker_events(ZEND_ASYNC_CURRENT_COROUTINE->waker);
+		TRY_HANDLE_SUSPEND_EXCEPTION();
+	}
 
 	//
 	// The async_scheduler_coroutine_suspend function is called

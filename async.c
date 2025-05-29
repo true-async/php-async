@@ -605,14 +605,12 @@ static zend_object_handlers async_timeout_handlers;
 
 static void async_timeout_free(zend_object *object)
 {
-	async_timeout_t *t = ASYNC_TIMEOUT_FROM_OBJ(object);
-
-	zend_object_std_dtor(&t->std);
+	zend_object_std_dtor(object);
 }
 
 static void async_timeout_dispose(zend_async_event_t *event)
 {
-	async_timeout_t *timeout = (async_timeout_t *) event;
+	async_timeout_ext_t *timeout = ASYNC_TIMEOUT_FROM_EVENT(event);
 
 	if (timeout->reactor_dispose == NULL) {
 		return;
@@ -623,7 +621,7 @@ static void async_timeout_dispose(zend_async_event_t *event)
 		return;
 	}
 
-	ZEND_ASYNC_EVENT_SET_NO_FREE_MEMORY(&timeout->event);
+	ZEND_ASYNC_EVENT_SET_NO_FREE_MEMORY(event);
 
 	timeout->reactor_dispose(event);
 	timeout->reactor_dispose = NULL;
@@ -632,19 +630,26 @@ static void async_timeout_dispose(zend_async_event_t *event)
 
 static zend_object *async_timeout_create(const zend_ulong ms, const bool is_periodic)
 {
-	async_timeout_t *timeout = (async_timeout_t *) ZEND_ASYNC_NEW_TIMER_EVENT_EX(
-		ms, is_periodic, sizeof(async_timeout_t) + zend_object_properties_size(async_ce_timeout)
+	zend_async_event_t *event = (zend_async_event_t *) ZEND_ASYNC_NEW_TIMER_EVENT_EX(
+		ms, is_periodic, sizeof(async_timeout_ext_t) + zend_object_properties_size(async_ce_timeout)
 	);
+
+	async_timeout_ext_t *timeout = ASYNC_TIMEOUT_FROM_EVENT(event);
 
 	zend_object_std_init(&timeout->std, async_ce_timeout);
 	object_properties_init(&timeout->std, async_ce_timeout);
 
-	ZEND_ASYNC_EVENT_SET_ZEND_OBJ(&timeout->event);
-	ZEND_ASYNC_EVENT_SET_NO_FREE_MEMORY(&timeout->event);
-	ZEND_ASYNC_EVENT_SET_ZEND_OBJ_OFFSET(&timeout->event, XtOffsetOf(async_timeout_t, std));
+	ZEND_ASYNC_EVENT_SET_ZEND_OBJ(event);
+	ZEND_ASYNC_EVENT_SET_NO_FREE_MEMORY(event);
+	// Calculate the offset for the zend object from the start of the event structure
+	ZEND_ASYNC_EVENT_SET_ZEND_OBJ_OFFSET(event, ((uint32_t)((event)->extra_offset + XtOffsetOf(async_timeout_ext_t, std))));
 
-	timeout->reactor_dispose = timeout->event.dispose;
-	timeout->event.dispose = async_timeout_dispose;
+	if (async_timeout_handlers.offset == 0) {
+		async_timeout_handlers.offset = (int)event->zend_object_offset;
+	}
+
+	timeout->reactor_dispose = event->dispose;
+	event->dispose = async_timeout_dispose;
 
 	timeout->std.handlers = &async_timeout_handlers;
 	return &timeout->std;
@@ -658,7 +663,7 @@ void async_register_timeout_ce(void)
 
 	async_timeout_handlers = std_object_handlers;
 
-	async_timeout_handlers.offset   = XtOffsetOf(async_timeout_t, std);
+	async_timeout_handlers.offset   = 0;
 	async_timeout_handlers.free_obj = async_timeout_free;
 }
 
