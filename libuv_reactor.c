@@ -29,10 +29,33 @@ static void libuv_reactor_stop_with_exception(void);
 #define WATCHER ASYNC_G(watcherThread)
 #define IF_EXCEPTION_STOP_REACTOR if (UNEXPECTED(EG(exception) != NULL)) { libuv_reactor_stop_with_exception(); }
 
+#define ASYNC_OF_EXCEPTION_MESSAGE "Async mode is disabled. Reactor API cannot be used."
+
+#define START_REACTOR_OR_RETURN \
+	if (UNEXPECTED(ASYNC_G(reactor_started) == false)) { \
+		libuv_reactor_startup(); \
+		if (UNEXPECTED(EG(exception) != NULL)) { \
+			return NULL; \
+		} \
+	}
+
+#define START_REACTOR_OR_RETURN_NULL \
+	if (UNEXPECTED(ASYNC_G(reactor_started) == false)) { \
+		libuv_reactor_startup(); \
+		if (UNEXPECTED(EG(exception) != NULL)) { \
+			return NULL; \
+		} \
+	}
+
 /* {{{ libuv_reactor_startup */
 void libuv_reactor_startup(void)
 {
 	if (ASYNC_G(reactor_started)) {
+		return;
+	}
+
+	if (ZEND_ASYNC_OFF) {
+		async_throw_error(ASYNC_OF_EXCEPTION_MESSAGE);
 		return;
 	}
 
@@ -44,6 +67,7 @@ void libuv_reactor_startup(void)
 	}
 
 	uv_loop_set_data(UVLOOP, ASYNC_GLOBALS);
+	ASYNC_G(reactor_started) = true;
 }
 /* }}} */
 
@@ -216,6 +240,8 @@ zend_async_poll_event_t* libuv_new_poll_event(
 	zend_file_descriptor_t fh, zend_socket_t socket, async_poll_event events, size_t size
 )
 {
+	START_REACTOR_OR_RETURN_NULL;
+
 	async_poll_event_t *poll = pecalloc(1, size != 0 ? size : sizeof(async_poll_event_t), 0);
 
 	int error = 0;
@@ -356,6 +382,8 @@ static void libuv_timer_dispose(zend_async_event_t *event)
 /* {{{ libuv_new_timer_event */
 zend_async_timer_event_t* libuv_new_timer_event(const zend_ulong timeout, const bool is_periodic, size_t size)
 {
+	START_REACTOR_OR_RETURN_NULL;
+
 	async_timer_event_t *event = pecalloc(1, size != 0 ? size : sizeof(async_timer_event_t), 0);
 
 	const int error = uv_timer_init(UVLOOP, &event->uv_handle);
@@ -469,6 +497,8 @@ static void libuv_signal_dispose(zend_async_event_t *event)
 /* {{{ libuv_new_signal_event */
 zend_async_signal_event_t* libuv_new_signal_event(int signum, size_t size)
 {
+	START_REACTOR_OR_RETURN_NULL;
+
     async_signal_event_t *signal = pecalloc(1, size != 0 ? size : sizeof(async_signal_event_t), 0);
 
     const int error = uv_signal_init(UVLOOP, &signal->uv_handle);
@@ -793,6 +823,8 @@ static void libuv_process_event_dispose(zend_async_event_t *event)
 /* {{{ libuv_new_process_event */
 zend_async_process_event_t * libuv_new_process_event(zend_process_t process_handle, size_t size)
 {
+	START_REACTOR_OR_RETURN_NULL;
+
 	async_process_event_t *process_event = pecalloc(1, size != 0 ? size : sizeof(async_process_event_t), 0);
 	process_event->event.process = process_handle;
 
@@ -941,6 +973,8 @@ static void libuv_filesystem_dispose(zend_async_event_t *event)
 /* {{{ libuv_new_filesystem_event */
 zend_async_filesystem_event_t* libuv_new_filesystem_event(zend_string * path, const unsigned int flags, size_t size)
 {
+	START_REACTOR_OR_RETURN_NULL;
+
     async_filesystem_event_t *fs_event = pecalloc(1, size != 0 ? size : sizeof(async_filesystem_event_t), 0);
 
     const int error = uv_fs_event_init(UVLOOP, &fs_event->uv_handle);
@@ -1053,6 +1087,8 @@ static void libuv_dns_nameinfo_dispose(zend_async_event_t *event)
 /* {{{ libuv_getnameinfo */
 static zend_async_dns_nameinfo_t * libuv_getnameinfo(const struct sockaddr *addr, int flags, size_t size)
 {
+	START_REACTOR_OR_RETURN_NULL;
+
 	async_dns_nameinfo_t *name_info = pecalloc(1, size != 0 ? size : sizeof(async_dns_nameinfo_t), 0);
 
 	const int error = uv_getnameinfo(
@@ -1151,6 +1187,8 @@ static void libuv_dns_getaddrinfo_dispose(zend_async_event_t *event)
 /* {{{ libuv_getaddrinfo */
 static zend_async_dns_addrinfo_t* libuv_getaddrinfo(const char *node, const char *service, const struct addrinfo *hints, size_t size)
 {
+	START_REACTOR_OR_RETURN_NULL;
+
 	async_dns_addrinfo_t *addr_info = pecalloc(1, size != 0 ? size : sizeof(async_dns_nameinfo_t), 0);
 
 	const int error = uv_getaddrinfo(
@@ -1429,6 +1467,8 @@ static zend_async_exec_event_t * libuv_new_exec_event(
 	size_t size
 )
 {
+	START_REACTOR_OR_RETURN_NULL;
+
 	async_exec_event_t * exec = pecalloc(1, size != 0 ? size : sizeof(async_exec_event_t), 0);
 	zend_async_exec_event_t * base = &exec->event;
 	uv_process_options_t *options = &exec->options;
