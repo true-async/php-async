@@ -601,10 +601,17 @@ void async_scheduler_main_coroutine_suspend(void)
 	OBJ_RELEASE(&coroutine->std);
 
 	//
-	// At this point, we transfer control to any other coroutines.
-	// When we regain control, it means the PHP script has finished.
+	// At this point, we transfer control to the Scheduler coroutine.
+	// Although this code performs 1–2 extra context switches,
+	// it helps normalize the coroutine switching logic.
 	//
-	async_scheduler_coroutine_suspend(NULL);
+
+	// Since the main coroutine has just finished its execution,
+	// we must normalize the state of EG(current_fiber_context)
+	// so that on the next switch we return to this exact point.
+	EG(current_fiber_context) = transfer->context;
+
+	switch_to_scheduler(NULL);
 
 	if (ASYNC_G(main_transfer)) {
 		efree(ASYNC_G(main_transfer));
