@@ -362,6 +362,21 @@ static zend_always_inline zend_async_event_t * zval_to_event(const zval * curren
 	}
 }
 
+void async_waiting_callback_dispose(zend_async_event_callback_t *callback, zend_async_event_t * event)
+{
+	async_await_callback_t * await_callback = (async_await_callback_t *) callback;
+	async_await_context_t * await_context = await_callback->await_context;
+
+	await_callback->await_context = NULL;
+
+	if (await_context == NULL) {
+		return;
+	}
+
+	await_context->dtor(await_context);
+	await_callback->prev_dispose(callback, event);
+}
+
 void async_waiting_callback(
 	zend_async_event_t *event,
 	zend_async_event_callback_t *callback,
@@ -708,6 +723,8 @@ void async_await_futures(
 				return;
 			}
 
+			callback->prev_dispose = callback->callback.base.dispose;
+			callback->callback.base.dispose = async_waiting_callback_dispose;
 			await_context->ref_count++;
 
 		} ZEND_HASH_FOREACH_END();

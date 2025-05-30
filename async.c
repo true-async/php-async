@@ -249,12 +249,14 @@ PHP_FUNCTION(Async_awaitAny)
 		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
 	ZEND_PARSE_PARAMETERS_END();
 
+	SCHEDULER_LAUNCH;
+
 	HashTable * results = zend_new_array(8);
 
 	async_await_futures(futures,
 		1,
 		false,
-		ZEND_ASYNC_OBJECT_TO_EVENT(cancellation),
+		cancellation != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation) : NULL,
 		0,
 		0,
 		results,
@@ -273,7 +275,11 @@ PHP_FUNCTION(Async_awaitAny)
 	}
 
 	zval result;
-	ZVAL_COPY(&result, zend_hash_index_find(results, 0));
+	ZEND_HASH_FOREACH_VAL(results, zval *item) {
+		ZVAL_COPY(&result, item);
+		break;
+	} ZEND_HASH_FOREACH_END();
+
 	zend_array_release(results);
 
 	RETURN_ZVAL(&result, 0, 0);
@@ -290,13 +296,15 @@ PHP_FUNCTION(Async_awaitFirstSuccess)
 		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
 	ZEND_PARSE_PARAMETERS_END();
 
+	SCHEDULER_LAUNCH;
+
 	HashTable * results = zend_new_array(8);
 	HashTable * errors = zend_new_array(8);
 
 	async_await_futures(futures,
 		1,
 		true,
-		ZEND_ASYNC_OBJECT_TO_EVENT(cancellation),
+		cancellation != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation) : NULL,
 		0,
 		0,
 		results,
@@ -339,12 +347,14 @@ PHP_FUNCTION(Async_awaitAll)
 		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
 	ZEND_PARSE_PARAMETERS_END();
 
+	SCHEDULER_LAUNCH;
+
 	HashTable * results = zend_new_array(8);
 
 	async_await_futures(futures,
 		0,
 		false,
-		ZEND_ASYNC_OBJECT_TO_EVENT(cancellation),
+		cancellation != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation) : NULL,
 		0,
 		0,
 		results,
@@ -371,13 +381,15 @@ PHP_FUNCTION(Async_awaitAllWithErrors)
 		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
 	ZEND_PARSE_PARAMETERS_END();
 
+	SCHEDULER_LAUNCH;
+
 	HashTable * results = zend_new_array(8);
 	HashTable * errors = zend_new_array(8);
 
 	async_await_futures(futures,
 		0,
 		true,
-		ZEND_ASYNC_OBJECT_TO_EVENT(cancellation),
+		cancellation != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation) : NULL,
 		0,
 		0,
 		results,
@@ -416,12 +428,14 @@ PHP_FUNCTION(Async_awaitAnyOf)
 		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
 	ZEND_PARSE_PARAMETERS_END();
 
+	SCHEDULER_LAUNCH;
+
 	HashTable * results = zend_new_array(8);
 
 	async_await_futures(futures,
 		(int)count,
 		false,
-		ZEND_ASYNC_OBJECT_TO_EVENT(cancellation),
+		cancellation != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation) : NULL,
 		0,
 		0,
 		results,
@@ -453,10 +467,12 @@ PHP_FUNCTION(Async_awaitAnyOfWithErrors)
 	HashTable * results = zend_new_array(8);
 	HashTable * errors = zend_new_array(8);
 
+	SCHEDULER_LAUNCH;
+
 	async_await_futures(futures,
 		(int)count,
 		true,
-		ZEND_ASYNC_OBJECT_TO_EVENT(cancellation),
+		cancellation != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation) : NULL,
 		0,
 		0,
 		results,
@@ -489,6 +505,8 @@ PHP_FUNCTION(Async_delay)
 	ZEND_PARSE_PARAMETERS_START(1, 1)
 		Z_PARAM_LONG(ms)
 	ZEND_PARSE_PARAMETERS_END();
+
+	SCHEDULER_LAUNCH;
 
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 

@@ -47,6 +47,7 @@ typedef struct
 	async_await_context_t *await_context;
 	// The key index for the result
 	zval key;
+	zend_async_event_callback_dispose_fn prev_dispose;
 } async_await_callback_t;
 
 typedef struct
