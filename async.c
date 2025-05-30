@@ -603,29 +603,10 @@ void async_register_awaitable_ce(void)
 
 static zend_object_handlers async_timeout_handlers;
 
-static void async_timeout_free(zend_object *object)
+static void async_timeout_destroy_object(zend_object *object)
 {
-	zend_object_std_dtor(object);
-}
-
-static void async_timeout_dispose(zend_async_event_t *event)
-{
-	async_timeout_ext_t *timeout = ASYNC_TIMEOUT_FROM_EVENT(event);
-
-	if (timeout->reactor_dispose == NULL) {
-		return;
-	}
-
-	if (GC_REFCOUNT(&timeout->std) > 1) {
-		OBJ_RELEASE(&timeout->std);
-		return;
-	}
-
-	ZEND_ASYNC_EVENT_SET_NO_FREE_MEMORY(event);
-
-	timeout->reactor_dispose(event);
-	timeout->reactor_dispose = NULL;
-	OBJ_RELEASE(&timeout->std);
+	zend_async_event_t *event = ZEND_ASYNC_OBJECT_TO_EVENT(object);
+	event->dispose(event);
 }
 
 static zend_object *async_timeout_create(const zend_ulong ms, const bool is_periodic)
@@ -648,9 +629,6 @@ static zend_object *async_timeout_create(const zend_ulong ms, const bool is_peri
 		async_timeout_handlers.offset = (int)event->zend_object_offset;
 	}
 
-	timeout->reactor_dispose = event->dispose;
-	event->dispose = async_timeout_dispose;
-
 	timeout->std.handlers = &async_timeout_handlers;
 	return &timeout->std;
 }
@@ -664,7 +642,7 @@ void async_register_timeout_ce(void)
 	async_timeout_handlers = std_object_handlers;
 
 	async_timeout_handlers.offset   = 0;
-	async_timeout_handlers.free_obj = async_timeout_free;
+	async_timeout_handlers.dtor_obj = async_timeout_destroy_object;
 }
 
 static PHP_GINIT_FUNCTION(async)
