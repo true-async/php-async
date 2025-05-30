@@ -47,6 +47,25 @@ static void libuv_reactor_stop_with_exception(void);
 		} \
 	}
 
+#define EVENT_START_PROLOGUE(event) \
+	if (UNEXPECTED(ZEND_ASYNC_EVENT_IS_CLOSED(event))) { \
+		return; \
+	} \
+	if (event->loop_ref_count > 0) { \
+		event->loop_ref_count++; \
+		return; \
+	}
+
+#define EVENT_STOP_PROLOGUE(event) \
+	if (event->loop_ref_count > 1) { \
+		event->loop_ref_count--; \
+		if (UNEXPECTED(ZEND_ASYNC_EVENT_IS_CLOSED(event))) { \
+			event->loop_ref_count = 0; \
+		} else { \
+			return; \
+		} \
+	}
+
 /* {{{ libuv_reactor_startup */
 void libuv_reactor_startup(void)
 {
@@ -171,10 +190,7 @@ static void on_poll_event(uv_poll_t* handle, int status, int events)
 /* {{{ libuv_poll_start */
 static void libuv_poll_start(zend_async_event_t *event)
 {
-	if (event->loop_ref_count > 0) {
-		event->loop_ref_count++;
-		return;
-	}
+	EVENT_START_PROLOGUE(event);
 
     async_poll_event_t *poll = (async_poll_event_t *)(event);
 
@@ -193,10 +209,7 @@ static void libuv_poll_start(zend_async_event_t *event)
 /* {{{ libuv_poll_stop */
 static void libuv_poll_stop(zend_async_event_t *event)
 {
-	if (event->loop_ref_count > 1) {
-		event->loop_ref_count--;
-		return;
-	}
+	EVENT_STOP_PROLOGUE(event);
 
 	async_poll_event_t *poll = (async_poll_event_t *)(event);
 
@@ -302,9 +315,15 @@ zend_async_poll_event_t* libuv_new_socket_event(zend_socket_t socket, async_poll
 /* {{{ on_timer_event */
 static void on_timer_event(uv_timer_t *handle)
 {
-	async_timer_event_t *poll = handle->data;
+	async_timer_event_t *timer_event = handle->data;
 
-	zend_async_callbacks_notify(&poll->event.base, NULL, NULL);
+	// If the timer is not periodic, we close it after the first execution.
+	if (false == timer_event->event.is_periodic) {
+		ZEND_ASYNC_EVENT_SET_CLOSED(&timer_event->event.base);
+		timer_event->event.base.stop(&timer_event->event.base);
+	}
+
+	zend_async_callbacks_notify(&timer_event->event.base, NULL, NULL);
 
 	IF_EXCEPTION_STOP_REACTOR;
 }
@@ -313,10 +332,7 @@ static void on_timer_event(uv_timer_t *handle)
 /* {{{ libuv_timer_start */
 static void libuv_timer_start(zend_async_event_t *event)
 {
-	if (event->loop_ref_count > 0) {
-		event->loop_ref_count++;
-		return;
-	}
+	EVENT_START_PROLOGUE(event);
 
 	async_timer_event_t *timer = (async_timer_event_t *)(event);
 
@@ -340,10 +356,7 @@ static void libuv_timer_start(zend_async_event_t *event)
 /* {{{ libuv_timer_stop */
 static void libuv_timer_stop(zend_async_event_t *event)
 {
-	if (event->loop_ref_count > 1) {
-		event->loop_ref_count--;
-		return;
-	}
+	EVENT_STOP_PROLOGUE(event);
 
 	async_timer_event_t *timer = (async_timer_event_t *)(event);
 
@@ -432,10 +445,7 @@ static void on_signal_event(uv_signal_t *handle, int signum)
 /* {{{ libuv_signal_start */
 static void libuv_signal_start(zend_async_event_t *event)
 {
-    if (event->loop_ref_count > 0) {
-        event->loop_ref_count++;
-        return;
-    }
+    EVENT_START_PROLOGUE(event);
 
     async_signal_event_t *signal = (async_signal_event_t *)(event);
 
@@ -458,10 +468,7 @@ static void libuv_signal_start(zend_async_event_t *event)
 /* {{{ libuv_signal_stop */
 static void libuv_signal_stop(zend_async_event_t *event)
 {
-    if (event->loop_ref_count > 1) {
-        event->loop_ref_count--;
-        return;
-    }
+    EVENT_STOP_PROLOGUE(event);
 
     async_signal_event_t *signal = (async_signal_event_t *)(event);
 
@@ -715,10 +722,7 @@ static void libuv_stop_process_watcher(void)
 /* {{{ libuv_process_event_start */
 static void libuv_process_event_start(zend_async_event_t *event)
 {
-	if (event->loop_ref_count > 0) {
-		event->loop_ref_count++;
-		return;
-	}
+	EVENT_START_PROLOGUE(event);
 
 	async_process_event_t *process = (async_process_event_t *)(event);
 
@@ -904,10 +908,7 @@ static void on_filesystem_event(uv_fs_event_t *handle, const char *filename, int
 /* {{{ libuv_filesystem_start */
 static void libuv_filesystem_start(zend_async_event_t *event)
 {
-    if (event->loop_ref_count > 0) {
-        event->loop_ref_count++;
-        return;
-    }
+    EVENT_START_PROLOGUE(event);
 
     async_filesystem_event_t *fs_event = (async_filesystem_event_t *)(event);
 
@@ -931,10 +932,7 @@ static void libuv_filesystem_start(zend_async_event_t *event)
 /* {{{ libuv_filesystem_stop */
 static void libuv_filesystem_stop(zend_async_event_t *event)
 {
-    if (event->loop_ref_count > 1) {
-        event->loop_ref_count--;
-        return;
-    }
+    EVENT_STOP_PROLOGUE(event);
 
     async_filesystem_event_t *fs_event = (async_filesystem_event_t *)(event);
 
@@ -1054,10 +1052,7 @@ static void on_nameinfo_event(uv_getnameinfo_t *req, int status, const char *hos
 /* {{{ libuv_dns_nameinfo_start */
 static void libuv_dns_nameinfo_start(zend_async_event_t *event)
 {
-	if (event->loop_ref_count > 0) {
-		event->loop_ref_count++;
-		return;
-	}
+	EVENT_START_PROLOGUE(event);
 
 	event->loop_ref_count++;
 	ZEND_ASYNC_INCREASE_EVENT_COUNT;
@@ -1067,10 +1062,7 @@ static void libuv_dns_nameinfo_start(zend_async_event_t *event)
 /* {{{ libuv_dns_nameinfo_stop */
 static void libuv_dns_nameinfo_stop(zend_async_event_t *event)
 {
-	if (event->loop_ref_count > 1) {
-		event->loop_ref_count--;
-		return;
-	}
+	EVENT_STOP_PROLOGUE(event);
 
 	event->loop_ref_count = 0;
 	ZEND_ASYNC_DECREASE_EVENT_COUNT;
@@ -1157,10 +1149,7 @@ static void on_addrinfo_event(uv_getaddrinfo_t *req, int status, struct addrinfo
 /* {{{ libuv_dns_getaddrinfo_start */
 static void libuv_dns_getaddrinfo_start(zend_async_event_t *event)
 {
-	if (event->loop_ref_count > 0) {
-		event->loop_ref_count++;
-		return;
-	}
+	EVENT_START_PROLOGUE(event);
 
 	event->loop_ref_count++;
 	ZEND_ASYNC_INCREASE_EVENT_COUNT;
@@ -1170,10 +1159,7 @@ static void libuv_dns_getaddrinfo_start(zend_async_event_t *event)
 /* {{{ libuv_dns_getaddrinfo_stop */
 static void libuv_dns_getaddrinfo_stop(zend_async_event_t *event)
 {
-	if (event->loop_ref_count > 1) {
-		event->loop_ref_count--;
-		return;
-	}
+	EVENT_STOP_PROLOGUE(event);
 
 	event->loop_ref_count = 0;
 	ZEND_ASYNC_DECREASE_EVENT_COUNT;
@@ -1388,10 +1374,7 @@ static void exec_std_err_read_cb(uv_stream_t *stream, ssize_t nread, const uv_bu
 /* {{{ libuv_exec_start */
 static void libuv_exec_start(zend_async_event_t *event)
 {
-	if (event->loop_ref_count > 0) {
-		event->loop_ref_count++;
-		return;
-	}
+	EVENT_START_PROLOGUE(event);
 
 	async_exec_event_t *exec = (async_exec_event_t *)(event);
 
@@ -1407,10 +1390,7 @@ static void libuv_exec_start(zend_async_event_t *event)
 /* {{{ libuv_exec_stop */
 static void libuv_exec_stop(zend_async_event_t *event)
 {
-	if (event->loop_ref_count > 1) {
-		event->loop_ref_count--;
-		return;
-	}
+	EVENT_STOP_PROLOGUE(event);
 
 	async_exec_event_t *exec = (async_exec_event_t *)(event);
 
