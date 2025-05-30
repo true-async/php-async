@@ -206,8 +206,9 @@ void resume(zend_coroutine_t *coroutine, zend_object * error, const bool transfe
 		if (coroutine->waker->error != NULL) {
 			zend_exception_set_previous(error, coroutine->waker->error);
 			OBJ_RELEASE(coroutine->waker->error);
-			coroutine->waker->error = error;
 		}
+
+		coroutine->waker->error = error;
 
 		if (false == transfer_error) {
 			GC_ADDREF(error);

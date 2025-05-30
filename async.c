@@ -227,6 +227,8 @@ PHP_FUNCTION(Async_await)
 		RETURN_THROWS();
 	}
 
+	ZEND_ASSERT(coroutine->waker != NULL && "coroutine->waker must not be NULL");
+
 	if (Z_TYPE(coroutine->waker->result) == IS_UNDEF) {
 		ZVAL_NULL(return_value);
 	} else {

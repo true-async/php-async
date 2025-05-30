@@ -134,6 +134,12 @@ static zend_always_inline void switch_context(async_coroutine_t *coroutine, zend
 		ZEND_ASYNC_CURRENT_COROUTINE = NULL;
 		zend_bailout();
 	}
+
+	// Transfer the exception to the current coroutine.
+	if (UNEXPECTED(transfer.flags & ZEND_FIBER_TRANSFER_FLAG_ERROR)) {
+		zend_throw_exception_internal(Z_OBJ(transfer.value));
+		ZVAL_NULL(&transfer.value);
+	}
 }
 
 static zend_always_inline async_coroutine_t * next_coroutine(void)
@@ -216,11 +222,6 @@ static bool execute_next_coroutine(zend_fiber_transfer *transfer)
 	if (error != NULL) {
 		OBJ_RELEASE(error);
 	}
-
-	// Ignore the exception if it is a cancellation exception
-	if (UNEXPECTED(EG(exception) && instanceof_function(EG(exception)->ce, async_ce_cancellation_exception))) {
-        zend_clear_exception();
-    }
 
 	return true;
 }
