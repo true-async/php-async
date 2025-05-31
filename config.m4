@@ -10,7 +10,7 @@ PHP_ARG_WITH([async_libuv],
 
 if test "$PHP_ASYNC" = "yes"; then
 
-  if test "$PHP_ASYNC_API" != "yes"; then
+  if test "$PHP_ASYNC_API" != "yes" && test "$PHP_EXPERIMENTAL_ASYNC_API" != "yes"; then
     AC_MSG_ERROR([PHP TRUE ASYNC API is required. Please configure PHP with --enable-experimental-async-api])
   fi
 

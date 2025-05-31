@@ -34,29 +34,49 @@ PHP TRUE ASYNC is supported for PHP 8.5.0 and later.
 
 ### Unix / macOS
 
-1. **Clone the repository:**
+1. **Clone the PHP repository:**
+
+    for example, basic directory name is `php-src`:
 
    ```
-   git clone https://github.com/true-async/php-src -b true-async-api
-   cd php-src/ext/async
+   git clone https://github.com/true-async/php-src -b true-async-api ./php-src
    ```
 
-2. **Prepare the build environment:**
+2. **Clone the `True Async` extension repository:**
 
-   ```
-   phpize
-   ```
+    to the `ext` directory of your PHP source:
 
-3. **Install LibUV:**:
+    ```
+    git clone https://github.com/true-async/php-async ./php-src/ext/async
+    ```
+
+3. **Install PHP development tools:**
+
+    Make sure you have the necessary development tools installed. On Debian/Ubuntu, you can run:
+    
+    ```
+    sudo apt-get install php-dev build-essential autoconf libtool pkg-config
+    ```
+    
+    For macOS, you can use Homebrew:
+    
+    ```
+    brew install autoconf automake libtool pkg-config
+    ```
+
+4. **Install LibUV:**:
    
 Please see the [LibUV installation guide](https://github.com/libuv/libuv)
 
-4. **Configure and build:**
+5. **Configure and build:**
 
    ```
+   ./buildconf
    ./configure --enable-experimental-async-api --enable-async
    make && sudo make install
    ```
+
+   We can use `--enable-debug` to enable debug mode, which is useful for development.
 
 ---
 
@@ -79,7 +99,7 @@ Please see the [LibUV installation guide](https://github.com/libuv/libuv)
 4. **Configure and build the extension with PHP:**
 
    ```
-   cd \path\to\php-src\ext\async
+   cd \path\to\php-src
    buildconf
    configure --enable-experimental-async-api --enable-async
    nmake
