@@ -394,6 +394,10 @@ void async_waiting_callback(
 	// as FUTURE-type objects, where the trigger can be activated only once.
 	event->del_callback(event, callback);
 
+	if (exception != NULL) {
+		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
+	}
+
 	if (await_context->errors != NULL && exception != NULL) {
 		const zval *success = NULL;
 		zval exception_obj;
