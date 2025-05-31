@@ -11,7 +11,7 @@ echo "start\n";
 
 $coroutines = [
     spawn(function() {
-        delay(50);
+        delay(80);
         return "first";
     }),
     spawn(function() {
@@ -19,11 +19,11 @@ $coroutines = [
         throw new RuntimeException("test exception");
     }),
     spawn(function() {
-        delay(30);
+        delay(20);
         return "third";
     }),
     spawn(function() {
-        delay(25);
+        delay(35);
         return "fourth";
     }),
 ];
@@ -33,7 +33,7 @@ var_dump($result);
 
 echo "end\n";
 ?>
---EXPECT--
+--EXPECTF--
 start
 array(2) {
   [0]=>

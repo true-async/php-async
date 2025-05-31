@@ -342,6 +342,10 @@ static zend_class_entry* async_get_class_ce(zend_async_class type)
 ////////////////////////////////////////////////////////////////////
 
 #define AWAIT_ALL(await_context) ((await_context)->waiting_count == 0 || (await_context)->waiting_count == (await_context)->total)
+#define ITERATOR_IS_FINISHED(await_context) \
+	((await_context->ignore_errors ? await_context->success_count : await_context->resolved_count) >= await_context->waiting_count || \
+		(await_context->total != 0 && await_context->resolved_count >= await_context->total) \
+	)
 
 static zend_always_inline zend_async_event_t * zval_to_event(const zval * current)
 {
@@ -442,6 +446,7 @@ void async_waiting_callback(
 	if (exception == NULL && await_context->results != NULL && ZEND_ASYNC_EVENT_WILL_ZVAL_RESULT(event) && result != NULL) {
 
 		const zval *success = NULL;
+		await_context->success_count++;
 
 		if (Z_TYPE(await_callback->key) == IS_STRING) {
 			success = zend_hash_update(await_context->results, Z_STR(await_callback->key), result);
@@ -459,7 +464,7 @@ void async_waiting_callback(
 		}
 	}
 
-	if (await_context->resolved_count >= await_context->waiting_count) {
+	if (UNEXPECTED(ITERATOR_IS_FINISHED(await_context))) {
 		ZEND_ASYNC_RESUME(await_callback->callback.coroutine);
 	}
 }
@@ -579,7 +584,7 @@ void iterator_coroutine_finish_callback(
 			exception,
 			false
 		);
-	} else if (iterator->await_context->resolved_count >= iterator->await_context->waiting_count) {
+	} else if (ITERATOR_IS_FINISHED(iterator->await_context)) {
 		// If iteration is finished, resume the waiting coroutine
 		ZEND_ASYNC_RESUME(iterator->waiting_coroutine);
 	}
@@ -669,6 +674,7 @@ void async_await_futures(
 	await_context->total = futures != NULL ? (int) zend_hash_num_elements(futures) : 0;
 	await_context->waiting_count = count > 0 ? count : await_context->total;
 	await_context->resolved_count = 0;
+	await_context->success_count = 0;
 	await_context->ignore_errors = ignore_errors;
 	await_context->concurrency = concurrency;
 	await_context->fill_missing_with_null = fill_missing_with_null;

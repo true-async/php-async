@@ -434,6 +434,10 @@ PHP_FUNCTION(Async_awaitAnyOf)
 
 	HashTable * results = zend_new_array(8);
 
+	if (count == 0) {
+		RETURN_ARR(results);
+	}
+
 	async_await_futures(futures,
 		(int)count,
 		false,

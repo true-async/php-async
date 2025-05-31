@@ -27,10 +27,19 @@ typedef void (*async_await_context_dtor_t) (async_await_context_t *context);
 struct _async_await_context_t
 {
 	unsigned int ref_count;
+	/* The total number of futures to wait for */
 	unsigned int total;
+	/* The number of futures that are currently waiting */
 	unsigned int waiting_count;
+	/* The number of futures that have been resolved */
 	unsigned int resolved_count;
+	/* The number of futures that have been successfully resolved */
+	unsigned int success_count;
+	/* If errors should be ignored */
 	bool ignore_errors;
+	/* If we need to fill missing results with null */
+	bool fill_missing_with_null;
+	/* Number of concurrent coroutines that can be executed */
 	unsigned int concurrency;
 	async_await_context_dtor_t dtor;
 	HashTable *futures;
@@ -38,7 +47,6 @@ struct _async_await_context_t
 	zend_async_scope_t * scope;
 	HashTable *results;
 	HashTable *errors;
-	bool fill_missing_with_null;
 };
 
 typedef struct

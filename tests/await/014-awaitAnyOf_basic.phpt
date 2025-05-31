@@ -11,7 +11,7 @@ echo "start\n";
 
 $coroutines = [
     spawn(function() {
-        delay(50);
+        delay(80);
         return "first";
     }),
     spawn(function() {
@@ -19,7 +19,7 @@ $coroutines = [
         return "second";
     }),
     spawn(function() {
-        delay(30);
+        delay(60);
         return "third";
     }),
     spawn(function() {

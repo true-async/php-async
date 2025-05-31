@@ -25,7 +25,7 @@ var_dump($result);
 
 echo "end\n";
 ?>
---EXPECT--
+--EXPECTF--
 start
 array(2) {
   [0]=>
