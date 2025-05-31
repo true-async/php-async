@@ -11,7 +11,7 @@ echo "start\n";
 
 $coroutines = [
     spawn(function() {
-        delay(50);
+        delay(10);
         throw new RuntimeException("first error");
     }),
     spawn(function() {
@@ -20,7 +20,7 @@ $coroutines = [
     }),
     spawn(function() {
         delay(30);
-        throw new RuntimeException("second error");
+        return "another success";
     }),
 ];
 
@@ -29,36 +29,17 @@ var_dump($result);
 
 echo "end\n";
 ?>
---EXPECT--
+--EXPECTF--
 start
 array(2) {
   [0]=>
   string(7) "success"
   [1]=>
-  array(2) {
+  array(1) {
     [0]=>
     object(RuntimeException)#%d (7) {
       ["message":protected]=>
       string(11) "first error"
-      ["string":"Exception":private]=>
-      string(0) ""
-      ["code":protected]=>
-      int(0)
-      ["file":protected]=>
-      string(%d) "%s"
-      ["line":protected]=>
-      int(%d)
-      ["trace":"Exception":private]=>
-      array(%d) {
-        %a
-      }
-      ["previous":"Exception":private]=>
-      NULL
-    }
-    [2]=>
-    object(RuntimeException)#%d (7) {
-      ["message":protected]=>
-      string(12) "second error"
       ["string":"Exception":private]=>
       string(0) ""
       ["code":protected]=>

@@ -321,17 +321,19 @@ PHP_FUNCTION(Async_awaitFirstSuccess)
 	HashTable * return_array = zend_new_array(2);
 
 	zval val;
+	ZVAL_NULL(&val);
 
-	if (zend_hash_num_elements(results) == 0) {
-		ZVAL_NULL(&val);
-	} else {
-		ZVAL_COPY(&val, zend_hash_index_find(results, 0));
-	}
+	ZEND_HASH_FOREACH_VAL(results, zval *item) {
+		ZVAL_COPY(&val, item);
+		break;
+	} ZEND_HASH_FOREACH_END();
 
 	zend_hash_next_index_insert_new(return_array, &val);
 
 	ZVAL_ARR(&val, errors);
 	zend_hash_next_index_insert_new(return_array, &val);
+
+	zend_array_release(results);
 
 	RETURN_ARR(return_array);
 }

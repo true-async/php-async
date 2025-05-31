@@ -429,7 +429,17 @@ void async_waiting_callback(
 		return;
 	}
 
-	if (await_context->results != NULL && ZEND_ASYNC_EVENT_WILL_ZVAL_RESULT(event) && result != NULL) {
+	// If the exception exists, and we are ignoring errors, we do not resume the coroutine.
+	if (exception != NULL && await_context->ignore_errors) {
+		// But if there's no one left to wait for, stop waiting.
+		if (await_context->total != 0 && await_context->resolved_count >= await_context->total) {
+			ZEND_ASYNC_RESUME(await_callback->callback.coroutine);
+		}
+
+		return;
+	}
+
+	if (exception == NULL && await_context->results != NULL && ZEND_ASYNC_EVENT_WILL_ZVAL_RESULT(event) && result != NULL) {
 
 		const zval *success = NULL;
 
@@ -445,7 +455,7 @@ void async_waiting_callback(
 		}
 
 		if (success != NULL) {
-			zval_add_ref(result);
+			Z_TRY_ADDREF_P(result);
 		}
 	}
 

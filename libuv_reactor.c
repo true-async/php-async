@@ -243,8 +243,6 @@ static void libuv_poll_dispose(zend_async_event_t *event)
 	async_poll_event_t *poll = (async_poll_event_t *)(event);
 
 	uv_close((uv_handle_t *)&poll->uv_handle, libuv_close_handle_cb);
-
-	pefree(event, 0);
 }
 /* }}} */
 
@@ -289,6 +287,7 @@ zend_async_poll_event_t* libuv_new_poll_event(
 	poll->uv_handle.data = poll;
 	poll->event.events = events;
 	poll->event.base.extra_offset = sizeof(async_poll_event_t);
+	poll->event.base.ref_count = 1;
 
 	// Initialize the event methods
 	poll->event.base.add_callback = libuv_add_callback;
@@ -390,8 +389,6 @@ static void libuv_timer_dispose(zend_async_event_t *event)
 	async_timer_event_t *timer = (async_timer_event_t *)(event);
 
 	uv_close((uv_handle_t *)&timer->uv_handle, libuv_close_handle_cb);
-
-	pefree(event, 0);
 }
 /* }}} */
 
@@ -416,6 +413,7 @@ zend_async_timer_event_t* libuv_new_timer_event(const zend_ulong timeout, const 
 	event->event.timeout = timeout;
 	event->event.is_periodic = is_periodic;
 	event->event.base.extra_offset = sizeof(async_timer_event_t);
+	event->event.base.ref_count = 1;
 
 	event->event.base.add_callback = libuv_add_callback;
 	event->event.base.del_callback = libuv_remove_callback;
@@ -502,8 +500,6 @@ static void libuv_signal_dispose(zend_async_event_t *event)
     async_signal_event_t *signal = (async_signal_event_t *)(event);
 
     uv_close((uv_handle_t *)&signal->uv_handle, libuv_close_handle_cb);
-
-    pefree(event, 0);
 }
 /* }}} */
 
@@ -527,6 +523,7 @@ zend_async_signal_event_t* libuv_new_signal_event(int signum, size_t extra_size)
     signal->uv_handle.data = signal;
     signal->event.signal = signum;
 	signal->event.base.extra_offset = sizeof(async_signal_event_t);
+	signal->event.base.ref_count = 1;
 
     signal->event.base.add_callback = libuv_add_callback;
     signal->event.base.del_callback = libuv_remove_callback;
@@ -828,8 +825,6 @@ static void libuv_process_event_dispose(zend_async_event_t *event)
 		process->hJob = NULL;
 	}
 #endif
-
-	pefree(event, 0);
 }
 /* }}} */
 
@@ -844,6 +839,7 @@ zend_async_process_event_t * libuv_new_process_event(zend_process_t process_hand
 
 	process_event->event.process = process_handle;
 	process_event->event.base.extra_offset = sizeof(async_process_event_t);
+	process_event->event.base.ref_count = 1;
 
 	process_event->event.base.add_callback = libuv_add_callback;
 	process_event->event.base.del_callback = libuv_remove_callback;
@@ -976,8 +972,6 @@ static void libuv_filesystem_dispose(zend_async_event_t *event)
 	}
 
     uv_close((uv_handle_t *)&fs_event->uv_handle, libuv_close_handle_cb);
-
-    pefree(event, 0);
 }
 /* }}} */
 
@@ -1002,6 +996,7 @@ zend_async_filesystem_event_t* libuv_new_filesystem_event(zend_string * path, co
     fs_event->event.path = zend_string_copy(path);
     fs_event->event.flags = flags;
 	fs_event->event.base.extra_offset = sizeof(async_filesystem_event_t);
+	fs_event->event.base.ref_count = 1;
 
     fs_event->event.base.add_callback = libuv_add_callback;
     fs_event->event.base.del_callback = libuv_remove_callback;
@@ -1087,8 +1082,6 @@ static void libuv_dns_nameinfo_dispose(zend_async_event_t *event)
 	async_dns_nameinfo_t *name_info = (async_dns_nameinfo_t *)(event);
 
 	uv_close((uv_handle_t *)&name_info->uv_handle, libuv_close_handle_cb);
-
-	pefree(event, 0);
 }
 /* }}} */
 
@@ -1113,6 +1106,7 @@ static zend_async_dns_nameinfo_t * libuv_getnameinfo(const struct sockaddr *addr
 
 	name_info->uv_handle.data = name_info;
 	name_info->event.base.extra_offset = sizeof(async_dns_nameinfo_t);
+	name_info->event.base.ref_count = 1;
 
 	name_info->event.base.add_callback = libuv_add_callback;
 	name_info->event.base.del_callback = libuv_remove_callback;
@@ -1184,8 +1178,6 @@ static void libuv_dns_getaddrinfo_dispose(zend_async_event_t *event)
 	async_dns_addrinfo_t *addr_info = (async_dns_addrinfo_t *)(event);
 
 	uv_close((uv_handle_t *)&addr_info->uv_handle, libuv_close_handle_cb);
-
-	pefree(event, 0);
 }
 /* }}} */
 
@@ -1212,6 +1204,7 @@ static zend_async_dns_addrinfo_t* libuv_getaddrinfo(
 
 	addr_info->uv_handle.data = addr_info;
 	addr_info->event.base.extra_offset = sizeof(async_dns_nameinfo_t);
+	addr_info->event.base.ref_count = 1;
 
 	addr_info->event.base.add_callback = libuv_add_callback;
 	addr_info->event.base.del_callback = libuv_remove_callback;
@@ -1454,8 +1447,6 @@ static void libuv_exec_dispose(zend_async_event_t *event)
         exec->quoted_cmd = NULL;
     }
 #endif
-
-    pefree(event, 0);
 }
 /* }}} */
 
@@ -1548,6 +1539,8 @@ static zend_async_exec_event_t * libuv_new_exec_event(
 	uv_read_start((uv_stream_t*) exec->stderr_pipe, exec_std_err_alloc_cb, exec_std_err_read_cb);
 
 	ZEND_ASYNC_INCREASE_EVENT_COUNT;
+
+	exec->event.base.ref_count = 1;
 
 	exec->event.base.add_callback = libuv_add_callback;
 	exec->event.base.del_callback = libuv_remove_callback;
