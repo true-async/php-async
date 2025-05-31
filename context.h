@@ -34,7 +34,7 @@ bool async_context_has(async_context_t * context, zval *key, bool include_parent
 bool async_context_has_local(async_context_t * context, zval *key);
 bool async_context_unset(async_context_t * context, zval *key);
 
-async_context_t *async_context_new();
+async_context_t *async_context_new(void);
 void async_context_dispose(async_context_t *context);
 
 // Class entry
