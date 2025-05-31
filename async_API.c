@@ -795,10 +795,6 @@ void async_await_futures(
 	}
 
 	await_context->dtor(await_context);
-
-	if (futures != NULL) {
-		zend_array_release(futures);
-	}
 }
 
 void async_api_register(void)
