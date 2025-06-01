@@ -263,6 +263,7 @@ PHP_FUNCTION(Async_awaitAny)
 		0,
 		results,
 		NULL,
+		false,
 		false
 	);
 
@@ -311,7 +312,8 @@ PHP_FUNCTION(Async_awaitFirstSuccess)
 		0,
 		results,
 		errors,
-		false
+		false,
+		true
 	);
 
 	if (EG(exception)) {
@@ -363,6 +365,7 @@ PHP_FUNCTION(Async_awaitAll)
 		0,
 		results,
 		NULL,
+		false,
 		false
 		);
 
@@ -398,7 +401,8 @@ PHP_FUNCTION(Async_awaitAllWithErrors)
 		0,
 		results,
 		errors,
-		false
+		false,
+		true
 		);
 
 	if (EG(exception)) {
@@ -448,6 +452,7 @@ PHP_FUNCTION(Async_awaitAnyOf)
 		0,
 		results,
 		NULL,
+		false,
 		false
 		);
 
@@ -485,7 +490,8 @@ PHP_FUNCTION(Async_awaitAnyOfWithErrors)
 		0,
 		results,
 		errors,
-		false
+		false,
+		true
 		);
 
 	if (EG(exception)) {

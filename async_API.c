@@ -469,6 +469,58 @@ void async_waiting_callback(
 	}
 }
 
+/**
+ * This callback is used only for awaiting cancelled coroutines.
+ * It resumes the target coroutine only after
+ * all coroutines awaiting cancellation have fully completed.
+ *
+ * @param event
+ * @param callback
+ * @param result
+ * @param exception
+ */
+void async_waiting_cancellation_callback(
+	zend_async_event_t *event,
+	zend_async_event_callback_t *callback,
+	void *result,
+	zend_object *exception
+) {
+	async_await_callback_t * await_callback = (async_await_callback_t *) callback;
+	async_await_context_t * await_context = await_callback->await_context;
+
+	await_context->resolved_count++;
+	event->del_callback(event, callback);
+
+	if (exception != NULL) {
+		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
+	}
+
+	if (await_context->errors != NULL && exception != NULL) {
+		const zval *success = NULL;
+		zval exception_obj;
+		ZVAL_OBJ(&exception_obj, exception);
+
+		if (Z_TYPE(await_callback->key) == IS_STRING) {
+			success = zend_hash_update(await_context->errors, Z_STR(await_callback->key), &exception_obj);
+		} else if (Z_TYPE(await_callback->key) == IS_LONG) {
+			success = zend_hash_index_update(await_context->errors, Z_LVAL(await_callback->key), &exception_obj);
+		} else if (Z_TYPE(await_callback->key) == IS_NULL || Z_TYPE(await_callback->key) == IS_UNDEF) {
+			success = zend_hash_next_index_insert_new(await_context->errors, &exception_obj);
+			ZVAL_LONG(&await_callback->key, await_context->errors->nNextFreeElement - 1);
+		} else {
+			ZEND_ASSERT("Invalid key type: must be string, long or null");
+		}
+
+		if (success != NULL) {
+			GC_ADDREF(exception);
+		}
+	}
+
+	if (await_context->total != 0 && await_context->resolved_count >= await_context->total) {
+		ZEND_ASYNC_RESUME(await_callback->callback.coroutine);
+	}
+}
+
 zend_result await_iterator_handler(async_iterator_t *iterator, zval *current, zval *key)
 {
 	async_await_iterator_t * await_iterator = ((async_await_iterator_iterator_t *) iterator)->await_iterator;
@@ -616,6 +668,80 @@ void await_context_dtor(async_await_context_t *context)
 	efree(context);
 }
 
+void async_cancel_awaited_futures(async_await_context_t * await_context, HashTable *futures)
+{
+	zend_coroutine_t *this_coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (UNEXPECTED(zend_async_waker_new(this_coroutine) == NULL)) {
+		return;
+	}
+
+	if (futures == NULL) {
+		// TODO: Write code to await the coroutine Scope.
+		return;
+	}
+
+	zend_ulong index;
+	zend_string *key;
+	zval * current;
+
+	bool not_need_wait = true;
+
+	ZEND_HASH_FOREACH_KEY_VAL(futures, index, key, current) {
+
+		// Handle only the Coroutine objects
+		if (Z_TYPE_P(current) != IS_OBJECT
+			|| false == instanceof_function(Z_OBJCE_P(current), async_ce_coroutine)) {
+			continue;
+		}
+
+		zend_async_event_t* awaitable = zval_to_event(current);
+
+		if (UNEXPECTED(EG(exception))) {
+			await_context->dtor(await_context);
+			return;
+		}
+
+		if (awaitable == NULL || ZEND_ASYNC_EVENT_IS_CLOSED(awaitable)) {
+			continue;
+		}
+
+		async_await_callback_t * callback = ecalloc(1, sizeof(async_await_callback_t));
+		callback->callback.base.callback = async_waiting_cancellation_callback;
+		callback->await_context = await_context;
+
+		ZEND_ASYNC_EVENT_SET_RESULT_USED(awaitable);
+		ZEND_ASYNC_EVENT_SET_EXC_CAUGHT(awaitable);
+
+		if (key != NULL) {
+			ZVAL_STR(&callback->key, key);
+			zval_add_ref(&callback->key);
+		} else {
+			ZVAL_LONG(&callback->key, index);
+		}
+
+		zend_async_resume_when(this_coroutine, awaitable, false, NULL, &callback->callback);
+
+		if (UNEXPECTED(EG(exception))) {
+			await_context->dtor(await_context);
+			return;
+		}
+
+		not_need_wait = false;
+
+		callback->prev_dispose = callback->callback.base.dispose;
+		callback->callback.base.dispose = async_waiting_callback_dispose;
+		await_context->ref_count++;
+
+	} ZEND_HASH_FOREACH_END();
+
+	if (not_need_wait) {
+		return;
+	}
+
+	ZEND_ASYNC_SUSPEND();
+}
+
 void async_await_futures(
 	zval *iterable,
 	int count,
@@ -625,7 +751,8 @@ void async_await_futures(
 	unsigned int concurrency,
 	HashTable *results,
 	HashTable *errors,
-	bool fill_missing_with_null
+	bool fill_missing_with_null,
+	bool cancel_on_exit
 )
 {
 	HashTable *futures = NULL;
@@ -678,6 +805,7 @@ void async_await_futures(
 	await_context->ignore_errors = ignore_errors;
 	await_context->concurrency = concurrency;
 	await_context->fill_missing_with_null = fill_missing_with_null;
+	await_context->cancel_on_exit = cancel_on_exit;
 
 	if (AWAIT_ALL(await_context)) {
 		tmp_results = zend_new_array(await_context->total);
@@ -786,6 +914,12 @@ void async_await_futures(
 	}
 
 	ZEND_ASYNC_SUSPEND();
+
+	// If the await on futures has completed and
+	// the automatic cancellation mode for pending coroutines is active.
+	if (await_context->cancel_on_exit) {
+		async_cancel_awaited_futures(await_context, futures);
+	}
 
 	// Free the coroutine scope if it was created for the iterator.
 	if (await_context->scope != NULL) {
