@@ -1,0 +1,64 @@
+--TEST--
+Multiple socket operations with coroutine switching
+--FILE--
+<?php
+
+use function Async\spawn;
+use function Async\awaitAll;
+
+echo "Start\n";
+
+// Create multiple socket pairs
+$sockets1 = stream_socket_pair(STREAM_PF_INET, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+$sockets2 = stream_socket_pair(STREAM_PF_INET, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+
+list($sock1a, $sock1b) = $sockets1;
+list($sock2a, $sock2b) = $sockets2;
+
+// First socket pair operations
+$worker1 = spawn(function() use ($sock1a, $sock1b) {
+    echo "Worker1: writing to socket1\n";
+    fwrite($sock1a, "message1");
+    echo "Worker1: reading from socket1\n";
+    $data = fread($sock1b, 1024);
+    echo "Worker1: got '$data'\n";
+    
+    fclose($sock1a);
+    fclose($sock1b);
+});
+
+// Second socket pair operations
+$worker2 = spawn(function() use ($sock2a, $sock2b) {
+    echo "Worker2: writing to socket2\n";
+    fwrite($sock2a, "message2");
+    echo "Worker2: reading from socket2\n";
+    $data = fread($sock2b, 1024);
+    echo "Worker2: got '$data'\n";
+    
+    fclose($sock2a);
+    fclose($sock2b);
+});
+
+// Third coroutine just working
+$worker3 = spawn(function() {
+    echo "Worker3: doing other work\n";
+    echo "Worker3: still working\n";
+    echo "Worker3: finished\n";
+});
+
+awaitAll([$worker1, $worker2, $worker3]);
+echo "End\n";
+
+?>
+--EXPECT--
+Start
+Worker1: writing to socket1
+Worker1: reading from socket1
+Worker1: got 'message1'
+Worker2: writing to socket2
+Worker2: reading from socket2
+Worker2: got 'message2'
+Worker3: doing other work
+Worker3: still working
+Worker3: finished
+End
