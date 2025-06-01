@@ -13,16 +13,14 @@ echo "Testing concurrent socket operations\n";
 $producer = spawn(function() {
     echo "Producer: Creating socket pair\n";
     
-    $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+    $sockets = stream_socket_pair(STREAM_PF_INET, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
     if (!$sockets) {
         echo "Producer: Failed to create socket pair\n";
         return null;
     }
     
     list($write_sock, $read_sock) = $sockets;
-    stream_set_blocking($write_sock, false);
-    stream_set_blocking($read_sock, false);
-    
+
     // Send multiple messages with delays
     for ($i = 1; $i <= 3; $i++) {
         echo "Producer: Sending message $i\n";

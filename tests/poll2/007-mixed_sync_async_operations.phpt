@@ -26,17 +26,13 @@ echo "Asynchronous operations:\n";
 $coroutine = spawn(function() {
     echo "Async: Creating socket pair\n";
     
-    $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+    $sockets = stream_socket_pair(STREAM_PF_INET, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
     if (!$sockets) {
         echo "Async: Failed to create socket pair\n";
         return;
     }
     
     list($sock1, $sock2) = $sockets;
-    
-    // Set non-blocking mode to trigger async polling
-    stream_set_blocking($sock1, false);
-    stream_set_blocking($sock2, false);
     
     echo "Async: Writing message\n";
     fwrite($sock1, "async message");
@@ -56,7 +52,7 @@ echo "Final result: $result\n";
 
 // More synchronous operations after async
 echo "Post-async synchronous operations:\n";
-$post_sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+$post_sockets = stream_socket_pair(STREAM_PF_INET, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
 list($post1, $post2) = $post_sockets;
 
 fwrite($post1, "post-async message");

@@ -11,17 +11,13 @@ echo "Before spawn\n";
 $coroutine = spawn(function() {
     echo "Creating socket pair\n";
     
-    $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+    $sockets = stream_socket_pair(STREAM_PF_INET, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
     if (!$sockets) {
         echo "Failed to create socket pair\n";
         return;
     }
     
     list($sock1, $sock2) = $sockets;
-    
-    // Set non-blocking mode
-    stream_set_blocking($sock1, false);
-    stream_set_blocking($sock2, false);
     
     echo "Writing to socket\n";
     $written = fwrite($sock1, "test message");

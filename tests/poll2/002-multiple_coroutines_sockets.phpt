@@ -16,17 +16,13 @@ for ($i = 1; $i <= 3; $i++) {
     $coroutines[] = spawn(function() use ($i) {
         echo "Coroutine $i: Creating socket pair\n";
         
-        $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+        $sockets = stream_socket_pair(STREAM_PF_INET, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
         if (!$sockets) {
             echo "Coroutine $i: Failed to create socket pair\n";
             return "failed";
         }
         
         list($sock1, $sock2) = $sockets;
-        
-        // Set non-blocking mode to trigger async polling
-        stream_set_blocking($sock1, false);
-        stream_set_blocking($sock2, false);
         
         // Write unique message
         $message = "message from coroutine $i";

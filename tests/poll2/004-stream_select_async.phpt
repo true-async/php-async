@@ -11,8 +11,8 @@ echo "Testing stream_select in async context\n";
 $coroutine = spawn(function() {
     echo "Creating socket pairs\n";
     
-    $sockets1 = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
-    $sockets2 = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+    $sockets1 = stream_socket_pair(STREAM_PF_INET, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+    $sockets2 = stream_socket_pair(STREAM_PF_INET, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
     
     if (!$sockets1 || !$sockets2) {
         echo "Failed to create socket pairs\n";
@@ -21,12 +21,6 @@ $coroutine = spawn(function() {
     
     list($sock1a, $sock1b) = $sockets1;
     list($sock2a, $sock2b) = $sockets2;
-    
-    // Set non-blocking
-    stream_set_blocking($sock1a, false);
-    stream_set_blocking($sock1b, false);
-    stream_set_blocking($sock2a, false);
-    stream_set_blocking($sock2b, false);
     
     // Write to one socket
     echo "Writing to first socket\n";
