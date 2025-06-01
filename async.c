@@ -163,6 +163,8 @@ PHP_FUNCTION(Async_spawnWith)
 
 PHP_FUNCTION(Async_suspend)
 {
+	ZEND_PARSE_PARAMETERS_NONE();
+
 	if (UNEXPECTED(ZEND_ASYNC_OFF)) {
 		return;
 	}
