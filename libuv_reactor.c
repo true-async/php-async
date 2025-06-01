@@ -1587,10 +1587,8 @@ static int libuv_exec(
 
 void async_libuv_reactor_register(void)
 {
-	zend_string * module_name = zend_string_init(LIBUV_REACTOR_NAME, sizeof(LIBUV_REACTOR_NAME) - 1, 0);
-
 	zend_async_reactor_register(
-		module_name,
+		LIBUV_REACTOR_NAME,
 		false,
 		libuv_reactor_startup,
 		libuv_reactor_shutdown,
@@ -1608,6 +1606,4 @@ void async_libuv_reactor_register(void)
 		libuv_new_exec_event,
 		libuv_exec
 	);
-
-	zend_string_release(module_name);
 }

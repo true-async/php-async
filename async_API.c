@@ -819,10 +819,8 @@ void async_await_futures(
 
 void async_api_register(void)
 {
-	zend_string *module = zend_string_init(PHP_ASYNC_NAME_VERSION, sizeof(PHP_ASYNC_NAME_VERSION) - 1, 0);
-
 	zend_async_scheduler_register(
-		module,
+		PHP_ASYNC_NAME_VERSION,
 		false,
 		new_coroutine,
 		async_new_scope,
@@ -838,6 +836,4 @@ void async_api_register(void)
 		get_awaiting_info,
 		async_get_class_ce
 	);
-
-	zend_string_release(module);
 }
