@@ -938,9 +938,13 @@ void async_await_futures(
 			}
 
 			if (key != NULL) {
-				zend_hash_update(results, key, current);
+				if (EXPECTED(zend_hash_update(results, key, current) != NULL)) {
+					zval_add_ref(current);
+				}
 			} else {
-				zend_hash_index_update(results, index, current);
+				if (EXPECTED(zend_hash_index_update(results, index, current) != NULL)) {
+					zval_add_ref(current);
+				}
 			}
 		} ZEND_HASH_FOREACH_END();
 

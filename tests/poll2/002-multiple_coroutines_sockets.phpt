@@ -52,12 +52,12 @@ echo "All coroutines completed\n";
 Before spawn
 Coroutine 1: Creating socket pair
 Coroutine 1: Writing 'message from coroutine 1'
-Coroutine 1: Read 'message from coroutine 1'
 Coroutine 2: Creating socket pair
 Coroutine 2: Writing 'message from coroutine 2'
-Coroutine 2: Read 'message from coroutine 2'
 Coroutine 3: Creating socket pair
 Coroutine 3: Writing 'message from coroutine 3'
+Coroutine 1: Read 'message from coroutine 1'
+Coroutine 2: Read 'message from coroutine 2'
 Coroutine 3: Read 'message from coroutine 3'
 Result 1: coroutine 1 completed
 Result 2: coroutine 2 completed
