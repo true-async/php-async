@@ -698,20 +698,12 @@ static PHP_GINIT_FUNCTION(async)
 	ZEND_TSRMLS_CACHE_UPDATE();
 #endif
 
-	circular_buffer_ctor(&async_globals->microtasks, 64, sizeof(zend_async_microtask_t *), &zend_std_allocator);
-	circular_buffer_ctor(&async_globals->coroutine_queue, 128, sizeof(zend_coroutine_t *), &zend_std_allocator);
-	zend_hash_init(&async_globals->coroutines, 128, NULL, NULL, 0);
-
 	async_globals->reactor_started = false;
 }
 
 /* {{{ PHP_GSHUTDOWN_FUNCTION */
 static PHP_GSHUTDOWN_FUNCTION(async)
 {
-	circular_buffer_dtor(&async_globals->microtasks);
-	circular_buffer_dtor(&async_globals->coroutine_queue);
-	zend_hash_destroy(&async_globals->coroutines);
-
 #ifdef PHP_WIN32
 #endif
 }
@@ -771,11 +763,21 @@ PHP_RINIT_FUNCTION(async) /* {{{ */
 {
 	//async_host_name_list_ctor();
 	ZEND_ASYNC_READY;
+	circular_buffer_ctor(&ASYNC_G(microtasks), 64, sizeof(zend_async_microtask_t *), &zend_std_allocator);
+	circular_buffer_ctor(&ASYNC_G(coroutine_queue), 128, sizeof(zend_coroutine_t *), &zend_std_allocator);
+	zend_hash_init(&ASYNC_G(coroutines), 128, NULL, NULL, 0);
+
+	ASYNC_G(reactor_started) = false;
+
 	return SUCCESS;
 } /* }}} */
 
 PHP_RSHUTDOWN_FUNCTION(async) /* {{{ */
 {
+	circular_buffer_dtor(&ASYNC_G(microtasks));
+	circular_buffer_dtor(&ASYNC_G(coroutine_queue));
+	zend_hash_destroy(&ASYNC_G(coroutines));
+
 	//async_host_name_list_dtor();
 	return SUCCESS;
 } /* }}} */

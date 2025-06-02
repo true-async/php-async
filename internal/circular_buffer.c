@@ -184,7 +184,9 @@ zend_result circular_buffer_realloc(circular_buffer_t *buffer, size_t new_count)
     	const ptrdiff_t head_offset = (char *)buffer->head - (char *)buffer->start;
     	const ptrdiff_t tail_offset = buffer->tail != NULL ? (char *)buffer->tail - (char *)buffer->start : 0;
 
-    	void *new_start = (buffer->allocator->m_realloc)(buffer->start, new_count * buffer->item_size);
+    	void *new_start = (buffer->allocator->m_realloc)(
+    		buffer->start, new_count * buffer->item_size, current_count * buffer->item_size
+		);
 
 		if(new_start == NULL) {
 			ASYNC_ERROR(E_WARNING, "Failed to reallocate circular buffer");
