@@ -14,8 +14,8 @@ list($sock1, $sock2) = $sockets;
 $writer = spawn(function() use ($sock1) {
     echo "Writer: writing data\n";
     fwrite($sock1, "test message");
-    echo "Writer: done writing\n";
     fclose($sock1);
+    echo "Writer: done writing\n";
 });
 
 $worker = spawn(function() {
