@@ -41,7 +41,6 @@ static void test_create_and_destroy()
     circular_buffer_t *buffer = circular_buffer_new(8, sizeof(test_struct_t), NULL);
 
 	ASSERT(buffer != NULL, "Buffer creation failed");
-    ASSERT(buffer->start != NULL, "Buffer memory allocation failed");
     ASSERT(buffer->item_size == sizeof(test_struct_t), "Buffer item size mismatch");
 
     circular_buffer_destroy(buffer);
@@ -71,6 +70,8 @@ static void test_push_and_pop()
 
 static void test_is_empty_and_is_full()
 {
+    // Request size 2, but will be rounded up to 2 (already power of 2)
+    // Capacity=2 means 1 usable slot (1 slot reserved to distinguish full/empty)
     circular_buffer_t *buffer = circular_buffer_new(2, sizeof(test_struct_t), NULL);
     test_struct_t value = {100, 200, 'x', 'q'};
 
@@ -80,8 +81,7 @@ static void test_is_empty_and_is_full()
     circular_buffer_push(buffer, &value, true);
     ASSERT(!circular_buffer_is_empty(buffer), "Buffer should not be empty after push");
 
-    circular_buffer_push(buffer, &value, true);
-    ASSERT(circular_buffer_is_full(buffer), "Buffer should be full after two pushes");
+    ASSERT(circular_buffer_is_full(buffer), "Buffer should be full after one push (capacity=2, usable=1)");
 
     circular_buffer_destroy(buffer);
     printf("[*] test_is_empty_and_is_full passed\n");
@@ -155,16 +155,17 @@ static void test_wrap_around_order(void)
 
 static void test_wrap_realloc(void)
 {
-	/* initial capacity 3 */
+	/* Request capacity 3, will be rounded up to 4 (power of 2) */
+	/* Actual usable capacity: 4-1 = 3 slots */
 	circular_buffer_t *buffer = circular_buffer_new(3, sizeof(int), NULL);
 	int in, out;
 
-	/* fill 1,2,3 */
+	/* fill 1,2,3 (fills the buffer) */
 	in = 1; circular_buffer_push(buffer, &in, true);
 	in = 2; circular_buffer_push(buffer, &in, true);
 	in = 3; circular_buffer_push(buffer, &in, true);
 
-	/* pop one (removes 1) */
+	/* pop two (removes 1, 2) */
 	circular_buffer_pop(buffer, &out);
 	ASSERT(out == 1, "Expected 1 after first pop (pre‑resize)");
 	circular_buffer_pop(buffer, &out);
@@ -173,15 +174,14 @@ static void test_wrap_realloc(void)
 	const size_t current_count = circular_buffer_count(buffer);
 	ASSERT(current_count == 1, "Buffer should have 1 item before realloc");
 
-	/* push 4 (fits) */
+	/* push 4, 5 (should fit in current capacity=4) */
 	in = 4; circular_buffer_push(buffer, &in, true);
-	/* push 5 (triggers realloc while head<tail) */
-	in = 5; circular_buffer_push(buffer, &in, true); /* realloc here */
+	in = 5; circular_buffer_push(buffer, &in, true);
+	
+	/* push 6 (triggers realloc: 4 -> 8) */
+	in = 6; circular_buffer_push(buffer, &in, true); /* realloc here */
 
-	/* push 6 to ensure new space used */
-	in = 6; circular_buffer_push(buffer, &in, true);
-
-	/* Pop remaining 4 elements: expect 2,3,4,5,6 */
+	/* Pop remaining 4 elements: expect 3,4,5,6 */
 	int expect_seq[] = {3,4,5,6};
 	for (size_t i = 0; i < 4; i++) {
 		circular_buffer_pop(buffer, &out);
@@ -274,12 +274,14 @@ static void test_pop_empty()
 
 static void test_push_full()
 {
+    // Capacity=2, usable=1 slot
     circular_buffer_t *buffer = circular_buffer_new(2, sizeof(test_struct_t), NULL);
     test_struct_t value = {100, 200, 'x', 'q'};
 
-    circular_buffer_push(buffer, &value, false);
+    // Fill the only usable slot
     circular_buffer_push(buffer, &value, false);
 
+    // Second push should fail (buffer is full)
     ASSERT(circular_buffer_push(buffer, &value, false) == FAILURE, "Push to full buffer should fail");
 
     circular_buffer_destroy(buffer);
@@ -288,7 +290,7 @@ static void test_push_full()
 
 static void test_head_and_tail_exchange()
 {
-    circular_buffer_t *buffer = circular_buffer_new(3, sizeof(test_struct_t), NULL);
+    circular_buffer_t *buffer = circular_buffer_new(4, sizeof(test_struct_t), NULL);
     test_struct_t value = {100, 200, 'x', 'q'};
 
 	// Insert 3 elements into the buffer
@@ -300,6 +302,7 @@ static void test_head_and_tail_exchange()
 
     circular_buffer_pop(buffer, &value);
     circular_buffer_pop(buffer, &value);
+	circular_buffer_push(buffer, &value, false);
 
     test_struct_t new_value = {500, 500, 'a', 'z'};
 	/**
@@ -320,7 +323,8 @@ static void test_head_and_tail_exchange()
     // Buffer full?
     ASSERT(circular_buffer_is_full(buffer), "Buffer should be full");
 
-    circular_buffer_pop(buffer, &value);
+	circular_buffer_pop(buffer, &value);
+	circular_buffer_pop(buffer, &value);
 
     // This value should be equal to the {100, 200, 'x', 'q'}
     ASSERT(
@@ -348,14 +352,44 @@ static void test_head_and_tail_exchange()
 }
 
 
+static void test_power_of_2_rounding()
+{
+    // Test that requested sizes are rounded up to power of 2
+    circular_buffer_t *buffer;
+    
+    // Request 3, should get 4
+    buffer = circular_buffer_new(3, sizeof(int), NULL);
+    ASSERT(buffer->capacity == 4, "Size 3 should round up to 4");
+    circular_buffer_destroy(buffer);
+    
+    // Request 5, should get 8
+    buffer = circular_buffer_new(5, sizeof(int), NULL);
+    ASSERT(buffer->capacity == 8, "Size 5 should round up to 8");
+    circular_buffer_destroy(buffer);
+    
+    // Request 10, should get 16
+    buffer = circular_buffer_new(10, sizeof(int), NULL);
+    ASSERT(buffer->capacity == 16, "Size 10 should round up to 16");
+    circular_buffer_destroy(buffer);
+    
+    // Request 16, should stay 16 (already power of 2)
+    buffer = circular_buffer_new(16, sizeof(int), NULL);
+    ASSERT(buffer->capacity == 16, "Size 16 should stay 16");
+    circular_buffer_destroy(buffer);
+    
+    printf("[*] test_power_of_2_rounding passed\n");
+}
+
 static void test_zval_buffer()
 {
     zval value_in;
     zval value_out;
     ZVAL_STRING(&value_in, "Hello, World!");
 
+    // Request 5, will be rounded to 8
     circular_buffer_t *buffer = zval_circular_buffer_new(5, NULL);
     ASSERT(buffer != NULL, "zval buffer creation failed");
+    ASSERT(buffer->capacity == 8, "Size 5 should round up to 8");
 
     ASSERT(zval_circular_buffer_push(buffer, &value_in, true) == SUCCESS, "zval push failed");
     ASSERT(zval_circular_buffer_pop(buffer, &value_out) == SUCCESS, "zval pop failed");
@@ -381,6 +415,9 @@ int main() {
     test_pop_empty();
     test_push_full();
     test_head_and_tail_exchange();
+    test_power_of_2_rounding();
+    test_zval_buffer();
 
+    printf("\n[✅] All tests passed! Buffer now uses power-of-2 optimization.\n");
     return 0;
 }

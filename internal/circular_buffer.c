@@ -20,6 +20,22 @@
 
 #define MINIMUM_COUNT 4
 
+/**
+ * Round up to the nearest power of 2
+ */
+static zend_always_inline size_t round_up_to_power_of_2(size_t n)
+{
+    if (n == 0) return 1;
+    if ((n & (n - 1)) == 0) return n;  // Already power of 2
+    
+    // Find the highest bit position
+    size_t power = 1;
+    while (power < n) {
+        power <<= 1;
+    }
+    return power;
+}
+
 #ifdef ASYNC_UNIT_TESTS
 #include <stdio.h>
 #endif
@@ -31,370 +47,380 @@
 #endif
 
 /**
- * Initialize a new zval circular buffer.
- *
+ * Initialize a new circular buffer.
  */
 circular_buffer_t *circular_buffer_new(size_t count, const size_t item_size, const allocator_t *allocator)
 {
-  	if(item_size <= 0) {
-		ASYNC_ERROR(E_ERROR, "Item size must be greater than zero");
-		return NULL;
-	}
+    if(item_size <= 0) {
+        ASYNC_ERROR(E_ERROR, "Item size must be greater than zero");
+        return NULL;
+    }
 
-	if(allocator == NULL) {
-		allocator = &zend_std_allocator;
-	}
+    if(allocator == NULL) {
+        allocator = &zend_std_allocator;
+    }
 
     if(count <= 0) {
-		count = MINIMUM_COUNT;
-	}
+        count = MINIMUM_COUNT;
+    }
+
+    // Ensure count is always a power of 2 for optimal performance
+    count = round_up_to_power_of_2(count);
 
     circular_buffer_t* buffer = (allocator->m_calloc)(1, sizeof(circular_buffer_t));
 
-	if (UNEXPECTED(buffer == NULL)) {
-		ASYNC_ERROR(E_ERROR, "Failed to allocate memory for circular buffer");
-		return NULL;
-	}
+    if (UNEXPECTED(buffer == NULL)) {
+        ASYNC_ERROR(E_ERROR, "Failed to allocate memory for circular buffer");
+        return NULL;
+    }
 
-	if (UNEXPECTED(circular_buffer_ctor(buffer, count, item_size, allocator) == FAILURE)) {
-		(allocator->m_free)(buffer);
-		return NULL;
-	}
+    if (UNEXPECTED(circular_buffer_ctor(buffer, count, item_size, allocator) == FAILURE)) {
+        (allocator->m_free)(buffer);
+        return NULL;
+    }
 
-	return buffer;
+    return buffer;
 }
 
 /**
- * Free the memory associated with a zval circular buffer.
+ * Free the memory associated with a circular buffer.
  */
 void circular_buffer_destroy(circular_buffer_t *buffer)
 {
-	(buffer->allocator->m_free)(buffer->start);
-	(buffer->allocator->m_free)(buffer);
+    (buffer->allocator->m_free)(buffer->data);
+    (buffer->allocator->m_free)(buffer);
 }
 
-zend_result circular_buffer_ctor(circular_buffer_t * buffer, size_t count, const size_t item_size, const allocator_t *allocator)
+zend_result circular_buffer_ctor(circular_buffer_t *buffer, size_t count, const size_t item_size, const allocator_t *allocator)
 {
-	if(allocator == NULL) {
-		allocator = &zend_std_allocator;
-	}
+    if(allocator == NULL) {
+        allocator = &zend_std_allocator;
+    }
 
-	if(count <= 0) {
-		count = MINIMUM_COUNT;
-	}
+    if(count <= 0) {
+        count = MINIMUM_COUNT;
+    }
 
-	void *start = (allocator->m_calloc)(count, item_size);
+    // Ensure count is always a power of 2 for optimal performance
+    count = round_up_to_power_of_2(count);
 
-	if (UNEXPECTED(start == NULL)) {
-		ASYNC_ERROR(E_ERROR, "Failed to allocate memory for circular buffer");
-		return FAILURE;
-	}
+    void *data = (allocator->m_calloc)(count, item_size);
 
-	buffer->allocator	= allocator;
-	buffer->item_size	= item_size;
-	buffer->min_size	= count;
-	buffer->start		= start;
-	buffer->end			= (char *) buffer->start + (count - 1) * item_size;
-	buffer->decrease_t	= 0;
-	buffer->head		= NULL;
-	buffer->tail		= NULL;
+    if (UNEXPECTED(data == NULL)) {
+        ASYNC_ERROR(E_ERROR, "Failed to allocate memory for circular buffer");
+        return FAILURE;
+    }
 
-	return SUCCESS;
+    buffer->allocator     = allocator;
+    buffer->item_size     = item_size;
+    buffer->min_size      = count;
+    buffer->capacity      = count;
+    buffer->auto_optimize = true;  // Default to enabled for backward compatibility
+    buffer->decrease_t    = count > MINIMUM_COUNT ? (count / 2 - count / 4) : 0;
+    buffer->data          = data;
+    buffer->head          = 0;
+    buffer->tail          = 0;
+
+    return SUCCESS;
 }
 
 void circular_buffer_dtor(circular_buffer_t *buffer)
 {
-	if (UNEXPECTED(buffer->start != NULL)) {
-		(buffer->allocator->m_free)(buffer->start);
-	}
-
-	buffer->start = NULL;
-	buffer->end = NULL;
+    if (buffer->data != NULL) {
+        (buffer->allocator->m_free)(buffer->data);
+        buffer->data = NULL;
+    }
 }
 
 /**
- * The method will return TRUE if the buffer actually uses half the memory allocated.
- * This means the memory can be released.
+ * Get next index in circular fashion
+ * Optimized for power-of-2 capacities using bitwise AND instead of modulo
  */
-static zend_always_inline bool circular_buffer_should_be_decrease(const circular_buffer_t *buffer)
+static zend_always_inline size_t next_index(size_t index, size_t capacity)
 {
-	if(buffer->head == NULL || buffer->tail == NULL) {
-		return 0;
-	}
+    ZEND_ASSERT((capacity & (capacity - 1)) == 0 && "Capacity must be power of 2");
+    // Since capacity is always power of 2, we can use fast bitwise AND
+    return (index + 1) & (capacity - 1);
+}
 
-	return circular_buffer_count(buffer) < buffer->decrease_t;
+/**
+ * Check if buffer should be decreased
+ */
+static zend_always_inline bool should_decrease(const circular_buffer_t *buffer)
+{
+    return buffer->auto_optimize && 
+           !circular_buffer_is_empty(buffer) && 
+           circular_buffer_count(buffer) < buffer->decrease_t;
 }
 
 /**
  * Recalculate the decrease threshold.
  */
-static zend_always_inline void circular_buffer_recalc_decrease_t(circular_buffer_t *buffer, const size_t new_count)
+static void recalc_decrease_threshold(circular_buffer_t *buffer, size_t new_count)
 {
-	if(new_count <= buffer->min_size) {
-		buffer->decrease_t = 0;
-		return;
-	}
-
-	// Recalculate decrease threshold by the formula: current_size / 2.5
-	buffer->decrease_t = (new_count / 2 - new_count / 4);
+    buffer->decrease_t = (new_count <= buffer->min_size) ? 0 : (new_count / 2 - new_count / 4);
 }
 
 /**
- * Reallocate the memory associated with a zval circular buffer.
+ * Reallocate the memory associated with a circular buffer while preserving element order.
  */
 zend_result circular_buffer_realloc(circular_buffer_t *buffer, size_t new_count)
 {
-	const size_t current_count = (((char *)buffer->end - (char *)buffer->start) / buffer->item_size) + 1;
-    bool increase = true;
+    ZEND_ASSERT(buffer != NULL && "Buffer cannot be NULL");
+    ZEND_ASSERT(buffer->data != NULL && "Buffer data cannot be NULL");
+    ZEND_ASSERT(buffer->capacity > 0 && "Buffer capacity must be positive");
+    ZEND_ASSERT(buffer->head < buffer->capacity && "Head index out of bounds");
+    ZEND_ASSERT(buffer->tail < buffer->capacity && "Tail index out of bounds");
+    ZEND_ASSERT(buffer->item_size > 0 && "Item size must be positive");
 
-  	if(new_count <= 0) {
-
-		if(circular_buffer_is_full(buffer)) {
-			new_count = current_count * 2;
-			increase = true;
-		} else if(circular_buffer_should_be_decrease(buffer)) {
-			new_count = current_count / 2;
-
-			// Ensure the buffer size is not less than the minimum size
+    if(new_count <= 0) {
+        if(circular_buffer_is_full(buffer)) {
+            // Buffer is full, need to increase size (double it, stays power of 2)
+            new_count = buffer->capacity * 2;
+        } else if(should_decrease(buffer)) {
+            // Buffer is underused, can decrease size (halve it, stays power of 2)
+            new_count = buffer->capacity / 2;
             if(new_count < buffer->min_size) {
-				new_count = buffer->min_size;
-			}
+                new_count = buffer->min_size;
+            }
+        } else {
+            return SUCCESS; // No need to reallocate
+        }
+    } else {
+        // Ensure manually specified count is also power of 2
+        new_count = round_up_to_power_of_2(new_count);
+    }
 
-			increase = false;
-		} else {
-            // No need to reallocate
-			return SUCCESS;
-		}
-	}
+    ZEND_ASSERT(new_count > 0 && "New count must be positive");
+    ZEND_ASSERT(new_count >= buffer->min_size && "New count cannot be less than minimum size");
+    ZEND_ASSERT((new_count & (new_count - 1)) == 0 && "New count must be power of 2");
 
-	// If buffer is empty we can simply free the memory and allocate a new buffer.
-	if(buffer->head == NULL || buffer->head == buffer->tail) {
-		(buffer->allocator->m_free)(buffer->start);
-		buffer->start = (buffer->allocator->m_alloc)(new_count * buffer->item_size);
+    /*
+     * Case 1: Empty buffer - simple replacement
+     * 
+     * Before: [  |  |  |  ]  head=tail=0
+     * After:  [  |  |  |  |  |  ]  head=tail=0
+     */
+    if(circular_buffer_is_empty(buffer)) {
+        void *new_data = (buffer->allocator->m_alloc)(new_count * buffer->item_size);
+        if (UNEXPECTED(new_data == NULL)) {
+            ASYNC_ERROR(E_WARNING, "Failed to reallocate circular buffer");
+            return FAILURE;
+        }
 
-		if (buffer->start == NULL) {
-			ASYNC_ERROR(E_WARNING, "Failed to reallocate circular buffer");
-			return FAILURE;
-		}
+        (buffer->allocator->m_free)(buffer->data);
+        buffer->data = new_data;
+        buffer->capacity = new_count;
+        buffer->head = 0;
+        buffer->tail = 0;
+        recalc_decrease_threshold(buffer, new_count);
+        return SUCCESS;
+    }
 
-		buffer->head = NULL;
-		buffer->tail = NULL;
-		buffer->end = (char*) buffer->start + (new_count - 1) * buffer->item_size;
-		circular_buffer_recalc_decrease_t(buffer, new_count);
-		return SUCCESS;
-	}
+    size_t count = circular_buffer_count(buffer);
 
-	//
-	// It’s a pleasant situation when the tail and the header are
-	// in direct order — the memory can simply be relocated in the normal way.
-	//
-	if (buffer->tail == NULL || buffer->head >= buffer->tail) {
-
-		if (UNEXPECTED(false == increase)) {
-
-			void *new_start = (buffer->allocator->m_alloc)(new_count * buffer->item_size);
-
-			if (new_start == NULL) {
-				ASYNC_ERROR(E_WARNING, "Failed to reallocate circular buffer");
-				return FAILURE;
-			}
-
-			// Calculate start of copy
-			const void *start_copy = (buffer->tail != NULL) ? (char *)buffer->tail + buffer->item_size : buffer->start;
-			const size_t size_copy = (char *)buffer->head - (char *)start_copy + buffer->item_size;
-			// Copy data from the old buffer to the new one
-			memcpy(new_start, start_copy, size_copy);
-			// Free the old buffer
-			(buffer->allocator->m_free)(buffer->start);
-
-			buffer->start = new_start;
-			buffer->head = (char *)buffer->start + size_copy - buffer->item_size;
-			buffer->end = (char *)new_start + (new_count - 1) * buffer->item_size;
-			buffer->tail = NULL;
-
-			circular_buffer_recalc_decrease_t(buffer, new_count);
-			return SUCCESS;
-		}
-
-		/*
-		const void *new_end = (char *)buffer->start + (new_count - 1) * buffer->item_size;
-
-		if(buffer->head > new_end || buffer->tail > new_end) {
-			ASYNC_ERROR(E_WARNING, "Cannot reallocate circular buffer, head or tail is out of bounds");
-			return FAILURE;
-		}
-		*/
-
-		const ptrdiff_t head_offset = (char *)buffer->head - (char *)buffer->start;
-		const ptrdiff_t tail_offset = buffer->tail != NULL ? (char *)buffer->tail - (char *)buffer->start : 0;
-
-		void *new_start = (buffer->allocator->m_realloc)(
-			buffer->start, new_count * buffer->item_size, current_count * buffer->item_size
-		);
-
-		if(new_start == NULL) {
-			ASYNC_ERROR(E_WARNING, "Failed to reallocate circular buffer");
-			return FAILURE;
-		}
-
-		buffer->start	= new_start;
-		buffer->head	= (char *) buffer->start + head_offset;
-		buffer->tail	= buffer->tail != NULL ? (char *) buffer->start + tail_offset : NULL;
-		buffer->end		= (char *) new_start + (new_count - 1) * buffer->item_size;
-		circular_buffer_recalc_decrease_t(buffer, new_count);
-
-		return SUCCESS;
-
-	} else {
-
-		//
-		// In this situation, the tail is located above the header,
-		// so it's not possible to simply reallocate the data.
-		//
-
-		/*  head < tail  (buffer full, one guard slot between head and tail)
-		 *
-		 *  Memory layout before realloc (wrap-around):
-		 *
-		 *  start^
-		 *  │ head-->               tail guard slot -->                               ^end
-		 *  ├─── data (head…wrap) ─┬───────────────────────┬─── data (tail…end) ──────┤
-		 *
-		 *  After copying into a larger contiguous block:
-		 *
-		 *  new_start^  tail^                           head^
-		 *  ├── data (tail…end) ── data (start…head) ──┤
-		 *                                   ↑
-		 *                        same single guard slot (empty)
-		 */
-
-		const size_t current_size = circular_buffer_count(buffer);
-		void *new_start = buffer->allocator->m_alloc(new_count * buffer->item_size);
-
-		if (UNEXPECTED(new_start == NULL)) {
-			ASYNC_ERROR(E_WARNING, "Failed to reallocate circular buffer");
-			return FAILURE;
-		}
-
-		/* bytes currently stored in buffer */
-		size_t stored_bytes = 0;
-
-		/* copy segment [tail+item_size … end] (skip guard) */
-		const char  *tail_next	 = (char *)buffer->tail + buffer->item_size;
-		const size_t first_part = ((char *)buffer->end + buffer->item_size) - (char *)tail_next;
-		memcpy(new_start, tail_next, first_part);
-
-		stored_bytes += first_part;
-
-		// copy segment [start … head] (skip guard) and head included
-		const size_t second_part = ((char *)buffer->head + buffer->item_size) - (char *)buffer->start;
-		memcpy((char *)new_start + first_part, buffer->start, second_part);
-
-		stored_bytes += second_part;
-
-		// Free the old buffer
-		buffer->allocator->m_free(buffer->start);
-
-		buffer->start = new_start;
-		buffer->end   = (char *)new_start + (new_count - 1) * buffer->item_size;
-		buffer->tail  = NULL;
-		buffer->head  = (char *)new_start + stored_bytes - buffer->item_size;
-
-		return SUCCESS;
-	}
+    /*
+     * Case 2: Linear order (head >= tail) - data is contiguous
+     * 
+     * Example:
+     * Before: [  | A| B| C|  |  ]  tail=1, head=4, count=3
+     *              ^     ^
+     *            tail  head
+     */
+    if (buffer->head >= buffer->tail) {
+        
+        if (EXPECTED(new_count > buffer->capacity)) {
+            /*
+             * Increasing size - can use realloc safely
+             * Data layout won't change, just more space at the end
+             * 
+             * After:  [  | A| B| C|  |  |  |  |  ]  tail=1, head=4
+             *              ^     ^
+             *            tail  head
+             */
+            void *new_data = (buffer->allocator->m_realloc)(buffer->data, 
+                new_count * buffer->item_size, buffer->capacity * buffer->item_size);
+            
+            if (UNEXPECTED(new_data == NULL)) {
+                ASYNC_ERROR(E_WARNING, "Failed to reallocate circular buffer");
+                return FAILURE;
+            }
+            
+            buffer->data = new_data;
+            buffer->capacity = new_count;
+            // head and tail offsets remain the same
+            
+        } else {
+            /*
+             * Decreasing size - use memcpy to copy only needed data
+             * 
+             * Copy [tail...head) to beginning of new buffer
+             * After:  [ A| B| C|  ]  tail=0, head=3
+             *           ^     ^
+             *         tail  head
+             */
+            void *new_data = (buffer->allocator->m_alloc)(new_count * buffer->item_size);
+            if (UNEXPECTED(new_data == NULL)) {
+                ASYNC_ERROR(E_WARNING, "Failed to reallocate circular buffer");
+                return FAILURE;
+            }
+            
+            // Single memcpy for contiguous data
+            memcpy(new_data, (char *)buffer->data + buffer->tail * buffer->item_size, 
+                   count * buffer->item_size);
+            
+            (buffer->allocator->m_free)(buffer->data);
+            buffer->data = new_data;
+            buffer->capacity = new_count;
+            buffer->tail = 0;
+            buffer->head = count;
+        }
+        
+    } else {
+        /*
+         * Case 3: Wrapped order (head < tail) - data wraps around
+         * 
+         * Example:
+         * Before: [ C| D|  |  | A| B]  tail=4, head=2, count=4
+         *              ^     ^
+         *            head  tail
+         * 
+         * Need to copy in two parts:
+         * Part 1: [A, B] from positions [tail...end]
+         * Part 2: [C, D] from positions [start...head)
+         * 
+         * After:  [ A| B| C| D|  |  ]  tail=0, head=4
+         *           ^           ^
+         *         tail        head
+         */
+        void *new_data = (buffer->allocator->m_alloc)(new_count * buffer->item_size);
+        if (UNEXPECTED(new_data == NULL)) {
+            ASYNC_ERROR(E_WARNING, "Failed to reallocate circular buffer");
+            return FAILURE;
+        }
+        
+        // First part: copy [tail...end] to beginning of new buffer
+        size_t first_part_count = buffer->capacity - buffer->tail;
+        memcpy(new_data, 
+               (char *)buffer->data + buffer->tail * buffer->item_size, 
+               first_part_count * buffer->item_size);
+        
+        // Second part: copy [start...head) after first part
+        memcpy((char *)new_data + first_part_count * buffer->item_size, 
+               buffer->data, 
+               buffer->head * buffer->item_size);
+        
+        (buffer->allocator->m_free)(buffer->data);
+        buffer->data = new_data;
+        buffer->capacity = new_count;
+        buffer->tail = 0;
+        buffer->head = count;
+    }
+    
+    // Final consistency checks
+    ZEND_ASSERT(buffer->data != NULL && "Buffer data should not be NULL after realloc");
+    ZEND_ASSERT(buffer->capacity == new_count && "Capacity should match new_count");
+    ZEND_ASSERT(buffer->head < buffer->capacity && "Head should be within new capacity");
+    ZEND_ASSERT(buffer->tail < buffer->capacity && "Tail should be within new capacity");
+    ZEND_ASSERT(circular_buffer_count(buffer) == count && "Element count should be preserved");
+    
+    recalc_decrease_threshold(buffer, new_count);
+    return SUCCESS;
 }
-
-/**
- * Move the header to the next position.
- */
-static zend_always_inline zend_result circular_buffer_header_next(circular_buffer_t *buffer)
-{
-	if(UNEXPECTED(buffer->head == NULL)) {
-		buffer->head = buffer->start;
-	} else if(UNEXPECTED(buffer->head >= buffer->end)) {
-
-		// The header can't be moved to the same position as the tail.
-		if(buffer->tail != NULL && buffer->tail != buffer->start) {
-			buffer->head = buffer->start;
-		} else {
-			return FAILURE;
-		}
-
-	} else if(EXPECTED(((char *) buffer->head - (char *) buffer->tail) >= 0
-		  || (((char *)buffer->head + buffer->item_size) < (char *) buffer->tail))) {
-		buffer->head = (char *)buffer->head + buffer->item_size;
-	} else {
-		return FAILURE;
-	}
-
-	return SUCCESS;
-}
-
-/**
- * Move the tail to the next position.
- */
-static zend_always_inline zend_result circular_buffer_tail_next(circular_buffer_t *buffer)
-{
-	if(UNEXPECTED(buffer->tail == buffer->head)) {
-		return FAILURE;
-	}
-
-	if(buffer->tail == NULL || buffer->tail >= buffer->end) {
-		buffer->tail = buffer->start;
-	} else {
-		buffer->tail = (char *) buffer->tail + buffer->item_size;
-	}
-
-	return SUCCESS;
-}
-
 
 /**
  * Push a value into the circular buffer.
- *
- * The push operation not only implicitly changes the size of the buffer but also reduces it.
- * This allows structural modification operations to be concentrated solely on the writing side of the buffer.
  */
 zend_result circular_buffer_push(circular_buffer_t *buffer, const void *value, const bool should_resize)
 {
-	const bool should_reallocate = circular_buffer_is_full(buffer);
+    ZEND_ASSERT(buffer != NULL && "Buffer cannot be NULL");
+    ZEND_ASSERT(buffer->data != NULL && "Buffer data cannot be NULL");
+    ZEND_ASSERT(value != NULL && "Value cannot be NULL");
+    ZEND_ASSERT(buffer->head < buffer->capacity && "Head index out of bounds");
+    ZEND_ASSERT(buffer->tail < buffer->capacity && "Tail index out of bounds");
+    ZEND_ASSERT(buffer->item_size > 0 && "Item size must be positive");
 
-  	if(should_resize && should_reallocate && circular_buffer_realloc(buffer, 0) == FAILURE) {
-		return FAILURE;
-	} else if (!should_resize && should_reallocate) {
-		return FAILURE;
-	}
+    // First check if resize is needed
+    if (should_resize) {
+        // Check resize conditions once
+        bool need_increase = circular_buffer_is_full(buffer);
+        bool need_decrease = !need_increase && should_decrease(buffer);
+        
+        if (need_increase || need_decrease) {
+            if (circular_buffer_realloc(buffer, 0) == FAILURE) {
+                return FAILURE;
+            }
+        }
+    } else if (circular_buffer_is_full(buffer)) {
+        // If resize is disabled but buffer is full - error
+        ASYNC_ERROR(E_WARNING, "Cannot push into full circular buffer");
+        return FAILURE;
+    }
 
-	if(UNEXPECTED(should_resize
-		&& !should_reallocate
-		&& circular_buffer_should_be_decrease(buffer)
-		&& circular_buffer_realloc(buffer, 0) == FAILURE)) {
-		return FAILURE;
-	}
+    /*
+     * Classic circular buffer push operation:
+     * 1. Store data at head position
+     * 2. Advance head to next position
+     * 
+     * Visual example:
+     * Before: [ A| B|  |  ]  head=2, tail=0
+     *              ^
+     *            head
+     * 
+     * After:  [ A| B| C|  ]  head=3, tail=0
+     *                 ^
+     *               head
+     */
+    ZEND_ASSERT(!circular_buffer_is_full(buffer) && "Buffer should not be full at this point");
+    
+    memcpy((char *)buffer->data + buffer->head * buffer->item_size, value, buffer->item_size);
+    buffer->head = next_index(buffer->head, buffer->capacity);
 
-	if(circular_buffer_header_next(buffer) == FAILURE) {
-		ASYNC_ERROR(E_WARNING, "Cannot push into full circular buffer");
-		return FAILURE;
-	}
-
-	memcpy(buffer->head, value, buffer->item_size);
-
-	return SUCCESS;
+    ZEND_ASSERT(buffer->head < buffer->capacity && "Head index should be valid after increment");
+    
+    return SUCCESS;
 }
 
 /**
- * Pop a zval from the circular buffer.
+ * Pop a value from the circular buffer.
  */
 zend_result circular_buffer_pop(circular_buffer_t *buffer, void *value)
 {
-	if(circular_buffer_tail_next(buffer) == FAILURE) {
-		ASYNC_ERROR(E_WARNING, "Cannot pop from empty circular buffer");
-		return FAILURE;
-	}
+    ZEND_ASSERT(buffer != NULL && "Buffer cannot be NULL");
+    ZEND_ASSERT(buffer->data != NULL && "Buffer data cannot be NULL");
+    ZEND_ASSERT(value != NULL && "Value cannot be NULL");
+    ZEND_ASSERT(buffer->head < buffer->capacity && "Head index out of bounds");
+    ZEND_ASSERT(buffer->tail < buffer->capacity && "Tail index out of bounds");
+    ZEND_ASSERT(buffer->item_size > 0 && "Item size must be positive");
 
-	memcpy(value, buffer->tail, buffer->item_size);
+    if(circular_buffer_is_empty(buffer)) {
+        ASYNC_ERROR(E_WARNING, "Cannot pop from empty circular buffer");
+        return FAILURE;
+    }
 
-	return SUCCESS;
+    /*
+     * Classic circular buffer pop operation:
+     * 1. Read data from tail position
+     * 2. Advance tail to next position
+     * 
+     * Visual example:
+     * Before: [ A| B| C|  ]  head=3, tail=0
+     *           ^
+     *         tail
+     * 
+     * After:  [ A| B| C|  ]  head=3, tail=1
+     *              ^
+     *            tail
+     * (A is returned, but memory isn't cleared for performance)
+     */
+    ZEND_ASSERT(!circular_buffer_is_empty(buffer) && "Buffer should not be empty at this point");
+    
+    memcpy(value, (char *)buffer->data + buffer->tail * buffer->item_size, buffer->item_size);
+    buffer->tail = next_index(buffer->tail, buffer->capacity);
+
+    ZEND_ASSERT(buffer->tail < buffer->capacity && "Tail index should be valid after increment");
+    
+    return SUCCESS;
 }
 
 /**
@@ -402,12 +428,13 @@ zend_result circular_buffer_pop(circular_buffer_t *buffer, void *value)
  */
 bool circular_buffer_is_empty(const circular_buffer_t *buffer)
 {
-  	return buffer->head == buffer->tail;
+    // Empty when head == tail
+    return buffer->head == buffer->tail;
 }
 
 bool circular_buffer_is_not_empty(const circular_buffer_t *buffer)
 {
-	return buffer->head != buffer->tail;
+    return buffer->head != buffer->tail;
 }
 
 /**
@@ -415,56 +442,42 @@ bool circular_buffer_is_not_empty(const circular_buffer_t *buffer)
  */
 bool circular_buffer_is_full(const circular_buffer_t *buffer)
 {
-	if (buffer->head == NULL) {
-		return false;
-	}
-
-	/**
-	 * If the head is to the left of the tail and the difference between them is one element,
-	 * the circular buffer is considered full, even though the tail points to a read element
-	 * and theoretically one more element could be written.
-	 *
-	 * However, such an operation would put the buffer in an undefined state, which would be equivalent to being empty.
-	 * In other words, the rule is as follows:
-	 * the tail can "catch up" to the head, but the head is not allowed to catch up to the tail.
-	 *
-	 * The minimum difference between them must always be one element if the head is to the left.
-	 */
-	const ptrdiff_t diff = (char *)buffer->head - (char *)buffer->tail;
-
-	if (diff < 0) {
-		return (size_t)(-diff) == buffer->item_size;
-	} else {
-		return buffer->head == buffer->end && (buffer->tail == NULL || buffer->tail == buffer->start);
-	}
+    // Full when advancing head would make it equal to tail
+    // (we keep one slot empty to distinguish full from empty)
+    return next_index(buffer->head, buffer->capacity) == buffer->tail;
 }
 
 /**
- * The method will return the number of existing elements currently in the ring buffer.
- * Do not confuse this with the buffer’s capacity!
+ * Get the number of elements currently in the buffer.
  */
 size_t circular_buffer_count(const circular_buffer_t *buffer)
 {
-	if (buffer->head == NULL) {
-		return 0;
-	}
+    ZEND_ASSERT(buffer != NULL && "Buffer cannot be NULL");
+    ZEND_ASSERT(buffer->head < buffer->capacity && "Head index out of bounds");
+    ZEND_ASSERT(buffer->tail < buffer->capacity && "Tail index out of bounds");
 
-	const void *tail = (buffer->tail != NULL) ? buffer->tail : buffer->start;
-
-	ptrdiff_t dist = (char *)buffer->head - (char *)tail;
-
-	if (dist < 0) {
-		dist = -dist;
-		// total size - distance
-		return (size_t)((char *)buffer->end - (char *)buffer->start - dist) / buffer->item_size + 1;
-	}
-
-	return (size_t)(dist / (ptrdiff_t)buffer->item_size) + ((buffer->tail != NULL) ? 0 : 1);
+    /*
+     * Two cases to handle:
+     * Case 1: head >= tail (normal order)
+     *   count = head - tail
+     * 
+     * Case 2: head < tail (wrapped around)
+     *   count = capacity - tail + head
+     */
+    size_t count;
+    if (buffer->head >= buffer->tail) {
+        count = buffer->head - buffer->tail;
+    } else {
+        count = buffer->capacity - buffer->tail + buffer->head;
+    }
+    
+    ZEND_ASSERT(count <= buffer->capacity && "Count cannot exceed capacity");
+    return count;
 }
 
 size_t circular_buffer_capacity(const circular_buffer_t *buffer)
 {
-	return ((char *)buffer->end - (char *)buffer->start + buffer->item_size) / buffer->item_size;
+    return buffer->capacity - 1; // One slot is reserved to distinguish full from empty
 }
 
 //
@@ -472,7 +485,7 @@ size_t circular_buffer_capacity(const circular_buffer_t *buffer)
 //
 circular_buffer_t *zval_circular_buffer_new(const size_t count, const allocator_t *allocator)
 {
-	return circular_buffer_new(count, sizeof(zval), allocator);
+    return circular_buffer_new(count, sizeof(zval), allocator);
 }
 
 /**
@@ -481,8 +494,8 @@ circular_buffer_t *zval_circular_buffer_new(const size_t count, const allocator_
  */
 zend_result zval_circular_buffer_push(circular_buffer_t *buffer, zval *value, const bool should_resize)
 {
-	Z_TRY_ADDREF_P(value);
-	return circular_buffer_push(buffer, value, should_resize);
+    Z_TRY_ADDREF_P(value);
+    return circular_buffer_push(buffer, value, should_resize);
 }
 
 /**
@@ -491,6 +504,6 @@ zend_result zval_circular_buffer_push(circular_buffer_t *buffer, zval *value, co
  */
 zend_result zval_circular_buffer_pop(circular_buffer_t *buffer, zval *value)
 {
-  	ZVAL_UNDEF(value);
-	return circular_buffer_pop(buffer, value);
+    ZVAL_UNDEF(value);
+    return circular_buffer_pop(buffer, value);
 }
