@@ -121,6 +121,146 @@ static void test_reallocation()
     printf("[*] test_reallocation passed\n");
 }
 
+static void test_wrap_around_order(void)
+{
+	circular_buffer_t *buffer = circular_buffer_new(4, sizeof(int), NULL); /* 4 slots → 3 usable */
+	int in, out;
+
+	/* push 1 2 3  */
+	in = 1; circular_buffer_push(buffer, &in, false);
+	in = 2; circular_buffer_push(buffer, &in, false);
+	in = 3; circular_buffer_push(buffer, &in, false);
+
+	/* pop two → expect 1, 2 */
+	circular_buffer_pop(buffer, &out);
+	ASSERT(out == 1, "Expected 1 after first pop");
+	circular_buffer_pop(buffer, &out);
+	ASSERT(out == 2, "Expected 2 after second pop");
+
+	/* push 4 5 … here head will wrap */
+	in = 4; circular_buffer_push(buffer, &in, false);
+	in = 5; circular_buffer_push(buffer, &in, false);
+
+	/* pop remaining elements: expect 3 4 5 */
+	int expect_seq[] = {3, 4, 5};
+	for (size_t i = 0; i < 3; i++) {
+		circular_buffer_pop(buffer, &out);
+		ASSERT(out == expect_seq[i], "Sequence mismatch after wrap‑around");
+	}
+
+	ASSERT(circular_buffer_is_empty(buffer), "Buffer should be empty at end");
+	circular_buffer_destroy(buffer);
+	printf("[*] test_wrap_around_order passed\n");
+}
+
+static void test_wrap_realloc(void)
+{
+	/* initial capacity 3 */
+	circular_buffer_t *buffer = circular_buffer_new(3, sizeof(int), NULL);
+	int in, out;
+
+	/* fill 1,2,3 */
+	in = 1; circular_buffer_push(buffer, &in, true);
+	in = 2; circular_buffer_push(buffer, &in, true);
+	in = 3; circular_buffer_push(buffer, &in, true);
+
+	/* pop one (removes 1) */
+	circular_buffer_pop(buffer, &out);
+	ASSERT(out == 1, "Expected 1 after first pop (pre‑resize)");
+	circular_buffer_pop(buffer, &out);
+	ASSERT(out == 2, "Expected 2 after second pop (pre‑resize)");
+
+	const size_t current_count = circular_buffer_count(buffer);
+	ASSERT(current_count == 1, "Buffer should have 1 item before realloc");
+
+	/* push 4 (fits) */
+	in = 4; circular_buffer_push(buffer, &in, true);
+	/* push 5 (triggers realloc while head<tail) */
+	in = 5; circular_buffer_push(buffer, &in, true); /* realloc here */
+
+	/* push 6 to ensure new space used */
+	in = 6; circular_buffer_push(buffer, &in, true);
+
+	/* Pop remaining 4 elements: expect 2,3,4,5,6 */
+	int expect_seq[] = {3,4,5,6};
+	for (size_t i = 0; i < 4; i++) {
+		circular_buffer_pop(buffer, &out);
+		ASSERT(out == expect_seq[i], "Order mismatch after realloc wrap‑around");
+	}
+
+	ASSERT(circular_buffer_is_empty(buffer), "Buffer should be empty after final pops");
+	circular_buffer_destroy(buffer);
+	printf("[*] test_wrap_realloc passed\n");
+}
+
+static void test_wrap_with_decrease_realloc(void)
+{
+	circular_buffer_t *buffer = circular_buffer_new(2, sizeof(int), NULL);
+	int in, out;
+
+	in = 1; circular_buffer_push(buffer, &in, true);
+	in = 2; circular_buffer_push(buffer, &in, true);
+	in = 3; circular_buffer_push(buffer, &in, true);
+	in = 4; circular_buffer_push(buffer, &in, true);
+	in = 5; circular_buffer_push(buffer, &in, true);
+
+	for (size_t i = 1; i <= 5; i++) {
+		circular_buffer_pop(buffer, &out);
+		ASSERT(out == i, "Order mismatch");
+	}
+
+	in = 1; circular_buffer_push(buffer, &in, true);
+	in = 2; circular_buffer_push(buffer, &in, true);
+	in = 3; circular_buffer_push(buffer, &in, true);
+	in = 4; circular_buffer_push(buffer, &in, true);
+	in = 5; circular_buffer_push(buffer, &in, true);
+
+	for (size_t i = 1; i <= 5; i++) {
+		circular_buffer_pop(buffer, &out);
+		ASSERT(out == i, "Order mismatch");
+	}
+
+	ASSERT(circular_buffer_is_empty(buffer), "Buffer should be empty after final pops");
+	circular_buffer_destroy(buffer);
+	printf("[*] test_wrap_realloc_last_item passed\n");
+}
+
+static void test_wrap_with_decrease2_realloc(void)
+{
+	circular_buffer_t *buffer = circular_buffer_new(2, sizeof(int), NULL);
+	int in, out;
+
+	for (size_t i = 1; i <= 16; i++) {
+		in = (int)i;
+		circular_buffer_push(buffer, &in, true);
+	}
+
+	for (size_t i = 1; i <= 14; i++) {
+		circular_buffer_pop(buffer, &out);
+		ASSERT(out == i, "Order mismatch");
+	}
+
+	in = 17; circular_buffer_push(buffer, &in, true);
+
+	for (size_t i = 15; i <= 15; i++) {
+		circular_buffer_pop(buffer, &out);
+		ASSERT(out == i, "Order mismatch");
+	}
+
+	//buffer->decrease_t = 20; // Set a high decrease threshold to force reallocation
+	in = 18; circular_buffer_push(buffer, &in, true);
+
+	for (size_t i = 16; i <= 18; i++) {
+		circular_buffer_pop(buffer, &out);
+		ASSERT(out == i, "Order mismatch");
+	}
+
+	ASSERT(circular_buffer_is_empty(buffer), "Buffer should be empty after final pops");
+	circular_buffer_destroy(buffer);
+	printf("[*] test_wrap_with_decrease2_realloc passed\n");
+}
+
+
 static void test_pop_empty()
 {
     circular_buffer_t *buffer = circular_buffer_new(2, sizeof(test_struct_t), NULL);
@@ -234,6 +374,10 @@ int main() {
     test_push_and_pop();
     test_is_empty_and_is_full();
     test_reallocation();
+	test_wrap_around_order();
+	test_wrap_realloc();
+	test_wrap_with_decrease_realloc();
+	test_wrap_with_decrease2_realloc();
     test_pop_empty();
     test_push_full();
     test_head_and_tail_exchange();

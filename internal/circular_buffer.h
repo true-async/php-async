@@ -48,7 +48,7 @@ struct _circular_buffer_s {
 	 */
 	void *head;
 	/**
-	 * The point to the next element to be read.
+	 * The point to the prev element to be read.
 	 * Equal NULL means the buffer is empty.
 	 */
 	void *tail;

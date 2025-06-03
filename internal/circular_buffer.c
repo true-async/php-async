@@ -122,13 +122,7 @@ static zend_always_inline bool circular_buffer_should_be_decrease(const circular
 		return 0;
 	}
 
-	ptrdiff_t capacity = (char *)buffer->head - (char *)buffer->tail;
-
-	if (capacity < 0) {
-		capacity = -capacity;
-	}
-
-	return (size_t)(capacity) < buffer->decrease_t;
+	return circular_buffer_count(buffer) < buffer->decrease_t;
 }
 
 /**
@@ -142,7 +136,7 @@ static zend_always_inline void circular_buffer_recalc_decrease_t(circular_buffer
 	}
 
 	// Recalculate decrease threshold by the formula: current_size / 2.5
-	buffer->decrease_t = (new_count / 2 - new_count / 4) * buffer->item_size;
+	buffer->decrease_t = (new_count / 2 - new_count / 4);
 }
 
 /**
@@ -173,36 +167,7 @@ zend_result circular_buffer_realloc(circular_buffer_t *buffer, size_t new_count)
 		}
 	}
 
-    if(increase) {
-    	const void *new_end = (char *)buffer->start + (new_count - 1) * buffer->item_size;
-
-    	if(buffer->head > new_end || buffer->tail > new_end) {
-    		ASYNC_ERROR(E_WARNING, "Cannot reallocate circular buffer, head or tail is out of bounds");
-    		return FAILURE;
-    	}
-
-    	const ptrdiff_t head_offset = (char *)buffer->head - (char *)buffer->start;
-    	const ptrdiff_t tail_offset = buffer->tail != NULL ? (char *)buffer->tail - (char *)buffer->start : 0;
-
-    	void *new_start = (buffer->allocator->m_realloc)(
-    		buffer->start, new_count * buffer->item_size, current_count * buffer->item_size
-		);
-
-		if(new_start == NULL) {
-			ASYNC_ERROR(E_WARNING, "Failed to reallocate circular buffer");
-			return FAILURE;
-		}
-
-    	buffer->start	= new_start;
-        buffer->head	= (char *) buffer->start + head_offset;
-        buffer->tail	= buffer->tail != NULL ? (char *) buffer->start + tail_offset : NULL;
-    	buffer->end		= (char *) new_start + (new_count - 1) * buffer->item_size;
-    	circular_buffer_recalc_decrease_t(buffer, new_count);
-
-        return SUCCESS;
-	}
-
-    // If buffer is empty we can simply free the memory and allocate a new buffer.
+	// If buffer is empty we can simply free the memory and allocate a new buffer.
 	if(buffer->head == NULL || buffer->head == buffer->tail) {
 		(buffer->allocator->m_free)(buffer->start);
 		buffer->start = (buffer->allocator->m_alloc)(new_count * buffer->item_size);
@@ -212,48 +177,131 @@ zend_result circular_buffer_realloc(circular_buffer_t *buffer, size_t new_count)
 			return FAILURE;
 		}
 
-        buffer->head = NULL;
-        buffer->tail = NULL;
+		buffer->head = NULL;
+		buffer->tail = NULL;
 		buffer->end = (char*) buffer->start + (new_count - 1) * buffer->item_size;
 		circular_buffer_recalc_decrease_t(buffer, new_count);
 		return SUCCESS;
 	}
 
 	//
-	// Shrinking the size of a circular buffer is a more complex operation that involves three steps:
-	// * A new buffer of the required size is allocated.
-	// * Data is copied starting from the head/tail.
-	// * The old buffer is destroyed.
-    //
+	// It’s a pleasant situation when the tail and the header are
+	// in direct order — the memory can simply be relocated in the normal way.
+	//
+	if (buffer->tail == NULL || buffer->head >= buffer->tail) {
 
-    const void *tail	= buffer->tail != NULL ? buffer->tail : buffer->start;
-    const void *start	= buffer->head > tail ? buffer->tail : buffer->head;
-    const void *end		= buffer->head > tail ? buffer->head : buffer->tail;
-    const size_t size	= (char *)end - (char *)start;
+		if (UNEXPECTED(false == increase)) {
 
-    // allocate a new buffer
-    void *new_start		= (buffer->allocator->m_alloc)(new_count * buffer->item_size);
-    void *new_end		= (char *) new_start + (new_count - 1) * buffer->item_size;
+			void *new_start = (buffer->allocator->m_alloc)(new_count * buffer->item_size);
 
-    // copy data
-    memcpy(new_start, start, size);
+			if (new_start == NULL) {
+				ASYNC_ERROR(E_WARNING, "Failed to reallocate circular buffer");
+				return FAILURE;
+			}
 
-	const ptrdiff_t head_offset = (char *)buffer->head - (char *)buffer->start;
-	const ptrdiff_t tail_offset = buffer->tail != NULL ? (char *)buffer->tail - (char *)buffer->start : 0;
+			// Calculate start of copy
+			const void *start_copy = (buffer->tail != NULL) ? (char *)buffer->tail + buffer->item_size : buffer->start;
+			const size_t size_copy = (char *)buffer->head - (char *)start_copy + buffer->item_size;
+			// Copy data from the old buffer to the new one
+			memcpy(new_start, start_copy, size_copy);
+			// Free the old buffer
+			(buffer->allocator->m_free)(buffer->start);
 
-    // Free the old buffer
-    buffer->allocator->m_free(buffer->start);
+			buffer->start = new_start;
+			buffer->head = (char *)buffer->start + size_copy - buffer->item_size;
+			buffer->end = (char *)new_start + (new_count - 1) * buffer->item_size;
+			buffer->tail = NULL;
 
-    buffer->start		= new_start;
-	buffer->head		= (char *) buffer->start + head_offset;
-	buffer->end			= new_end;
-	circular_buffer_recalc_decrease_t(buffer, new_count);
+			circular_buffer_recalc_decrease_t(buffer, new_count);
+			return SUCCESS;
+		}
 
-    if(buffer->tail != NULL) {
-		buffer->tail	= (char *)buffer->start + tail_offset;
+		/*
+		const void *new_end = (char *)buffer->start + (new_count - 1) * buffer->item_size;
+
+		if(buffer->head > new_end || buffer->tail > new_end) {
+			ASYNC_ERROR(E_WARNING, "Cannot reallocate circular buffer, head or tail is out of bounds");
+			return FAILURE;
+		}
+		*/
+
+		const ptrdiff_t head_offset = (char *)buffer->head - (char *)buffer->start;
+		const ptrdiff_t tail_offset = buffer->tail != NULL ? (char *)buffer->tail - (char *)buffer->start : 0;
+
+		void *new_start = (buffer->allocator->m_realloc)(
+			buffer->start, new_count * buffer->item_size, current_count * buffer->item_size
+		);
+
+		if(new_start == NULL) {
+			ASYNC_ERROR(E_WARNING, "Failed to reallocate circular buffer");
+			return FAILURE;
+		}
+
+		buffer->start	= new_start;
+		buffer->head	= (char *) buffer->start + head_offset;
+		buffer->tail	= buffer->tail != NULL ? (char *) buffer->start + tail_offset : NULL;
+		buffer->end		= (char *) new_start + (new_count - 1) * buffer->item_size;
+		circular_buffer_recalc_decrease_t(buffer, new_count);
+
+		return SUCCESS;
+
+	} else {
+
+		//
+		// In this situation, the tail is located above the header,
+		// so it's not possible to simply reallocate the data.
+		//
+
+		/*  head < tail  (buffer full, one guard slot between head and tail)
+		 *
+		 *  Memory layout before realloc (wrap-around):
+		 *
+		 *  start^
+		 *  │ head-->               tail guard slot -->                               ^end
+		 *  ├─── data (head…wrap) ─┬───────────────────────┬─── data (tail…end) ──────┤
+		 *
+		 *  After copying into a larger contiguous block:
+		 *
+		 *  new_start^  tail^                           head^
+		 *  ├── data (tail…end) ── data (start…head) ──┤
+		 *                                   ↑
+		 *                        same single guard slot (empty)
+		 */
+
+		const size_t current_size = circular_buffer_count(buffer);
+		void *new_start = buffer->allocator->m_alloc(new_count * buffer->item_size);
+
+		if (UNEXPECTED(new_start == NULL)) {
+			ASYNC_ERROR(E_WARNING, "Failed to reallocate circular buffer");
+			return FAILURE;
+		}
+
+		/* bytes currently stored in buffer */
+		size_t stored_bytes = 0;
+
+		/* copy segment [tail+item_size … end] (skip guard) */
+		const char  *tail_next	 = (char *)buffer->tail + buffer->item_size;
+		const size_t first_part = ((char *)buffer->end + buffer->item_size) - (char *)tail_next;
+		memcpy(new_start, tail_next, first_part);
+
+		stored_bytes += first_part;
+
+		// copy segment [start … head] (skip guard) and head included
+		const size_t second_part = ((char *)buffer->head + buffer->item_size) - (char *)buffer->start;
+		memcpy((char *)new_start + first_part, buffer->start, second_part);
+
+		stored_bytes += second_part;
+
+		// Free the old buffer
+		buffer->allocator->m_free(buffer->start);
+
+		buffer->start = new_start;
+		buffer->end   = (char *)new_start + (new_count - 1) * buffer->item_size;
+		buffer->tail  = NULL;
+		buffer->head  = (char *)new_start + stored_bytes - buffer->item_size;
+
+		return SUCCESS;
 	}
-
-	return SUCCESS;
 }
 
 /**
@@ -291,9 +339,7 @@ static zend_always_inline zend_result circular_buffer_tail_next(circular_buffer_
 		return FAILURE;
 	}
 
-	if(buffer->tail == NULL) {
-		buffer->tail = buffer->start;
-	} else if(buffer->tail >= buffer->end) {
+	if(buffer->tail == NULL || buffer->tail >= buffer->end) {
 		buffer->tail = buffer->start;
 	} else {
 		buffer->tail = (char *) buffer->tail + buffer->item_size;
@@ -319,19 +365,19 @@ zend_result circular_buffer_push(circular_buffer_t *buffer, const void *value, c
 		return FAILURE;
 	}
 
+	if(UNEXPECTED(should_resize
+		&& !should_reallocate
+		&& circular_buffer_should_be_decrease(buffer)
+		&& circular_buffer_realloc(buffer, 0) == FAILURE)) {
+		return FAILURE;
+	}
+
 	if(circular_buffer_header_next(buffer) == FAILURE) {
 		ASYNC_ERROR(E_WARNING, "Cannot push into full circular buffer");
 		return FAILURE;
 	}
 
 	memcpy(buffer->head, value, buffer->item_size);
-
-	if(should_resize
-		&& !should_reallocate
-		&& circular_buffer_should_be_decrease(buffer)
-		&& circular_buffer_realloc(buffer, 0) == FAILURE) {
-		return SUCCESS;
-	}
 
 	return SUCCESS;
 }
@@ -409,6 +455,8 @@ size_t circular_buffer_count(const circular_buffer_t *buffer)
 
 	if (dist < 0) {
 		dist = -dist;
+		// total size - distance
+		return (size_t)((char *)buffer->end - (char *)buffer->start - dist) / buffer->item_size + 1;
 	}
 
 	return (size_t)(dist / (ptrdiff_t)buffer->item_size) + ((buffer->tail != NULL) ? 0 : 1);
