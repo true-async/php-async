@@ -42,8 +42,6 @@ $worker2 = spawn(function() use ($sock2a, $sock2b) {
 // Third coroutine just working
 $worker3 = spawn(function() {
     echo "Worker3: doing other work\n";
-    echo "Worker3: still working\n";
-    echo "Worker3: finished\n";
 });
 
 awaitAll([$worker1, $worker2, $worker3]);
@@ -54,11 +52,9 @@ echo "End\n";
 Start
 Worker1: writing to socket1
 Worker1: reading from socket1
-Worker1: got 'message1'
 Worker2: writing to socket2
 Worker2: reading from socket2
-Worker2: got 'message2'
 Worker3: doing other work
-Worker3: still working
-Worker3: finished
+Worker1: got 'message1'
+Worker2: got 'message2'
 End

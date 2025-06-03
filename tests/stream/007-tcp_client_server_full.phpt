@@ -6,6 +6,7 @@ Full TCP client-server test with coroutine switching
 use function Async\spawn;
 use function Async\awaitAll;
 use function Async\delay;
+use function Async\suspend;
 
 echo "Start\n";
 
@@ -14,6 +15,7 @@ $server_port = null;
 // Server coroutine
 $server = spawn(function() use (&$server_port) {
     echo "Server: starting\n";
+
     $socket = stream_socket_server("tcp://127.0.0.1:0", $errno, $errstr);
     if (!$socket) {
         echo "Server: failed to start - $errstr\n";
@@ -29,10 +31,9 @@ $server = spawn(function() use (&$server_port) {
     echo "Server: client connected\n";
     
     $data = fread($client, 1024);
-    echo "Server: received '$data'\n";
+    echo "Server: received '$data' and sending response...\n";
     
     fwrite($client, "Server response: $data");
-    echo "Server: sent response\n";
     
     fclose($client);
     fclose($socket);
@@ -46,16 +47,17 @@ $client = spawn(function() use (&$server_port) {
         delay(1);
     }
     
-    echo "Client: connecting to port $server_port\n";
+    echo "Client: connecting to port $server_port...\n";
+
     $socket = stream_socket_client("tcp://127.0.0.1:$server_port", $errno, $errstr, 1);
+
     if (!$socket) {
         echo "Client: failed to connect - $errstr\n";
         return;
     }
     
-    echo "Client: connected\n";
+    echo "Client: connected and send message...\n";
     fwrite($socket, "Hello from client");
-    echo "Client: sent message\n";
     
     $response = fread($socket, 1024);
     echo "Client: received '$response'\n";
@@ -66,10 +68,9 @@ $client = spawn(function() use (&$server_port) {
 
 // Worker to show parallel execution
 $worker = spawn(function() {
-    echo "Worker: working while TCP operations happen\n";
     for ($i = 1; $i <= 3; $i++) {
         echo "Worker: step $i\n";
-        delay(1);
+        suspend();
     }
     echo "Worker: finished\n";
     return "worker_done";
@@ -80,22 +81,19 @@ echo "Results: " . implode(", ", $results) . "\n";
 echo "End\n";
 
 ?>
---EXPECT--
+--EXPECTF--
 Start
 Server: starting
 Server: listening on port %d
 Server: accepting connections
-Worker: working while TCP operations happen
+Client: connecting to port %d...
 Worker: step 1
-Client: connecting to port %d
-Client: connected
-Client: sent message
 Server: client connected
-Server: received 'Hello from client'
-Server: sent response
+Client: connected and send message...
 Worker: step 2
-Client: received 'Server response: Hello from client'
+Server: received 'Hello from client' and sending response...
 Worker: step 3
+Client: received 'Server response: Hello from client'
 Worker: finished
 Results: server_done, client_done, worker_done
 End
