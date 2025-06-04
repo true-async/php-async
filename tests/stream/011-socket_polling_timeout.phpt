@@ -20,13 +20,16 @@ $coroutine = spawn(function() {
     list($sock1, $sock2) = $sockets;
     
     // Set read timeout
-    stream_set_timeout($sock2, 1, 0); // 1 second timeout
+    stream_set_timeout($sock2, 0, 2000); // 2 ms timeout
     
     echo "Attempting to read from empty socket (should timeout)\n";
     $start_time = microtime(true);
     
     // This should trigger the async polling mechanism
     $data = fread($sock2, 1024);
+    $meta = stream_get_meta_data($sock2);
+
+    var_dump($meta['timed_out']);
     
     $end_time = microtime(true);
     $elapsed = $end_time - $start_time;
@@ -50,12 +53,13 @@ $result = await($coroutine);
 echo "Result: $result\n";
 
 ?>
---EXPECT--
+--EXPECTF--
 Testing socket timeout behavior
 Creating socket pair
 Attempting to read from empty socket (should timeout)
-Read completed, data: ''
-Elapsed time: 0 seconds
+bool(true)
+Read completed, data: 'false'
+Elapsed time: %s seconds
 Writing data and reading it back
 Successfully read: 'test data'
 Result: timeout test completed

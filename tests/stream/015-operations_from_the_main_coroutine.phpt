@@ -1,5 +1,5 @@
 --TEST--
-Poll2 async: Mixed synchronous and asynchronous operations
+Poll2 async: Asynchronous operations from the main coroutine
 --FILE--
 <?php
 
@@ -10,7 +10,7 @@ echo "Testing mixed sync/async operations\n";
 
 // First do some synchronous socket operations
 echo "Synchronous operations:\n";
-$sync_sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+$sync_sockets = stream_socket_pair(STREAM_PF_INET, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
 list($sync1, $sync2) = $sync_sockets;
 
 fwrite($sync1, "sync message");

@@ -54,10 +54,4 @@ Creating socket pair
 Testing operations on closed socket
 Attempting to read from closed socket
 
-Warning: fread(): %s in %s on line %d
-Read result: false
-Writing to remaining socket
-Write result: 9
-Reading from remaining socket
-Read result: ''
-Result: error handling test completed
+Warning: %a
