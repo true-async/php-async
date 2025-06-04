@@ -393,7 +393,7 @@ static void libuv_timer_dispose(zend_async_event_t *event)
 /* }}} */
 
 /* {{{ libuv_new_timer_event */
-zend_async_timer_event_t* libuv_new_timer_event(const zend_ulong timeout, const bool is_periodic, size_t extra_size)
+zend_async_timer_event_t* libuv_new_timer_event(const zend_ulong timeout, const zend_ulong nanoseconds, const bool is_periodic, size_t extra_size)
 {
 	START_REACTOR_OR_RETURN_NULL;
 
@@ -410,7 +410,15 @@ zend_async_timer_event_t* libuv_new_timer_event(const zend_ulong timeout, const 
 	}
 
 	event->uv_handle.data = event;
-	event->event.timeout = timeout;
+	
+	// Calculate final timeout with nanoseconds support
+	zend_ulong final_timeout = timeout;
+	if (nanoseconds > 0 && timeout == 0) {
+		// If only nanoseconds provided, convert to milliseconds with ceiling
+		final_timeout = (nanoseconds + 999999) / 1000000;  // Round up to next millisecond
+	}
+	
+	event->event.timeout = final_timeout;
 	event->event.is_periodic = is_periodic;
 	event->event.base.extra_offset = sizeof(async_timer_event_t);
 	event->event.base.ref_count = 1;
