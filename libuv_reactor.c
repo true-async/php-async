@@ -1234,6 +1234,15 @@ static zend_async_dns_addrinfo_t* libuv_getaddrinfo(
 }
 /* }}} */
 
+/* {{{ libuv_freeaddrinfo */
+static void libuv_freeaddrinfo(struct addrinfo *ai)
+{
+	if (ai != NULL) {
+		uv_freeaddrinfo(ai);
+	}
+}
+/* }}} */
+
 ////////////////////////////////////////////////////////////////////////////////////
 /// Exec API
 ///////////////////////////////////////////////////////////////////////////////////
@@ -1621,6 +1630,7 @@ void async_libuv_reactor_register(void)
 		libuv_new_filesystem_event,
 		libuv_getnameinfo,
 		libuv_getaddrinfo,
+		libuv_freeaddrinfo,
 		libuv_new_exec_event,
 		libuv_exec
 	);
