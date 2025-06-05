@@ -1029,6 +1029,11 @@ static void on_nameinfo_event(uv_getnameinfo_t *req, int status, const char *hos
 	name_info->event.hostname = NULL;
 	name_info->event.service = NULL;
 
+	// Events of type nameinfo are triggered only once.
+	// After that, the event is automatically closed.
+	ZEND_ASYNC_EVENT_SET_CLOSED(&name_info->event.base);
+	name_info->event.base.stop(&name_info->event.base);
+
     if (UNEXPECTED(status < 0)) {
         exception = async_new_exception(
             async_ce_dns_exception, "DNS error: %s", uv_strerror(status)
@@ -1132,6 +1137,11 @@ static void on_addrinfo_event(uv_getaddrinfo_t *req, int status, struct addrinfo
 	async_dns_addrinfo_t *addr_info = req->data;
 	zend_object *exception = NULL;
 
+	// Events of type addrinfo are triggered only once.
+	// After that, the event is automatically closed.
+	ZEND_ASYNC_EVENT_SET_CLOSED(&addr_info->event.base);
+	addr_info->event.base.stop(&addr_info->event.base);
+
 	if (status < 0) {
 		exception = async_new_exception(
 			async_ce_dns_exception, "DNS error: %s", uv_strerror(status)
@@ -1185,7 +1195,7 @@ static void libuv_dns_getaddrinfo_dispose(zend_async_event_t *event)
 
 	async_dns_addrinfo_t *addr_info = (async_dns_addrinfo_t *)(event);
 
-	uv_close((uv_handle_t *)&addr_info->uv_handle, libuv_close_handle_cb);
+	libuv_close_handle_cb((uv_handle_t *)&addr_info->uv_handle);
 }
 /* }}} */
 
@@ -1197,7 +1207,7 @@ static zend_async_dns_addrinfo_t* libuv_getaddrinfo(
 	START_REACTOR_OR_RETURN_NULL;
 
 	async_dns_addrinfo_t *addr_info = pecalloc(
-		1, extra_size != 0 ? sizeof(async_dns_nameinfo_t) + extra_size : sizeof(async_dns_nameinfo_t), 0
+		1, extra_size != 0 ? sizeof(async_dns_addrinfo_t) + extra_size : sizeof(async_dns_addrinfo_t), 0
 	);
 
 	const int error = uv_getaddrinfo(
@@ -1211,7 +1221,7 @@ static zend_async_dns_addrinfo_t* libuv_getaddrinfo(
 	}
 
 	addr_info->uv_handle.data = addr_info;
-	addr_info->event.base.extra_offset = sizeof(async_dns_nameinfo_t);
+	addr_info->event.base.extra_offset = sizeof(async_dns_addrinfo_t);
 	addr_info->event.base.ref_count = 1;
 
 	addr_info->event.base.add_callback = libuv_add_callback;

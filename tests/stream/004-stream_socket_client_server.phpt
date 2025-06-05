@@ -5,6 +5,7 @@ stream_socket_client and stream_socket_server with coroutine switching
 
 use function Async\spawn;
 use function Async\awaitAll;
+use function Async\delay;
 
 echo "Start\n";
 
@@ -42,7 +43,7 @@ $client = spawn(function() use (&$address) {
     // Wait for the server to set the address
     while ($address === null) {
         // Yield control for other coroutines
-        usleep(1000);
+        delay(10);
     }
 
     echo "Client: connecting\n";
@@ -75,10 +76,10 @@ echo "End\n";
 --EXPECTF--
 Start
 Server: creating socket
+Worker: doing work while server waits
 Server: listening
 Server: waiting for connection
 Client: connecting
-Worker: doing work while server waits
 Worker: more work
 Worker: finished
 Server: client connected
