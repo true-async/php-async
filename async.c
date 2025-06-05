@@ -745,9 +745,6 @@ ZEND_MSHUTDOWN_FUNCTION(async)
 	//async_libuv_shutdown();
 #endif
 
-	// Cleanup internal context API
-	async_shutdown_internal_context_api();
-
 	return SUCCESS;
 }
 
