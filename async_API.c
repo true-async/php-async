@@ -17,6 +17,7 @@
 
 #include "context.h"
 #include "exceptions.h"
+#include "internal_context.h"
 #include "iterator.h"
 #include "php_async.h"
 #include "scheduler.h"
@@ -963,6 +964,11 @@ void async_api_register(void)
 		new_coroutine,
 		async_new_scope,
 		(zend_async_new_context_t)async_context_new,
+		async_internal_context_key_alloc,
+		async_internal_context_key_name,
+		async_internal_context_get,
+		async_internal_context_set,
+		async_internal_context_unset,
 		spawn,
 		suspend,
 		async_scheduler_coroutine_enqueue,
