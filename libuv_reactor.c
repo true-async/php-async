@@ -1148,7 +1148,9 @@ static void on_addrinfo_event(uv_getaddrinfo_t *req, int status, struct addrinfo
 		);
 	}
 
-	zend_async_callbacks_notify(&addr_info->event.base, res, exception);
+	addr_info->event.hints = res;
+
+	zend_async_callbacks_notify(&addr_info->event.base, NULL, exception);
 
 	if (exception != NULL) {
 		zend_object_release(exception);

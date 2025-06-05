@@ -210,6 +210,9 @@ static bool execute_next_coroutine(zend_fiber_transfer *transfer)
 		define_transfer(async_coroutine, error, transfer);
 		return true;
 	} else if (ZEND_ASYNC_CURRENT_COROUTINE == coroutine) {
+		if (error != NULL) {
+			zend_throw_exception_internal(error);
+		}
 		return true;
 	} else {
 		switch_context(async_coroutine, error);
