@@ -1048,8 +1048,14 @@ static void on_nameinfo_event(uv_getnameinfo_t *req, int status, const char *hos
     	return;
     }
 
-	name_info->event.hostname = hostname;
-	name_info->event.service = service;
+	// We must copy these strings as zend_string into Zend memory space because they do not belong to us.
+	if (hostname != NULL) {
+		name_info->event.hostname = zend_string_init(hostname, strlen(hostname), 0);
+	}
+
+	if (service != NULL) {
+		name_info->event.service = zend_string_init(service, strlen(service), 0);
+	}
 
     zend_async_callbacks_notify(&name_info->event.base, NULL, NULL);
 
@@ -1092,9 +1098,19 @@ static void libuv_dns_nameinfo_dispose(zend_async_event_t *event)
 
 	zend_async_callbacks_free(event);
 
-	async_dns_nameinfo_t *name_info = (async_dns_nameinfo_t *)(event);
+	zend_async_dns_nameinfo_t *name_info = (zend_async_dns_nameinfo_t *)(event);
 
-	uv_close((uv_handle_t *)&name_info->uv_handle, libuv_close_handle_cb);
+	if (name_info->hostname != NULL) {
+		zend_string_release(name_info->hostname);
+		name_info->hostname = NULL;
+	}
+
+	if (name_info->service != NULL) {
+		zend_string_release(name_info->service);
+		name_info->service = NULL;
+	}
+
+	pefree(event, 0);
 }
 /* }}} */
 
@@ -1148,7 +1164,7 @@ static void on_addrinfo_event(uv_getaddrinfo_t *req, int status, struct addrinfo
 		);
 	}
 
-	addr_info->event.hints = res;
+	addr_info->event.result = res;
 
 	zend_async_callbacks_notify(&addr_info->event.base, NULL, exception);
 
@@ -1197,6 +1213,7 @@ static void libuv_dns_getaddrinfo_dispose(zend_async_event_t *event)
 
 	async_dns_addrinfo_t *addr_info = (async_dns_addrinfo_t *)(event);
 
+	// Note: The addrinfo structure is allocated by libuv and should not be freed manually!
 	libuv_close_handle_cb((uv_handle_t *)&addr_info->uv_handle);
 }
 /* }}} */
