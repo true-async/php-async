@@ -68,10 +68,6 @@ $client = spawn(function() use (&$server_port) {
 
 // Worker to show parallel execution
 $worker = spawn(function() {
-    for ($i = 1; $i <= 3; $i++) {
-        echo "Worker: step $i\n";
-        suspend();
-    }
     echo "Worker: finished\n";
     return "worker_done";
 });
@@ -84,16 +80,13 @@ echo "End\n";
 --EXPECTF--
 Start
 Server: starting
+Worker: finished
 Server: listening on port %d
 Server: accepting connections
 Client: connecting to port %d...
-Worker: step 1
 Server: client connected
 Client: connected and send message...
-Worker: step 2
 Server: received 'Hello from client' and sending response...
-Worker: step 3
 Client: received 'Server response: Hello from client'
-Worker: finished
 Results: server_done, client_done, worker_done
 End

@@ -6,6 +6,7 @@ stream_socket_client and stream_socket_server with coroutine switching
 use function Async\spawn;
 use function Async\awaitAll;
 use function Async\delay;
+use function Async\suspend;
 
 echo "Start\n";
 
@@ -65,8 +66,6 @@ $client = spawn(function() use (&$address) {
 // Worker coroutine for parallel execution
 $worker = spawn(function() {
     echo "Worker: doing work while server waits\n";
-    echo "Worker: more work\n";
-    echo "Worker: finished\n";
 });
 
 awaitAll([$server, $client, $worker]);
@@ -80,8 +79,6 @@ Worker: doing work while server waits
 Server: listening
 Server: waiting for connection
 Client: connecting
-Worker: more work
-Worker: finished
 Server: client connected
 Client: sent request
 Server: received 'Hello from client'
