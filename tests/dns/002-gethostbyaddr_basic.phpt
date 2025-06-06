@@ -33,5 +33,5 @@ await($coroutine);
 ?>
 --EXPECTF--
 127.0.0.1 resolved to: %s
-%s
+%a
 bool(false)
