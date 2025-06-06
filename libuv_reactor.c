@@ -1124,7 +1124,7 @@ static zend_async_dns_nameinfo_t * libuv_getnameinfo(const struct sockaddr *addr
 	);
 
 	const int error = uv_getnameinfo(
-		UVLOOP, &name_info->uv_handle, on_nameinfo_event, (const struct sockaddr*) &addr, flags
+		UVLOOP, &name_info->uv_handle, on_nameinfo_event, addr, flags
 	);
 
 	if (error < 0) {
