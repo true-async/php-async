@@ -181,6 +181,11 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 	ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&coroutine->coroutine.event);
 	ZEND_COROUTINE_CLR_EXCEPTION_HANDLED(&coroutine->coroutine);
 	zend_async_callbacks_notify(&coroutine->coroutine.event, &coroutine->coroutine.result, exception);
+
+	if (coroutine->coroutine.internal_context != NULL) {
+		zend_async_coroutine_internal_context_dispose(&coroutine->coroutine);
+	}
+
 	zend_exception_restore();
 
 	// If the exception was handled by any handler, we do not propagate it further.
@@ -408,6 +413,10 @@ static void coroutine_object_destroy(zend_object *object)
 	if (coroutine->coroutine.waker) {
 		zend_async_waker_destroy(&coroutine->coroutine);
 		coroutine->coroutine.waker = NULL;
+	}
+
+	if (coroutine->coroutine.internal_context != NULL) {
+		zend_async_coroutine_internal_context_dispose(&coroutine->coroutine);
 	}
 
 	zval_ptr_dtor(&coroutine->coroutine.result);
