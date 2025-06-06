@@ -26,7 +26,6 @@
 #include "context.h"
 #include "async_API.h"
 #include "async_arginfo.h"
-#include "internal_context.h"
 #include "zend_interfaces.h"
 #ifdef PHP_ASYNC_LIBUV
 #include "libuv_reactor.h"
