@@ -64,7 +64,20 @@ static void libuv_reactor_stop_with_exception(void);
 		} else { \
 			return; \
 		} \
+	} \
+	if (UNEXPECTED(ZEND_ASYNC_EVENT_IS_CLOSED(event))) { \
+		event->loop_ref_count = 0; \
+		return; \
 	}
+
+static zend_always_inline void close_event(zend_async_event_t *event)
+{
+	if (event->loop_ref_count > 0) {
+		event->loop_ref_count = 1;
+		event->stop(event);
+		ZEND_ASYNC_EVENT_SET_CLOSED(event);
+	}
+}
 
 /* {{{ libuv_reactor_startup */
 void libuv_reactor_startup(void)
@@ -318,8 +331,7 @@ static void on_timer_event(uv_timer_t *handle)
 
 	// If the timer is not periodic, we close it after the first execution.
 	if (false == timer_event->event.is_periodic) {
-		ZEND_ASYNC_EVENT_SET_CLOSED(&timer_event->event.base);
-		timer_event->event.base.stop(&timer_event->event.base);
+		close_event(&timer_event->event.base);
 	}
 
 	zend_async_callbacks_notify(&timer_event->event.base, NULL, NULL);
@@ -1031,8 +1043,7 @@ static void on_nameinfo_event(uv_getnameinfo_t *req, int status, const char *hos
 
 	// Events of type nameinfo are triggered only once.
 	// After that, the event is automatically closed.
-	ZEND_ASYNC_EVENT_SET_CLOSED(&name_info->event.base);
-	name_info->event.base.stop(&name_info->event.base);
+	close_event(&name_info->event.base);
 
     if (UNEXPECTED(status < 0)) {
         exception = async_new_exception(
@@ -1157,8 +1168,7 @@ static void on_addrinfo_event(uv_getaddrinfo_t *req, int status, struct addrinfo
 
 	// Events of type addrinfo are triggered only once.
 	// After that, the event is automatically closed.
-	ZEND_ASYNC_EVENT_SET_CLOSED(&addr_info->event.base);
-	addr_info->event.base.stop(&addr_info->event.base);
+	close_event(&addr_info->event.base);
 
 	if (status < 0) {
 		exception = async_new_exception(
