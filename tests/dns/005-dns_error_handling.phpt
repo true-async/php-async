@@ -66,8 +66,10 @@ await($coroutine);
 ?>
 --EXPECTF--
 Empty hostname: ''
-%s
-%s
+
+%a
 bool(false)
+%a
 bool(false)
+%a
 bool(false)
