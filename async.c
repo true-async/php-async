@@ -670,16 +670,22 @@ static void async_timeout_event_dispose(zend_async_event_t *event)
 	}
 }
 
-static bool timeout_before_notify_handler(zend_async_event_t *event, void **result, zend_object **exception)
+static void timeout_before_notify_handler(zend_async_event_t *event, void *result, zend_object *exception)
 {
+	if (UNEXPECTED(exception != NULL)) {
+		ZEND_ASYNC_CALLBACKS_NOTIFY_FROM_HANDLER(event, result, exception);
+		return;
+	}
+
 	// Here we override the exception value with a timeout exception.
-	*exception = async_new_exception(
+	zend_object * timeout_exception = async_new_exception(
 		async_ce_timeout_exception,
 		"Timeout occurred after %lu milliseconds",
 		((zend_async_timer_event_t * )event)->timeout
 	);
 
-	return true;
+	ZEND_ASYNC_CALLBACKS_NOTIFY_FROM_HANDLER(event, result, exception);
+	OBJ_RELEASE(timeout_exception);
 }
 
 static zend_object *async_timeout_create(const zend_ulong ms, const bool is_periodic)
@@ -716,7 +722,7 @@ static zend_object *async_timeout_create(const zend_ulong ms, const bool is_peri
 	// Define own dispose handler for the event.
 	timeout->prev_dispose = event->dispose;
 
-	event->before_notify = timeout_before_notify_handler;
+	event->notify_handler = timeout_before_notify_handler;
 	event->dispose = async_timeout_event_dispose;
 
 	return &object->std;

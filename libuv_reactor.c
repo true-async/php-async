@@ -190,7 +190,7 @@ static void on_poll_event(uv_poll_t* handle, int status, int events)
 
 	poll->event.triggered_events = events;
 
-	zend_async_callbacks_notify(&poll->event.base, NULL, exception);
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&poll->event.base, NULL, exception);
 
 	if (exception != NULL) {
 		zend_object_release(exception);
@@ -334,7 +334,7 @@ static void on_timer_event(uv_timer_t *handle)
 		close_event(&timer_event->event.base);
 	}
 
-	zend_async_callbacks_notify(&timer_event->event.base, NULL, NULL);
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&timer_event->event.base, NULL, NULL);
 
 	IF_EXCEPTION_STOP_REACTOR;
 }
@@ -454,7 +454,7 @@ static void on_signal_event(uv_signal_t *handle, int signum)
 {
     async_signal_event_t *signal = handle->data;
 
-    zend_async_callbacks_notify(&signal->event.base, &signum, NULL);
+    ZEND_ASYNC_CALLBACKS_NOTIFY(&signal->event.base, &signum, NULL);
 
     IF_EXCEPTION_STOP_REACTOR;
 }
@@ -640,7 +640,7 @@ static void on_process_event(uv_async_t *handle)
 			}
         }
 
-		zend_async_callbacks_notify(&process_event->event.base, &exit_code, NULL);
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&process_event->event.base, &exit_code, NULL);
 		IF_EXCEPTION_STOP_REACTOR;
 	}
 }
@@ -907,7 +907,7 @@ static void on_filesystem_event(uv_fs_event_t *handle, const char *filename, int
         zend_object *exception = async_new_exception(
             async_ce_input_output_exception, "Filesystem monitoring error: %s", uv_strerror(status)
         );
-        zend_async_callbacks_notify(&fs_event->event.base, NULL, exception);
+        ZEND_ASYNC_CALLBACKS_NOTIFY(&fs_event->event.base, NULL, exception);
         zend_object_release(exception);
         return;
     }
@@ -915,7 +915,7 @@ static void on_filesystem_event(uv_fs_event_t *handle, const char *filename, int
     fs_event->event.triggered_events = events;
     fs_event->event.triggered_filename = filename ? zend_string_init(filename, strlen(filename), 0) : NULL;
 
-    zend_async_callbacks_notify(&fs_event->event.base, NULL, NULL);
+    ZEND_ASYNC_CALLBACKS_NOTIFY(&fs_event->event.base, NULL, NULL);
 
     IF_EXCEPTION_STOP_REACTOR;
 }
@@ -1050,7 +1050,7 @@ static void on_nameinfo_event(uv_getnameinfo_t *req, int status, const char *hos
             async_ce_dns_exception, "DNS error: %s", uv_strerror(status)
         );
 
-    	zend_async_callbacks_notify(&name_info->event.base, NULL, exception);
+    	ZEND_ASYNC_CALLBACKS_NOTIFY(&name_info->event.base, NULL, exception);
 
     	if (exception != NULL) {
             zend_object_release(exception);
@@ -1068,7 +1068,7 @@ static void on_nameinfo_event(uv_getnameinfo_t *req, int status, const char *hos
 		name_info->event.service = zend_string_init(service, strlen(service), 0);
 	}
 
-    zend_async_callbacks_notify(&name_info->event.base, NULL, NULL);
+    ZEND_ASYNC_CALLBACKS_NOTIFY(&name_info->event.base, NULL, NULL);
 
     IF_EXCEPTION_STOP_REACTOR;
 }
@@ -1178,10 +1178,10 @@ static void on_addrinfo_event(uv_getaddrinfo_t *req, int status, struct addrinfo
 
 	addr_info->event.result = res;
 
-	zend_async_callbacks_notify(&addr_info->event.base, NULL, exception);
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&addr_info->event.base, NULL, exception);
 
 	if (exception != NULL) {
-		zend_object_release(exception);
+		OBJ_RELEASE(exception);
 	}
 
 	IF_EXCEPTION_STOP_REACTOR;
@@ -1296,7 +1296,7 @@ static void exec_on_exit(uv_process_t* process, const int64_t exit_status, int t
 		exec->event.terminated = true;
 		ZEND_ASYNC_DECREASE_EVENT_COUNT;
 
-		zend_async_callbacks_notify(&exec->event.base, NULL, NULL);
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&exec->event.base, NULL, NULL);
 	}
 }
 //* }}} */
@@ -1383,7 +1383,7 @@ static void exec_read_cb(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf
 		if (exec->terminated != true) {
 			exec->terminated = true;
 			ZEND_ASYNC_DECREASE_EVENT_COUNT;
-			zend_async_callbacks_notify(&event->event.base, NULL, NULL);
+			ZEND_ASYNC_CALLBACKS_NOTIFY(&event->event.base, NULL, NULL);
 		}
 	}
 }

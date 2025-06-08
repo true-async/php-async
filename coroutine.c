@@ -180,7 +180,7 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 	// Mark second parameter of zend_async_callbacks_notify as ZVAL
 	ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&coroutine->coroutine.event);
 	ZEND_COROUTINE_CLR_EXCEPTION_HANDLED(&coroutine->coroutine);
-	zend_async_callbacks_notify(&coroutine->coroutine.event, &coroutine->coroutine.result, exception);
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&coroutine->coroutine.event, &coroutine->coroutine.result, exception);
 	zend_async_callbacks_free(&coroutine->coroutine.event);
 
 	if (coroutine->coroutine.internal_context != NULL) {

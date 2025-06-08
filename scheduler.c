@@ -222,10 +222,6 @@ static bool execute_next_coroutine(zend_fiber_transfer *transfer)
 	// At this point, the async_coroutine must already be destroyed
 	//
 
-	if (error != NULL) {
-		OBJ_RELEASE(error);
-	}
-
 	return true;
 }
 
