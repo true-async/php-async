@@ -62,7 +62,5 @@ Testing Windows-specific DNS behavior
 localhost -> 127.0.0.1
 127.0.0.1 -> 127.0.0.1
 LOCALHOST -> 127.0.0.1
-%s
-%s
-%s
+%a
 Case sensitivity test: passed

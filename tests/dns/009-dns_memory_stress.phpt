@@ -42,8 +42,8 @@ echo "Results received: " . count($results) . "\n";
 ?>
 --EXPECTF--
 DNS memory stress test
-Starting memory usage: %d bytes
-Ending memory usage: %d bytes
+Starting memory usage: %s bytes
+Ending memory usage: %s bytes
 Memory difference: %s bytes
 Successfully completed 50 concurrent DNS lookups
 Results received: 50

@@ -49,6 +49,5 @@ await($coroutine);
 ?>
 --EXPECTF--
 Testing IPv6 DNS support
-%s
-%s
+%a
 bool(false)
