@@ -643,7 +643,10 @@ static void async_timeout_destroy_object(zend_object *object)
 
 	if (timeout->event != NULL) {
 		zend_async_timer_event_t * timer_event = timeout->event;
+		async_timeout_ext_t *timeout_ext = ASYNC_TIMEOUT_FROM_EVENT(&timer_event->base);
+		timeout_ext->std = NULL;
 		timeout->event = NULL;
+
 		timer_event->base.dispose(&timer_event->base);
 	}
 }
@@ -655,7 +658,8 @@ static void async_timeout_event_dispose(zend_async_event_t *event)
 	if (timeout->std) {
 		zend_object *object = timeout->std;
 		async_timeout_object_t *timeout_object = ASYNC_TIMEOUT_FROM_OBJ(object);
-		ZEND_ASSERT(timeout_object->event == (zend_async_timer_event_t *) event && "Event object mismatch");
+		ZEND_ASSERT((timeout_object->event == NULL || timeout_object->event == (zend_async_timer_event_t *) event)
+			&& "Event object mismatch");
 		timeout_object->event = NULL;
 		timeout->std = NULL;
 		OBJ_RELEASE(object);
