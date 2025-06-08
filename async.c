@@ -702,9 +702,14 @@ static zend_object *async_timeout_create(const zend_ulong ms, const bool is_peri
 	}
 
 	ZEND_ASYNC_EVENT_REF_SET(object, XtOffsetOf(async_timeout_object_t, std), (zend_async_timer_event_t *)event);
+	// A special flag is set to indicate that the event will contain a reference to a Zend object.
+	ZEND_ASYNC_EVENT_WITH_OBJECT_REF(event);
 
+	// Cast the event to the extended type.
 	async_timeout_ext_t *timeout = ASYNC_TIMEOUT_FROM_EVENT(event);
+	// Store the event in the object.
 	timeout->std = &object->std;
+	// Define own dispose handler for the event.
 	timeout->prev_dispose = event->dispose;
 
 	event->before_notify = timeout_before_notify_handler;

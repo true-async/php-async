@@ -63,7 +63,7 @@ typedef struct
 	zend_object std;
 } async_timeout_object_t;
 
-#define ASYNC_TIMEOUT_FROM_EVENT(ev) ((async_timeout_ext_t *)((char *)(ev) + (ev)->zend_object_offset))
+#define ASYNC_TIMEOUT_FROM_EVENT(ev) ((async_timeout_ext_t *)((char *)(ev) + (ev)->extra_offset))
 #define ASYNC_TIMEOUT_FROM_OBJ(obj) ((async_timeout_object_t *)((char *)(obj) - (obj)->handlers->offset))
 
 ZEND_BEGIN_MODULE_GLOBALS(async)
