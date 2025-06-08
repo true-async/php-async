@@ -155,9 +155,7 @@ bool async_context_has_local(async_context_t * context, zval *key)
 
 async_context_t *async_context_new(void)
 {
-	async_context_t *context = zend_object_alloc(
-		sizeof(async_context_t) + zend_object_properties_size(async_ce_context), async_ce_context
-	);
+	async_context_t *context = zend_object_alloc(sizeof(async_context_t), async_ce_context);
 	
 	// Initialize hash tables directly
 	zend_hash_init(&context->values, 8, NULL, ZVAL_PTR_DTOR, 0);

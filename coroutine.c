@@ -433,9 +433,7 @@ static void coroutine_free(zend_object *object)
 
 static zend_object *coroutine_object_create(zend_class_entry *class_entry)
 {
-	async_coroutine_t *coroutine = zend_object_alloc(
-		sizeof(async_coroutine_t) + zend_object_properties_size(async_ce_coroutine), class_entry
-	);
+	async_coroutine_t *coroutine = zend_object_alloc(sizeof(async_coroutine_t), class_entry);
 
 	ZVAL_UNDEF(&coroutine->coroutine.result);
 
