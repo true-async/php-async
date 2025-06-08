@@ -7,7 +7,11 @@ if (!function_exists("proc_open")) echo "skip proc_open() is not available";
 --FILE--
 <?php
 
-Async\run(function () {
+use function Async\spawn;
+
+echo "Starting timeout test\n";
+
+spawn(function () {
     echo "Testing proc_open with fast process\n";
     
     $descriptorspec = [
@@ -37,7 +41,7 @@ Async\run(function () {
     echo "Fast process output: " . trim($output) . " (exit: $exit_code)\n";
 });
 
-Async\run(function () {
+spawn(function () {
     echo "Testing proc_open with slow process\n";
     
     $descriptorspec = [
@@ -67,19 +71,17 @@ Async\run(function () {
     echo "Slow process output: " . trim($output) . " (exit: $exit_code)\n";
 });
 
-Async\run(function() {
+spawn(function() {
     echo "Background task running\n";
 });
 
-echo "Starting timeout test\n";
-Async\launchScheduler();
 echo "Timeout test completed\n";
 ?>
 --EXPECT--
 Starting timeout test
+Timeout test completed
 Testing proc_open with fast process
 Testing proc_open with slow process
 Background task running
 Fast process output: Fast process (exit: 0)
 Slow process output: Slow process (exit: 0)
-Timeout test completed

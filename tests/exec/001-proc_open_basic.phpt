@@ -7,7 +7,11 @@ if (!function_exists("proc_open")) echo "skip proc_open() is not available";
 --FILE--
 <?php
 
-Async\run(function () {
+use function Async\spawn;
+
+echo "Main thread start\n";
+
+spawn(function () {
     echo "Starting async proc_open test\n";
     
     $descriptorspec = [
@@ -51,19 +55,17 @@ Async\run(function () {
     echo "Test completed successfully\n";
 });
 
-Async\run(function() {
+spawn(function() {
     echo "Other async task executing\n";
 });
 
-echo "Main thread start\n";
-Async\launchScheduler();
 echo "Main thread end\n";
 ?>
 --EXPECT--
 Main thread start
+Main thread end
 Starting async proc_open test
 Other async task executing
 Output: Hello from async process
 Exit code: 0
 Test completed successfully
-Main thread end
