@@ -5,9 +5,6 @@ socket_connect() with IPv6 hostname resolution in async context
 if (!extension_loaded('sockets')) {
     die('skip sockets extension not available');
 }
-if (!extension_loaded('async')) {
-    die('skip async extension not available');
-}
 if (!defined('AF_INET6')) {
     die('skip IPv6 not supported');
 }
@@ -17,7 +14,11 @@ if (!socket_create(AF_INET6, SOCK_STREAM, SOL_TCP)) {
 ?>
 --FILE--
 <?php
-async(function () {
+
+use function Async\spawn;
+use function Async\await;
+
+$coroutine = spawn(function () {
     // Test IPv6 hostname resolution in socket_connect
     $socket = socket_create(AF_INET6, SOCK_STREAM, SOL_TCP);
     
@@ -27,7 +28,7 @@ async(function () {
     }
     
     // Test with localhost IPv6 - this should resolve asynchronously
-    $result = @socket_connect($socket, "::1", 80);
+    $result = @socket_connect($socket, "::1", 64181);
     
     // We don't care if the connection actually succeeds (port 80 might not be open)
     // We just want to verify that the hostname resolution worked
@@ -46,6 +47,7 @@ async(function () {
     socket_close($socket);
 });
 
+await($coroutine);
 echo "Test completed\n";
 ?>
 --EXPECT--

@@ -5,9 +5,6 @@ socket_bind() with IPv6 hostname resolution in async context
 if (!extension_loaded('sockets')) {
     die('skip sockets extension not available');
 }
-if (!extension_loaded('async')) {
-    die('skip async extension not available');
-}
 if (!defined('AF_INET6')) {
     die('skip IPv6 not supported');
 }
@@ -17,7 +14,11 @@ if (!socket_create(AF_INET6, SOCK_STREAM, SOL_TCP)) {
 ?>
 --FILE--
 <?php
-async(function () {
+
+use function Async\spawn;
+use function Async\await;
+
+$coroutine = spawn(function () {
     // Test IPv6 hostname resolution in socket_bind
     $socket = socket_create(AF_INET6, SOCK_STREAM, SOL_TCP);
     
@@ -49,9 +50,10 @@ async(function () {
     socket_close($socket);
 });
 
+await($coroutine);
 echo "Test completed\n";
 ?>
---EXPECT--
+--EXPECTF--
 IPv6 bind succeeded
-Bound to IPv6 address: ::1:0
+Bound to IPv6 address: ::1:%s
 Test completed

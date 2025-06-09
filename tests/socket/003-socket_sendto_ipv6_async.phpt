@@ -5,9 +5,6 @@ socket_sendto() with IPv6 hostname resolution in async context
 if (!extension_loaded('sockets')) {
     die('skip sockets extension not available');
 }
-if (!extension_loaded('async')) {
-    die('skip async extension not available');
-}
 if (!defined('AF_INET6')) {
     die('skip IPv6 not supported');
 }
@@ -17,7 +14,11 @@ if (!socket_create(AF_INET6, SOCK_DGRAM, SOL_UDP)) {
 ?>
 --FILE--
 <?php
-async(function () {
+
+use function Async\spawn;
+use function Async\await;
+
+$coroutine = spawn(function () {
     // Test IPv6 hostname resolution in socket_sendto
     $socket = socket_create(AF_INET6, SOCK_DGRAM, SOL_UDP);
     
@@ -47,9 +48,10 @@ async(function () {
     socket_close($socket);
 });
 
+await($coroutine);
 echo "Test completed\n";
 ?>
 --EXPECT--
-IPv6 sendto succeeded, sent 18 bytes
+IPv6 sendto succeeded, sent 17 bytes
 Message sent successfully to IPv6 address
 Test completed

@@ -5,9 +5,6 @@ Socket IPv6 hostname resolution with real hostname in async context
 if (!extension_loaded('sockets')) {
     die('skip sockets extension not available');
 }
-if (!extension_loaded('async')) {
-    die('skip async extension not available');
-}
 if (!defined('AF_INET6')) {
     die('skip IPv6 not supported');
 }
@@ -19,7 +16,11 @@ if (!$ips) {
 ?>
 --FILE--
 <?php
-async(function () {
+
+use function Async\spawn;
+use function Async\await;
+
+$coroutine = spawn(function () {
     echo "Testing IPv6 hostname resolution with socket functions\n";
     
     // Test socket_connect with hostname
@@ -68,6 +69,7 @@ async(function () {
     }
 });
 
+await($coroutine);
 echo "IPv6 hostname resolution test completed\n";
 ?>
 --EXPECTF--
