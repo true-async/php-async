@@ -380,7 +380,6 @@ static void cancel_queued_coroutines(void)
 		if (((async_coroutine_t *) coroutine)->context.status == ZEND_FIBER_STATUS_INIT) {
 			// No need to cancel the fiber if it has not been started.
 			coroutine->waker->status = ZEND_ASYNC_WAKER_IGNORED;
-			coroutine->event.dispose(&coroutine->event);
 		} else {
 			ZEND_ASYNC_CANCEL(coroutine, cancellation_exception, false);
 		}

@@ -131,12 +131,7 @@ bool libuv_reactor_execute(bool no_wait)
 {
 	const bool has_handles = uv_run(UVLOOP, no_wait ? UV_RUN_NOWAIT : UV_RUN_ONCE);
 
-	if (UNEXPECTED(has_handles == false && ZEND_ASYNC_ACTIVE_EVENT_COUNT > 0)) {
-		async_warning("event_handle_count %d is greater than 0 but no handles are available", ZEND_ASYNC_ACTIVE_EVENT_COUNT);
-		return false;
-	}
-
-	return ZEND_ASYNC_ACTIVE_EVENT_COUNT > 0 && has_handles;
+	return ZEND_ASYNC_ACTIVE_EVENT_COUNT > 0 || has_handles;
 }
 /* }}} */
 
