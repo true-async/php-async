@@ -684,7 +684,7 @@ static void timeout_before_notify_handler(zend_async_event_t *event, void *resul
 		((zend_async_timer_event_t * )event)->timeout
 	);
 
-	ZEND_ASYNC_CALLBACKS_NOTIFY_FROM_HANDLER(event, result, exception);
+	ZEND_ASYNC_CALLBACKS_NOTIFY_FROM_HANDLER(event, result, timeout_exception);
 	OBJ_RELEASE(timeout_exception);
 }
 
@@ -823,6 +823,8 @@ PHP_RINIT_FUNCTION(async) /* {{{ */
 
 PHP_RSHUTDOWN_FUNCTION(async) /* {{{ */
 {
+	ZEND_ASYNC_REACTOR_SHUTDOWN();
+
 	circular_buffer_dtor(&ASYNC_G(microtasks));
 	circular_buffer_dtor(&ASYNC_G(coroutine_queue));
 	zend_hash_destroy(&ASYNC_G(coroutines));
