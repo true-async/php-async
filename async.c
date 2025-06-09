@@ -199,6 +199,34 @@ PHP_FUNCTION(Async_await)
 		RETURN_NULL();
 	}
 
+	zend_async_event_t *awaitable_event = ZEND_ASYNC_OBJECT_TO_EVENT(awaitable);
+	zend_async_event_t *cancellation_event = cancellation != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation) : NULL;
+
+	// If the awaitable is already resolved, we can return the result immediately.
+	if (ZEND_ASYNC_EVENT_IS_CLOSED(awaitable_event)) {
+
+		if (UNEXPECTED(awaitable_event->replay == NULL)) {
+			zend_error(E_CORE_WARNING, "Cannot await a closed event which cannot be replayed");
+			RETURN_NULL();
+		}
+
+		if (ZEND_ASYNC_EVENT_EXTRACT_RESULT(awaitable_event, return_value)) {
+			return;
+		}
+
+		RETURN_NULL();
+	}
+
+	// If the cancellation event is already resolved, we can return exception immediately.
+	if (cancellation_event != NULL && ZEND_ASYNC_EVENT_IS_CLOSED(cancellation_event)) {
+		if (ZEND_ASYNC_EVENT_EXTRACT_RESULT(awaitable_event, return_value)) {
+			return;
+		}
+
+		async_throw_cancellation("Operation has been cancelled");
+		RETURN_THROWS();
+	}
+
 	zend_async_waker_new(coroutine);
 
 	if (UNEXPECTED(EG(exception) != NULL)) {
@@ -207,20 +235,28 @@ PHP_FUNCTION(Async_await)
 
 	zend_async_resume_when(
 		coroutine,
-		ZEND_ASYNC_OBJECT_TO_EVENT(awaitable),
+		awaitable_event,
 		false,
 		zend_async_waker_callback_resolve,
 		NULL
 	);
 
-	if (cancellation != NULL) {
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		RETURN_THROWS();
+	}
+
+	if (cancellation_event != NULL) {
 		zend_async_resume_when(
 			coroutine,
-			ZEND_ASYNC_OBJECT_TO_EVENT(cancellation),
+			cancellation_event,
 			false,
 			zend_async_waker_callback_cancel,
 			NULL
 		);
+
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			RETURN_THROWS();
+		}
 	}
 
 	ZEND_ASYNC_SUSPEND();

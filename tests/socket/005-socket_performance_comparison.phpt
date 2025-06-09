@@ -5,15 +5,15 @@ Compare socket IPv6 resolution performance: sync vs async
 if (!extension_loaded('sockets')) {
     die('skip sockets extension not available');
 }
-if (!extension_loaded('async')) {
-    die('skip async extension not available');
-}
 if (!defined('AF_INET6')) {
     die('skip IPv6 not supported');
 }
 ?>
 --FILE--
 <?php
+
+use function Async\spawn;
+use function Async\await;
 
 function test_sync_resolution() {
     $socket = socket_create(AF_INET6, SOCK_STREAM, SOL_TCP);
@@ -25,7 +25,7 @@ function test_sync_resolution() {
 }
 
 function test_async_resolution() {
-    return async(function() {
+    return spawn(function() {
         $socket = socket_create(AF_INET6, SOCK_STREAM, SOL_TCP);
         $start = microtime(true);
         @socket_connect($socket, "localhost", 80);
@@ -37,13 +37,18 @@ function test_async_resolution() {
 
 // Test multiple times to get average
 $sync_times = [];
-$async_times = [];
+$async_coroutines = [];
 
 echo "Testing socket IPv6 resolution performance...\n";
 
 for ($i = 0; $i < 3; $i++) {
     $sync_times[] = test_sync_resolution();
-    $async_times[] = test_async_resolution();
+    $async_coroutines[] = test_async_resolution();
+}
+
+$async_times = [];
+foreach ($async_coroutines as $coroutine) {
+    $async_times[] = await($coroutine);
 }
 
 $avg_sync = array_sum($sync_times) / count($sync_times);

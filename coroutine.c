@@ -176,6 +176,12 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 		}
 	}
 
+	// Hold the exception inside coroutine if it is not NULL.
+	if (exception != NULL) {
+		coroutine->coroutine.exception = exception;
+		GC_ADDREF(exception);
+	}
+
 	zend_exception_save();
 	// Mark second parameter of zend_async_callbacks_notify as ZVAL
 	ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&coroutine->coroutine.event);
@@ -342,6 +348,44 @@ static void coroutine_del_callback(zend_async_event_t *event, zend_async_event_c
 	zend_async_callbacks_remove(event, callback);
 }
 
+/**
+ * The method allows you to retrieve the results of a coroutine once it has completed.
+ * The method can only be called if the coroutine has completed; otherwise, it does nothing.
+ *
+ * @param event The coroutine event to replay.
+ * @param callback The callback to call with the result and exception (can be NULL).
+ * @param result The result to copy into, if not NULL.
+ * @param exception The exception to set, if not NULL.
+ */
+static bool coroutine_replay(zend_async_event_t *event, zend_async_event_callback_t *callback, zval *result, zend_object **exception)
+{
+	async_coroutine_t *coroutine = (async_coroutine_t *) event;
+
+	if (UNEXPECTED(false == ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine))) {
+		ZEND_ASSERT("Cannot replay coroutine, because the coroutine is not finished");
+		return false;
+	}
+
+	if (callback != NULL) {
+		callback->callback(event, callback, &coroutine->coroutine.result, coroutine->coroutine.exception);
+		return true;
+	}
+
+	if (result != NULL) {
+		ZVAL_COPY(result, &coroutine->coroutine.result);
+	}
+
+	if (exception == NULL && coroutine->coroutine.exception != NULL) {
+		GC_ADDREF(coroutine->coroutine.exception);
+		zend_throw_exception_internal(coroutine->coroutine.exception);
+	} else if (exception != NULL && coroutine->coroutine.exception != NULL) {
+		*exception = coroutine->coroutine.exception;
+		GC_ADDREF(*exception);
+	}
+
+	return coroutine->coroutine.exception != NULL || Z_TYPE(coroutine->coroutine.result) != IS_UNDEF;
+}
+
 static zend_string* coroutine_info(zend_async_event_t *event)
 {
 	async_coroutine_t *coroutine = (async_coroutine_t *) event;
@@ -421,6 +465,14 @@ static void coroutine_object_destroy(zend_object *object)
 	}
 
 	zval_ptr_dtor(&coroutine->coroutine.result);
+
+	if (coroutine->coroutine.exception != NULL) {
+		// If the coroutine has an exception, we need to release it.
+
+		zend_object *exception = coroutine->coroutine.exception;
+		coroutine->coroutine.exception = NULL;
+		OBJ_RELEASE(exception);
+	}
 }
 
 static void coroutine_free(zend_object *object)
@@ -447,6 +499,7 @@ static zend_object *coroutine_object_create(zend_class_entry *class_entry)
 	event->stop = coroutine_event_stop;
 	event->add_callback = coroutine_add_callback;
 	event->del_callback = coroutine_del_callback;
+	event->replay = coroutine_replay;
 	event->info = coroutine_info;
 	event->dispose = coroutine_dispose;
 
