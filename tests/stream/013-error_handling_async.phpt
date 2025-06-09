@@ -54,4 +54,4 @@ Creating socket pair
 Testing operations on closed socket
 Attempting to read from closed socket
 
-Warning: %a
+Fatal error: Uncaught TypeError: fread(): %a
