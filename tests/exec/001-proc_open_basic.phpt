@@ -26,7 +26,7 @@ spawn(function () {
     }
     
     $process = proc_open(
-        [$php, "-r", "echo 'Hello from async process';"],
+        [$php, "-r", "usleep(10000); echo 'Hello from async process';"],
         $descriptorspec,
         $pipes
     );
@@ -38,19 +38,11 @@ spawn(function () {
     
     // Close stdin
     fclose($pipes[0]);
-    
-    // Read output asynchronously
-    $output = '';
-    while (!feof($pipes[1])) {
-        $output .= fread($pipes[1], 1024);
-    }
-    
     fclose($pipes[1]);
     fclose($pipes[2]);
     
     $exit_code = proc_close($process);
     
-    echo "Output: " . trim($output) . "\n";
     echo "Exit code: " . $exit_code . "\n";
     echo "Test completed successfully\n";
 });

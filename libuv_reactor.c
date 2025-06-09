@@ -627,7 +627,7 @@ static void on_process_event(uv_async_t *handle)
 		circular_buffer_pop(reactor->pid_queue, &process_event);
 
 		DWORD exit_code;
-		GetExitCodeProcess(process_event->hProcess, &exit_code);
+		GetExitCodeProcess(process_event->event.process, &exit_code);
 
 		process_event->event.exit_code = exit_code;
 
@@ -748,15 +748,23 @@ static void libuv_process_event_start(zend_async_event_t *event)
 	}
 
 	DWORD exitCode;
-	if (GetExitCodeProcess(process->hProcess, &exitCode) && exitCode != STILL_ACTIVE) {
+	if (GetExitCodeProcess(process->event.process, &exitCode) && exitCode != STILL_ACTIVE) {
 		async_throw_error("Process has already terminated: %d", exitCode);
 		return;
 	}
 
 	process->hJob = CreateJobObject(NULL, NULL);
 
-	if (AssignProcessToJobObject(process->hJob, process->hProcess) == 0) {
-		char * error_msg = php_win32_error_to_msg((HRESULT) GetLastError());
+	DWORD error;
+
+	if (AssignProcessToJobObject(process->hJob, process->event.process) == 0) {
+
+		error = GetLastError();
+		if (error == ERROR_SUCCESS) {
+			return;
+		}
+
+		char * error_msg = php_win32_error_to_msg((HRESULT) error);
 		async_throw_error("Failed to assign process to job object: %s", error_msg);
 		php_win32_error_msg_free(error_msg);
 		return;
@@ -778,7 +786,13 @@ static void libuv_process_event_start(zend_async_event_t *event)
 		)
 	{
 		CloseHandle(process->hJob);
-		char * error_msg = php_win32_error_to_msg((HRESULT) GetLastError());
+
+		error = GetLastError();
+		if (error == ERROR_SUCCESS) {
+			return;
+		}
+
+		char * error_msg = php_win32_error_to_msg((HRESULT) error);
 		async_throw_error("Failed to associate IO completion port with Job for process: %s", error_msg);
 		php_win32_error_msg_free(error_msg);
 	}
@@ -835,9 +849,9 @@ static void libuv_process_event_dispose(zend_async_event_t *event)
 
 	async_process_event_t *process = (async_process_event_t *)(event);
 
-	if (process->hProcess != NULL) {
-		CloseHandle(process->hProcess);
-		process->hProcess = NULL;
+	if (process->event.process != NULL) {
+		CloseHandle(process->event.process);
+		process->event.process = NULL;
 	}
 
 	if (process->hJob != NULL) {
