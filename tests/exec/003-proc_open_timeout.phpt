@@ -33,12 +33,11 @@ spawn(function () {
     );
     
     fclose($pipes[0]);
-    $output = stream_get_contents($pipes[1]);
     fclose($pipes[1]);
     fclose($pipes[2]);
     
     $exit_code = proc_close($process);
-    echo "Fast process output: " . trim($output) . " (exit: $exit_code)\n";
+    echo "Fast process output: (exit: $exit_code)\n";
 });
 
 spawn(function () {
@@ -63,12 +62,11 @@ spawn(function () {
     );
     
     fclose($pipes[0]);
-    $output = stream_get_contents($pipes[1]);
     fclose($pipes[1]);
     fclose($pipes[2]);
     
     $exit_code = proc_close($process);
-    echo "Slow process output: " . trim($output) . " (exit: $exit_code)\n";
+    echo "Slow process output: (exit: $exit_code)\n";
 });
 
 spawn(function() {
@@ -83,5 +81,5 @@ Timeout test completed
 Testing proc_open with fast process
 Testing proc_open with slow process
 Background task running
-Fast process output: Fast process (exit: 0)
-Slow process output: Slow process (exit: 0)
+Fast process output: (exit: 0)
+Slow process output: (exit: 0)

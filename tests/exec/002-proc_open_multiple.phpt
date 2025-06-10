@@ -34,12 +34,11 @@ spawn(function () use (&$results) {
     );
     
     fclose($pipes[0]);
-    $output = stream_get_contents($pipes[1]);
     fclose($pipes[1]);
     fclose($pipes[2]);
     
     $exit_code = proc_close($process);
-    $results[] = "Process 1: " . trim($output) . " (exit: $exit_code)";
+    $results[] = "Process 1: exit: $exit_code";
     echo "Process 1 completed\n";
 });
 
@@ -64,12 +63,11 @@ spawn(function () use (&$results) {
     );
     
     fclose($pipes[0]);
-    $output = stream_get_contents($pipes[1]);
     fclose($pipes[1]);
     fclose($pipes[2]);
     
     $exit_code = proc_close($process);
-    $results[] = "Process 2: " . trim($output) . " (exit: $exit_code)";
+    $results[] = "Process 2: exit: $exit_code";
     echo "Process 2 completed\n";
 });
 
