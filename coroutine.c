@@ -414,6 +414,121 @@ static zend_string* coroutine_info(zend_async_event_t *event)
 	}
 }
 
+void async_coroutine_suspend(const bool from_main)
+{
+	if (UNEXPECTED(from_main)) {
+		// If the Scheduler was never used, it means no coroutines were created,
+		// so execution can be finished without doing anything.
+		if (circular_buffer_is_empty(&ASYNC_G(microtasks)) && zend_hash_num_elements(&ASYNC_G(coroutines)) == 0) {
+			return;
+		}
+
+		async_scheduler_main_coroutine_suspend();
+		return;
+	}
+
+	async_scheduler_coroutine_suspend(NULL);
+}
+
+void async_coroutine_resume(zend_coroutine_t *coroutine, zend_object * error, const bool transfer_error)
+{
+	if (UNEXPECTED(coroutine->waker == NULL)) {
+		async_throw_error("Cannot resume a coroutine that has not been suspended");
+		return;
+	}
+
+	if (error != NULL) {
+		if (coroutine->waker->error != NULL) {
+			zend_exception_set_previous(error, coroutine->waker->error);
+			OBJ_RELEASE(coroutine->waker->error);
+		}
+
+		coroutine->waker->error = error;
+
+		if (false == transfer_error) {
+			GC_ADDREF(error);
+		}
+	}
+
+	if (UNEXPECTED(coroutine->waker->status == ZEND_ASYNC_WAKER_QUEUED)) {
+		return;
+	}
+
+	if (UNEXPECTED(circular_buffer_push(&ASYNC_G(coroutine_queue), &coroutine, true)) == FAILURE) {
+		async_throw_error("Failed to enqueue coroutine");
+		return;
+	}
+
+	coroutine->waker->status = ZEND_ASYNC_WAKER_QUEUED;
+}
+
+void async_coroutine_cancel(zend_coroutine_t *zend_coroutine, zend_object *error, const bool transfer_error, const bool is_safely)
+{
+	// If the coroutine finished, do nothing.
+	if (ZEND_COROUTINE_IS_FINISHED(zend_coroutine)) {
+		if (transfer_error && error != NULL) {
+			OBJ_RELEASE(error);
+		}
+
+		return;
+	}
+
+	if (zend_coroutine->waker == NULL) {
+		zend_async_waker_new(zend_coroutine);
+	}
+
+	if (UNEXPECTED(zend_coroutine->waker == NULL)) {
+		async_throw_error("Waker is not initialized");
+
+		if (transfer_error) {
+			OBJ_RELEASE(error);
+		}
+
+		return;
+	}
+
+	ZEND_COROUTINE_SET_CANCELLED(zend_coroutine);
+
+	if (false == ZEND_COROUTINE_IS_STARTED(zend_coroutine)) {
+		zend_coroutine->waker->status = ZEND_ASYNC_WAKER_IGNORED;
+		zend_coroutine->exception = error;
+
+		if (false == transfer_error) {
+			GC_ADDREF(error);
+		}
+
+		return;
+	}
+
+	// In safely mode, we don't forcibly terminate the coroutine,
+	// but we do mark it as a Zombie.
+	if (is_safely && error == NULL) {
+		ZEND_COROUTINE_SET_ZOMBIE(zend_coroutine);
+		ZEND_ASYNC_DECREASE_COROUTINE_COUNT
+		return;
+	}
+
+	const bool is_error_null = (error == NULL);
+
+	if (is_error_null) {
+		error = async_new_exception(async_ce_cancellation_exception, "Coroutine cancelled");
+		if (UNEXPECTED(EG(exception))) {
+			return;
+		}
+	}
+
+	if (zend_coroutine->waker->error != NULL) {
+		zend_exception_set_previous(error, zend_coroutine->waker->error);
+		OBJ_RELEASE(zend_coroutine->waker->error);
+	}
+
+	zend_coroutine->waker->error = error;
+
+	if (false == transfer_error && false == is_error_null) {
+		GC_ADDREF(error);
+	}
+}
+
 static void coroutine_dispose(zend_async_event_t *event)
 {
 	async_coroutine_t *coroutine = (async_coroutine_t *) event;
@@ -513,7 +628,7 @@ static zend_object *coroutine_object_create(zend_class_entry *class_entry)
 	return &coroutine->std;
 }
 
-zend_coroutine_t *new_coroutine(zend_async_scope_t *scope)
+zend_coroutine_t *async_new_coroutine(zend_async_scope_t *scope)
 {
 	zend_object * object = coroutine_object_create(async_ce_coroutine);
 
