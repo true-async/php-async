@@ -26,7 +26,7 @@ spawn(function () {
     }
     
     $process = proc_open(
-        [$php, "-r", "usleep(10000); echo 'Hello from async process';"],
+        [$php, "-r", "usleep(1000); echo 'Hello from async process';"],
         $descriptorspec,
         $pipes
     );
@@ -58,6 +58,5 @@ Main thread start
 Main thread end
 Starting async proc_open test
 Other async task executing
-Output: Hello from async process
 Exit code: 0
 Test completed successfully

@@ -582,6 +582,19 @@ static void process_watcher_thread(void * args)
             break;
         }
 
+		switch (lpNumberOfBytesTransferred) {
+			case JOB_OBJECT_MSG_EXIT_PROCESS:
+			case JOB_OBJECT_MSG_ABNORMAL_EXIT_PROCESS:
+			case JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO:
+				// Try to handle process exit
+				goto handleExitCode;
+			default:
+				// Ignore other messages
+				continue;
+		}
+
+handleExitCode:
+
 		async_process_event_t * process_event = (async_process_event_t *) completionKey;
 
 		if (UNEXPECTED(circular_buffer_is_full(reactor->pid_queue))) {
@@ -628,14 +641,14 @@ static void on_process_event(uv_async_t *handle)
 
 		if (reactor->countWaitingDescriptors > 0) {
 			reactor->countWaitingDescriptors--;
-			ZEND_ASYNC_DECREASE_EVENT_COUNT;
 
 			if (reactor->countWaitingDescriptors == 0) {
 				libuv_stop_process_watcher();
 			}
         }
 
-		ZEND_ASYNC_CALLBACKS_NOTIFY(&process_event->event.base, &exit_code, NULL);
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&process_event->event.base, NULL, NULL);
+		process_event->event.base.stop(&process_event->event.base);
 		IF_EXCEPTION_STOP_REACTOR;
 	}
 }
@@ -754,6 +767,9 @@ static void libuv_process_event_start(zend_async_event_t *event)
 
 	if (AssignProcessToJobObject(process->hJob, process->event.process) == 0) {
 
+		CloseHandle(process->hJob);
+		process->hJob = NULL;
+
 		error = GetLastError();
 		if (error == ERROR_SUCCESS) {
 			return;
@@ -781,6 +797,7 @@ static void libuv_process_event_start(zend_async_event_t *event)
 		)
 	{
 		CloseHandle(process->hJob);
+		process->hJob = NULL;
 
 		error = GetLastError();
 		if (error == ERROR_SUCCESS) {
@@ -802,12 +819,18 @@ static void libuv_process_event_start(zend_async_event_t *event)
 /* {{{ libuv_process_event_stop */
 static void libuv_process_event_stop(zend_async_event_t *event)
 {
+	EVENT_STOP_PROLOGUE(event);
+
+	ZEND_ASYNC_EVENT_SET_CLOSED(event);
 	async_process_event_t *process = (async_process_event_t *) event;
+	event->loop_ref_count = 0;
 
 	if (process->hJob != NULL) {
 		CloseHandle(process->hJob);
 		process->hJob = NULL;
 	}
+
+	ZEND_ASYNC_DECREASE_EVENT_COUNT;
 }
 /* }}} */
 
@@ -846,7 +869,7 @@ static void libuv_process_event_dispose(zend_async_event_t *event)
 	async_process_event_t *process = (async_process_event_t *)(event);
 
 	if (process->event.process != NULL) {
-		CloseHandle(process->event.process);
+		//CloseHandle(process->event.process);
 		process->event.process = NULL;
 	}
 
@@ -855,6 +878,8 @@ static void libuv_process_event_dispose(zend_async_event_t *event)
 		process->hJob = NULL;
 	}
 #endif
+
+	pefree(event, 0);
 }
 /* }}} */
 

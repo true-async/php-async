@@ -783,6 +783,15 @@ static PHP_GINIT_FUNCTION(async)
 #endif
 
 	async_globals->reactor_started = false;
+
+#ifdef PHP_WIN32
+	async_globals->watcherThread = NULL;
+	async_globals->ioCompletionPort = NULL;
+	async_globals->countWaitingDescriptors = 0;
+	async_globals->isRunning = false;
+	async_globals->uvloop_wakeup = NULL;
+	async_globals->pid_queue = NULL;
+#endif
 }
 
 /* {{{ PHP_GSHUTDOWN_FUNCTION */
