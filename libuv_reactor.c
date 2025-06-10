@@ -790,6 +790,7 @@ static void libuv_process_event_start(zend_async_event_t *event)
 		char * error_msg = php_win32_error_to_msg((HRESULT) error);
 		async_throw_error("Failed to associate IO completion port with Job for process: %s", error_msg);
 		php_win32_error_msg_free(error_msg);
+		return;
 	}
 
 	event->loop_ref_count++;

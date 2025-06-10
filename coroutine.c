@@ -225,8 +225,9 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 			zend_error(E_CORE_ERROR, "Failed to remove coroutine from the list");
 		}
 
-		// Decrease the active coroutine count if the coroutine is not a zombie.
-		if (false == ZEND_COROUTINE_IS_ZOMBIE(&coroutine->coroutine)) {
+		// Decrease the active coroutine count if the coroutine is not a zombie and is started.
+		if (ZEND_COROUTINE_IS_STARTED(&coroutine->coroutine)
+			&& false == ZEND_COROUTINE_IS_ZOMBIE(&coroutine->coroutine)) {
 			ZEND_ASYNC_DECREASE_COROUTINE_COUNT
 		}
 	}

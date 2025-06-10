@@ -172,20 +172,19 @@ static bool execute_next_coroutine(zend_fiber_transfer *transfer)
 		return false;
 	}
 
-	if (UNEXPECTED(coroutine->waker == NULL)) {
-		coroutine->event.dispose(&coroutine->event);
-		return true;
-	}
-
 	zend_async_waker_t * waker = coroutine->waker;
 
-	if (UNEXPECTED(waker->status == ZEND_ASYNC_WAKER_IGNORED)) {
+	if (UNEXPECTED(waker == NULL || waker->status == ZEND_ASYNC_WAKER_IGNORED)) {
 
 		//
 		// This state triggers if the fiber has never been started;
 		// in this case, it is deallocated differently than usual.
 		// Finalizing handlers are called. Memory is freed in the correct order!
 		//
+		if (ZEND_COROUTINE_IS_CANCELLED(coroutine)) {
+			async_coroutine_finalize(NULL, async_coroutine);
+		}
+
 		coroutine->event.dispose(&coroutine->event);
 		return true;
 	}
@@ -380,6 +379,9 @@ static void cancel_queued_coroutines(void)
 		if (((async_coroutine_t *) coroutine)->context.status == ZEND_FIBER_STATUS_INIT) {
 			// No need to cancel the fiber if it has not been started.
 			coroutine->waker->status = ZEND_ASYNC_WAKER_IGNORED;
+			ZEND_COROUTINE_SET_CANCELLED(coroutine);
+			coroutine->exception = cancellation_exception;
+			GC_ADDREF(cancellation_exception);
 		} else {
 			ZEND_ASYNC_CANCEL(coroutine, cancellation_exception, false);
 		}
@@ -744,7 +746,18 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 	//
 	if (transfer == NULL && ZEND_ASYNC_CURRENT_COROUTINE != NULL && ZEND_ASYNC_CURRENT_COROUTINE->waker != NULL) {
 		async_scheduler_start_waker_events(ZEND_ASYNC_CURRENT_COROUTINE->waker);
-		TRY_HANDLE_SUSPEND_EXCEPTION();
+
+		// If an exception occurs during the startup of the Waker object,
+		// that exception belongs to the current coroutine,
+		// which means we have the right to immediately return to the point from which we were called.
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			// Before returning, We are required to properly destroy the Waker object.
+			zend_exception_save();
+			async_scheduler_stop_waker_events(ZEND_ASYNC_CURRENT_COROUTINE->waker);
+			zend_async_waker_destroy(ZEND_ASYNC_CURRENT_COROUTINE);
+			zend_exception_restore();
+			return;
+		}
 	}
 
 	//
