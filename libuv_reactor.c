@@ -1681,6 +1681,228 @@ static int libuv_exec(
 }
 /* }}} */
 
+/////////////////////////////////////////////////////////////////////////////////
+/// Socket Listening API
+/////////////////////////////////////////////////////////////////////////////////
+
+typedef struct {
+	zend_async_listen_event_t event;
+	uv_tcp_t uv_handle;
+} async_listen_event_t;
+
+/* {{{ on_connection_event */
+static void on_connection_event(uv_stream_t *server, int status)
+{
+	async_listen_event_t *listen_event = server->data;
+	zend_socket_t client_socket = INVALID_SOCKET;
+	zend_object *exception = NULL;
+
+	if (status < 0) {
+		exception = async_new_exception(
+			async_ce_input_output_exception, "Connection accept error: %s", uv_strerror(status)
+		);
+	} else {
+		uv_tcp_t client;
+		int result = uv_tcp_init(UVLOOP, &client);
+		
+		if (result == 0) {
+			result = uv_accept(server, (uv_stream_t*)&client);
+			if (result == 0) {
+				uv_os_fd_t fd;
+				result = uv_fileno((uv_handle_t*)&client, &fd);
+				if (result == 0) {
+					client_socket = (zend_socket_t)fd;
+				}
+			}
+		}
+		
+		if (result < 0) {
+			exception = async_new_exception(
+				async_ce_input_output_exception, "Failed to accept connection: %s", uv_strerror(result)
+			);
+			uv_close((uv_handle_t*)&client, NULL);
+		}
+	}
+
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&listen_event->event.base, &client_socket, exception);
+
+	if (exception != NULL) {
+		zend_object_release(exception);
+	}
+
+	IF_EXCEPTION_STOP_REACTOR;
+}
+/* }}} */
+
+/* {{{ libuv_listen_start */
+static void libuv_listen_start(zend_async_event_t *event)
+{
+	EVENT_START_PROLOGUE(event);
+
+	async_listen_event_t *listen_event = (async_listen_event_t *)(event);
+
+	const int error = uv_listen((uv_stream_t*)&listen_event->uv_handle, listen_event->event.backlog, on_connection_event);
+
+	if (error < 0) {
+		async_throw_error("Failed to start listening: %s", uv_strerror(error));
+		return;
+	}
+
+	event->loop_ref_count++;
+	ZEND_ASYNC_INCREASE_EVENT_COUNT;
+}
+/* }}} */
+
+/* {{{ libuv_listen_stop */
+static void libuv_listen_stop(zend_async_event_t *event)
+{
+	EVENT_STOP_PROLOGUE(event);
+
+	// uv_listen doesn't have a stop function, we close the handle
+	event->loop_ref_count = 0;
+	ZEND_ASYNC_DECREASE_EVENT_COUNT;
+}
+/* }}} */
+
+/* {{{ libuv_listen_dispose */
+static void libuv_listen_dispose(zend_async_event_t *event)
+{
+	if (ZEND_ASYNC_EVENT_REF(event) > 1) {
+		ZEND_ASYNC_EVENT_DEL_REF(event);
+		return;
+	}
+
+	if (event->loop_ref_count > 0) {
+		event->loop_ref_count = 1;
+		event->stop(event);
+	}
+
+	zend_async_callbacks_free(event);
+
+	async_listen_event_t *listen_event = (async_listen_event_t *)(event);
+
+	if (listen_event->event.host) {
+		efree((void*)listen_event->event.host);
+		listen_event->event.host = NULL;
+	}
+
+	uv_close((uv_handle_t *)&listen_event->uv_handle, libuv_close_handle_cb);
+}
+/* }}} */
+
+/* {{{ libuv_listen_get_local_address */
+static int libuv_listen_get_local_address(
+	zend_async_listen_event_t *listen_event,
+	char *host, size_t host_len,
+	int *port
+)
+{
+	struct sockaddr_storage addr;
+	int addr_len = sizeof(addr);
+	
+	int result = uv_tcp_getsockname(&((async_listen_event_t*)listen_event)->uv_handle, 
+									(struct sockaddr*)&addr, &addr_len);
+	
+	if (result < 0) {
+		return result;
+	}
+	
+	if (addr.ss_family == AF_INET) {
+		struct sockaddr_in *addr_in = (struct sockaddr_in*)&addr;
+		*port = ntohs(addr_in->sin_port);
+		if (host && host_len > 0) {
+			uv_ip4_name(addr_in, host, host_len);
+		}
+	} else if (addr.ss_family == AF_INET6) {
+		struct sockaddr_in6 *addr_in6 = (struct sockaddr_in6*)&addr;
+		*port = ntohs(addr_in6->sin6_port);
+		if (host && host_len > 0) {
+			uv_ip6_name(addr_in6, host, host_len);
+		}
+	} else {
+		return -1;
+	}
+	
+	return 0;
+}
+/* }}} */
+
+/* {{{ libuv_socket_listen */
+zend_async_listen_event_t* libuv_socket_listen(const char *host, int port, int backlog, size_t extra_size)
+{
+	START_REACTOR_OR_RETURN_NULL;
+
+	async_listen_event_t *listen_event = pecalloc(1, extra_size != 0 ?
+							sizeof(async_listen_event_t) + extra_size :
+							sizeof(async_listen_event_t), 0);
+
+	int error = uv_tcp_init(UVLOOP, &listen_event->uv_handle);
+	if (error < 0) {
+		async_throw_error("Failed to initialize TCP handle: %s", uv_strerror(error));
+		pefree(listen_event, 0);
+		return NULL;
+	}
+
+	// Set socket options
+	uv_tcp_nodelay(&listen_event->uv_handle, 1);
+	uv_tcp_simultaneous_accepts(&listen_event->uv_handle, 1);
+
+	// Bind to address
+	struct sockaddr_storage addr;
+	if (strchr(host, ':') != NULL) {
+		// IPv6
+		error = uv_ip6_addr(host, port, (struct sockaddr_in6*)&addr);
+	} else {
+		// IPv4
+		error = uv_ip4_addr(host, port, (struct sockaddr_in*)&addr);
+	}
+
+	if (error < 0) {
+		async_throw_error("Failed to parse address %s:%d: %s", host, port, uv_strerror(error));
+		uv_close((uv_handle_t*)&listen_event->uv_handle, libuv_close_handle_cb);
+		pefree(listen_event, 0);
+		return NULL;
+	}
+
+	error = uv_tcp_bind(&listen_event->uv_handle, (struct sockaddr*)&addr, 0);
+	if (error < 0) {
+		async_throw_error("Failed to bind to %s:%d: %s", host, port, uv_strerror(error));
+		uv_close((uv_handle_t*)&listen_event->uv_handle, libuv_close_handle_cb);
+		pefree(listen_event, 0);
+		return NULL;
+	}
+
+	// Get actual socket fd
+	uv_os_fd_t fd;
+	error = uv_fileno((uv_handle_t*)&listen_event->uv_handle, &fd);
+	if (error < 0) {
+		async_throw_error("Failed to get socket descriptor: %s", uv_strerror(error));
+		uv_close((uv_handle_t*)&listen_event->uv_handle, libuv_close_handle_cb);
+		pefree(listen_event, 0);
+		return NULL;
+	}
+
+	// Link the handle to the loop
+	listen_event->uv_handle.data = listen_event;
+	listen_event->event.host = estrdup(host);
+	listen_event->event.port = port;
+	listen_event->event.backlog = backlog;
+	listen_event->event.socket_fd = (zend_socket_t)fd;
+	listen_event->event.base.extra_offset = sizeof(async_listen_event_t);
+	listen_event->event.base.ref_count = 1;
+
+	// Initialize the event methods
+	listen_event->event.base.add_callback = libuv_add_callback;
+	listen_event->event.base.del_callback = libuv_remove_callback;
+	listen_event->event.base.start = libuv_listen_start;
+	listen_event->event.base.stop = libuv_listen_stop;
+	listen_event->event.base.dispose = libuv_listen_dispose;
+	listen_event->event.get_local_address = libuv_listen_get_local_address;
+
+	return &listen_event->event;
+}
+/* }}} */
+
 void async_libuv_reactor_register(void)
 {
 	zend_async_reactor_register(
@@ -1702,5 +1924,11 @@ void async_libuv_reactor_register(void)
 		libuv_freeaddrinfo,
 		libuv_new_exec_event,
 		libuv_exec
+	);
+
+	zend_async_socket_listening_register(
+		LIBUV_REACTOR_NAME,
+		false,
+		libuv_socket_listen
 	);
 }
