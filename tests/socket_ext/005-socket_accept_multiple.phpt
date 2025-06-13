@@ -83,17 +83,17 @@ Server: creating socket
 Server: listening on port %d
 Server: waiting for client 1
 Client1: connecting
-Client1: connected
+Client2: connecting
+Client3: connecting
 Server: client 1 connected
 Server: waiting for client 2
-Client2: connecting
-Client2: connected
 Server: client 2 connected
 Server: waiting for client 3
-Client3: connecting
-Client3: connected
 Server: client 3 connected
+Client1: connected
 Client1: received 'Response to client 1'
+Client2: connected
 Client2: received 'Response to client 2'
+Client3: connected
 Client3: received 'Response to client 3'
 End

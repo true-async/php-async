@@ -93,9 +93,9 @@ Server: creating socket
 Server: listening on port %d
 Server: accepting connections
 Client1: connecting
-Client1: connected successfully
-Server: client1 connected
 Client2: connecting
+Server: client1 connected
+Client1: connected successfully
 Client2: connected successfully
 Server: client2 connected
 Client1: received 'Hello client1'

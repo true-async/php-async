@@ -33,7 +33,7 @@ $server = spawn(function() use (&$port) {
     echo "Server: client connected\n";
     
     $buffer = '';
-    $bytes = socket_recv($client, $buffer, 1024, MSG_WAITALL);
+    $bytes = socket_recv($client, $buffer, 1024, 0);
     echo "Server: received $bytes bytes: '$buffer'\n";
     
     $sent = socket_send($client, "Response from server", 20, 0);
@@ -57,7 +57,7 @@ $client = spawn(function() use (&$port) {
     echo "Client: sent $sent bytes\n";
     
     $buffer = '';
-    $bytes = socket_recv($socket, $buffer, 1024, MSG_WAITALL);
+    $bytes = socket_recv($socket, $buffer, 1024, 0);
     echo "Client: received $bytes bytes: '$buffer'\n";
     
     socket_close($socket);
