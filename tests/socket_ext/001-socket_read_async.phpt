@@ -79,10 +79,10 @@ echo "End\n";
 --EXPECTF--
 Start
 Server: creating socket
-Worker: doing work while server waits
 Server: listening on port %d
 Server: waiting for connection
 Client: connecting
+Worker: doing work while server waits
 Server: client connected
 Client: sent request
 Server: received 'Hello from client'
