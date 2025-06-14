@@ -1330,7 +1330,6 @@ static void exec_on_exit(uv_process_t* process, const int64_t exit_status, int t
 	if (exec->event.terminated != true) {
 		exec->event.terminated = true;
 		ZEND_ASYNC_DECREASE_EVENT_COUNT;
-
 		ZEND_ASYNC_CALLBACKS_NOTIFY(&exec->event.base, NULL, NULL);
 	}
 }
@@ -1413,6 +1412,8 @@ static void exec_read_cb(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf
 		}
 
 		uv_read_stop(stream);
+		// For libuv_close_handle_cb to work correctly.
+		stream->data = stream;
 		uv_close((uv_handle_t *)stream, libuv_close_handle_cb);
 
 		if (exec->terminated != true) {
@@ -1453,6 +1454,7 @@ static void exec_std_err_read_cb(uv_stream_t *stream, ssize_t nread, const uv_bu
 		event->stderr_pipe = NULL;
 
 		uv_read_stop(stream);
+		stream->data = stream;
 		uv_close((uv_handle_t *)stream, libuv_close_handle_cb);
 	}
 
@@ -1482,10 +1484,6 @@ static void libuv_exec_stop(zend_async_event_t *event)
 	EVENT_STOP_PROLOGUE(event);
 
 	async_exec_event_t *exec = (async_exec_event_t *)(event);
-
-	if (exec->process == NULL) {
-		return;
-	}
 
 	event->loop_ref_count = 0;
 	ZEND_ASYNC_DECREASE_EVENT_COUNT;
@@ -1521,20 +1519,27 @@ static void libuv_exec_dispose(zend_async_event_t *event)
 
     if (exec->process != NULL && !uv_is_closing((uv_handle_t *)exec->process)) {
         uv_process_kill(exec->process, ZEND_ASYNC_SIGTERM);
-        uv_close((uv_handle_t *)exec->process, libuv_close_handle_cb);
-        exec->process = NULL;
+    	uv_handle_t * handle = (uv_handle_t *) exec->process;
+    	exec->process = NULL;
+    	// For libuv_close_handle_cb to work correctly.
+    	handle->data = handle;
+        uv_close(handle, libuv_close_handle_cb);
     }
 
     if (exec->stdout_pipe != NULL && !uv_is_closing((uv_handle_t *)exec->stdout_pipe)) {
         uv_read_stop((uv_stream_t *)exec->stdout_pipe);
-        uv_close((uv_handle_t *)exec->stdout_pipe, libuv_close_handle_cb);
-        exec->stdout_pipe = NULL;
+    	uv_handle_t * handle = (uv_handle_t *) exec->stdout_pipe;
+		exec->stdout_pipe->data = NULL;
+    	handle->data = handle;
+        uv_close(handle, libuv_close_handle_cb);
     }
 
     if (exec->stderr_pipe != NULL && !uv_is_closing((uv_handle_t *)exec->stderr_pipe)) {
         uv_read_stop((uv_stream_t *)exec->stderr_pipe);
-        uv_close((uv_handle_t *)exec->stderr_pipe, libuv_close_handle_cb);
-        exec->stderr_pipe = NULL;
+    	uv_handle_t * handle = (uv_handle_t *) exec->stderr_pipe;
+		exec->stderr_pipe->data = NULL;
+    	handle->data = handle;
+        uv_close(handle, libuv_close_handle_cb);
     }
 
 #ifdef PHP_WIN32
@@ -1543,6 +1548,9 @@ static void libuv_exec_dispose(zend_async_event_t *event)
         exec->quoted_cmd = NULL;
     }
 #endif
+
+	// Free the event itself
+	pefree(event, 0);
 }
 /* }}} */
 
@@ -1664,6 +1672,17 @@ static int libuv_exec(
 	ZVAL_UNDEF(&tmp_return_value);
 	ZVAL_UNDEF(&tmp_return_buffer);
 
+	if (return_value != NULL) {
+		ZVAL_BOOL(return_value, false);
+	}
+
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (UNEXPECTED(coroutine == NULL)) {
+		zend_throw_error(NULL, "Cannot call async_exec() outside of an async context");
+		return -1;
+	}
+
 	zend_async_exec_event_t * exec_event = ZEND_ASYNC_NEW_EXEC_EVENT(
 		exec_mode,
 		cmd,
@@ -1673,6 +1692,27 @@ static int libuv_exec(
 		cwd,
 		env
 	);
+
+	if (UNEXPECTED(EG(exception))) {
+		return -1;
+	}
+
+	zend_async_waker_new(coroutine);
+	if (UNEXPECTED(EG(exception))) {
+		return -1;
+	}
+
+	zend_async_resume_when(coroutine, &exec_event->base, true, zend_async_waker_callback_resolve, NULL);
+	if (UNEXPECTED(EG(exception))) {
+		return -1;
+	}
+
+	ZEND_ASYNC_SUSPEND();
+	zend_async_waker_destroy(coroutine);
+
+	if (UNEXPECTED(EG(exception))) {
+		return -1;
+	}
 
 	zval_ptr_dtor(&tmp_return_value);
 	zval_ptr_dtor(&tmp_return_buffer);

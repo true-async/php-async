@@ -21,9 +21,9 @@ spawn(function () {
     
     $return_var = null;
     
-    $output = system($php . ' -r "echo \'Hello from async system\';"', $return_var);
+    $output = system($php . ' -r "echo \"Hello from async system\n\";"', $return_var);
     
-    echo "Output: " . $output . "\n";
+    echo "Output: " . $output;
     echo "Return code: " . $return_var . "\n";
     echo "System test completed successfully\n";
 });
