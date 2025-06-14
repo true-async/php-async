@@ -155,6 +155,14 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 {
 	ZEND_COROUTINE_SET_FINISHED(&coroutine->coroutine);
 
+	/* Call switch handlers for coroutine finishing */
+	if (UNEXPECTED(coroutine->coroutine.switch_handlers)) {
+		ZEND_COROUTINE_FINISH(&coroutine->coroutine);
+	}
+
+	/* Cleanup switch handlers */
+	zend_coroutine_switch_handlers_destroy(&coroutine->coroutine);
+
 	// call coroutines handlers
 	zend_object * exception = NULL;
 
@@ -240,6 +248,11 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(zend_fiber_transfer *transfer)
 
 	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
 	ZEND_COROUTINE_SET_STARTED(&coroutine->coroutine);
+
+	/* Call switch handlers for coroutine entering */
+	if (UNEXPECTED(&coroutine->coroutine.switch_handlers != NULL)) {
+		ZEND_COROUTINE_CALL_SWITCH_HANDLERS(&coroutine->coroutine, true, false);
+	}
 
 	/* Determine the current error_reporting ini setting. */
 	zend_long error_reporting = INI_INT("error_reporting");
@@ -608,6 +621,9 @@ static zend_object *coroutine_object_create(zend_class_entry *class_entry)
 	ZEND_ASYNC_EVENT_SET_ZEND_OBJ(&coroutine->coroutine.event);
 	ZEND_ASYNC_EVENT_SET_NO_FREE_MEMORY(&coroutine->coroutine.event);
 	ZEND_ASYNC_EVENT_SET_ZEND_OBJ_OFFSET(&coroutine->coroutine.event, XtOffsetOf(async_coroutine_t, std));
+
+	/* Initialize switch handlers */
+	coroutine->coroutine.switch_handlers = NULL;
 
 	zend_async_event_t *event = &coroutine->coroutine.event;
 

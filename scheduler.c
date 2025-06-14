@@ -739,13 +739,15 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 
 	ZEND_ASYNC_SCHEDULER_HEARTBEAT;
 
+	zend_coroutine_t * coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
 	//
 	// Before suspending the coroutine,
 	// we start all its Waker-events.
 	// This causes timers to start, POLL objects to begin waiting for events, and so on.
 	//
-	if (transfer == NULL && ZEND_ASYNC_CURRENT_COROUTINE != NULL && ZEND_ASYNC_CURRENT_COROUTINE->waker != NULL) {
-		async_scheduler_start_waker_events(ZEND_ASYNC_CURRENT_COROUTINE->waker);
+	if (transfer == NULL && coroutine != NULL && coroutine->waker != NULL) {
+		async_scheduler_start_waker_events(coroutine->waker);
 
 		// If an exception occurs during the startup of the Waker object,
 		// that exception belongs to the current coroutine,
@@ -753,11 +755,16 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 		if (UNEXPECTED(EG(exception) != NULL)) {
 			// Before returning, We are required to properly destroy the Waker object.
 			zend_exception_save();
-			async_scheduler_stop_waker_events(ZEND_ASYNC_CURRENT_COROUTINE->waker);
-			zend_async_waker_destroy(ZEND_ASYNC_CURRENT_COROUTINE);
+			async_scheduler_stop_waker_events(coroutine->waker);
+			zend_async_waker_destroy(coroutine);
 			zend_exception_restore();
 			return;
 		}
+	}
+
+	if (UNEXPECTED(coroutine->switch_handlers)) {
+		ZEND_COROUTINE_LEAVE(coroutine);
+		ZEND_ASSERT(EG(exception) == NULL && "The exception after ZEND_COROUTINE_LEAVE must be NULL");
 	}
 
 	//
@@ -829,6 +836,10 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 		}
 	} else {
 		switch_to_scheduler(transfer);
+	}
+
+	if (UNEXPECTED(coroutine->switch_handlers && transfer == NULL)) {
+		ZEND_COROUTINE_ENTER(coroutine);
 	}
 }
 
