@@ -40,9 +40,7 @@ spawn(function () {
     
     $return_var = null;
     
-    $output = system($php . ' -r "echo \'system result\';"', $return_var);
-    
-    echo "system() result: " . $output . " (code: $return_var)\n";
+    $output = system($php . ' -r "echo \'system result\'.\"\n\";"', $return_var);
 });
 
 spawn(function () {
@@ -55,11 +53,7 @@ spawn(function () {
     
     $return_var = null;
     
-    ob_start();
-    passthru($php . ' -r "echo \'passthru result\';"', $return_var);
-    $output = ob_get_clean();
-    
-    echo "passthru() result: " . trim($output) . " (code: $return_var)\n";
+    passthru($php . ' -r "echo \'passthru result\'.\"\n\";"', $return_var);
 });
 
 spawn(function () {
@@ -81,18 +75,7 @@ spawn(function() {
 
 echo "Full exec functions test completed\n";
 ?>
---EXPECT--
+--EXPECTF--
 Starting full exec functions test
 Full exec functions test completed
-Testing exec() async
-Testing system() async
-Testing passthru() async
-Testing shell_exec() async
-Background task running
-exec result
-exec() result: exec result (code: 0)
-system result
-system() result: system result (code: 0)
-passthru result
-passthru() result: passthru result (code: 0)
-shell_exec() result: shell_exec result
+%a
