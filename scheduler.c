@@ -624,6 +624,11 @@ void async_scheduler_main_coroutine_suspend(void)
 
 	coroutine->context.cleanup = NULL;
 
+	// Current coroutine is no longer valid.
+	ZEND_ASYNC_CURRENT_COROUTINE = NULL;
+	// Async context is no longer valid.
+	ZEND_ASYNC_DEACTIVATE;
+
 	OBJ_RELEASE(&coroutine->std);
 
 	//

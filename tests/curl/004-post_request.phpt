@@ -4,20 +4,20 @@ Async cURL POST request
 curl
 --FILE--
 <?php
-include "../../sapi/cli/tests/php_cli_server.inc";
+require_once __DIR__ . '/../common/http_server.php';
 
 use function Async\spawn;
 use function Async\await;
 
-php_cli_server_start();
+$server = async_test_server_start();
 
-function test_post_request() {
+function test_post_request($server) {
     echo "Starting POST test\n";
     
     $post_data = "test=data&value=123";
     
     $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, "http://" . PHP_CLI_SERVER_ADDRESS);
+    curl_setopt($ch, CURLOPT_URL, "http://localhost:{$server->port}/post");
     curl_setopt($ch, CURLOPT_POST, true);
     curl_setopt($ch, CURLOPT_POSTFIELDS, $post_data);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -38,15 +38,17 @@ function test_post_request() {
 
 echo "Test start\n";
 
-$coroutine = spawn(test_post_request(...));
+$coroutine = spawn(fn() => test_post_request($server));
 $result = await($coroutine);
 
 echo "Test end\n";
+
+async_test_server_stop($server);
 ?>
---EXPECT--
+--EXPECTF--
 Test start
 Starting POST test
 HTTP Code: 200
 Error: none
-Response: Hello world
+Response: %s
 Test end

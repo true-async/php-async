@@ -4,21 +4,18 @@ Concurrent async cURL requests
 curl
 --FILE--
 <?php
-include "../../sapi/cli/tests/php_cli_server.inc";
+require_once __DIR__ . '/../common/http_server.php';
 
 use function Async\spawn;
 use function Async\awaitAll;
 
-php_cli_server_start();
+$server = async_test_server_start();
 
-function make_request_with_delay($delay_ms, $id) {
+function make_request($id, $server) {
     echo "Request $id: starting\n";
     
-    // Add delay before making the request
-    usleep($delay_ms * 1000);
-    
     $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, "http://" . PHP_CLI_SERVER_ADDRESS);
+    curl_setopt($ch, CURLOPT_URL, "http://localhost:{$server->port}/");
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 5);
     
@@ -33,11 +30,11 @@ function make_request_with_delay($delay_ms, $id) {
 
 echo "Test start\n";
 
-// Launch multiple concurrent requests with different delays
+// Launch multiple concurrent requests
 $coroutines = [
-    spawn(fn() => make_request_with_delay(10, 1)),
-    spawn(fn() => make_request_with_delay(20, 2)),
-    spawn(fn() => make_request_with_delay(30, 3)),
+    spawn(fn() => make_request(1, $server)),
+    spawn(fn() => make_request(2, $server)),
+    spawn(fn() => make_request(3, $server)),
 ];
 
 $results = awaitAll($coroutines);
@@ -47,6 +44,8 @@ foreach ($results as $result) {
 }
 
 echo "Test end\n";
+
+async_test_server_stop($server);
 ?>
 --EXPECTF--
 Test start
@@ -56,7 +55,7 @@ Request 3: starting
 Request 1: completed (HTTP 200)
 Request 2: completed (HTTP 200)
 Request 3: completed (HTTP 200)
-Result: Request 1 result: Hello world
-Result: Request 2 result: Hello world
-Result: Request 3 result: Hello world
+Result: Request 1 result: Hello World
+Result: Request 2 result: Hello World
+Result: Request 3 result: Hello World
 Test end

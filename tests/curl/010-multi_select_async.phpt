@@ -4,29 +4,28 @@ cURL multi select with async operations
 curl
 --FILE--
 <?php
-include "../common/simple_http_server.php";
+require_once __DIR__ . '/../common/http_server.php';
 
 use function Async\spawn;
 use function Async\await;
 
-// Start test server
-$server_pid = start_test_server_process(8088);
+$server = async_test_server_start();
 
-function test_curl_multi() {
+function test_curl_multi($server) {
     echo "coroutine start\n";
 
     $mh = curl_multi_init();
 
     // First cURL handle
     $ch1 = curl_init();
-    curl_setopt($ch1, CURLOPT_URL, get_test_server_url('/'));
+    curl_setopt($ch1, CURLOPT_URL, "http://localhost:{$server->port}/");
     curl_setopt($ch1, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch1, CURLOPT_TIMEOUT, 5);
     curl_multi_add_handle($mh, $ch1);
 
     // Second cURL handle
     $ch2 = curl_init();
-    curl_setopt($ch2, CURLOPT_URL, get_test_server_url('/json'));
+    curl_setopt($ch2, CURLOPT_URL, "http://localhost:{$server->port}/json");
     curl_setopt($ch2, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch2, CURLOPT_TIMEOUT, 5);
     curl_multi_add_handle($mh, $ch2);
@@ -55,8 +54,8 @@ function test_curl_multi() {
     curl_close($ch1);
     curl_close($ch2);
 
-    var_dump($response1);
-    var_dump($response2);
+    echo "Response 1: $response1\n";
+    echo "Response 2: $response2\n";
 
     echo "coroutine end\n";
 }
@@ -67,22 +66,21 @@ function test_simple() {
 
 echo "start\n";
 
-$coroutine1 = spawn(test_curl_multi(...));
-$coroutine2 = spawn(test_simple(...));
+$coroutine1 = spawn(fn() => test_curl_multi($server));
+$coroutine2 = spawn(fn() => test_simple());
 
 await($coroutine1);
 await($coroutine2);
 
-// Stop server
-stop_test_server_process($server_pid);
-
 echo "end\n";
+
+async_test_server_stop($server);
 ?>
 --EXPECT--
 start
 coroutine start
 coroutine 2
-string(11) "Hello World"
-string(40) "{\"message\":\"Hello JSON\",\"status\":\"ok\"}"
+Response 1: Hello World
+Response 2: {"message":"Hello JSON","status":"ok"}
 coroutine end
 end

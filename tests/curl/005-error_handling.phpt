@@ -4,18 +4,18 @@ Async cURL error handling
 curl
 --FILE--
 <?php
-include "../../sapi/cli/tests/php_cli_server.inc";
+require_once __DIR__ . '/../common/http_server.php';
 
 use function Async\spawn;
 use function Async\awaitAll;
 
-php_cli_server_start();
+$server = async_test_server_start();
 
 function test_connection_error() {
     echo "Testing connection error\n";
     
     $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, "http://127.0.0.1:9999/nonexistent"); // Wrong port
+    curl_setopt($ch, CURLOPT_URL, "http://127.0.0.1:99991/nonexistent"); // Wrong port
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 2);
     curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 1);
@@ -33,12 +33,11 @@ function test_connection_error() {
     return $response;
 }
 
-function test_server_error() {
+function test_server_error($server) {
     echo "Testing server error\n";
     
-    // Test with invalid URL to trigger an error
     $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, "http://" . PHP_CLI_SERVER_ADDRESS . "/nonexistent.php");
+    curl_setopt($ch, CURLOPT_URL, "http://localhost:{$server->port}/error");
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 5);
     
@@ -55,11 +54,11 @@ function test_server_error() {
     return $response;
 }
 
-function test_not_found() {
+function test_not_found($server) {
     echo "Testing 404 error\n";
     
     $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, "http://" . PHP_CLI_SERVER_ADDRESS . "/missing.html");
+    curl_setopt($ch, CURLOPT_URL, "http://localhost:{$server->port}/missing.html");
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 5);
     
@@ -77,14 +76,16 @@ function test_not_found() {
 echo "Test start\n";
 
 $coroutines = [
-    spawn(test_connection_error(...)),
-    spawn(test_server_error(...)),
-    spawn(test_not_found(...)),
+    spawn(fn() => test_connection_error()),
+    spawn(fn() => test_server_error($server)),
+    spawn(fn() => test_not_found($server)),
 ];
 
 $results = awaitAll($coroutines);
 
 echo "Test end\n";
+
+async_test_server_stop($server);
 ?>
 --EXPECTF--
 Test start
@@ -94,7 +95,7 @@ Testing 404 error
 Connection failed as expected
 Error present: yes
 Error number: %d
-HTTP Code: 404
+HTTP Code: 500
 Error: none
 Response length: %d
 HTTP Code: 404

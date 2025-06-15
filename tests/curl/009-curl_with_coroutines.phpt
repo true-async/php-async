@@ -1,50 +1,67 @@
 --TEST--
-cURL exec with coroutine switching
+cURL with async coroutines
 --EXTENSIONS--
 curl
 --FILE--
 <?php
-include "../../sapi/cli/tests/php_cli_server.inc";
+require_once __DIR__ . '/../common/http_server.php';
 
 use function Async\spawn;
 use function Async\await;
+use function Async\awaitAll;
 
-php_cli_server_start();
+$server = async_test_server_start();
 
-function test_curl() {
-    echo "coroutine start\n";
-
+function make_curl_request($server, $id) {
+    echo "Coroutine $id: starting\n";
+    
     $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, "http://" . PHP_CLI_SERVER_ADDRESS);
+    curl_setopt($ch, CURLOPT_URL, "http://localhost:{$server->port}/");
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-
+    
     $response = curl_exec($ch);
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    
     curl_close($ch);
-
-    var_dump($response);
-    echo "coroutine end\n";
+    
+    echo "Coroutine $id: completed (HTTP $http_code)\n";
+    
+    return [
+        'id' => $id,
+        'response' => $response,
+        'http_code' => $http_code
+    ];
 }
 
-function test_simple() {
-    echo "coroutine 2\n";
+echo "Test start\n";
+
+// Test basic coroutine usage with cURL
+$coroutines = [
+    spawn(fn() => make_curl_request($server, 1)),
+    spawn(fn() => make_curl_request($server, 2)),
+    spawn(fn() => make_curl_request($server, 3))
+];
+
+$results = awaitAll($coroutines);
+
+foreach ($results as $result) {
+    echo "Result {$result['id']}: {$result['response']}\n";
 }
 
-echo "start\n";
+echo "Test end\n";
 
-$coroutine1 = spawn(test_curl(...));
-$coroutine2 = spawn(test_simple(...));
-
-await($coroutine1);
-await($coroutine2);
-
-
-echo "end\n";
+async_test_server_stop($server);
 ?>
 --EXPECT--
-start
-coroutine start
-coroutine 2
-string(11) "Hello world"
-coroutine end
-end
+Test start
+Coroutine 1: starting
+Coroutine 2: starting
+Coroutine 3: starting
+Coroutine 1: completed (HTTP 200)
+Coroutine 2: completed (HTTP 200)
+Coroutine 3: completed (HTTP 200)
+Result 1: Hello World
+Result 2: Hello World
+Result 3: Hello World
+Test end

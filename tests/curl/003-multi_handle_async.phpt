@@ -4,31 +4,31 @@ Async cURL multi-handle operations
 curl
 --FILE--
 <?php
-include "../../sapi/cli/tests/php_cli_server.inc";
+require_once __DIR__ . '/../common/http_server.php';
 
 use function Async\spawn;
 use function Async\await;
 
-php_cli_server_start();
+$server = async_test_server_start();
 
-function test_multi_handle() {
+function test_multi_handle($server) {
     echo "Starting multi-handle test\n";
     
     $mh = curl_multi_init();
     
-    // Create multiple cURL handles - all pointing to same URL with delays
+    // Create multiple cURL handles
     $ch1 = curl_init();
-    curl_setopt($ch1, CURLOPT_URL, "http://" . PHP_CLI_SERVER_ADDRESS);
+    curl_setopt($ch1, CURLOPT_URL, "http://localhost:{$server->port}/");
     curl_setopt($ch1, CURLOPT_RETURNTRANSFER, true);
     curl_multi_add_handle($mh, $ch1);
     
     $ch2 = curl_init();
-    curl_setopt($ch2, CURLOPT_URL, "http://" . PHP_CLI_SERVER_ADDRESS);
+    curl_setopt($ch2, CURLOPT_URL, "http://localhost:{$server->port}/");
     curl_setopt($ch2, CURLOPT_RETURNTRANSFER, true);
     curl_multi_add_handle($mh, $ch2);
     
     $ch3 = curl_init();
-    curl_setopt($ch3, CURLOPT_URL, "http://" . PHP_CLI_SERVER_ADDRESS);
+    curl_setopt($ch3, CURLOPT_URL, "http://localhost:{$server->port}/");
     curl_setopt($ch3, CURLOPT_RETURNTRANSFER, true);
     curl_multi_add_handle($mh, $ch3);
     
@@ -70,15 +70,17 @@ function test_multi_handle() {
 
 echo "Test start\n";
 
-$coroutine = spawn(test_multi_handle(...));
+$coroutine = spawn(fn() => test_multi_handle($server));
 $results = await($coroutine);
 
 echo "Test end\n";
+
+async_test_server_stop($server);
 ?>
 --EXPECT--
 Test start
 Starting multi-handle test
-Response 1: Hello world
-Response 2: Hello world
-Response 3: Hello world
+Response 1: Hello World
+Response 2: Hello World
+Response 3: Hello World
 Test end

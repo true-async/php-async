@@ -4,12 +4,12 @@ Async cURL timeout handling
 curl
 --FILE--
 <?php
-include "../../sapi/cli/tests/php_cli_server.inc";
+require_once __DIR__ . '/../common/http_server.php';
 
 use function Async\spawn;
 use function Async\await;
 
-php_cli_server_start();
+$server = async_test_server_start();
 
 function test_timeout() {
     echo "Testing timeout\n";
@@ -41,11 +41,11 @@ function test_timeout() {
     return $response;
 }
 
-function test_normal_request() {
+function test_normal_request($server) {
     echo "Testing normal request\n";
     
     $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, "http://" . PHP_CLI_SERVER_ADDRESS);
+    curl_setopt($ch, CURLOPT_URL, "http://localhost:{$server->port}/");
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 5);
     
@@ -62,24 +62,25 @@ function test_normal_request() {
 
 echo "Test start\n";
 
-$timeout_coroutine = spawn(test_timeout(...));
-$normal_coroutine = spawn(test_normal_request(...));
+$timeout_coroutine = spawn(fn() => test_timeout());
+$normal_coroutine = spawn(fn() => test_normal_request($server));
 
 $timeout_result = await($timeout_coroutine);
 $normal_result = await($normal_coroutine);
 
-
 echo "Test end\n";
+
+async_test_server_stop($server);
 ?>
 --EXPECTF--
 Test start
 Testing timeout
 Testing normal request
+Response: Hello World
+Error: none
 Duration: %f seconds
 Response: timeout
 Error present: yes
 Error number: %d
 HTTP Code: 0
-Response: Hello world
-Error: none
 Test end
