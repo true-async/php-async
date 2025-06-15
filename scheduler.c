@@ -337,6 +337,7 @@ static void async_scheduler_dtor(void)
 	zend_hash_destroy(&ASYNC_G(coroutines));
 	zend_hash_init(&ASYNC_G(coroutines), 0, NULL, NULL, 0);
 
+	ZEND_ASYNC_CURRENT_COROUTINE = NULL;
 	ZEND_ASYNC_GRACEFUL_SHUTDOWN = false;
 	ZEND_ASYNC_SCHEDULER_CONTEXT = false;
 	ZEND_ASYNC_DEACTIVATE;
@@ -623,11 +624,6 @@ void async_scheduler_main_coroutine_suspend(void)
 	async_coroutine_finalize(transfer, coroutine);
 
 	coroutine->context.cleanup = NULL;
-
-	// Current coroutine is no longer valid.
-	ZEND_ASYNC_CURRENT_COROUTINE = NULL;
-	// Async context is no longer valid.
-	ZEND_ASYNC_DEACTIVATE;
 
 	OBJ_RELEASE(&coroutine->std);
 

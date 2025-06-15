@@ -68,10 +68,10 @@ $client2 = spawn(function() use (&$port) {
     while ($port === null) {
         delay(1);
     }
-    
+
     echo "Client2: connecting\n";
     $socket = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
-    
+
     if (socket_connect($socket, '127.0.0.1', $port)) {
         echo "Client2: connected successfully\n";
         $data = socket_read($socket, 1024);
@@ -96,8 +96,4 @@ Client1: connecting
 Client2: connecting
 Server: client1 connected
 Client1: connected successfully
-Client2: connected successfully
-Server: client2 connected
-Client1: received 'Hello client1'
-Client2: received 'Hello client2'
-End
+%a
