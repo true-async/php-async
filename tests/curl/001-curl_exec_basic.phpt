@@ -4,19 +4,18 @@ Basic async curl_exec GET request
 curl
 --FILE--
 <?php
-include "../common/simple_http_server.php";
+include "../../sapi/cli/tests/php_cli_server.inc";
 
 use function Async\spawn;
 use function Async\await;
 
-// Start test server
-$server_pid = start_test_server_process(8088);
+php_cli_server_start();
 
 function test_basic_get() {
     echo "Starting basic GET test\n";
     
     $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, get_test_server_url('/'));
+    curl_setopt($ch, CURLOPT_URL, "http://" . PHP_CLI_SERVER_ADDRESS);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 5);
     
@@ -37,10 +36,6 @@ echo "Test start\n";
 
 $coroutine = spawn(test_basic_get(...));
 $result = await($coroutine);
-
-// Stop server
-stop_test_server_process($server_pid);
-
 echo "Test end\n";
 ?>
 --EXPECT--
@@ -48,5 +43,5 @@ Test start
 Starting basic GET test
 HTTP Code: 200
 Error: none
-Response: Hello World
+Response: Hello world
 Test end

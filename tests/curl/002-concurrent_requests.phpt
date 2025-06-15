@@ -4,19 +4,21 @@ Concurrent async cURL requests
 curl
 --FILE--
 <?php
-include "../common/simple_http_server.php";
+include "../../sapi/cli/tests/php_cli_server.inc";
 
 use function Async\spawn;
 use function Async\awaitAll;
 
-// Start test server
-$server_pid = start_test_server_process(8088);
+php_cli_server_start();
 
-function make_request($url, $id) {
+function make_request_with_delay($delay_ms, $id) {
     echo "Request $id: starting\n";
     
+    // Add delay before making the request
+    usleep($delay_ms * 1000);
+    
     $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_URL, "http://" . PHP_CLI_SERVER_ADDRESS);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 5);
     
@@ -31,11 +33,11 @@ function make_request($url, $id) {
 
 echo "Test start\n";
 
-// Launch multiple concurrent requests
+// Launch multiple concurrent requests with different delays
 $coroutines = [
-    spawn(fn() => make_request(get_test_server_url('/'), 1)),
-    spawn(fn() => make_request(get_test_server_url('/json'), 2)),
-    spawn(fn() => make_request(get_test_server_url('/slow'), 3)),
+    spawn(fn() => make_request_with_delay(10, 1)),
+    spawn(fn() => make_request_with_delay(20, 2)),
+    spawn(fn() => make_request_with_delay(30, 3)),
 ];
 
 $results = awaitAll($coroutines);
@@ -43,9 +45,6 @@ $results = awaitAll($coroutines);
 foreach ($results as $result) {
     echo "Result: $result\n";
 }
-
-// Stop server
-stop_test_server_process($server_pid);
 
 echo "Test end\n";
 ?>
@@ -57,7 +56,7 @@ Request 3: starting
 Request 1: completed (HTTP 200)
 Request 2: completed (HTTP 200)
 Request 3: completed (HTTP 200)
-Result: Request 1 result: Hello World
-Result: Request 2 result: {"message":"Hello JSON","status":"ok"}
-Result: Request 3 result: Slow Response
+Result: Request 1 result: Hello world
+Result: Request 2 result: Hello world
+Result: Request 3 result: Hello world
 Test end
