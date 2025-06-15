@@ -4,19 +4,18 @@ cURL exec with coroutine switching
 curl
 --FILE--
 <?php
-include "../common/simple_http_server.php";
+include "../../sapi/cli/tests/php_cli_server.inc";
 
 use function Async\spawn;
 use function Async\await;
 
-// Start test server
-$server_pid = start_test_server_process(8088);
+php_cli_server_start();
 
 function test_curl() {
     echo "coroutine start\n";
 
     $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, get_test_server_url('/'));
+    curl_setopt($ch, CURLOPT_URL, "http://" . PHP_CLI_SERVER_ADDRESS);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 5);
 
@@ -39,8 +38,6 @@ $coroutine2 = spawn(test_simple(...));
 await($coroutine1);
 await($coroutine2);
 
-// Stop server
-stop_test_server_process($server_pid);
 
 echo "end\n";
 ?>
@@ -48,6 +45,6 @@ echo "end\n";
 start
 coroutine start
 coroutine 2
-string(11) "Hello World"
+string(11) "Hello world"
 coroutine end
 end

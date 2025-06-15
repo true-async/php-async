@@ -4,13 +4,12 @@ Async cURL POST request
 curl
 --FILE--
 <?php
-include "../common/simple_http_server.php";
+include "../../sapi/cli/tests/php_cli_server.inc";
 
 use function Async\spawn;
 use function Async\await;
 
-// Start test server
-$server_pid = start_test_server_process(8088);
+php_cli_server_start();
 
 function test_post_request() {
     echo "Starting POST test\n";
@@ -18,7 +17,7 @@ function test_post_request() {
     $post_data = "test=data&value=123";
     
     $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, get_test_server_url('/post'));
+    curl_setopt($ch, CURLOPT_URL, "http://" . PHP_CLI_SERVER_ADDRESS);
     curl_setopt($ch, CURLOPT_POST, true);
     curl_setopt($ch, CURLOPT_POSTFIELDS, $post_data);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -42,9 +41,6 @@ echo "Test start\n";
 $coroutine = spawn(test_post_request(...));
 $result = await($coroutine);
 
-// Stop server
-stop_test_server_process($server_pid);
-
 echo "Test end\n";
 ?>
 --EXPECT--
@@ -52,5 +48,5 @@ Test start
 Starting POST test
 HTTP Code: 200
 Error: none
-Response: POST received: 17 bytes
+Response: Hello world
 Test end

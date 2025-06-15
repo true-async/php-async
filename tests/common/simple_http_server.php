@@ -7,7 +7,8 @@
 
 function start_test_server_process($port = 8088) {
     $server_script = __FILE__;
-    $cmd = PHP_BINARY . " $server_script $port > /dev/null 2>&1 & echo $!";
+    $php_executable = getenv('TEST_PHP_EXECUTABLE') ?: PHP_BINARY;
+    $cmd = $php_executable . " $server_script $port > /dev/null 2>&1 & echo $!";
     $pid = exec($cmd);
     
     // Wait a bit for server to start

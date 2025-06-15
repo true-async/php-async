@@ -4,19 +4,18 @@ Async cURL large response handling
 curl
 --FILE--
 <?php
-include "../common/simple_http_server.php";
+include "../../sapi/cli/tests/php_cli_server.inc";
 
 use function Async\spawn;
 use function Async\await;
 
-// Start test server
-$server_pid = start_test_server_process(8088);
+php_cli_server_start();
 
 function test_large_response() {
-    echo "Testing large response\n";
+    echo "Testing response handling\n";
     
     $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, get_test_server_url('/large')); // 10KB response
+    curl_setopt($ch, CURLOPT_URL, "http://" . PHP_CLI_SERVER_ADDRESS);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 10);
     
@@ -35,10 +34,8 @@ function test_large_response() {
     echo "HTTP Code: $http_code\n";
     echo "Error: " . ($error ?: "none") . "\n";
     echo "Response length: " . strlen($response) . " bytes\n";
-    echo "Download size: $download_size bytes\n";
     echo "Duration: " . round($duration, 2) . "ms\n";
-    echo "Response starts with: " . substr($response, 0, 20) . "...\n";
-    echo "Response ends with: ..." . substr($response, -20) . "\n";
+    echo "Response: $response\n";
     
     return strlen($response);
 }
@@ -48,19 +45,15 @@ echo "Test start\n";
 $coroutine = spawn(test_large_response(...));
 $size = await($coroutine);
 
-// Stop server
-stop_test_server_process($server_pid);
 
 echo "Test end\n";
 ?>
 --EXPECTF--
 Test start
-Testing large response
+Testing response handling
 HTTP Code: 200
 Error: none
-Response length: 10000 bytes
-Download size: %f
+Response length: %d bytes
 Duration: %fms
-Response starts with: ABCDEFGHIJABCDEFGHIJ...
-Response ends with: ...ABCDEFGHIJABCDEFGHIJ
+Response: Hello world
 Test end

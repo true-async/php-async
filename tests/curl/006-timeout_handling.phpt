@@ -4,21 +4,21 @@ Async cURL timeout handling
 curl
 --FILE--
 <?php
-include "../common/simple_http_server.php";
+include "../../sapi/cli/tests/php_cli_server.inc";
 
 use function Async\spawn;
 use function Async\await;
 
-// Start test server
-$server_pid = start_test_server_process(8088);
+php_cli_server_start();
 
 function test_timeout() {
     echo "Testing timeout\n";
     
     $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, get_test_server_url('/very-slow')); // 2 second response
+    curl_setopt($ch, CURLOPT_URL, "http://192.0.2.1/timeout"); // Non-routable IP for timeout
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 1); // 1 second timeout
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 1);
     
     $start_time = microtime(true);
     $response = curl_exec($ch);
@@ -45,7 +45,7 @@ function test_normal_request() {
     echo "Testing normal request\n";
     
     $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, get_test_server_url('/'));
+    curl_setopt($ch, CURLOPT_URL, "http://" . PHP_CLI_SERVER_ADDRESS);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 5);
     
@@ -68,8 +68,6 @@ $normal_coroutine = spawn(test_normal_request(...));
 $timeout_result = await($timeout_coroutine);
 $normal_result = await($normal_coroutine);
 
-// Stop server
-stop_test_server_process($server_pid);
 
 echo "Test end\n";
 ?>
@@ -82,6 +80,6 @@ Response: timeout
 Error present: yes
 Error number: %d
 HTTP Code: 0
-Response: Hello World
+Response: Hello world
 Error: none
 Test end

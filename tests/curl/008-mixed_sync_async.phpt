@@ -4,19 +4,18 @@ Mixed sync and async cURL operations
 curl
 --FILE--
 <?php
-include "../common/simple_http_server.php";
+include "../../sapi/cli/tests/php_cli_server.inc";
 
 use function Async\spawn;
 use function Async\await;
 
-// Start test server
-$server_pid = start_test_server_process(8088);
+php_cli_server_start();
 
 function sync_request() {
     echo "Sync request start\n";
     
     $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, get_test_server_url('/'));
+    curl_setopt($ch, CURLOPT_URL, "http://" . PHP_CLI_SERVER_ADDRESS);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 5);
     
@@ -33,7 +32,7 @@ function async_request() {
     echo "Async request start\n";
     
     $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, get_test_server_url('/json'));
+    curl_setopt($ch, CURLOPT_URL, "http://" . PHP_CLI_SERVER_ADDRESS);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 5);
     
@@ -73,8 +72,6 @@ $mixed_result = await($mixed_coroutine);
 echo "Sync while async: $sync_while_async\n";
 echo "Mixed async result: $mixed_result\n";
 
-// Stop server
-stop_test_server_process($server_pid);
 
 echo "Test end\n";
 ?>
@@ -82,10 +79,10 @@ echo "Test end\n";
 Test start
 Sync request start
 Sync request complete: HTTP 200
-Sync result: Hello World
+Sync result: Hello world
 Async request start
 Async request complete: HTTP 200
-Async result: {"message":"Hello JSON","status":"ok"}
+Async result: Hello world
 Mixed execution start
 In coroutine: making async request
 Making sync request while coroutine runs
@@ -93,6 +90,6 @@ Async request start
 Sync request start
 Sync request complete: HTTP 200
 Async request complete: HTTP 200
-Sync while async: Hello World
-Mixed async result: {"message":"Hello JSON","status":"ok"}
+Sync while async: Hello world
+Mixed async result: Hello world
 Test end

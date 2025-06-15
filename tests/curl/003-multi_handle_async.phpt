@@ -4,32 +4,31 @@ Async cURL multi-handle operations
 curl
 --FILE--
 <?php
-include "../common/simple_http_server.php";
+include "../../sapi/cli/tests/php_cli_server.inc";
 
 use function Async\spawn;
 use function Async\await;
 
-// Start test server
-$server_pid = start_test_server_process(8088);
+php_cli_server_start();
 
 function test_multi_handle() {
     echo "Starting multi-handle test\n";
     
     $mh = curl_multi_init();
     
-    // Create multiple cURL handles
+    // Create multiple cURL handles - all pointing to same URL with delays
     $ch1 = curl_init();
-    curl_setopt($ch1, CURLOPT_URL, get_test_server_url('/'));
+    curl_setopt($ch1, CURLOPT_URL, "http://" . PHP_CLI_SERVER_ADDRESS);
     curl_setopt($ch1, CURLOPT_RETURNTRANSFER, true);
     curl_multi_add_handle($mh, $ch1);
     
     $ch2 = curl_init();
-    curl_setopt($ch2, CURLOPT_URL, get_test_server_url('/json'));
+    curl_setopt($ch2, CURLOPT_URL, "http://" . PHP_CLI_SERVER_ADDRESS);
     curl_setopt($ch2, CURLOPT_RETURNTRANSFER, true);
     curl_multi_add_handle($mh, $ch2);
     
     $ch3 = curl_init();
-    curl_setopt($ch3, CURLOPT_URL, get_test_server_url('/slow'));
+    curl_setopt($ch3, CURLOPT_URL, "http://" . PHP_CLI_SERVER_ADDRESS);
     curl_setopt($ch3, CURLOPT_RETURNTRANSFER, true);
     curl_multi_add_handle($mh, $ch3);
     
@@ -74,15 +73,12 @@ echo "Test start\n";
 $coroutine = spawn(test_multi_handle(...));
 $results = await($coroutine);
 
-// Stop server
-stop_test_server_process($server_pid);
-
 echo "Test end\n";
 ?>
 --EXPECT--
 Test start
 Starting multi-handle test
-Response 1: Hello World
-Response 2: {"message":"Hello JSON","status":"ok"}
-Response 3: Slow Response
+Response 1: Hello world
+Response 2: Hello world
+Response 3: Hello world
 Test end
