@@ -553,6 +553,11 @@ void async_scheduler_launch(void)
 		return;
 	}
 
+	zend_async_call_main_coroutine_start_handlers(&main_coroutine->coroutine);
+	if (UNEXPECTED(EG(exception))) {
+		return;
+	}
+
 	// Copy the main coroutine context
 	main_coroutine->context = *EG(main_fiber_context);
 	// Set the current fiber context to the main coroutine context

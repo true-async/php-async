@@ -251,7 +251,7 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(zend_fiber_transfer *transfer)
 
 	/* Call switch handlers for coroutine entering */
 	if (UNEXPECTED(&coroutine->coroutine.switch_handlers != NULL)) {
-		ZEND_COROUTINE_CALL_SWITCH_HANDLERS(&coroutine->coroutine, true, false);
+		ZEND_COROUTINE_ENTER(&coroutine->coroutine);
 	}
 
 	/* Determine the current error_reporting ini setting. */
