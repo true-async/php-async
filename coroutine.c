@@ -53,18 +53,17 @@ METHOD(asHiPriority)
 
 METHOD(getContext)
 {
-	async_coroutine_t *coroutine;
-
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
 
 	if (coroutine->coroutine.context == NULL) {
 		RETURN_NULL();
 	}
 
-	// TODO: Return actual context object when Context API is implemented
-	RETURN_NULL();
+	// Return the context object
+	async_context_t *context = (async_context_t *) coroutine->coroutine.context;
+	RETURN_OBJ_COPY(&context->std);
 }
 
 METHOD(getResult)
