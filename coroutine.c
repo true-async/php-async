@@ -18,6 +18,7 @@
 #include "context.h"
 #include "coroutine_arginfo.h"
 #include "exceptions.h"
+#include "iterator.h"
 #include "php_async.h"
 
 #include "scheduler.h"
@@ -38,13 +39,9 @@ static zend_function coroutine_root_function = { ZEND_INTERNAL_FUNCTION };
 
 METHOD(getId)
 {
-	async_coroutine_t *coroutine;
-
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
-
-	RETURN_LONG(coroutine->std.handle);
+	RETURN_LONG(Z_OBJ_P(ZEND_THIS)->handle);
 }
 
 METHOD(asHiPriority)
@@ -72,11 +69,9 @@ METHOD(getContext)
 
 METHOD(getResult)
 {
-	async_coroutine_t *coroutine;
-
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
 
 	if (!ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine)) {
 		RETURN_NULL();
@@ -91,11 +86,9 @@ METHOD(getResult)
 
 METHOD(getException)
 {
-	async_coroutine_t *coroutine;
-
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
 
 	if (!ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine)) {
 		zend_throw_exception(zend_ce_error, "Cannot get exception of a running coroutine", 0);
@@ -118,11 +111,9 @@ METHOD(getTrace)
 
 METHOD(getSpawnFileAndLine)
 {
-	async_coroutine_t *coroutine;
-
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
 
 	array_init(return_value);
 
@@ -137,14 +128,12 @@ METHOD(getSpawnFileAndLine)
 
 METHOD(getSpawnLocation)
 {
-	async_coroutine_t *coroutine;
-
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
 
 	if (coroutine->coroutine.filename) {
-		RETURN_STR(zend_strpprintf(0, "%s:%d", 
+		RETURN_STR(zend_strpprintf(0, "%s:%d",
 			ZSTR_VAL(coroutine->coroutine.filename), 
 			coroutine->coroutine.lineno));
 	} else {
@@ -154,11 +143,9 @@ METHOD(getSpawnLocation)
 
 METHOD(getSuspendFileAndLine)
 {
-	async_coroutine_t *coroutine;
-
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
 
 	array_init(return_value);
 
@@ -173,11 +160,9 @@ METHOD(getSuspendFileAndLine)
 
 METHOD(getSuspendLocation)
 {
-	async_coroutine_t *coroutine;
-
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
 
 	if (coroutine->coroutine.waker && coroutine->coroutine.waker->filename) {
 		RETURN_STR(zend_strpprintf(0, "%s:%d", 
@@ -190,22 +175,18 @@ METHOD(getSuspendLocation)
 
 METHOD(isStarted)
 {
-	async_coroutine_t *coroutine;
-
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
 
 	RETURN_BOOL(ZEND_COROUTINE_IS_STARTED(&coroutine->coroutine));
 }
 
 METHOD(isQueued)
 {
-	async_coroutine_t *coroutine;
-
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
 
 	if (coroutine->coroutine.waker == NULL) {
 		RETURN_FALSE;
@@ -216,11 +197,9 @@ METHOD(isQueued)
 
 METHOD(isRunning)
 {
-	async_coroutine_t *coroutine;
-
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
 
 	// Coroutine is running if it's the current one and is started but not finished
 	RETURN_BOOL(ZEND_ASYNC_CURRENT_COROUTINE == &coroutine->coroutine && 
@@ -230,33 +209,27 @@ METHOD(isRunning)
 
 METHOD(isSuspended)
 {
-	async_coroutine_t *coroutine;
-
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
 
 	RETURN_BOOL(ZEND_COROUTINE_SUSPENDED(&coroutine->coroutine));
 }
 
 METHOD(isCancelled)
 {
-	async_coroutine_t *coroutine;
-
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
 
 	RETURN_BOOL(ZEND_COROUTINE_IS_CANCELLED(&coroutine->coroutine));
 }
 
 METHOD(isCancellationRequested)
 {
-	async_coroutine_t *coroutine;
-
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
 
 	// TODO: Implement cancellation request tracking in waker
 	// For now, return same as isCancelled
@@ -265,25 +238,19 @@ METHOD(isCancellationRequested)
 
 METHOD(isFinished)
 {
-	async_coroutine_t *coroutine;
-
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
 
 	RETURN_BOOL(ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine));
 }
 
 METHOD(getAwaitingInfo)
 {
-	async_coroutine_t *coroutine;
-	zend_array *info;
-
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
-
-	info = ZEND_ASYNC_GET_AWAITING_INFO(&coroutine->coroutine);
+	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	zend_array *info = ZEND_ASYNC_GET_AWAITING_INFO(&coroutine->coroutine);
 
 	if (info == NULL) {
 		array_init(return_value);
@@ -294,14 +261,13 @@ METHOD(getAwaitingInfo)
 
 METHOD(cancel)
 {
-	async_coroutine_t *coroutine;
 	zend_object *exception;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_OBJ_OF_CLASS(exception, async_ce_cancellation_exception)
+		Z_PARAM_OBJ_OF_CLASS(exception, zend_ce_cancellation_exception)
 	ZEND_PARSE_PARAMETERS_END();
 
-	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
 
 	ZEND_ASYNC_CANCEL(&coroutine->coroutine, exception, false);
 }
@@ -318,14 +284,140 @@ METHOD(onFinally)
 
 	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
 
-	// TODO: Implement callback registration for coroutine completion
-	// This requires adding callback to the coroutine event
-	zend_throw_error(NULL, "onFinally is not yet implemented");
+	// Check if coroutine is already finished
+	if (ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine)) {
+		zend_throw_error(NULL, "Cannot add finally handler to a finished coroutine");
+		RETURN_THROWS();
+	}
+
+	// Verify that the function is callable
+	if (!zend_is_callable(&fci.function_name, 0, NULL)) {
+		zend_throw_error(NULL, "Finally handler must be callable");
+		RETURN_THROWS();
+	}
+
+	// Lazy initialization of finally_handlers array
+	if (coroutine->finally_handlers == NULL) {
+		coroutine->finally_handlers = zend_new_array(0);
+	}
+
+	// Add the callable to the finally handlers array
+	zval callable;
+	ZVAL_COPY(&callable, &fci.function_name);
+	zend_hash_next_index_insert(coroutine->finally_handlers, &callable);
 }
 
 ///////////////////////////////////////////////////////////
 /// Coroutine methods end
 ///////////////////////////////////////////////////////////
+static void finally_handlers_coroutine_callback(zend_async_event_t *event,
+	zend_async_event_callback_t *callback,
+	void * result,
+	zend_object *exception
+)
+{
+	zend_coroutine_t *coroutine = ((zend_coroutine_event_callback_t *) callback)->coroutine;
+
+	if (coroutine != NULL && coroutine->extended_data != NULL) {
+		async_coroutine_t *async_coroutine = (async_coroutine_t *) coroutine->extended_data;
+		coroutine->extended_data = NULL;
+		HashTable *finally_handlers = async_coroutine->finally_handlers;
+		async_coroutine->finally_handlers = NULL;
+		zend_array_destroy(finally_handlers);
+		OBJ_RELEASE(&async_coroutine->std);
+	}
+}
+
+typedef struct finally_handlers_iterator_t {
+	async_iterator_t iterator;
+	async_coroutine_t *coroutine;
+} finally_handlers_iterator_t;
+
+static zend_result finally_handlers_iterator_handler(async_iterator_t *iterator, zval *current, zval *key)
+{
+	zval rv;
+	ZVAL_UNDEF(&rv);
+	zval param;
+	ZVAL_OBJ(&param, &((finally_handlers_iterator_t *) iterator)->coroutine->std);
+
+	call_user_function(NULL, NULL, current, &rv, 1, &param);
+	zval_ptr_dtor(&rv);
+
+	return SUCCESS;
+}
+
+static void finally_handlers_entry(void)
+{
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (UNEXPECTED(coroutine == NULL)) {
+		zend_throw_error(NULL, "Cannot run finally handlers in a non-coroutine context");
+		return;
+	}
+
+	async_coroutine_t *finalized_coroutine = coroutine->extended_data;
+
+	if (finalized_coroutine == NULL || finalized_coroutine->finally_handlers == NULL) {
+		return;
+	}
+
+	zval handlers;
+	ZVAL_ARR(&handlers, finalized_coroutine->finally_handlers);
+
+	finally_handlers_iterator_t * iterator = (finally_handlers_iterator_t *) async_new_iterator(
+	   &handlers,
+	   NULL,
+	   NULL,
+	   finally_handlers_iterator_handler,
+	   0,
+	   sizeof(finally_handlers_iterator_t)
+   );
+
+	if (UNEXPECTED(iterator == NULL)) {
+		zend_array_destroy(finalized_coroutine->finally_handlers);
+		finalized_coroutine->finally_handlers = NULL;
+		return;
+	}
+
+	iterator->coroutine = finalized_coroutine;
+	finalized_coroutine->finally_handlers = NULL;
+
+	async_run_iterator(&iterator->iterator);
+}
+
+static void async_coroutine_call_finally_handlers(async_coroutine_t *coroutine)
+{
+	if (coroutine->finally_handlers == NULL || zend_hash_num_elements(coroutine->finally_handlers) == 0) {
+		return;
+	}
+
+	// Add coroutine finally handler
+	zend_coroutine_event_callback_t * callback = zend_async_coroutine_callback_new(
+		&coroutine->coroutine, finally_handlers_coroutine_callback,0
+	);
+	if (UNEXPECTED(EG(exception))) {
+		return;
+	}
+
+	zend_coroutine_t * iterator_coroutine = ZEND_ASYNC_SPAWN();
+	if (UNEXPECTED(iterator_coroutine == NULL || EG(exception))) {
+		efree(callback);
+		return;
+	}
+
+	iterator_coroutine->event.add_callback(
+		&iterator_coroutine->event, &callback->base
+	);
+	if (UNEXPECTED(EG(exception))) {
+		iterator_coroutine->waker->status = ZEND_ASYNC_WAKER_IGNORED;
+		efree(callback);
+		return;
+	}
+
+	iterator_coroutine->internal_entry = finally_handlers_entry;
+	iterator_coroutine->extended_data = coroutine;
+	GC_ADDREF(&coroutine->std);
+}
 
 static zend_always_inline async_coroutine_t *coroutine_from_context(zend_fiber_context *context)
 {
@@ -397,6 +489,9 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 	if (coroutine->coroutine.internal_context != NULL) {
 		zend_async_coroutine_internal_context_dispose(&coroutine->coroutine);
 	}
+
+	// Call finally handlers if any
+	async_coroutine_call_finally_handlers(coroutine);
 
 	zend_exception_restore();
 
@@ -799,6 +894,11 @@ static void coroutine_object_destroy(zend_object *object)
 		coroutine->coroutine.exception = NULL;
 		OBJ_RELEASE(exception);
 	}
+
+	if (coroutine->finally_handlers) {
+		zend_array_destroy(coroutine->finally_handlers);
+		coroutine->finally_handlers = NULL;
+	}
 }
 
 static void coroutine_free(zend_object *object)
@@ -834,6 +934,7 @@ static zend_object *coroutine_object_create(zend_class_entry *class_entry)
 
 	coroutine->flags = ZEND_FIBER_STATUS_INIT;
 	coroutine->coroutine.extended_data = NULL;
+	coroutine->finally_handlers = NULL;
 
 	zend_object_std_init(&coroutine->std, class_entry);
 	object_properties_init(&coroutine->std, class_entry);

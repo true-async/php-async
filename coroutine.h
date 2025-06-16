@@ -44,6 +44,9 @@ struct _async_coroutine_s {
 	HashTable *context_values;     /* Storage for actual values */
 	HashTable *context_obj_keys;   /* Storage for object keys to hold references */
 
+	/* Finally handlers array (zval callables) - lazy initialization */
+	HashTable *finally_handlers;
+
 	/* PHP object handle. */
 	zend_object std;
 };
