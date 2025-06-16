@@ -37,6 +37,8 @@ static zend_function coroutine_root_function = { ZEND_INTERNAL_FUNCTION };
 /// Coroutine methods
 ///////////////////////////////////////////////////////////
 
+#define THIS_COROUTINE ((async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS)))
+
 METHOD(getId)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
@@ -55,7 +57,7 @@ METHOD(getContext)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	async_coroutine_t *coroutine = THIS_COROUTINE;
 
 	if (coroutine->coroutine.context == NULL) {
 		async_context_t * context = async_context_new();
@@ -74,7 +76,7 @@ METHOD(getResult)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	async_coroutine_t *coroutine = THIS_COROUTINE;
 
 	if (!ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine)) {
 		RETURN_NULL();
@@ -91,7 +93,7 @@ METHOD(getException)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	async_coroutine_t *coroutine = THIS_COROUTINE;
 
 	if (!ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine)) {
 		async_throw_error("Cannot get exception of a running coroutine");
@@ -116,7 +118,7 @@ METHOD(getSpawnFileAndLine)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	async_coroutine_t *coroutine = THIS_COROUTINE;
 
 	array_init(return_value);
 
@@ -133,7 +135,7 @@ METHOD(getSpawnLocation)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	async_coroutine_t *coroutine = THIS_COROUTINE;
 
 	if (coroutine->coroutine.filename) {
 		RETURN_STR(zend_strpprintf(0, "%s:%d",
@@ -148,7 +150,7 @@ METHOD(getSuspendFileAndLine)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	async_coroutine_t *coroutine = THIS_COROUTINE;
 
 	array_init(return_value);
 
@@ -165,7 +167,7 @@ METHOD(getSuspendLocation)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	async_coroutine_t *coroutine = THIS_COROUTINE;
 
 	if (coroutine->coroutine.waker && coroutine->coroutine.waker->filename) {
 		RETURN_STR(zend_strpprintf(0, "%s:%d", 
@@ -179,17 +181,14 @@ METHOD(getSuspendLocation)
 METHOD(isStarted)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
-
-	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
-
-	RETURN_BOOL(ZEND_COROUTINE_IS_STARTED(&coroutine->coroutine));
+	RETURN_BOOL(ZEND_COROUTINE_IS_STARTED(&THIS_COROUTINE->coroutine));
 }
 
 METHOD(isQueued)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	async_coroutine_t *coroutine = THIS_COROUTINE;
 
 	if (coroutine->coroutine.waker == NULL) {
 		RETURN_FALSE;
@@ -202,37 +201,32 @@ METHOD(isRunning)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	async_coroutine_t *coroutine = THIS_COROUTINE;
 
 	// Coroutine is running if it's the current one and is started but not finished
-	RETURN_BOOL(ZEND_ASYNC_CURRENT_COROUTINE == &coroutine->coroutine && 
-				ZEND_COROUTINE_IS_STARTED(&coroutine->coroutine) && 
-				!ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine));
+	RETURN_BOOL(ZEND_COROUTINE_IS_STARTED(&coroutine->coroutine)
+		&& false == ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine));
 }
 
 METHOD(isSuspended)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
-
-	RETURN_BOOL(ZEND_COROUTINE_SUSPENDED(&coroutine->coroutine));
+	RETURN_BOOL(ZEND_COROUTINE_SUSPENDED(&THIS_COROUTINE->coroutine));
 }
 
 METHOD(isCancelled)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
-
-	RETURN_BOOL(ZEND_COROUTINE_IS_CANCELLED(&coroutine->coroutine));
+	RETURN_BOOL(ZEND_COROUTINE_IS_CANCELLED(&THIS_COROUTINE->coroutine));
 }
 
 METHOD(isCancellationRequested)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	async_coroutine_t *coroutine = THIS_COROUTINE;
 
 	// TODO: Implement cancellation request tracking in waker
 	// For now, return same as isCancelled
@@ -243,17 +237,14 @@ METHOD(isFinished)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
-
-	RETURN_BOOL(ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine));
+	RETURN_BOOL(ZEND_COROUTINE_IS_FINISHED(&THIS_COROUTINE->coroutine));
 }
 
 METHOD(getAwaitingInfo)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
-	zend_array *info = ZEND_ASYNC_GET_AWAITING_INFO(&coroutine->coroutine);
+	zend_array *info = ZEND_ASYNC_GET_AWAITING_INFO(&THIS_COROUTINE->coroutine);
 
 	if (info == NULL) {
 		array_init(return_value);
@@ -270,14 +261,11 @@ METHOD(cancel)
 		Z_PARAM_OBJ_OF_CLASS(exception, zend_ce_cancellation_exception)
 	ZEND_PARSE_PARAMETERS_END();
 
-	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
-
-	ZEND_ASYNC_CANCEL(&coroutine->coroutine, exception, false);
+	ZEND_ASYNC_CANCEL(&THIS_COROUTINE->coroutine, exception, false);
 }
 
 METHOD(onFinally)
 {
-	async_coroutine_t *coroutine;
 	zend_fcall_info fci;
 	zend_fcall_info_cache fci_cache;
 
@@ -285,7 +273,7 @@ METHOD(onFinally)
 		Z_PARAM_FUNC(fci, fci_cache)
 	ZEND_PARSE_PARAMETERS_END();
 
-	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+	async_coroutine_t *coroutine = THIS_COROUTINE;
 
 	// Check if coroutine is already finished
 	if (ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine)) {
