@@ -38,92 +38,289 @@ static zend_function coroutine_root_function = { ZEND_INTERNAL_FUNCTION };
 
 METHOD(getId)
 {
+	async_coroutine_t *coroutine;
 
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+
+	RETURN_LONG(coroutine->std.handle);
 }
 
 METHOD(asHiPriority)
 {
-
+	// TODO: Implement priority handling in scheduler
+	// For now, just return the same coroutine
+	RETURN_ZVAL(ZEND_THIS, 1, 0);
 }
 
 METHOD(getContext)
 {
+	async_coroutine_t *coroutine;
 
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+
+	if (coroutine->coroutine.context == NULL) {
+		RETURN_NULL();
+	}
+
+	// TODO: Return actual context object when Context API is implemented
+	RETURN_NULL();
+}
+
+METHOD(getResult)
+{
+	async_coroutine_t *coroutine;
+
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+
+	if (!ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine)) {
+		RETURN_NULL();
+	}
+
+	if (Z_TYPE(coroutine->coroutine.result) == IS_UNDEF) {
+		RETURN_NULL();
+	}
+
+	RETURN_ZVAL(&coroutine->coroutine.result, 1, 0);
+}
+
+METHOD(getException)
+{
+	async_coroutine_t *coroutine;
+
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+
+	if (!ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine)) {
+		zend_throw_exception(zend_ce_error, "Cannot get exception of a running coroutine", 0);
+		RETURN_THROWS();
+	}
+
+	if (coroutine->coroutine.exception == NULL) {
+		RETURN_NULL();
+	}
+
+	RETURN_OBJ_COPY(coroutine->coroutine.exception);
 }
 
 METHOD(getTrace)
 {
-
+	// TODO: Implement debug trace collection
+	// This would require fiber stack trace functionality
+	array_init(return_value);
 }
 
 METHOD(getSpawnFileAndLine)
 {
+	async_coroutine_t *coroutine;
 
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+
+	array_init(return_value);
+
+	if (coroutine->coroutine.filename) {
+		add_next_index_str(return_value, zend_string_copy(coroutine->coroutine.filename));
+	} else {
+		add_next_index_null(return_value);
+	}
+
+	add_next_index_long(return_value, coroutine->coroutine.lineno);
 }
 
 METHOD(getSpawnLocation)
 {
+	async_coroutine_t *coroutine;
 
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+
+	if (coroutine->coroutine.filename) {
+		RETURN_STR(zend_strpprintf(0, "%s:%d", 
+			ZSTR_VAL(coroutine->coroutine.filename), 
+			coroutine->coroutine.lineno));
+	} else {
+		RETURN_STRING("unknown");
+	}
 }
 
 METHOD(getSuspendFileAndLine)
 {
+	async_coroutine_t *coroutine;
 
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+
+	array_init(return_value);
+
+	if (coroutine->coroutine.waker && coroutine->coroutine.waker->filename) {
+		add_next_index_str(return_value, zend_string_copy(coroutine->coroutine.waker->filename));
+		add_next_index_long(return_value, coroutine->coroutine.waker->lineno);
+	} else {
+		add_next_index_null(return_value);
+		add_next_index_long(return_value, 0);
+	}
 }
 
 METHOD(getSuspendLocation)
 {
+	async_coroutine_t *coroutine;
 
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+
+	if (coroutine->coroutine.waker && coroutine->coroutine.waker->filename) {
+		RETURN_STR(zend_strpprintf(0, "%s:%d", 
+			ZSTR_VAL(coroutine->coroutine.waker->filename), 
+			coroutine->coroutine.waker->lineno));
+	} else {
+		RETURN_STRING("unknown");
+	}
 }
 
 METHOD(isStarted)
 {
+	async_coroutine_t *coroutine;
 
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+
+	RETURN_BOOL(ZEND_COROUTINE_IS_STARTED(&coroutine->coroutine));
 }
 
 METHOD(isQueued)
 {
+	async_coroutine_t *coroutine;
 
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+
+	if (coroutine->coroutine.waker == NULL) {
+		RETURN_FALSE;
+	}
+
+	RETURN_BOOL(coroutine->coroutine.waker->status == ZEND_ASYNC_WAKER_QUEUED);
 }
 
 METHOD(isRunning)
 {
+	async_coroutine_t *coroutine;
 
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+
+	// Coroutine is running if it's the current one and is started but not finished
+	RETURN_BOOL(ZEND_ASYNC_CURRENT_COROUTINE == &coroutine->coroutine && 
+				ZEND_COROUTINE_IS_STARTED(&coroutine->coroutine) && 
+				!ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine));
 }
 
 METHOD(isSuspended)
 {
+	async_coroutine_t *coroutine;
 
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+
+	RETURN_BOOL(ZEND_COROUTINE_SUSPENDED(&coroutine->coroutine));
 }
 
 METHOD(isCancelled)
 {
+	async_coroutine_t *coroutine;
 
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+
+	RETURN_BOOL(ZEND_COROUTINE_IS_CANCELLED(&coroutine->coroutine));
 }
 
 METHOD(isCancellationRequested)
 {
+	async_coroutine_t *coroutine;
 
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+
+	// TODO: Implement cancellation request tracking in waker
+	// For now, return same as isCancelled
+	RETURN_BOOL(ZEND_COROUTINE_IS_CANCELLED(&coroutine->coroutine));
 }
 
 METHOD(isFinished)
 {
+	async_coroutine_t *coroutine;
 
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+
+	RETURN_BOOL(ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine));
 }
 
 METHOD(getAwaitingInfo)
 {
+	async_coroutine_t *coroutine;
+	zend_array *info;
 
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+
+	info = ZEND_ASYNC_GET_AWAITING_INFO(&coroutine->coroutine);
+
+	if (info == NULL) {
+		array_init(return_value);
+	} else {
+		RETURN_ARR(info);
+	}
 }
 
 METHOD(cancel)
 {
+	async_coroutine_t *coroutine;
+	zend_object *exception;
 
+	ZEND_PARSE_PARAMETERS_START(1, 1)
+		Z_PARAM_OBJ_OF_CLASS(exception, async_ce_cancellation_exception)
+	ZEND_PARSE_PARAMETERS_END();
+
+	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+
+	ZEND_ASYNC_CANCEL(&coroutine->coroutine, exception, false);
 }
 
 METHOD(onFinally)
 {
+	async_coroutine_t *coroutine;
+	zend_fcall_info fci;
+	zend_fcall_info_cache fci_cache;
 
+	ZEND_PARSE_PARAMETERS_START(1, 1)
+		Z_PARAM_FUNC(fci, fci_cache)
+	ZEND_PARSE_PARAMETERS_END();
+
+	coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
+
+	// TODO: Implement callback registration for coroutine completion
+	// This requires adding callback to the coroutine event
+	zend_throw_error(NULL, "onFinally is not yet implemented");
 }
 
 ///////////////////////////////////////////////////////////

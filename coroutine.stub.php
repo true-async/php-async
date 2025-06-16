@@ -26,6 +26,21 @@ final class Coroutine implements Awaitable
     public function getContext(): Context {}
 
     /**
+     * Returns the Coroutine result when finished.
+     * If the Coroutine is not finished, it will return null.
+     */
+    public function getResult(): mixed {}
+
+    /**
+     * Returns the Coroutine exception when finished.
+     * If the Coroutine is not finished, it will return null.
+     * If the Coroutine is cancelled, it will return a CancellationException.
+     *
+     * @throws \RuntimeException if the Coroutine is running
+     */
+    public function getException(): mixed {}
+
+    /**
      * Returns the Coroutine debug trace.
      */
     public function getTrace(): array {}
