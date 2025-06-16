@@ -58,12 +58,16 @@ METHOD(getContext)
 	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
 
 	if (coroutine->coroutine.context == NULL) {
-		RETURN_NULL();
+		async_context_t * context = async_context_new();
+		if (UNEXPECTED(context == NULL)) {
+			RETURN_THROWS();
+		}
+
+		coroutine->coroutine.context = &context->base;
 	}
 
 	// Return the context object
-	async_context_t *context = (async_context_t *) coroutine->coroutine.context;
-	RETURN_OBJ_COPY(&context->std);
+	RETURN_OBJ_COPY(&((async_context_t *) coroutine->coroutine.context)->std);
 }
 
 METHOD(getResult)
@@ -885,6 +889,13 @@ static void coroutine_object_destroy(zend_object *object)
 
 		zval_ptr_dtor(&fcall->fci.function_name);
 		efree(fcall);
+	}
+
+	if (coroutine->coroutine.context != NULL) {
+		// If the coroutine has a context, we need to release it.
+		async_context_t *context = (async_context_t *) coroutine->coroutine.context;
+		coroutine->coroutine.context = NULL;
+		async_context_dispose(context);
 	}
 
 	if (coroutine->coroutine.filename) {

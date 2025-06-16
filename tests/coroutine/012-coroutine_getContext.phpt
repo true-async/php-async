@@ -1,5 +1,5 @@
 --TEST--
-Coroutine: getContext() - returns null (TODO Context API implementation)
+Coroutine: getContext() - returns the context of the coroutine
 --FILE--
 <?php
 
@@ -14,5 +14,5 @@ $context = $coroutine->getContext();
 var_dump($context);
 
 ?>
---EXPECT--
-NULL
+--EXPECTF--
+object(Async\Context)%a
