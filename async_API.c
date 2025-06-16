@@ -197,10 +197,12 @@ void add_microtask(zend_async_microtask_t *microtask)
 		return;
 	}
 
-	if (UNEXPECTED(circular_buffer_push(&ASYNC_G(microtasks), microtask, true) == FAILURE)) {
+	if (UNEXPECTED(circular_buffer_push(&ASYNC_G(microtasks), &microtask, true) == FAILURE)) {
 		async_throw_error("Failed to enqueue microtask");
 		return;
 	}
+
+	microtask->ref_count++;
 }
 
 zend_array *get_awaiting_info(zend_coroutine_t *coroutine)
@@ -513,8 +515,7 @@ void iterator_coroutine_entry(void)
 		return;
 	}
 
-	async_run_iterator(&iterator->iterator);
-	efree(iterator);
+	async_iterator_run(&iterator->iterator);
 }
 
 void iterator_coroutine_finish_callback(

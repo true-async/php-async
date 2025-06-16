@@ -40,7 +40,8 @@ async_iterator_t * async_new_iterator(
 	size_t iterator_size
 );
 
-void async_run_iterator(async_iterator_t *iterator);
+void async_iterator_run(async_iterator_t *iterator);
+void async_iterator_dispose(async_iterator_t *iterator);
 
 struct _async_iterator_t {
 	zend_async_microtask_t microtask;

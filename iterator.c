@@ -61,6 +61,7 @@ void iterator_microtask(zend_async_microtask_t *microtask)
 
 void iterator_dtor(zend_async_microtask_t *microtask)
 {
+	efree(microtask);
 }
 
 async_iterator_t * async_new_iterator(
@@ -110,6 +111,7 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 {
 	zend_result result = SUCCESS;
 	zval retval;
+	ZVAL_UNDEF(&retval);
 
 	zend_fcall_info fci;
 
@@ -226,11 +228,13 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 			}
 		}
 
-		zval_ptr_dtor(&fci.params[0]);
+		if (iterator->fcall != NULL) {
+			zval_ptr_dtor(&fci.params[0]);
 
-		if (Z_TYPE(fci.params[1]) != IS_UNDEF) {
-			zval_ptr_dtor(&fci.params[1]);
-			ZVAL_UNDEF(&fci.params[1]);
+			if (Z_TYPE(fci.params[1]) != IS_UNDEF) {
+				zval_ptr_dtor(&fci.params[1]);
+				ZVAL_UNDEF(&fci.params[1]);
+			}
 		}
 
 		if (UNEXPECTED(result == FAILURE || EG(exception) != NULL)) {
@@ -241,7 +245,7 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 	}
 }
 
-void async_run_iterator(async_iterator_t *iterator)
+void async_iterator_run(async_iterator_t *iterator)
 {
 	if (UNEXPECTED(ZEND_ASYNC_IS_SCHEDULER_CONTEXT)) {
 		async_throw_error("The iterator cannot be run in the scheduler context");
@@ -251,7 +255,11 @@ void async_run_iterator(async_iterator_t *iterator)
 	ZEND_ASYNC_ADD_MICROTASK(&iterator->microtask);
 
 	iterate(iterator);
+	async_iterator_dispose(iterator);
+}
 
+void async_iterator_dispose(async_iterator_t *iterator)
+{
 	if (iterator->microtask.ref_count > 0) {
 		iterator->microtask.ref_count--;
 	}
@@ -270,7 +278,7 @@ static void coroutine_entry(void)
 
 	async_iterator_t *iterator = (async_iterator_t *) ZEND_ASYNC_CURRENT_COROUTINE->extended_data;
 
-	async_run_iterator(iterator);
+	async_iterator_run(iterator);
 
 	if (iterator->active_coroutines > 1) {
 		iterator->active_coroutines--;

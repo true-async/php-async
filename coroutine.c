@@ -266,25 +266,34 @@ METHOD(cancel)
 
 METHOD(onFinally)
 {
-	zend_fcall_info fci;
-	zend_fcall_info_cache fci_cache;
+	zval *callable;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_FUNC(fci, fci_cache)
+		Z_PARAM_ZVAL(callable)
 	ZEND_PARSE_PARAMETERS_END();
+
+	if (UNEXPECTED(false == zend_is_callable(callable, 0, NULL))) {
+		zend_argument_type_error(1, "argument must be callable");
+		RETURN_THROWS();
+	}
 
 	async_coroutine_t *coroutine = THIS_COROUTINE;
 
 	// Check if coroutine is already finished
 	if (ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine)) {
-		async_throw_error("Cannot add finally handler to a finished coroutine");
-		RETURN_THROWS();
-	}
 
-	// Verify that the function is callable
-	if (!zend_is_callable(&fci.function_name, 0, NULL)) {
-		async_throw_error("Finally handler must be callable");
-		RETURN_THROWS();
+		// Call the callable immediately
+		zval result, param;
+		ZVAL_UNDEF(&result);
+		ZVAL_OBJ(&param, &coroutine->std);
+
+		if (UNEXPECTED(call_user_function(NULL, NULL, callable, &result, 1, &param) == FAILURE)) {
+			zend_throw_error(NULL, "Failed to call finally handler in finished coroutine");
+			zval_ptr_dtor(&result);
+			RETURN_THROWS();
+		}
+
+		return;
 	}
 
 	// Lazy initialization of finally_handlers array
@@ -292,10 +301,12 @@ METHOD(onFinally)
 		coroutine->finally_handlers = zend_new_array(0);
 	}
 
-	// Add the callable to the finally handlers array
-	zval callable;
-	ZVAL_COPY(&callable, &fci.function_name);
-	zend_hash_next_index_insert(coroutine->finally_handlers, &callable);
+	if (UNEXPECTED(zend_hash_next_index_insert(coroutine->finally_handlers, callable) == NULL)) {
+		async_throw_error("Failed to add finally handler to coroutine");
+		RETURN_THROWS();
+	}
+
+	Z_TRY_ADDREF_P(callable);
 }
 
 ///////////////////////////////////////////////////////////
@@ -373,7 +384,14 @@ static void finally_handlers_entry(void)
 	iterator->coroutine = finalized_coroutine;
 	finalized_coroutine->finally_handlers = NULL;
 
-	async_run_iterator(&iterator->iterator);
+	async_iterator_run(&iterator->iterator);
+
+	HashTable *finally_handlers = finalized_coroutine->finally_handlers;
+	finalized_coroutine->finally_handlers = NULL;
+
+	if (finally_handlers != NULL) {
+		zend_array_destroy(finally_handlers);
+	}
 }
 
 static void async_coroutine_call_finally_handlers(async_coroutine_t *coroutine)
