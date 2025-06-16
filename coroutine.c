@@ -90,7 +90,7 @@ METHOD(getException)
 	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS));
 
 	if (!ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine)) {
-		zend_throw_exception(zend_ce_error, "Cannot get exception of a running coroutine", 0);
+		async_throw_error("Cannot get exception of a running coroutine");
 		RETURN_THROWS();
 	}
 
@@ -285,13 +285,13 @@ METHOD(onFinally)
 
 	// Check if coroutine is already finished
 	if (ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine)) {
-		zend_throw_error(NULL, "Cannot add finally handler to a finished coroutine");
+		async_throw_error("Cannot add finally handler to a finished coroutine");
 		RETURN_THROWS();
 	}
 
 	// Verify that the function is callable
 	if (!zend_is_callable(&fci.function_name, 0, NULL)) {
-		zend_throw_error(NULL, "Finally handler must be callable");
+		async_throw_error("Finally handler must be callable");
 		RETURN_THROWS();
 	}
 
@@ -474,7 +474,18 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 
 	// Hold the exception inside coroutine if it is not NULL.
 	if (exception != NULL) {
+		if (coroutine->coroutine.exception != NULL) {
+			// If the coroutine already has an exception, we do not overwrite it.
+			// This is to prevent losing the original exception in case of multiple exceptions.
+			zend_exception_set_previous(exception, coroutine->coroutine.exception);
+			GC_DELREF(coroutine->coroutine.exception);
+		}
+
 		coroutine->coroutine.exception = exception;
+		GC_ADDREF(exception);
+	} else if (coroutine->coroutine.exception != NULL) {
+		// If the coroutine has an exception, we keep it.
+		exception = coroutine->coroutine.exception;
 		GC_ADDREF(exception);
 	}
 
@@ -491,6 +502,7 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 
 	// Call finally handlers if any
 	async_coroutine_call_finally_handlers(coroutine);
+	zend_async_waker_destroy(&coroutine->coroutine);
 
 	zend_exception_restore();
 
@@ -842,6 +854,11 @@ static void coroutine_dispose(zend_async_event_t *event)
 static void coroutine_object_destroy(zend_object *object)
 {
 	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(object);
+
+	ZEND_ASSERT((coroutine->coroutine.waker == NULL ||
+		(coroutine->coroutine.waker->status == ZEND_ASYNC_WAKER_QUEUED ||
+			coroutine->coroutine.waker->status == ZEND_ASYNC_WAKER_IGNORED))
+		&& "Coroutine waker must be dequeued before destruction");
 
 	if (coroutine->coroutine.scope != NULL) {
 		async_scope_remove_coroutine((async_scope_t *) coroutine->coroutine.scope, coroutine);

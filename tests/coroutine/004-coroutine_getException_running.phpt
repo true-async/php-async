@@ -1,5 +1,5 @@
 --TEST--
-Coroutine: getException() - throws RuntimeException if running
+Coroutine: getException() - throws Async\AsyncException if running
 --FILE--
 <?php
 
@@ -12,7 +12,7 @@ $coroutine = spawn(function() {
 try {
     $coroutine->getException();
     echo "Should not reach here\n";
-} catch (RuntimeException $e) {
+} catch (Async\AsyncException $e) {
     echo "Caught: " . $e->getMessage() . "\n";
 }
 

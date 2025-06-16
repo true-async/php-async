@@ -94,6 +94,8 @@ zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object * scope_provider)
 		return NULL;
 	}
 
+	zend_apply_current_filename_and_line(&coroutine->coroutine.filename, &coroutine->coroutine.lineno);
+
 	zval options;
 	ZVAL_UNDEF(&options);
 	scope->before_coroutine_enqueue(&coroutine->coroutine, scope, &options);
