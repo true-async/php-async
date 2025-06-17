@@ -3,14 +3,16 @@ Multiple socket operations with coroutine switching
 --FILE--
 <?php
 
+
+require_once __DIR__ . '/stream_helper.php';
 use function Async\spawn;
 use function Async\awaitAll;
 
 echo "Start\n";
 
 // Create multiple socket pairs
-$sockets1 = stream_socket_pair(STREAM_PF_INET, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
-$sockets2 = stream_socket_pair(STREAM_PF_INET, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+$sockets1 = create_socket_pair();
+$sockets2 = create_socket_pair();
 
 list($sock1a, $sock1b) = $sockets1;
 list($sock2a, $sock2b) = $sockets2;

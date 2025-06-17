@@ -3,6 +3,8 @@ Poll2 async: Basic socket stream operations in coroutine context
 --FILE--
 <?php
 
+
+require_once __DIR__ . '/stream_helper.php';
 use function Async\spawn;
 use function Async\await;
 
@@ -11,7 +13,7 @@ echo "Before spawn\n";
 $coroutine = spawn(function() {
     echo "Creating socket pair\n";
     
-    $sockets = stream_socket_pair(STREAM_PF_INET, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+    $sockets = create_socket_pair();
     if (!$sockets) {
         echo "Failed to create socket pair\n";
         return;

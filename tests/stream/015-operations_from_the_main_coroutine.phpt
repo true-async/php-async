@@ -3,6 +3,8 @@ Poll2 async: Asynchronous operations from the main coroutine
 --FILE--
 <?php
 
+
+require_once __DIR__ . '/stream_helper.php';
 use function Async\spawn;
 use function Async\await;
 
@@ -10,7 +12,7 @@ echo "Testing mixed sync/async operations\n";
 
 // First do some synchronous socket operations
 echo "Synchronous operations:\n";
-$sync_sockets = stream_socket_pair(STREAM_PF_INET, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+$sync_sockets = create_socket_pair();
 list($sync1, $sync2) = $sync_sockets;
 
 fwrite($sync1, "sync message");
@@ -26,7 +28,7 @@ echo "Asynchronous operations:\n";
 $coroutine = spawn(function() {
     echo "Async: Creating socket pair\n";
     
-    $sockets = stream_socket_pair(STREAM_PF_INET, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+    $sockets = create_socket_pair();
     if (!$sockets) {
         echo "Async: Failed to create socket pair\n";
         return;
@@ -52,7 +54,7 @@ echo "Final result: $result\n";
 
 // More synchronous operations after async
 echo "Post-async synchronous operations:\n";
-$post_sockets = stream_socket_pair(STREAM_PF_INET, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+$post_sockets = create_socket_pair();
 list($post1, $post2) = $post_sockets;
 
 fwrite($post1, "post-async message");

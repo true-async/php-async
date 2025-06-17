@@ -3,6 +3,8 @@ Poll2 async: Nested coroutines with polling operations
 --FILE--
 <?php
 
+
+require_once __DIR__ . '/stream_helper.php';
 use function Async\spawn;
 use function Async\await;
 
@@ -12,7 +14,7 @@ $outer_coroutine = spawn(function() {
     echo "Outer: Starting\n";
     
     // Create a socket pair for outer coroutine
-    $outer_sockets = stream_socket_pair(STREAM_PF_INET, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+    $outer_sockets = create_socket_pair();
     list($outer1, $outer2) = $outer_sockets;
 
     echo "Outer: Created sockets, spawning inner coroutine\n";
@@ -22,7 +24,7 @@ $outer_coroutine = spawn(function() {
         echo "Inner: Starting\n";
         
         // Create socket pair for inner coroutine
-        $inner_sockets = stream_socket_pair(STREAM_PF_INET, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+        $inner_sockets = create_socket_pair();
         list($inner1, $inner2) = $inner_sockets;
         stream_set_blocking($inner1, false);
         stream_set_blocking($inner2, false);

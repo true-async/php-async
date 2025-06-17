@@ -1,14 +1,24 @@
 --TEST--
 Simple fread/fwrite test with two coroutines
+--SKIPIF--
+<?php
+//This test only makes sense on Windows,
+//since on UNIX systems the fwrite and fclose operations are asynchronous for sockets.
+if (PHP_OS_FAMILY !== 'Windows') {
+    die("skip Windows-only test\n");
+}
+?>
 --FILE--
 <?php
+
+require_once __DIR__ . '/stream_helper.php';
 
 use function Async\spawn;
 use function Async\awaitAll;
 
 echo "Start\n";
 
-$sockets = stream_socket_pair(STREAM_PF_INET, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+$sockets = create_socket_pair();
 list($sock1, $sock2) = $sockets;
 
 $writer = spawn(function() use ($sock1) {

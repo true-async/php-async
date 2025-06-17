@@ -3,6 +3,8 @@ Poll2 async: Concurrent socket operations
 --FILE--
 <?php
 
+
+require_once __DIR__ . '/stream_helper.php';
 use function Async\spawn;
 use function Async\delay;
 use function Async\awaitAll;
@@ -12,7 +14,7 @@ echo "Testing concurrent socket operations\n";
 
 echo "Creating socket pair\n";
 
-$sockets = stream_socket_pair(STREAM_PF_INET, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+$sockets = create_socket_pair();
 if (!$sockets) {
     echo "Failed to create socket pair\n";
     exit(1);
