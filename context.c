@@ -40,6 +40,14 @@ bool async_context_find(async_context_t * context, zval *key, zval *result, bool
 
 	zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
 
+	if (UNEXPECTED(scope == NULL)) {
+		if (result != NULL) {
+			ZVAL_NULL(result);
+		}
+
+		return false;
+	}
+
 	if (scope->context == &context->base) {
 		scope = scope->parent_scope;
 	}

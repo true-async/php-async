@@ -34,7 +34,7 @@ var_dump($context->has('username'));
 // Test replace parameter
 try {
     $context->set('user_id', 456, false); // Should throw error
-} catch (Error $e) {
+} catch (Async\AsyncException $e) {
     echo "Expected error: " . $e->getMessage() . "\n";
 }
 
