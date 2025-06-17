@@ -479,7 +479,7 @@ zend_result await_iterator_handler(async_iterator_t *iterator, zval *current, zv
 	return SUCCESS;
 }
 
-void iterator_coroutine_entry(void)
+void iterator_coroutine_first_entry(void)
 {
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
@@ -502,7 +502,7 @@ void iterator_coroutine_entry(void)
 		return;
 	}
 
-	 async_await_iterator_iterator_t * iterator = (async_await_iterator_iterator_t *) async_new_iterator(
+	 async_await_iterator_iterator_t * iterator = (async_await_iterator_iterator_t *) async_iterator_new(
 		NULL,
 		await_iterator->zend_iterator,
 		NULL,
@@ -516,6 +516,7 @@ void iterator_coroutine_entry(void)
 	}
 
 	async_iterator_run(&iterator->iterator);
+	iterator->iterator.microtask.dtor(&iterator->iterator.microtask);
 }
 
 void iterator_coroutine_finish_callback(
@@ -797,7 +798,7 @@ void async_await_futures(
 		}
 
 		await_context->scope = scope;
-		iterator_coroutine->internal_entry = iterator_coroutine_entry;
+		iterator_coroutine->internal_entry = iterator_coroutine_first_entry;
 
 		async_await_iterator_t * iterator = ecalloc(1, sizeof(async_await_iterator_t));
 		iterator->zend_iterator = zend_iterator;

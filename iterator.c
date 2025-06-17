@@ -19,6 +19,9 @@
 #include "php_async.h"
 #include "zend_exceptions.h"
 
+/**
+ *  An additional coroutine destructor that frees the iterator if the coroutine never started.
+ */
 void coroutine_extended_dispose(zend_coroutine_t * coroutine)
 {
 	if (coroutine->extended_data == NULL) {
@@ -27,14 +30,7 @@ void coroutine_extended_dispose(zend_coroutine_t * coroutine)
 
 	async_iterator_t *iterator = coroutine->extended_data;
 	coroutine->extended_data = NULL;
-
-	if (iterator->microtask.ref_count > 0) {
-		iterator->microtask.ref_count--;
-	}
-
-	if (iterator->microtask.ref_count == 0) {
-		iterator->microtask.dtor(&iterator->microtask);
-	}
+	iterator->microtask.dtor(&iterator->microtask);
 }
 
 static void coroutine_entry(void);
@@ -47,7 +43,7 @@ void iterator_microtask(zend_async_microtask_t *microtask)
 		return;
 	}
 
-	zend_coroutine_t * coroutine = ZEND_ASYNC_SPAWN();
+	zend_coroutine_t * coroutine = ZEND_ASYNC_SPAWN_WITH(iterator->scope);
 
 	if (coroutine == NULL) {
 		return;
@@ -61,10 +57,51 @@ void iterator_microtask(zend_async_microtask_t *microtask)
 
 void iterator_dtor(zend_async_microtask_t *microtask)
 {
+	if (microtask->ref_count > 1) {
+		microtask->ref_count--;
+		return;
+	}
+
+	microtask->ref_count = 0;
+
+	async_iterator_t *iterator = (async_iterator_t *) microtask;
+
+	if (iterator->extended_dtor != NULL) {
+		// Call the extended destructor if it exists
+		ASYNC_ITERATOR_DTOR extended_dtor = iterator->extended_dtor;
+		iterator->extended_dtor = NULL;
+		extended_dtor(microtask);
+	}
+
+	// Free hash iterator if it was allocated
+	if (iterator->hash_iterator != -1) {
+		zend_hash_iterator_del(iterator->hash_iterator);
+	}
+
+	// Free copied array if it was copied
+	if (Z_TYPE(iterator->array) != IS_UNDEF) {
+		zval_ptr_dtor(&iterator->array);
+	}
+
+	// Free fcall structure if it exists
+	if (iterator->fcall != NULL) {
+		// Free any remaining parameter copies
+		if (iterator->fcall->fci.params != NULL) {
+			for (uint32_t i = 0; i < iterator->fcall->fci.param_count; i++) {
+				if (Z_TYPE(iterator->fcall->fci.params[i]) != IS_UNDEF) {
+					zval_ptr_dtor(&iterator->fcall->fci.params[i]);
+				}
+			}
+			efree(iterator->fcall->fci.params);
+		}
+
+		iterator->fcall = NULL;
+	}
+
 	efree(microtask);
 }
 
-async_iterator_t * async_new_iterator(
+async_iterator_t * async_iterator_new(
 		zval *array,
 		zend_object_iterator *zend_iterator,
 		zend_fcall_t *fcall,
@@ -212,6 +249,8 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 			result = iterator->handler(iterator, current, &key);
 		}
 
+		zval_ptr_dtor(current);
+
 		if (result == SUCCESS) {
 
 			if (Z_TYPE(retval) == IS_FALSE) {
@@ -245,30 +284,6 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 	}
 }
 
-void async_iterator_run(async_iterator_t *iterator)
-{
-	if (UNEXPECTED(ZEND_ASYNC_IS_SCHEDULER_CONTEXT)) {
-		async_throw_error("The iterator cannot be run in the scheduler context");
-		return;
-	}
-
-	ZEND_ASYNC_ADD_MICROTASK(&iterator->microtask);
-
-	iterate(iterator);
-	async_iterator_dispose(iterator);
-}
-
-void async_iterator_dispose(async_iterator_t *iterator)
-{
-	if (iterator->microtask.ref_count > 0) {
-		iterator->microtask.ref_count--;
-	}
-
-	if (iterator->microtask.ref_count == 0) {
-		iterator->microtask.dtor(&iterator->microtask);
-	}
-}
-
 static void coroutine_entry(void)
 {
 	if (UNEXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == NULL || ZEND_ASYNC_CURRENT_COROUTINE->extended_data == NULL)) {
@@ -276,7 +291,8 @@ static void coroutine_entry(void)
 		return;
 	}
 
-	async_iterator_t *iterator = (async_iterator_t *) ZEND_ASYNC_CURRENT_COROUTINE->extended_data;
+	async_iterator_t *iterator = ZEND_ASYNC_CURRENT_COROUTINE->extended_data;
+	ZEND_ASYNC_CURRENT_COROUTINE->extended_data = NULL;
 
 	async_iterator_run(iterator);
 
@@ -286,4 +302,47 @@ static void coroutine_entry(void)
 		iterator->active_coroutines = 0;
 		iterator->state = ASYNC_ITERATOR_FINISHED;
 	}
+
+	iterator->microtask.dtor(&iterator->microtask);
+}
+
+/**
+ * Starts the iteration process in the current coroutine.
+ *
+ * @param iterator
+ */
+void async_iterator_run(async_iterator_t *iterator)
+{
+	if (UNEXPECTED(ZEND_ASYNC_IS_SCHEDULER_CONTEXT)) {
+		async_throw_error("The iterator cannot be run in the scheduler context");
+		return;
+	}
+
+	if (iterator->scope == NULL) {
+		iterator->scope = ZEND_ASYNC_CURRENT_SCOPE;
+	}
+
+	ZEND_ASYNC_ADD_MICROTASK(&iterator->microtask);
+
+	iterate(iterator);
+}
+
+/**
+ * Starts the iterator in a separate coroutine.
+ * @param iterator
+ */
+void async_iterator_run_in_coroutine(async_iterator_t *iterator)
+{
+	if (iterator->scope == NULL) {
+		iterator->scope = ZEND_ASYNC_CURRENT_SCOPE;
+	}
+
+	zend_coroutine_t * iterator_coroutine = ZEND_ASYNC_SPAWN_WITH(iterator->scope);
+	if (UNEXPECTED(iterator_coroutine == NULL || EG(exception))) {
+		return;
+	}
+
+	iterator_coroutine->extended_data = iterator;
+	iterator_coroutine->internal_entry = coroutine_entry;
+	iterator_coroutine->extended_dispose = coroutine_extended_dispose;
 }

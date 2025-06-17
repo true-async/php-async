@@ -312,35 +312,17 @@ METHOD(onFinally)
 ///////////////////////////////////////////////////////////
 /// Coroutine methods end
 ///////////////////////////////////////////////////////////
-static void finally_handlers_coroutine_callback(zend_async_event_t *event,
-	zend_async_event_callback_t *callback,
-	void * result,
-	zend_object *exception
-)
-{
-	zend_coroutine_t *coroutine = ((zend_coroutine_event_callback_t *) callback)->coroutine;
 
-	if (coroutine != NULL && coroutine->extended_data != NULL) {
-		async_coroutine_t *async_coroutine = (async_coroutine_t *) coroutine->extended_data;
-		coroutine->extended_data = NULL;
-		HashTable *finally_handlers = async_coroutine->finally_handlers;
-		async_coroutine->finally_handlers = NULL;
-		zend_array_destroy(finally_handlers);
-		OBJ_RELEASE(&async_coroutine->std);
-	}
-}
-
-typedef struct finally_handlers_iterator_t {
-	async_iterator_t iterator;
-	async_coroutine_t *coroutine;
-} finally_handlers_iterator_t;
+///////////////////////////////////////////////////////////
+/// async_coroutine_call_finally_handlers
+///////////////////////////////////////////////////////////
 
 static zend_result finally_handlers_iterator_handler(async_iterator_t *iterator, zval *current, zval *key)
 {
 	zval rv;
 	ZVAL_UNDEF(&rv);
 	zval param;
-	ZVAL_OBJ(&param, &((finally_handlers_iterator_t *) iterator)->coroutine->std);
+	ZVAL_OBJ(&param, &((async_coroutine_t *) iterator->extended_data)->std);
 
 	call_user_function(NULL, NULL, current, &rv, 1, &param);
 	zval_ptr_dtor(&rv);
@@ -348,49 +330,14 @@ static zend_result finally_handlers_iterator_handler(async_iterator_t *iterator,
 	return SUCCESS;
 }
 
-static void finally_handlers_entry(void)
+static void finally_handlers_iterator_dtor(zend_async_microtask_t *microtask)
 {
-	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	async_iterator_t * iterator = (async_iterator_t *) microtask;
 
-	if (UNEXPECTED(coroutine == NULL)) {
-		zend_throw_error(NULL, "Cannot run finally handlers in a non-coroutine context");
-		return;
-	}
-
-	async_coroutine_t *finalized_coroutine = coroutine->extended_data;
-
-	if (finalized_coroutine == NULL || finalized_coroutine->finally_handlers == NULL) {
-		return;
-	}
-
-	zval handlers;
-	ZVAL_ARR(&handlers, finalized_coroutine->finally_handlers);
-
-	finally_handlers_iterator_t * iterator = (finally_handlers_iterator_t *) async_new_iterator(
-	   &handlers,
-	   NULL,
-	   NULL,
-	   finally_handlers_iterator_handler,
-	   0,
-	   sizeof(finally_handlers_iterator_t)
-   );
-
-	if (UNEXPECTED(iterator == NULL)) {
-		zend_array_destroy(finalized_coroutine->finally_handlers);
-		finalized_coroutine->finally_handlers = NULL;
-		return;
-	}
-
-	iterator->coroutine = finalized_coroutine;
-	finalized_coroutine->finally_handlers = NULL;
-
-	async_iterator_run(&iterator->iterator);
-
-	HashTable *finally_handlers = finalized_coroutine->finally_handlers;
-	finalized_coroutine->finally_handlers = NULL;
-
-	if (finally_handlers != NULL) {
-		zend_array_destroy(finally_handlers);
+	if (iterator->extended_data != NULL) {
+		async_coroutine_t *coroutine = iterator->extended_data;
+		iterator->extended_data = NULL;
+		OBJ_RELEASE(&coroutine->std);
 	}
 }
 
@@ -400,33 +347,28 @@ static void async_coroutine_call_finally_handlers(async_coroutine_t *coroutine)
 		return;
 	}
 
-	// Add coroutine finally handler
-	zend_coroutine_event_callback_t * callback = zend_async_coroutine_callback_new(
-		&coroutine->coroutine, finally_handlers_coroutine_callback,0
+	zval handlers;
+	ZVAL_ARR(&handlers, coroutine->finally_handlers);
+	coroutine->finally_handlers = NULL;
+
+	async_iterator_t * iterator = async_iterator_new(
+		&handlers,
+		NULL,
+		NULL,
+		finally_handlers_iterator_handler,
+		0,
+		0
 	);
-	if (UNEXPECTED(EG(exception))) {
-		return;
-	}
 
-	zend_coroutine_t * iterator_coroutine = ZEND_ASYNC_SPAWN();
-	if (UNEXPECTED(iterator_coroutine == NULL || EG(exception))) {
-		efree(callback);
-		return;
-	}
+	iterator->extended_data = coroutine;
+	iterator->extended_dtor = finally_handlers_iterator_dtor;
 
-	iterator_coroutine->event.add_callback(
-		&iterator_coroutine->event, &callback->base
-	);
-	if (UNEXPECTED(EG(exception))) {
-		iterator_coroutine->waker->status = ZEND_ASYNC_WAKER_IGNORED;
-		efree(callback);
-		return;
-	}
-
-	iterator_coroutine->internal_entry = finally_handlers_entry;
-	iterator_coroutine->extended_data = coroutine;
 	GC_ADDREF(&coroutine->std);
 }
+
+///////////////////////////////////////////////////////////
+/// internal functions
+///////////////////////////////////////////////////////////
 
 static zend_always_inline async_coroutine_t *coroutine_from_context(zend_fiber_context *context)
 {
