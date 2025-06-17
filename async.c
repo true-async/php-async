@@ -601,6 +601,18 @@ PHP_FUNCTION(Async_currentContext)
 {
 	THROW_IF_ASYNC_OFF;
 	THROW_IF_SCHEDULER_CONTEXT;
+
+	zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
+
+	if (scope == NULL || scope->context == NULL) {
+		// No current scope or context - return new context
+		async_context_t *context = async_context_new();
+		RETURN_OBJ(&context->std);
+	}
+
+	// Return the existing context from scope
+	async_context_t *context = (async_context_t *) scope->context;
+	RETURN_OBJ_COPY(&context->std);
 }
 
 PHP_FUNCTION(Async_coroutineContext)
@@ -608,6 +620,24 @@ PHP_FUNCTION(Async_coroutineContext)
 	THROW_IF_ASYNC_OFF;
 	THROW_IF_SCHEDULER_CONTEXT;
 
+	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (coroutine == NULL) {
+		// No current coroutine - return new context
+		async_context_t *context = async_context_new();
+		RETURN_OBJ(&context->std);
+	}
+
+	if (coroutine->coroutine.context == NULL) {
+		// Coroutine exists but no context - create and assign to coroutine
+		async_context_t *context = async_context_new();
+		coroutine->coroutine.context = &context->base;
+		RETURN_OBJ_COPY(&context->std);
+	}
+
+	// Return the existing context from coroutine
+	async_context_t *context = (async_context_t *) coroutine->coroutine.context;
+	RETURN_OBJ_COPY(&context->std);
 }
 
 PHP_FUNCTION(Async_currentCoroutine)

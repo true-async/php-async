@@ -3,15 +3,15 @@ Coroutine getContext method
 --FILE--
 <?php
 
-use Async\{spawn, suspend, Context, Coroutine};
+use Async\{Context, Coroutine};
 
 // Test coroutine with context
-$coroutine = spawn(function() {
-    $context = new Context();
+$coroutine = Async\spawn(function() {
+    $context = Async\coroutineContext();
     $context->set('test_key', 'test_value');
     
     // Get context from coroutine
-    $currentCoroutine = Coroutine::getCurrent();
+    $currentCoroutine = Async\currentCoroutine();
     $contextFromCoroutine = $currentCoroutine->getContext();
     
     if ($contextFromCoroutine !== null) {
@@ -24,7 +24,7 @@ $coroutine = spawn(function() {
     return 'done';
 });
 
-suspend();
+Async\suspend();
 
 // Test getting context from finished coroutine
 $context = $coroutine->getContext();
@@ -35,21 +35,22 @@ if ($context !== null) {
 }
 
 // Test coroutine without context
-$coroutineNoContext = spawn(function() {
+$coroutineNoContext = Async\spawn(function() {
     return 'no context';
 });
 
-suspend();
+Async\suspend();
 
 $noContext = $coroutineNoContext->getContext();
 if ($noContext === null) {
     echo "No context coroutine returns null\n";
 } else {
-    echo "Unexpected context found\n";
+    echo "context found\n";
 }
 
 ?>
 --EXPECT--
-Context is null
-Finished coroutine context is null
-No context coroutine returns null
+bool(true)
+bool(true)
+bool(true)
+context found

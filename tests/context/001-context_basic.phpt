@@ -3,10 +3,10 @@ Context basic functionality
 --FILE--
 <?php
 
-use Async\{spawn, suspend, Context};
+use Async\{Context};
 
 // Test basic context creation and storage
-$context = new Context();
+$context = Async\coroutineContext();
 
 // Test string key storage
 $context->set('user_id', 123);

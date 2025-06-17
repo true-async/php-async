@@ -5,36 +5,36 @@ Context error handling
 
 use Async\{Context};
 
-$context = new Context();
+$context = Async\coroutineContext();
 
 // Test invalid key types
 try {
     $context->set(123, 'value'); // Invalid key type
-} catch (Error $e) {
+} catch (Async\AsyncException $e) {
     echo "Error for integer key: " . $e->getMessage() . "\n";
 }
 
 try {
     $context->set([], 'value'); // Invalid key type
-} catch (Error $e) {
+} catch (Async\AsyncException $e) {
     echo "Error for array key: " . $e->getMessage() . "\n";
 }
 
 try {
     $context->get(123); // Invalid key type
-} catch (Error $e) {
+} catch (Async\AsyncException $e) {
     echo "Error for get with integer key: " . $e->getMessage() . "\n";
 }
 
 try {
     $context->has(null); // Invalid key type
-} catch (Error $e) {
+} catch (Async\AsyncException $e) {
     echo "Error for has with null key: " . $e->getMessage() . "\n";
 }
 
 try {
     $context->unset(3.14); // Invalid key type
-} catch (Error $e) {
+} catch (Async\AsyncException $e) {
     echo "Error for unset with float key: " . $e->getMessage() . "\n";
 }
 
