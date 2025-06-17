@@ -1,7 +1,5 @@
 --TEST--
 Coroutine getContext method
---EXTENSION--
-async
 --FILE--
 <?php
 

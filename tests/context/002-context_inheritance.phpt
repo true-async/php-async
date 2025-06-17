@@ -1,7 +1,5 @@
 --TEST--
 Context inheritance through coroutines
---EXTENSION--
-async
 --FILE--
 <?php
 

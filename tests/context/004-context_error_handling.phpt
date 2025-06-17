@@ -1,7 +1,5 @@
 --TEST--
 Context error handling
---EXTENSION--
-async
 --FILE--
 <?php
 

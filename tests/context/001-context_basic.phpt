@@ -1,7 +1,5 @@
 --TEST--
 Context basic functionality
---EXTENSION--
-async
 --FILE--
 <?php
 

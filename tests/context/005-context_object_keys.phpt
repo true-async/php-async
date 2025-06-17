@@ -1,7 +1,5 @@
 --TEST--
 Context with object keys
---EXTENSION--
-async
 --FILE--
 <?php
 
