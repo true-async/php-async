@@ -360,10 +360,17 @@ static void async_coroutine_call_finally_handlers(async_coroutine_t *coroutine)
 		0
 	);
 
+	zval_ptr_dtor(&handlers);
+
+	if (UNEXPECTED(EG(exception))) {
+		return;
+	}
+
 	iterator->extended_data = coroutine;
 	iterator->extended_dtor = finally_handlers_iterator_dtor;
-
 	GC_ADDREF(&coroutine->std);
+
+	async_iterator_run_in_coroutine(iterator);
 }
 
 ///////////////////////////////////////////////////////////

@@ -249,8 +249,6 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 			result = iterator->handler(iterator, current, &key);
 		}
 
-		zval_ptr_dtor(current);
-
 		if (result == SUCCESS) {
 
 			if (Z_TYPE(retval) == IS_FALSE) {

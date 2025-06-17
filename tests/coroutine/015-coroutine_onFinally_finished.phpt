@@ -1,5 +1,5 @@
 --TEST--
-Coroutine: onFinally() - throws error when coroutine is finished
+Coroutine: onFinally() - call when coroutine is already finished
 --FILE--
 <?php
 
@@ -10,17 +10,13 @@ $coroutine = spawn(function() {
     return "test";
 });
 
-await($coroutine);
+echo 'Coroutine returned: '.await($coroutine)."\n";
 
-try {
-    $coroutine->onFinally(function() {
-        echo "Should not be called\n";
-    });
-    echo "Should not reach here\n";
-} catch (Error $e) {
-    echo "Caught: " . $e->getMessage() . "\n";
-}
+$coroutine->onFinally(function() {
+    echo "Finally called\n";
+});
 
 ?>
 --EXPECT--
-Caught: Cannot add finally handler to a finished coroutine
+Coroutine returned: test
+Finally called
