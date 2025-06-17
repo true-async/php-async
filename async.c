@@ -604,9 +604,17 @@ PHP_FUNCTION(Async_currentContext)
 
 	zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
 
-	if (scope == NULL || scope->context == NULL) {
-		// No current scope or context - return new context
+	if (scope == NULL) {
+		// No current scope - return new independent context
 		async_context_t *context = async_context_new();
+		RETURN_OBJ(&context->std);
+	}
+
+	if (scope->context == NULL) {
+		// Scope exists but no context - create new context and link it to scope
+		async_context_t *context = async_context_new();
+		context->scope = scope;
+		scope->context = &context->base;
 		RETURN_OBJ(&context->std);
 	}
 

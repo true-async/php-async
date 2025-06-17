@@ -14,6 +14,7 @@
   +----------------------------------------------------------------------+
 */
 #include "scope.h"
+#include "context.h"
 #include "zend_attributes.h"
 #include "scope_arginfo.h"
 #include "zend_common.h"
@@ -171,6 +172,12 @@ static void scope_dispose(zend_async_scope_t *zend_scope)
 	scope->scope.before_coroutine_enqueue = NULL;
 	scope->scope.after_coroutine_enqueue = NULL;
 	scope->scope.dispose = NULL;
+
+	// Clear weak reference from context to scope
+	if (scope->scope.context != NULL) {
+		async_context_t *context = (async_context_t *) scope->scope.context;
+		context->scope = NULL;
+	}
 
 	if (scope->scope.scope_object != NULL) {
 		((async_scope_object_t *) scope->scope.scope_object)->scope = NULL;

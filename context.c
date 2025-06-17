@@ -38,7 +38,8 @@ bool async_context_find(async_context_t * context, zval *key, zval *result, bool
 		return false;
 	}
 
-	zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
+	// Use context's own scope instead of global current scope
+	zend_async_scope_t *scope = context->scope;
 
 	if (UNEXPECTED(scope == NULL)) {
 		if (result != NULL) {
@@ -48,9 +49,8 @@ bool async_context_find(async_context_t * context, zval *key, zval *result, bool
 		return false;
 	}
 
-	if (scope->context == &context->base) {
-		scope = scope->parent_scope;
-	}
+	// Start from parent scope since we already checked current context
+	scope = scope->parent_scope;
 
 	while (scope != NULL && scope->context != NULL) {
 		if (async_context_find_local((async_context_t *) scope->context, key, result)) {
@@ -168,6 +168,9 @@ async_context_t *async_context_new(void)
 	// Initialize hash tables directly
 	zend_hash_init(&context->values, 8, NULL, ZVAL_PTR_DTOR, 0);
 	zend_hash_init(&context->keys, 8, NULL, ZVAL_PTR_DTOR, 0);
+	
+	// Initialize scope reference as NULL (weak reference)
+	context->scope = NULL;
 	
 	// Initialize base context function pointers
 	context->base.find = (zend_async_context_find_t) async_context_find;
