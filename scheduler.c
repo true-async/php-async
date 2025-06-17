@@ -260,7 +260,7 @@ static bool resolve_deadlocks(void)
 	zval *value;
 
 	async_warning(
-		"No active coroutines, deadlock detected. Coroutines in waiting: %u", ZEND_ASYNC_ACTIVE_COROUTINE_COUNT
+		"no active coroutines, deadlock detected. Coroutines in waiting: %u", ZEND_ASYNC_ACTIVE_COROUTINE_COUNT
 	);
 
 	ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), value)
@@ -276,7 +276,7 @@ static bool resolve_deadlocks(void)
 			//zend_get_function_name_by_fci(&fiber_state->fiber->fci, &fiber_state->fiber->fci_cache, &function_name);
 
 			async_warning(
-				"Resume that suspended in file: %s, line: %d will be canceled",
+				"the coroutine was suspended in file: %s, line: %d will be canceled",
 				ZSTR_VAL(coroutine->coroutine.waker->filename),
 				coroutine->coroutine.waker->lineno
 			);
@@ -707,7 +707,8 @@ void async_scheduler_coroutine_enqueue(zend_coroutine_t * coroutine)
 	if (coroutine != NULL
 		&& (coroutine->waker == NULL
 			|| (coroutine->waker != NULL
-				&& coroutine->waker->status != ZEND_ASYNC_WAKER_WAITING)
+				&& coroutine->waker->status != ZEND_ASYNC_WAKER_WAITING
+					&& coroutine->waker->status != ZEND_ASYNC_WAKER_IGNORED)
 			)
 	) {
 		if (coroutine->waker == NULL) {

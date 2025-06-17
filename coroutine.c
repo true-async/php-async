@@ -748,6 +748,11 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine, zend_object *error
 		return;
 	}
 
+	if (ZEND_ASYNC_SCHEDULER_CONTEXT && zend_coroutine == ZEND_ASYNC_CURRENT_COROUTINE) {
+		zend_throw_error(zend_ce_cancellation_exception, "Coroutine has been canceled");
+		return;
+	}
+
 	if (zend_coroutine->waker == NULL) {
 		zend_async_waker_new(zend_coroutine);
 	}
@@ -762,7 +767,7 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine, zend_object *error
 		return;
 	}
 
-	ZEND_COROUTINE_SET_CANCELLED(zend_coroutine);
+	bool was_cancelled = ZEND_COROUTINE_IS_CANCELLED(zend_coroutine);
 
 	if (false == ZEND_COROUTINE_IS_STARTED(zend_coroutine)) {
 		zend_coroutine->waker->status = ZEND_ASYNC_WAKER_IGNORED;
@@ -783,11 +788,23 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine, zend_object *error
 		return;
 	}
 
+	ZEND_COROUTINE_SET_CANCELLED(zend_coroutine);
+
 	const bool is_error_null = (error == NULL);
 
 	if (is_error_null) {
 		error = async_new_exception(async_ce_cancellation_exception, "Coroutine cancelled");
 		if (UNEXPECTED(EG(exception))) {
+			return;
+		}
+	}
+
+	zend_async_waker_t * waker = zend_coroutine->waker;
+
+	if (was_cancelled) {
+		if (waker->error != NULL
+			&& instanceof_function(waker->error->ce, zend_ce_cancellation_exception)) {
+			async_scheduler_coroutine_enqueue(zend_coroutine);
 			return;
 		}
 	}
@@ -803,6 +820,8 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine, zend_object *error
 	if (false == transfer_error && false == is_error_null) {
 		GC_ADDREF(error);
 	}
+
+	async_scheduler_coroutine_enqueue(zend_coroutine);
 }
 
 static void coroutine_dispose(zend_async_event_t *event)
