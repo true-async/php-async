@@ -794,7 +794,8 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine, zend_object *error
 
 	if (zend_coroutine->waker->error != NULL) {
 		zend_exception_set_previous(error, zend_coroutine->waker->error);
-		OBJ_RELEASE(zend_coroutine->waker->error);
+		// We don't release the object because zend_exception_set_previous does not increment the reference count.
+		// OBJ_RELEASE(zend_coroutine->waker->error);
 	}
 
 	zend_coroutine->waker->error = error;
