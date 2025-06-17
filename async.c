@@ -199,6 +199,34 @@ PHP_FUNCTION(Async_await)
 		RETURN_NULL();
 	}
 
+	zend_async_event_t *awaitable_event = ZEND_ASYNC_OBJECT_TO_EVENT(awaitable);
+	zend_async_event_t *cancellation_event = cancellation != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation) : NULL;
+
+	// If the awaitable is already resolved, we can return the result immediately.
+	if (ZEND_ASYNC_EVENT_IS_CLOSED(awaitable_event)) {
+
+		if (UNEXPECTED(awaitable_event->replay == NULL)) {
+			zend_error(E_CORE_WARNING, "Cannot await a closed event which cannot be replayed");
+			RETURN_NULL();
+		}
+
+		if (ZEND_ASYNC_EVENT_EXTRACT_RESULT(awaitable_event, return_value)) {
+			return;
+		}
+
+		RETURN_NULL();
+	}
+
+	// If the cancellation event is already resolved, we can return exception immediately.
+	if (cancellation_event != NULL && ZEND_ASYNC_EVENT_IS_CLOSED(cancellation_event)) {
+		if (ZEND_ASYNC_EVENT_EXTRACT_RESULT(awaitable_event, return_value)) {
+			return;
+		}
+
+		async_throw_cancellation("Operation has been cancelled");
+		RETURN_THROWS();
+	}
+
 	zend_async_waker_new(coroutine);
 
 	if (UNEXPECTED(EG(exception) != NULL)) {
@@ -207,20 +235,28 @@ PHP_FUNCTION(Async_await)
 
 	zend_async_resume_when(
 		coroutine,
-		ZEND_ASYNC_OBJECT_TO_EVENT(awaitable),
+		awaitable_event,
 		false,
 		zend_async_waker_callback_resolve,
 		NULL
 	);
 
-	if (cancellation != NULL) {
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		RETURN_THROWS();
+	}
+
+	if (cancellation_event != NULL) {
 		zend_async_resume_when(
 			coroutine,
-			ZEND_ASYNC_OBJECT_TO_EVENT(cancellation),
+			cancellation_event,
 			false,
 			zend_async_waker_callback_cancel,
 			NULL
 		);
+
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			RETURN_THROWS();
+		}
 	}
 
 	ZEND_ASYNC_SUSPEND();
@@ -263,6 +299,7 @@ PHP_FUNCTION(Async_awaitAny)
 		0,
 		results,
 		NULL,
+		false,
 		false
 	);
 
@@ -311,7 +348,8 @@ PHP_FUNCTION(Async_awaitFirstSuccess)
 		0,
 		results,
 		errors,
-		false
+		false,
+		true
 	);
 
 	if (EG(exception)) {
@@ -363,6 +401,7 @@ PHP_FUNCTION(Async_awaitAll)
 		0,
 		results,
 		NULL,
+		false,
 		false
 		);
 
@@ -398,7 +437,8 @@ PHP_FUNCTION(Async_awaitAllWithErrors)
 		0,
 		results,
 		errors,
-		false
+		false,
+		true
 		);
 
 	if (EG(exception)) {
@@ -448,6 +488,7 @@ PHP_FUNCTION(Async_awaitAnyOf)
 		0,
 		results,
 		NULL,
+		false,
 		false
 		);
 
@@ -485,7 +526,8 @@ PHP_FUNCTION(Async_awaitAnyOfWithErrors)
 		0,
 		results,
 		errors,
-		false
+		false,
+		true
 		);
 
 	if (EG(exception)) {
@@ -559,6 +601,26 @@ PHP_FUNCTION(Async_currentContext)
 {
 	THROW_IF_ASYNC_OFF;
 	THROW_IF_SCHEDULER_CONTEXT;
+
+	zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
+
+	if (scope == NULL) {
+		// No current scope - return new independent context
+		async_context_t *context = async_context_new();
+		RETURN_OBJ(&context->std);
+	}
+
+	if (scope->context == NULL) {
+		// Scope exists but no context - create new context and link it to scope
+		async_context_t *context = async_context_new();
+		context->scope = scope;
+		scope->context = &context->base;
+		RETURN_OBJ(&context->std);
+	}
+
+	// Return the existing context from scope
+	async_context_t *context = (async_context_t *) scope->context;
+	RETURN_OBJ_COPY(&context->std);
 }
 
 PHP_FUNCTION(Async_coroutineContext)
@@ -566,6 +628,24 @@ PHP_FUNCTION(Async_coroutineContext)
 	THROW_IF_ASYNC_OFF;
 	THROW_IF_SCHEDULER_CONTEXT;
 
+	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (coroutine == NULL) {
+		// No current coroutine - return new context
+		async_context_t *context = async_context_new();
+		RETURN_OBJ(&context->std);
+	}
+
+	if (coroutine->coroutine.context == NULL) {
+		// Coroutine exists but no context - create and assign to coroutine
+		async_context_t *context = async_context_new();
+		coroutine->coroutine.context = &context->base;
+		RETURN_OBJ_COPY(&context->std);
+	}
+
+	// Return the existing context from coroutine
+	async_context_t *context = (async_context_t *) coroutine->coroutine.context;
+	RETURN_OBJ_COPY(&context->std);
 }
 
 PHP_FUNCTION(Async_currentCoroutine)
@@ -633,45 +713,93 @@ static zend_object_handlers async_timeout_handlers;
 
 static void async_timeout_destroy_object(zend_object *object)
 {
-	zend_async_event_t *event = ZEND_ASYNC_OBJECT_TO_EVENT(object);
-	event->dispose(event);
+	async_timeout_object_t * timeout = ASYNC_TIMEOUT_FROM_OBJ(object);
+
+	if (timeout->event != NULL) {
+		zend_async_timer_event_t * timer_event = timeout->event;
+		async_timeout_ext_t *timeout_ext = ASYNC_TIMEOUT_FROM_EVENT(&timer_event->base);
+		timeout_ext->std = NULL;
+		timeout->event = NULL;
+
+		timer_event->base.dispose(&timer_event->base);
+	}
 }
 
-static bool timeout_before_notify_handler(zend_async_event_t *event, void **result, zend_object **exception)
+static void async_timeout_event_dispose(zend_async_event_t *event)
 {
+	async_timeout_ext_t *timeout = ASYNC_TIMEOUT_FROM_EVENT(event);
+
+	if (timeout->std) {
+		zend_object *object = timeout->std;
+		async_timeout_object_t *timeout_object = ASYNC_TIMEOUT_FROM_OBJ(object);
+		ZEND_ASSERT((timeout_object->event == NULL || timeout_object->event == (zend_async_timer_event_t *) event)
+			&& "Event object mismatch");
+		timeout_object->event = NULL;
+		timeout->std = NULL;
+		OBJ_RELEASE(object);
+	}
+
+	if (timeout->prev_dispose) {
+		timeout->prev_dispose(event);
+	}
+}
+
+static void timeout_before_notify_handler(zend_async_event_t *event, void *result, zend_object *exception)
+{
+	if (UNEXPECTED(exception != NULL)) {
+		ZEND_ASYNC_CALLBACKS_NOTIFY_FROM_HANDLER(event, result, exception);
+		return;
+	}
+
 	// Here we override the exception value with a timeout exception.
-	*exception = async_new_exception(
+	zend_object * timeout_exception = async_new_exception(
 		async_ce_timeout_exception,
 		"Timeout occurred after %lu milliseconds",
 		((zend_async_timer_event_t * )event)->timeout
 	);
 
-	return true;
+	ZEND_ASYNC_CALLBACKS_NOTIFY_FROM_HANDLER(event, result, timeout_exception);
+	OBJ_RELEASE(timeout_exception);
 }
 
 static zend_object *async_timeout_create(const zend_ulong ms, const bool is_periodic)
 {
-	zend_async_event_t *event = (zend_async_event_t *) ZEND_ASYNC_NEW_TIMER_EVENT_EX(
-		ms, is_periodic, sizeof(async_timeout_ext_t) + zend_object_properties_size(async_ce_timeout)
-	);
+	async_timeout_object_t *object = zend_object_alloc(sizeof(async_timeout_object_t), async_ce_timeout);
 
-	async_timeout_ext_t *timeout = ASYNC_TIMEOUT_FROM_EVENT(event);
-	event->before_notify = timeout_before_notify_handler;
+	zend_object_std_init(&object->std, async_ce_timeout);
+	object_properties_init(&object->std, async_ce_timeout);
 
-	zend_object_std_init(&timeout->std, async_ce_timeout);
-	object_properties_init(&timeout->std, async_ce_timeout);
-
-	ZEND_ASYNC_EVENT_SET_ZEND_OBJ(event);
-	ZEND_ASYNC_EVENT_SET_NO_FREE_MEMORY(event);
-	// Calculate the offset for the zend object from the start of the event structure
-	ZEND_ASYNC_EVENT_SET_ZEND_OBJ_OFFSET(event, ((uint32_t)((event)->extra_offset + XtOffsetOf(async_timeout_ext_t, std))));
-
-	if (async_timeout_handlers.offset == 0) {
-		async_timeout_handlers.offset = (int)event->zend_object_offset;
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		efree(object);
+		return NULL;
 	}
 
-	timeout->std.handlers = &async_timeout_handlers;
-	return &timeout->std;
+	object->std.handlers = &async_timeout_handlers;
+
+	zend_async_event_t *event = (zend_async_event_t *) ZEND_ASYNC_NEW_TIMER_EVENT_EX(
+		ms, is_periodic, sizeof(async_timeout_ext_t)
+	);
+
+	if (UNEXPECTED(event == NULL)) {
+		efree(object);
+		return NULL;
+	}
+
+	ZEND_ASYNC_EVENT_REF_SET(object, XtOffsetOf(async_timeout_object_t, std), (zend_async_timer_event_t *)event);
+	// A special flag is set to indicate that the event will contain a reference to a Zend object.
+	ZEND_ASYNC_EVENT_WITH_OBJECT_REF(event);
+
+	// Cast the event to the extended type.
+	async_timeout_ext_t *timeout = ASYNC_TIMEOUT_FROM_EVENT(event);
+	// Store the event in the object.
+	timeout->std = &object->std;
+	// Define own dispose handler for the event.
+	timeout->prev_dispose = event->dispose;
+
+	event->notify_handler = timeout_before_notify_handler;
+	event->dispose = async_timeout_event_dispose;
+
+	return &object->std;
 }
 
 void async_register_timeout_ce(void)
@@ -682,7 +810,7 @@ void async_register_timeout_ce(void)
 
 	async_timeout_handlers = std_object_handlers;
 
-	async_timeout_handlers.offset   = 0;
+	async_timeout_handlers.offset   = XtOffsetOf(async_timeout_object_t, std);
 	async_timeout_handlers.dtor_obj = async_timeout_destroy_object;
 }
 
@@ -692,20 +820,21 @@ static PHP_GINIT_FUNCTION(async)
 	ZEND_TSRMLS_CACHE_UPDATE();
 #endif
 
-	circular_buffer_ctor(&async_globals->microtasks, 64, sizeof(zend_async_microtask_t *), &zend_std_allocator);
-	circular_buffer_ctor(&async_globals->coroutine_queue, 128, sizeof(zend_coroutine_t *), &zend_std_allocator);
-	zend_hash_init(&async_globals->coroutines, 128, NULL, NULL, 0);
-
 	async_globals->reactor_started = false;
+
+#ifdef PHP_WIN32
+	async_globals->watcherThread = NULL;
+	async_globals->ioCompletionPort = NULL;
+	async_globals->countWaitingDescriptors = 0;
+	async_globals->isRunning = false;
+	async_globals->uvloop_wakeup = NULL;
+	async_globals->pid_queue = NULL;
+#endif
 }
 
 /* {{{ PHP_GSHUTDOWN_FUNCTION */
 static PHP_GSHUTDOWN_FUNCTION(async)
 {
-	circular_buffer_dtor(&async_globals->microtasks);
-	circular_buffer_dtor(&async_globals->coroutine_queue);
-	zend_hash_destroy(&async_globals->coroutines);
-
 #ifdef PHP_WIN32
 #endif
 }
@@ -745,6 +874,7 @@ ZEND_MSHUTDOWN_FUNCTION(async)
 #ifdef PHP_ASYNC_LIBUV
 	//async_libuv_shutdown();
 #endif
+
 	return SUCCESS;
 }
 
@@ -765,11 +895,23 @@ PHP_RINIT_FUNCTION(async) /* {{{ */
 {
 	//async_host_name_list_ctor();
 	ZEND_ASYNC_READY;
+	circular_buffer_ctor(&ASYNC_G(microtasks), 64, sizeof(zend_async_microtask_t *), &zend_std_allocator);
+	circular_buffer_ctor(&ASYNC_G(coroutine_queue), 128, sizeof(zend_coroutine_t *), &zend_std_allocator);
+	zend_hash_init(&ASYNC_G(coroutines), 128, NULL, NULL, 0);
+
+	ASYNC_G(reactor_started) = false;
+
 	return SUCCESS;
 } /* }}} */
 
 PHP_RSHUTDOWN_FUNCTION(async) /* {{{ */
 {
+	ZEND_ASYNC_REACTOR_SHUTDOWN();
+
+	circular_buffer_dtor(&ASYNC_G(microtasks));
+	circular_buffer_dtor(&ASYNC_G(coroutine_queue));
+	zend_hash_destroy(&ASYNC_G(coroutines));
+
 	//async_host_name_list_dtor();
 	return SUCCESS;
 } /* }}} */

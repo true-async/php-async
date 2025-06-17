@@ -73,7 +73,6 @@ struct _async_dns_addrinfo_t {
 struct _async_process_event_t {
 	zend_async_process_event_t event;
 #ifdef PHP_WIN32
-	HANDLE hProcess;
 	HANDLE hJob;
 #endif
 };

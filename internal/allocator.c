@@ -35,12 +35,12 @@ void *zend_std_calloc(const size_t num, const size_t size)
 #endif
 }
 
-void *zend_std_realloc(void *ptr, const size_t size)
+void *zend_std_realloc(void *ptr, const size_t size, const size_t old_size)
 {
 #ifdef ASYNC_UNIT_TESTS
 	return realloc(ptr, size);
 #else
-	return erealloc(ptr, size);
+	return erealloc2(ptr, size, old_size);
 #endif
 }
 
@@ -78,12 +78,12 @@ void *zend_std_pcalloc(const size_t num, const size_t size)
 #endif
 }
 
-void *zend_std_prealloc(void *ptr, const size_t size)
+void *zend_std_prealloc(void *ptr, const size_t size, const size_t old_size)
 {
 #ifdef ASYNC_UNIT_TESTS
 	return realloc(ptr, size);
 #else
-	return perealloc(ptr, size, 1);
+	return perealloc2(ptr, size, old_size, 1);
 #endif
 }
 

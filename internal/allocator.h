@@ -23,7 +23,7 @@ typedef struct _allocator_s allocator_t;
 struct _allocator_s {
 	void *(*m_alloc)(size_t size);
 	void *(*m_calloc)(size_t num, size_t size);
-	void *(*m_realloc)(void *ptr, size_t size);
+	void *(*m_realloc)(void *ptr, size_t size, const size_t old_size);
 	void (*m_free)(void *ptr);
 };
 

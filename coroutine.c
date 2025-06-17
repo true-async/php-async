@@ -18,6 +18,7 @@
 #include "context.h"
 #include "coroutine_arginfo.h"
 #include "exceptions.h"
+#include "iterator.h"
 #include "php_async.h"
 
 #include "scheduler.h"
@@ -36,98 +37,344 @@ static zend_function coroutine_root_function = { ZEND_INTERNAL_FUNCTION };
 /// Coroutine methods
 ///////////////////////////////////////////////////////////
 
+#define THIS_COROUTINE ((async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS)))
+
 METHOD(getId)
 {
+	ZEND_PARSE_PARAMETERS_NONE();
 
+	RETURN_LONG(Z_OBJ_P(ZEND_THIS)->handle);
 }
 
 METHOD(asHiPriority)
 {
-
+	// TODO: Implement priority handling in scheduler
+	// For now, just return the same coroutine
+	RETURN_ZVAL(ZEND_THIS, 1, 0);
 }
 
 METHOD(getContext)
 {
+	ZEND_PARSE_PARAMETERS_NONE();
 
+	async_coroutine_t *coroutine = THIS_COROUTINE;
+
+	if (coroutine->coroutine.context == NULL) {
+		async_context_t * context = async_context_new();
+		if (UNEXPECTED(context == NULL)) {
+			RETURN_THROWS();
+		}
+
+		coroutine->coroutine.context = &context->base;
+	}
+
+	// Return the context object
+	RETURN_OBJ_COPY(&((async_context_t *) coroutine->coroutine.context)->std);
+}
+
+METHOD(getResult)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	async_coroutine_t *coroutine = THIS_COROUTINE;
+
+	if (!ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine)) {
+		RETURN_NULL();
+	}
+
+	if (Z_TYPE(coroutine->coroutine.result) == IS_UNDEF) {
+		RETURN_NULL();
+	}
+
+	RETURN_ZVAL(&coroutine->coroutine.result, 1, 0);
+}
+
+METHOD(getException)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	async_coroutine_t *coroutine = THIS_COROUTINE;
+
+	if (!ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine)) {
+		async_throw_error("Cannot get exception of a running coroutine");
+		RETURN_THROWS();
+	}
+
+	if (coroutine->coroutine.exception == NULL) {
+		RETURN_NULL();
+	}
+
+	RETURN_OBJ_COPY(coroutine->coroutine.exception);
 }
 
 METHOD(getTrace)
 {
-
+	// TODO: Implement debug trace collection
+	// This would require fiber stack trace functionality
+	array_init(return_value);
 }
 
 METHOD(getSpawnFileAndLine)
 {
+	ZEND_PARSE_PARAMETERS_NONE();
 
+	async_coroutine_t *coroutine = THIS_COROUTINE;
+
+	array_init(return_value);
+
+	if (coroutine->coroutine.filename) {
+		add_next_index_str(return_value, zend_string_copy(coroutine->coroutine.filename));
+	} else {
+		add_next_index_null(return_value);
+	}
+
+	add_next_index_long(return_value, coroutine->coroutine.lineno);
 }
 
 METHOD(getSpawnLocation)
 {
+	ZEND_PARSE_PARAMETERS_NONE();
 
+	async_coroutine_t *coroutine = THIS_COROUTINE;
+
+	if (coroutine->coroutine.filename) {
+		RETURN_STR(zend_strpprintf(0, "%s:%d",
+			ZSTR_VAL(coroutine->coroutine.filename), 
+			coroutine->coroutine.lineno));
+	} else {
+		RETURN_STRING("unknown");
+	}
 }
 
 METHOD(getSuspendFileAndLine)
 {
+	ZEND_PARSE_PARAMETERS_NONE();
 
+	async_coroutine_t *coroutine = THIS_COROUTINE;
+
+	array_init(return_value);
+
+	if (coroutine->coroutine.waker && coroutine->coroutine.waker->filename) {
+		add_next_index_str(return_value, zend_string_copy(coroutine->coroutine.waker->filename));
+		add_next_index_long(return_value, coroutine->coroutine.waker->lineno);
+	} else {
+		add_next_index_null(return_value);
+		add_next_index_long(return_value, 0);
+	}
 }
 
 METHOD(getSuspendLocation)
 {
+	ZEND_PARSE_PARAMETERS_NONE();
 
+	async_coroutine_t *coroutine = THIS_COROUTINE;
+
+	if (coroutine->coroutine.waker && coroutine->coroutine.waker->filename) {
+		RETURN_STR(zend_strpprintf(0, "%s:%d", 
+			ZSTR_VAL(coroutine->coroutine.waker->filename), 
+			coroutine->coroutine.waker->lineno));
+	} else {
+		RETURN_STRING("unknown");
+	}
 }
 
 METHOD(isStarted)
 {
-
+	ZEND_PARSE_PARAMETERS_NONE();
+	RETURN_BOOL(ZEND_COROUTINE_IS_STARTED(&THIS_COROUTINE->coroutine));
 }
 
 METHOD(isQueued)
 {
+	ZEND_PARSE_PARAMETERS_NONE();
 
+	async_coroutine_t *coroutine = THIS_COROUTINE;
+
+	if (coroutine->coroutine.waker == NULL) {
+		RETURN_FALSE;
+	}
+
+	RETURN_BOOL(coroutine->coroutine.waker->status == ZEND_ASYNC_WAKER_QUEUED);
 }
 
 METHOD(isRunning)
 {
+	ZEND_PARSE_PARAMETERS_NONE();
 
+	async_coroutine_t *coroutine = THIS_COROUTINE;
+
+	// Coroutine is running if it's the current one and is started but not finished
+	RETURN_BOOL(ZEND_COROUTINE_IS_STARTED(&coroutine->coroutine)
+		&& false == ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine));
 }
 
 METHOD(isSuspended)
 {
+	ZEND_PARSE_PARAMETERS_NONE();
 
+	RETURN_BOOL(ZEND_COROUTINE_SUSPENDED(&THIS_COROUTINE->coroutine));
 }
 
 METHOD(isCancelled)
 {
+	ZEND_PARSE_PARAMETERS_NONE();
 
+	RETURN_BOOL(ZEND_COROUTINE_IS_CANCELLED(&THIS_COROUTINE->coroutine));
 }
 
 METHOD(isCancellationRequested)
 {
+	ZEND_PARSE_PARAMETERS_NONE();
 
+	async_coroutine_t *coroutine = THIS_COROUTINE;
+
+	// TODO: Implement cancellation request tracking in waker
+	// For now, return same as isCancelled
+	RETURN_BOOL(ZEND_COROUTINE_IS_CANCELLED(&coroutine->coroutine));
 }
 
 METHOD(isFinished)
 {
+	ZEND_PARSE_PARAMETERS_NONE();
 
+	RETURN_BOOL(ZEND_COROUTINE_IS_FINISHED(&THIS_COROUTINE->coroutine));
 }
 
 METHOD(getAwaitingInfo)
 {
+	ZEND_PARSE_PARAMETERS_NONE();
 
+	zend_array *info = ZEND_ASYNC_GET_AWAITING_INFO(&THIS_COROUTINE->coroutine);
+
+	if (info == NULL) {
+		array_init(return_value);
+	} else {
+		RETURN_ARR(info);
+	}
 }
 
 METHOD(cancel)
 {
+	zend_object *exception;
 
+	ZEND_PARSE_PARAMETERS_START(1, 1)
+		Z_PARAM_OBJ_OF_CLASS(exception, zend_ce_cancellation_exception)
+	ZEND_PARSE_PARAMETERS_END();
+
+	ZEND_ASYNC_CANCEL(&THIS_COROUTINE->coroutine, exception, false);
 }
 
 METHOD(onFinally)
 {
+	zval *callable;
 
+	ZEND_PARSE_PARAMETERS_START(1, 1)
+		Z_PARAM_ZVAL(callable)
+	ZEND_PARSE_PARAMETERS_END();
+
+	if (UNEXPECTED(false == zend_is_callable(callable, 0, NULL))) {
+		zend_argument_type_error(1, "argument must be callable");
+		RETURN_THROWS();
+	}
+
+	async_coroutine_t *coroutine = THIS_COROUTINE;
+
+	// Check if coroutine is already finished
+	if (ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine)) {
+
+		// Call the callable immediately
+		zval result, param;
+		ZVAL_UNDEF(&result);
+		ZVAL_OBJ(&param, &coroutine->std);
+
+		if (UNEXPECTED(call_user_function(NULL, NULL, callable, &result, 1, &param) == FAILURE)) {
+			zend_throw_error(NULL, "Failed to call finally handler in finished coroutine");
+			zval_ptr_dtor(&result);
+			RETURN_THROWS();
+		}
+
+		return;
+	}
+
+	// Lazy initialization of finally_handlers array
+	if (coroutine->finally_handlers == NULL) {
+		coroutine->finally_handlers = zend_new_array(0);
+	}
+
+	if (UNEXPECTED(zend_hash_next_index_insert(coroutine->finally_handlers, callable) == NULL)) {
+		async_throw_error("Failed to add finally handler to coroutine");
+		RETURN_THROWS();
+	}
+
+	Z_TRY_ADDREF_P(callable);
 }
 
 ///////////////////////////////////////////////////////////
 /// Coroutine methods end
+///////////////////////////////////////////////////////////
+
+///////////////////////////////////////////////////////////
+/// async_coroutine_call_finally_handlers
+///////////////////////////////////////////////////////////
+
+static zend_result finally_handlers_iterator_handler(async_iterator_t *iterator, zval *current, zval *key)
+{
+	zval rv;
+	ZVAL_UNDEF(&rv);
+	zval param;
+	ZVAL_OBJ(&param, &((async_coroutine_t *) iterator->extended_data)->std);
+
+	call_user_function(NULL, NULL, current, &rv, 1, &param);
+	zval_ptr_dtor(&rv);
+
+	return SUCCESS;
+}
+
+static void finally_handlers_iterator_dtor(zend_async_microtask_t *microtask)
+{
+	async_iterator_t * iterator = (async_iterator_t *) microtask;
+
+	if (iterator->extended_data != NULL) {
+		async_coroutine_t *coroutine = iterator->extended_data;
+		iterator->extended_data = NULL;
+		OBJ_RELEASE(&coroutine->std);
+	}
+}
+
+static void async_coroutine_call_finally_handlers(async_coroutine_t *coroutine)
+{
+	if (coroutine->finally_handlers == NULL || zend_hash_num_elements(coroutine->finally_handlers) == 0) {
+		return;
+	}
+
+	zval handlers;
+	ZVAL_ARR(&handlers, coroutine->finally_handlers);
+	coroutine->finally_handlers = NULL;
+
+	async_iterator_t * iterator = async_iterator_new(
+		&handlers,
+		NULL,
+		NULL,
+		finally_handlers_iterator_handler,
+		0,
+		0
+	);
+
+	zval_ptr_dtor(&handlers);
+
+	if (UNEXPECTED(EG(exception))) {
+		return;
+	}
+
+	iterator->extended_data = coroutine;
+	iterator->extended_dtor = finally_handlers_iterator_dtor;
+	GC_ADDREF(&coroutine->std);
+
+	async_iterator_run_in_coroutine(iterator);
+}
+
+///////////////////////////////////////////////////////////
+/// internal functions
 ///////////////////////////////////////////////////////////
 
 static zend_always_inline async_coroutine_t *coroutine_from_context(zend_fiber_context *context)
@@ -155,6 +402,14 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 {
 	ZEND_COROUTINE_SET_FINISHED(&coroutine->coroutine);
 
+	/* Call switch handlers for coroutine finishing */
+	if (UNEXPECTED(coroutine->coroutine.switch_handlers)) {
+		ZEND_COROUTINE_FINISH(&coroutine->coroutine);
+	}
+
+	/* Cleanup switch handlers */
+	zend_coroutine_switch_handlers_destroy(&coroutine->coroutine);
+
 	// call coroutines handlers
 	zend_object * exception = NULL;
 
@@ -176,11 +431,38 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 		}
 	}
 
+	// Hold the exception inside coroutine if it is not NULL.
+	if (exception != NULL) {
+		if (coroutine->coroutine.exception != NULL) {
+			// If the coroutine already has an exception, we do not overwrite it.
+			// This is to prevent losing the original exception in case of multiple exceptions.
+			zend_exception_set_previous(exception, coroutine->coroutine.exception);
+			GC_DELREF(coroutine->coroutine.exception);
+		}
+
+		coroutine->coroutine.exception = exception;
+		GC_ADDREF(exception);
+	} else if (coroutine->coroutine.exception != NULL) {
+		// If the coroutine has an exception, we keep it.
+		exception = coroutine->coroutine.exception;
+		GC_ADDREF(exception);
+	}
+
 	zend_exception_save();
 	// Mark second parameter of zend_async_callbacks_notify as ZVAL
 	ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&coroutine->coroutine.event);
 	ZEND_COROUTINE_CLR_EXCEPTION_HANDLED(&coroutine->coroutine);
-	zend_async_callbacks_notify(&coroutine->coroutine.event, &coroutine->coroutine.result, exception);
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&coroutine->coroutine.event, &coroutine->coroutine.result, exception);
+	zend_async_callbacks_free(&coroutine->coroutine.event);
+
+	if (coroutine->coroutine.internal_context != NULL) {
+		zend_async_coroutine_internal_context_dispose(&coroutine->coroutine);
+	}
+
+	// Call finally handlers if any
+	async_coroutine_call_finally_handlers(coroutine);
+	zend_async_waker_destroy(&coroutine->coroutine);
+
 	zend_exception_restore();
 
 	// If the exception was handled by any handler, we do not propagate it further.
@@ -213,8 +495,9 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 			zend_error(E_CORE_ERROR, "Failed to remove coroutine from the list");
 		}
 
-		// Decrease the active coroutine count if the coroutine is not a zombie.
-		if (false == ZEND_COROUTINE_IS_ZOMBIE(&coroutine->coroutine)) {
+		// Decrease the active coroutine count if the coroutine is not a zombie and is started.
+		if (ZEND_COROUTINE_IS_STARTED(&coroutine->coroutine)
+			&& false == ZEND_COROUTINE_IS_ZOMBIE(&coroutine->coroutine)) {
 			ZEND_ASYNC_DECREASE_COROUTINE_COUNT
 		}
 	}
@@ -227,6 +510,11 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(zend_fiber_transfer *transfer)
 
 	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
 	ZEND_COROUTINE_SET_STARTED(&coroutine->coroutine);
+
+	/* Call switch handlers for coroutine entering */
+	if (UNEXPECTED(&coroutine->coroutine.switch_handlers != NULL)) {
+		ZEND_COROUTINE_ENTER(&coroutine->coroutine);
+	}
 
 	/* Determine the current error_reporting ini setting. */
 	zend_long error_reporting = INI_INT("error_reporting");
@@ -336,6 +624,44 @@ static void coroutine_del_callback(zend_async_event_t *event, zend_async_event_c
 	zend_async_callbacks_remove(event, callback);
 }
 
+/**
+ * The method allows you to retrieve the results of a coroutine once it has completed.
+ * The method can only be called if the coroutine has completed; otherwise, it does nothing.
+ *
+ * @param event The coroutine event to replay.
+ * @param callback The callback to call with the result and exception (can be NULL).
+ * @param result The result to copy into, if not NULL.
+ * @param exception The exception to set, if not NULL.
+ */
+static bool coroutine_replay(zend_async_event_t *event, zend_async_event_callback_t *callback, zval *result, zend_object **exception)
+{
+	async_coroutine_t *coroutine = (async_coroutine_t *) event;
+
+	if (UNEXPECTED(false == ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine))) {
+		ZEND_ASSERT("Cannot replay coroutine, because the coroutine is not finished");
+		return false;
+	}
+
+	if (callback != NULL) {
+		callback->callback(event, callback, &coroutine->coroutine.result, coroutine->coroutine.exception);
+		return true;
+	}
+
+	if (result != NULL) {
+		ZVAL_COPY(result, &coroutine->coroutine.result);
+	}
+
+	if (exception == NULL && coroutine->coroutine.exception != NULL) {
+		GC_ADDREF(coroutine->coroutine.exception);
+		zend_throw_exception_internal(coroutine->coroutine.exception);
+	} else if (exception != NULL && coroutine->coroutine.exception != NULL) {
+		*exception = coroutine->coroutine.exception;
+		GC_ADDREF(*exception);
+	}
+
+	return coroutine->coroutine.exception != NULL || Z_TYPE(coroutine->coroutine.result) != IS_UNDEF;
+}
+
 static zend_string* coroutine_info(zend_async_event_t *event)
 {
 	async_coroutine_t *coroutine = (async_coroutine_t *) event;
@@ -363,6 +689,121 @@ static zend_string* coroutine_info(zend_async_event_t *event)
 	}
 }
 
+void async_coroutine_suspend(const bool from_main)
+{
+	if (UNEXPECTED(from_main)) {
+		// If the Scheduler was never used, it means no coroutines were created,
+		// so execution can be finished without doing anything.
+		if (circular_buffer_is_empty(&ASYNC_G(microtasks)) && zend_hash_num_elements(&ASYNC_G(coroutines)) == 0) {
+			return;
+		}
+
+		async_scheduler_main_coroutine_suspend();
+		return;
+	}
+
+	async_scheduler_coroutine_suspend(NULL);
+}
+
+void async_coroutine_resume(zend_coroutine_t *coroutine, zend_object * error, const bool transfer_error)
+{
+	if (UNEXPECTED(coroutine->waker == NULL)) {
+		async_throw_error("Cannot resume a coroutine that has not been suspended");
+		return;
+	}
+
+	if (error != NULL) {
+		if (coroutine->waker->error != NULL) {
+			zend_exception_set_previous(error, coroutine->waker->error);
+			OBJ_RELEASE(coroutine->waker->error);
+		}
+
+		coroutine->waker->error = error;
+
+		if (false == transfer_error) {
+			GC_ADDREF(error);
+		}
+	}
+
+	if (UNEXPECTED(coroutine->waker->status == ZEND_ASYNC_WAKER_QUEUED)) {
+		return;
+	}
+
+	if (UNEXPECTED(circular_buffer_push(&ASYNC_G(coroutine_queue), &coroutine, true)) == FAILURE) {
+		async_throw_error("Failed to enqueue coroutine");
+		return;
+	}
+
+	coroutine->waker->status = ZEND_ASYNC_WAKER_QUEUED;
+}
+
+void async_coroutine_cancel(zend_coroutine_t *zend_coroutine, zend_object *error, const bool transfer_error, const bool is_safely)
+{
+	// If the coroutine finished, do nothing.
+	if (ZEND_COROUTINE_IS_FINISHED(zend_coroutine)) {
+		if (transfer_error && error != NULL) {
+			OBJ_RELEASE(error);
+		}
+
+		return;
+	}
+
+	if (zend_coroutine->waker == NULL) {
+		zend_async_waker_new(zend_coroutine);
+	}
+
+	if (UNEXPECTED(zend_coroutine->waker == NULL)) {
+		async_throw_error("Waker is not initialized");
+
+		if (transfer_error) {
+			OBJ_RELEASE(error);
+		}
+
+		return;
+	}
+
+	ZEND_COROUTINE_SET_CANCELLED(zend_coroutine);
+
+	if (false == ZEND_COROUTINE_IS_STARTED(zend_coroutine)) {
+		zend_coroutine->waker->status = ZEND_ASYNC_WAKER_IGNORED;
+		zend_coroutine->exception = error;
+
+		if (false == transfer_error) {
+			GC_ADDREF(error);
+		}
+
+		return;
+	}
+
+	// In safely mode, we don't forcibly terminate the coroutine,
+	// but we do mark it as a Zombie.
+	if (is_safely && error == NULL) {
+		ZEND_COROUTINE_SET_ZOMBIE(zend_coroutine);
+		ZEND_ASYNC_DECREASE_COROUTINE_COUNT
+		return;
+	}
+
+	const bool is_error_null = (error == NULL);
+
+	if (is_error_null) {
+		error = async_new_exception(async_ce_cancellation_exception, "Coroutine cancelled");
+		if (UNEXPECTED(EG(exception))) {
+			return;
+		}
+	}
+
+	if (zend_coroutine->waker->error != NULL) {
+		zend_exception_set_previous(error, zend_coroutine->waker->error);
+		OBJ_RELEASE(zend_coroutine->waker->error);
+	}
+
+	zend_coroutine->waker->error = error;
+
+	if (false == transfer_error && false == is_error_null) {
+		GC_ADDREF(error);
+	}
+}
+
 static void coroutine_dispose(zend_async_event_t *event)
 {
 	async_coroutine_t *coroutine = (async_coroutine_t *) event;
@@ -372,6 +813,11 @@ static void coroutine_dispose(zend_async_event_t *event)
 static void coroutine_object_destroy(zend_object *object)
 {
 	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(object);
+
+	ZEND_ASSERT((coroutine->coroutine.waker == NULL ||
+		(coroutine->coroutine.waker->status == ZEND_ASYNC_WAKER_QUEUED ||
+			coroutine->coroutine.waker->status == ZEND_ASYNC_WAKER_IGNORED))
+		&& "Coroutine waker must be dequeued before destruction");
 
 	if (coroutine->coroutine.scope != NULL) {
 		async_scope_remove_coroutine((async_scope_t *) coroutine->coroutine.scope, coroutine);
@@ -400,6 +846,13 @@ static void coroutine_object_destroy(zend_object *object)
 		efree(fcall);
 	}
 
+	if (coroutine->coroutine.context != NULL) {
+		// If the coroutine has a context, we need to release it.
+		async_context_t *context = (async_context_t *) coroutine->coroutine.context;
+		coroutine->coroutine.context = NULL;
+		async_context_dispose(context);
+	}
+
 	if (coroutine->coroutine.filename) {
 		zend_string_release_ex(coroutine->coroutine.filename, 0);
 		coroutine->coroutine.filename = NULL;
@@ -410,7 +863,24 @@ static void coroutine_object_destroy(zend_object *object)
 		coroutine->coroutine.waker = NULL;
 	}
 
+	if (coroutine->coroutine.internal_context != NULL) {
+		zend_async_coroutine_internal_context_dispose(&coroutine->coroutine);
+	}
+
 	zval_ptr_dtor(&coroutine->coroutine.result);
+
+	if (coroutine->coroutine.exception != NULL) {
+		// If the coroutine has an exception, we need to release it.
+
+		zend_object *exception = coroutine->coroutine.exception;
+		coroutine->coroutine.exception = NULL;
+		OBJ_RELEASE(exception);
+	}
+
+	if (coroutine->finally_handlers) {
+		zend_array_destroy(coroutine->finally_handlers);
+		coroutine->finally_handlers = NULL;
+	}
 }
 
 static void coroutine_free(zend_object *object)
@@ -423,9 +893,7 @@ static void coroutine_free(zend_object *object)
 
 static zend_object *coroutine_object_create(zend_class_entry *class_entry)
 {
-	async_coroutine_t *coroutine = zend_object_alloc(
-		sizeof(async_coroutine_t) + zend_object_properties_size(async_ce_coroutine), class_entry
-	);
+	async_coroutine_t *coroutine = zend_object_alloc(sizeof(async_coroutine_t), class_entry);
 
 	ZVAL_UNDEF(&coroutine->coroutine.result);
 
@@ -433,17 +901,22 @@ static zend_object *coroutine_object_create(zend_class_entry *class_entry)
 	ZEND_ASYNC_EVENT_SET_NO_FREE_MEMORY(&coroutine->coroutine.event);
 	ZEND_ASYNC_EVENT_SET_ZEND_OBJ_OFFSET(&coroutine->coroutine.event, XtOffsetOf(async_coroutine_t, std));
 
+	/* Initialize switch handlers */
+	coroutine->coroutine.switch_handlers = NULL;
+
 	zend_async_event_t *event = &coroutine->coroutine.event;
 
 	event->start = coroutine_event_start;
 	event->stop = coroutine_event_stop;
 	event->add_callback = coroutine_add_callback;
 	event->del_callback = coroutine_del_callback;
+	event->replay = coroutine_replay;
 	event->info = coroutine_info;
 	event->dispose = coroutine_dispose;
 
 	coroutine->flags = ZEND_FIBER_STATUS_INIT;
 	coroutine->coroutine.extended_data = NULL;
+	coroutine->finally_handlers = NULL;
 
 	zend_object_std_init(&coroutine->std, class_entry);
 	object_properties_init(&coroutine->std, class_entry);
@@ -451,7 +924,7 @@ static zend_object *coroutine_object_create(zend_class_entry *class_entry)
 	return &coroutine->std;
 }
 
-zend_coroutine_t *new_coroutine(zend_async_scope_t *scope)
+zend_coroutine_t *async_new_coroutine(zend_async_scope_t *scope)
 {
 	zend_object * object = coroutine_object_create(async_ce_coroutine);
 

@@ -39,6 +39,11 @@ struct _async_await_context_t
 	bool ignore_errors;
 	/* If we need to fill missing results with null */
 	bool fill_missing_with_null;
+	/*
+	 * The flag indicates that all pending coroutines
+	 * must be cancelled once the wait completes, regardless of the outcome.
+	 */
+	bool cancel_on_exit;
 	/* Number of concurrent coroutines that can be executed */
 	unsigned int concurrency;
 	async_await_context_dtor_t dtor;
@@ -84,7 +89,8 @@ void async_await_futures(
 	unsigned int concurrency,
 	HashTable *results,
 	HashTable *errors,
-	bool fill_missing_with_null
+	bool fill_missing_with_null,
+	bool cancel_on_exit
 );
 
 #endif //ASYNC_API_H

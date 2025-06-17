@@ -1,5 +1,5 @@
 /* This is a generated file, edit the .stub.php file instead.
- * Stub hash: e241f73a62d9d48b7924045d76a5ef81b5cb3980 */
+ * Stub hash: 3a7bec9f75dae798325da4b6e6eea54ecd3791ee */
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_Coroutine_getId, 0, 0, IS_LONG, 0)
 ZEND_END_ARG_INFO()
@@ -9,6 +9,11 @@ ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_class_Async_Coroutine_getContext, 0, 0, Async\\Context, 0)
 ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_Coroutine_getResult, 0, 0, IS_MIXED, 0)
+ZEND_END_ARG_INFO()
+
+#define arginfo_class_Async_Coroutine_getException arginfo_class_Async_Coroutine_getResult
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_Coroutine_getTrace, 0, 0, IS_ARRAY, 0)
 ZEND_END_ARG_INFO()
@@ -50,6 +55,8 @@ ZEND_END_ARG_INFO()
 ZEND_METHOD(Async_Coroutine, getId);
 ZEND_METHOD(Async_Coroutine, asHiPriority);
 ZEND_METHOD(Async_Coroutine, getContext);
+ZEND_METHOD(Async_Coroutine, getResult);
+ZEND_METHOD(Async_Coroutine, getException);
 ZEND_METHOD(Async_Coroutine, getTrace);
 ZEND_METHOD(Async_Coroutine, getSpawnFileAndLine);
 ZEND_METHOD(Async_Coroutine, getSpawnLocation);
@@ -70,6 +77,8 @@ static const zend_function_entry class_Async_Coroutine_methods[] = {
 	ZEND_ME(Async_Coroutine, getId, arginfo_class_Async_Coroutine_getId, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_Coroutine, asHiPriority, arginfo_class_Async_Coroutine_asHiPriority, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_Coroutine, getContext, arginfo_class_Async_Coroutine_getContext, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_Coroutine, getResult, arginfo_class_Async_Coroutine_getResult, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_Coroutine, getException, arginfo_class_Async_Coroutine_getException, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_Coroutine, getTrace, arginfo_class_Async_Coroutine_getTrace, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_Coroutine, getSpawnFileAndLine, arginfo_class_Async_Coroutine_getSpawnFileAndLine, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_Coroutine, getSpawnLocation, arginfo_class_Async_Coroutine_getSpawnLocation, ZEND_ACC_PUBLIC)

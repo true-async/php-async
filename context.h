@@ -24,6 +24,7 @@ struct _async_context_s {
 	zend_async_context_t base;
 	HashTable values;
 	HashTable keys;
+	zend_async_scope_t *scope;  /* Associated scope - weak reference */
 	zend_object std;
 };
 

@@ -47,10 +47,24 @@ extern zend_class_entry * async_ce_timeout;
 
 typedef struct
 {
-	zend_object std;
+	// The first field must be a reference to a Zend object.
+	zend_object *std;
+	zend_async_event_dispose_t prev_dispose;
 } async_timeout_ext_t;
 
+/**
+ * Structure of an Awaitable interface object that holds a reference to an event object.
+ */
+typedef struct
+{
+	ZEND_ASYNC_EVENT_REF_PROLOG
+	// Pointer to the event object, which is a timer event.
+	zend_async_timer_event_t *event;
+	zend_object std;
+} async_timeout_object_t;
+
 #define ASYNC_TIMEOUT_FROM_EVENT(ev) ((async_timeout_ext_t *)((char *)(ev) + (ev)->extra_offset))
+#define ASYNC_TIMEOUT_FROM_OBJ(obj) ((async_timeout_object_t *)((char *)(obj) - (obj)->handlers->offset))
 
 ZEND_BEGIN_MODULE_GLOBALS(async)
 	// Microtask queue

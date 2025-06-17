@@ -31,7 +31,7 @@ typedef enum
 	ASYNC_ITERATOR_FINISHED = 2,
 } async_iterator_state_t;
 
-async_iterator_t * async_new_iterator(
+async_iterator_t * async_iterator_new(
 	zval *array,
 	zend_object_iterator *zend_iterator,
 	zend_fcall_t *fcall,
@@ -40,7 +40,10 @@ async_iterator_t * async_new_iterator(
 	size_t iterator_size
 );
 
-void async_run_iterator(async_iterator_t *iterator);
+#define ASYNC_ITERATOR_DTOR zend_async_microtask_handler_t
+
+void async_iterator_run(async_iterator_t *iterator);
+void async_iterator_run_in_coroutine(async_iterator_t *iterator);
 
 struct _async_iterator_t {
 	zend_async_microtask_t microtask;
@@ -50,6 +53,8 @@ struct _async_iterator_t {
 	unsigned int concurrency;
 	/* The number of active coroutines that are currently executing */
 	unsigned int active_coroutines;
+	/* The coroutine scope */
+	zend_async_scope_t *scope;
 	/* The internal handler */
 	async_iterator_handler_t handler;
 	/* Callback and info / cache to be used when coroutine is started. */
@@ -61,6 +66,10 @@ struct _async_iterator_t {
 	uint32_t hash_iterator;
 	/* The iterator object, which may be NULL if there is no iterator. */
 	zend_object_iterator *zend_iterator;
+	/* NULLABLE. Custom data for the iterator, can be used to store additional information. */
+	void *extended_data;
+	/* NULLABLE. An additional destructor that will be called. */
+	ASYNC_ITERATOR_DTOR extended_dtor;
 };
 
 #endif //ITERATOR_H

@@ -154,6 +154,12 @@ static zend_always_inline async_coroutine_t * next_coroutine(void)
 	return coroutine;
 }
 
+typedef enum {
+	COROUTINE_NOT_EXISTS,
+	COROUTINE_SWITCHED,
+	COROUTINE_IGNORED
+} switch_status;
+
 /**
  * Executes the next coroutine in the queue.
  *
@@ -161,39 +167,38 @@ static zend_always_inline async_coroutine_t * next_coroutine(void)
  * If the coroutine is finished, it will clean up and return true.
  *
  * @param transfer The transfer object to define the context for the coroutine.
- * @return true if a coroutine was executed or cleaned up, false otherwise.
+ * @return switch_status - status of the coroutine switching.
  */
-static bool execute_next_coroutine(zend_fiber_transfer *transfer)
+static switch_status execute_next_coroutine(zend_fiber_transfer *transfer)
 {
 	async_coroutine_t *async_coroutine = next_coroutine();
 	zend_coroutine_t *coroutine = &async_coroutine->coroutine;
 
 	if (UNEXPECTED(coroutine == NULL)) {
-		return false;
-	}
-
-	if (UNEXPECTED(coroutine->waker == NULL)) {
-		coroutine->event.dispose(&coroutine->event);
-		return true;
+		return COROUTINE_NOT_EXISTS;
 	}
 
 	zend_async_waker_t * waker = coroutine->waker;
 
-	if (UNEXPECTED(waker->status == ZEND_ASYNC_WAKER_IGNORED)) {
+	if (UNEXPECTED(waker == NULL || waker->status == ZEND_ASYNC_WAKER_IGNORED)) {
 
 		//
 		// This state triggers if the fiber has never been started;
 		// in this case, it is deallocated differently than usual.
 		// Finalizing handlers are called. Memory is freed in the correct order!
 		//
+		if (ZEND_COROUTINE_IS_CANCELLED(coroutine)) {
+			async_coroutine_finalize(NULL, async_coroutine);
+		}
+
 		coroutine->event.dispose(&coroutine->event);
-		return true;
+		return COROUTINE_IGNORED;
 	}
 
 	if (UNEXPECTED(waker->status == ZEND_ASYNC_WAKER_WAITING)) {
 		zend_error(E_ERROR, "Attempt to resume a fiber that has not been resolved");
 		coroutine->event.dispose(&coroutine->event);
-		return false;
+		return COROUTINE_IGNORED;
 	}
 
 	waker->status = ZEND_ASYNC_WAKER_RESULT;
@@ -208,9 +213,12 @@ static bool execute_next_coroutine(zend_fiber_transfer *transfer)
 
 	if (transfer != NULL) {
 		define_transfer(async_coroutine, error, transfer);
-		return true;
+		return COROUTINE_SWITCHED;
 	} else if (ZEND_ASYNC_CURRENT_COROUTINE == coroutine) {
-		return true;
+		if (error != NULL) {
+			zend_throw_exception_internal(error);
+		}
+		return COROUTINE_SWITCHED;
 	} else {
 		switch_context(async_coroutine, error);
 	}
@@ -219,11 +227,7 @@ static bool execute_next_coroutine(zend_fiber_transfer *transfer)
 	// At this point, the async_coroutine must already be destroyed
 	//
 
-	if (error != NULL) {
-		OBJ_RELEASE(error);
-	}
-
-	return true;
+	return COROUTINE_SWITCHED;
 }
 
 /**
@@ -339,8 +343,7 @@ static void async_scheduler_dtor(void)
 	zend_hash_destroy(&ASYNC_G(coroutines));
 	zend_hash_init(&ASYNC_G(coroutines), 0, NULL, NULL, 0);
 
-	ZEND_ASYNC_REACTOR_SHUTDOWN();
-
+	ZEND_ASYNC_CURRENT_COROUTINE = NULL;
 	ZEND_ASYNC_GRACEFUL_SHUTDOWN = false;
 	ZEND_ASYNC_SCHEDULER_CONTEXT = false;
 	ZEND_ASYNC_DEACTIVATE;
@@ -383,7 +386,9 @@ static void cancel_queued_coroutines(void)
 		if (((async_coroutine_t *) coroutine)->context.status == ZEND_FIBER_STATUS_INIT) {
 			// No need to cancel the fiber if it has not been started.
 			coroutine->waker->status = ZEND_ASYNC_WAKER_IGNORED;
-			coroutine->event.dispose(&coroutine->event);
+			ZEND_COROUTINE_SET_CANCELLED(coroutine);
+			coroutine->exception = cancellation_exception;
+			GC_ADDREF(cancellation_exception);
 		} else {
 			ZEND_ASYNC_CANCEL(coroutine, cancellation_exception, false);
 		}
@@ -552,6 +557,11 @@ void async_scheduler_launch(void)
 
 	scope->after_coroutine_enqueue(&main_coroutine->coroutine, scope);
 	if (UNEXPECTED(EG(exception) != NULL)) {
+		return;
+	}
+
+	zend_async_call_main_coroutine_start_handlers(&main_coroutine->coroutine);
+	if (UNEXPECTED(EG(exception))) {
 		return;
 	}
 
@@ -741,14 +751,37 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 
 	ZEND_ASYNC_SCHEDULER_HEARTBEAT;
 
+	zend_coroutine_t * coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
 	//
 	// Before suspending the coroutine,
 	// we start all its Waker-events.
 	// This causes timers to start, POLL objects to begin waiting for events, and so on.
 	//
-	if (transfer == NULL && ZEND_ASYNC_CURRENT_COROUTINE != NULL && ZEND_ASYNC_CURRENT_COROUTINE->waker != NULL) {
-		async_scheduler_start_waker_events(ZEND_ASYNC_CURRENT_COROUTINE->waker);
-		TRY_HANDLE_SUSPEND_EXCEPTION();
+	if (transfer == NULL && coroutine != NULL && coroutine->waker != NULL) {
+		async_scheduler_start_waker_events(coroutine->waker);
+
+		// If an exception occurs during the startup of the Waker object,
+		// that exception belongs to the current coroutine,
+		// which means we have the right to immediately return to the point from which we were called.
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			// Before returning, We are required to properly destroy the Waker object.
+			zend_exception_save();
+			async_scheduler_stop_waker_events(coroutine->waker);
+			zend_async_waker_destroy(coroutine);
+			zend_exception_restore();
+			return;
+		}
+	}
+
+	if (UNEXPECTED(coroutine->switch_handlers)) {
+		ZEND_COROUTINE_LEAVE(coroutine);
+		ZEND_ASSERT(EG(exception) == NULL && "The exception after ZEND_COROUTINE_LEAVE must be NULL");
+	}
+
+	// Define current filename and line number for the coroutine suspend.
+	if (coroutine->waker != NULL) {
+		zend_apply_current_filename_and_line(&coroutine->waker->filename, &coroutine->waker->lineno);
 	}
 
 	//
@@ -815,11 +848,15 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 		// The execute_next_coroutine() may fail to transfer control to another coroutine for various reasons.
 		// In that case, it returns false, and we are then required to yield control to the scheduler.
 		//
-		if (false == execute_next_coroutine(transfer) && EG(exception) == NULL) {
+		if (COROUTINE_SWITCHED != execute_next_coroutine(transfer) && EG(exception) == NULL) {
 			switch_to_scheduler(transfer);
 		}
 	} else {
 		switch_to_scheduler(transfer);
+	}
+
+	if (UNEXPECTED(coroutine->switch_handlers && transfer == NULL)) {
+		ZEND_COROUTINE_ENTER(coroutine);
 	}
 }
 
@@ -850,7 +887,8 @@ void async_scheduler_main_loop(void)
 			ZEND_ASYNC_SCHEDULER_CONTEXT = false;
 
 			if (EXPECTED(has_next_coroutine)) {
-				was_executed = execute_next_coroutine(NULL);
+				const switch_status status = execute_next_coroutine(NULL);
+				was_executed = status == COROUTINE_SWITCHED || status == COROUTINE_IGNORED;
 			} else {
 				was_executed = false;
 			}

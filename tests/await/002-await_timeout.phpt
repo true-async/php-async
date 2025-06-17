@@ -15,7 +15,7 @@ $coroutine = spawn(function() {
     return "result";
 });
 
-$timeout_obj = timeout(50);
+$timeout_obj = timeout(1);
 
 try {
     $result = await($coroutine, $timeout_obj);
