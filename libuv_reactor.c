@@ -1734,7 +1734,11 @@ typedef struct {
 static void on_connection_event(uv_stream_t *server, int status)
 {
 	async_listen_event_t *listen_event = server->data;
+#ifdef PHP_WIN32
 	zend_socket_t client_socket = INVALID_SOCKET;
+#else
+	zend_socket_t client_socket = -1;
+#endif
 	zend_object *exception = NULL;
 
 	if (status < 0) {
