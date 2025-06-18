@@ -572,12 +572,7 @@ static void libuv_global_signal_callback(uv_signal_t *handle, int signum)
 static uv_signal_t* libuv_get_or_create_signal_handler(int signum)
 {
 	if (ASYNC_G(signal_handlers) == NULL) {
-		ASYNC_G(signal_handlers) = pecalloc(1, sizeof(HashTable), 0);
-		if (ASYNC_G(signal_handlers) == NULL) {
-			async_throw_error("Failed to allocate memory for signal handlers table");
-			return NULL;
-		}
-		zend_hash_init(ASYNC_G(signal_handlers), 0, NULL, NULL, 1);
+		ASYNC_G(signal_handlers) = zend_new_array(0);
 	}
 
 	uv_signal_t *handler = zend_hash_index_find_ptr(ASYNC_G(signal_handlers), signum);
@@ -618,15 +613,13 @@ static void libuv_add_signal_event(int signum, zend_async_event_t *event)
 
 	// Initialize signal_events if needed
 	if (ASYNC_G(signal_events) == NULL) {
-		ASYNC_G(signal_events) = pecalloc(1, sizeof(HashTable), 0);
-		zend_hash_init(ASYNC_G(signal_events), 0, NULL, NULL, 1);
+		ASYNC_G(signal_events) = zend_new_array(0);
 	}
 
 	// Get or create events list for this signal
 	HashTable *events_list = zend_hash_index_find_ptr(ASYNC_G(signal_events), signum);
 	if (events_list == NULL) {
-		events_list = pecalloc(1, sizeof(HashTable), 0);
-		zend_hash_init(events_list, 0, NULL, NULL, 1);
+		events_list = zend_new_array(0);
 		zend_hash_index_add_ptr(ASYNC_G(signal_events), signum, events_list);
 	}
 
@@ -766,8 +759,7 @@ static void libuv_add_process_event(zend_async_event_t *event)
 
 	// Initialize process_events if needed
 	if (ASYNC_G(process_events) == NULL) {
-		ASYNC_G(process_events) = pecalloc(1, sizeof(HashTable), 0);
-		zend_hash_init(ASYNC_G(process_events), 0, NULL, NULL, 1);
+		ASYNC_G(process_events) = zend_new_array(0);
 	}
 
 	// Add event to the process events list (use pointer address as key)
