@@ -532,6 +532,277 @@ zend_async_signal_event_t* libuv_new_signal_event(int signum, size_t extra_size)
 /* }}} */
 
 /////////////////////////////////////////////////////////////////////////////////
+/// Global Signal Management API
+/////////////////////////////////////////////////////////////////////////////////
+
+/* {{{ libuv_signal_close_cb */
+static void libuv_signal_close_cb(uv_handle_t *handle)
+{
+	pefree(handle, 0);
+}
+/* }}} */
+
+/* {{{ libuv_global_signal_callback */
+static void libuv_global_signal_callback(uv_signal_t *handle, int signum)
+{
+	// Handle regular signal events for ALL signals (including SIGCHLD)
+	libuv_handle_signal_events(signum);
+
+	// Additionally handle process events if this is SIGCHLD
+	if (signum == SIGCHLD) {
+		libuv_handle_process_events();
+	}
+
+	IF_EXCEPTION_STOP_REACTOR;
+}
+/* }}} */
+
+/* {{{ libuv_get_or_create_signal_handler */
+static uv_signal_t* libuv_get_or_create_signal_handler(int signum)
+{
+	if (ASYNC_G(signal_handlers) == NULL) {
+		ASYNC_G(signal_handlers) = pecalloc(1, sizeof(HashTable), 0);
+		if (ASYNC_G(signal_handlers) == NULL) {
+			async_throw_error("Failed to allocate memory for signal handlers table");
+			return NULL;
+		}
+		zend_hash_init(ASYNC_G(signal_handlers), 0, NULL, NULL, 1);
+	}
+
+	uv_signal_t *handler = zend_hash_index_find_ptr(ASYNC_G(signal_handlers), signum);
+	if (handler != NULL) {
+		return handler;
+	}
+
+	// Create new signal handler
+	handler = pecalloc(1, sizeof(uv_signal_t), 0);
+
+	int error = uv_signal_init(UVLOOP, handler);
+	if (error < 0) {
+		async_throw_error("Failed to initialize signal handle: %s", uv_strerror(error));
+		pefree(handler, 0);
+		return NULL;
+	}
+
+	error = uv_signal_start(handler, libuv_global_signal_callback, signum);
+	if (error < 0) {
+		async_throw_error("Failed to start signal handle: %s", uv_strerror(error));
+		uv_close((uv_handle_t*)handler, libuv_signal_close_cb);
+		return NULL;
+	}
+
+	zend_hash_index_add_ptr(ASYNC_G(signal_handlers), signum, handler);
+	return handler;
+}
+/* }}} */
+
+/* {{{ libuv_add_signal_event */
+static void libuv_add_signal_event(int signum, zend_async_event_t *event)
+{
+	// Ensure signal handler exists
+	uv_signal_t *handler = libuv_get_or_create_signal_handler(signum);
+	if (handler == NULL) {
+		return;
+	}
+
+	// Initialize signal_events if needed
+	if (ASYNC_G(signal_events) == NULL) {
+		ASYNC_G(signal_events) = pecalloc(1, sizeof(HashTable), 0);
+		zend_hash_init(ASYNC_G(signal_events), 0, NULL, NULL, 1);
+	}
+
+	// Get or create events list for this signal
+	HashTable *events_list = zend_hash_index_find_ptr(ASYNC_G(signal_events), signum);
+	if (events_list == NULL) {
+		events_list = pecalloc(1, sizeof(HashTable), 0);
+		zend_hash_init(events_list, 0, NULL, NULL, 1);
+		zend_hash_index_add_ptr(ASYNC_G(signal_events), signum, events_list);
+	}
+
+	// Add event to the list (use pointer address as key)
+	zend_hash_index_add_ptr(events_list, (zend_ulong)event, event);
+}
+/* }}} */
+
+/* {{{ libuv_remove_signal_event */
+static void libuv_remove_signal_event(int signum, zend_async_event_t *event)
+{
+	if (ASYNC_G(signal_events) == NULL) {
+		return;
+	}
+
+	HashTable *events_list = zend_hash_index_find_ptr(ASYNC_G(signal_events), signum);
+	if (events_list == NULL) {
+		return;
+	}
+
+	zend_hash_index_del(events_list, (zend_ulong)event);
+
+	// If no more events for this signal, remove the handler (but check for process events if SIGCHLD)
+	if (zend_hash_num_elements(events_list) == 0) {
+		bool can_remove_handler = true;
+
+		// For SIGCHLD, check if there are process events still active
+		if (signum == SIGCHLD && ASYNC_G(process_events) != NULL) {
+			if (zend_hash_num_elements(ASYNC_G(process_events)) > 0) {
+				can_remove_handler = false;
+			}
+		}
+
+		if (can_remove_handler && ASYNC_G(signal_handlers) != NULL) {
+			uv_signal_t *handler = zend_hash_index_find_ptr(ASYNC_G(signal_handlers), signum);
+			if (handler != NULL) {
+				uv_signal_stop(handler);
+				uv_close((uv_handle_t*)handler, libuv_signal_close_cb);
+				zend_hash_index_del(ASYNC_G(signal_handlers), signum);
+			}
+		}
+
+		zend_hash_destroy(events_list);
+		pefree(events_list, 0);
+		zend_hash_index_del(ASYNC_G(signal_events), signum);
+	}
+}
+/* }}} */
+
+/* {{{ libuv_handle_process_events */
+static void libuv_handle_process_events(void)
+{
+	if (ASYNC_G(process_events) == NULL) {
+		return;
+	}
+
+	// Create a copy of events to iterate safely (callbacks may modify the original HashTable)
+	uint32_t num_events = zend_hash_num_elements(ASYNC_G(process_events));
+	if (num_events == 0) {
+		return;
+	}
+
+	zend_async_event_t **events_copy = pecalloc(num_events, sizeof(zend_async_event_t *), 0);
+	if (events_copy == NULL) {
+		return;
+	}
+
+	uint32_t i = 0;
+	zend_async_event_t *event;
+	ZEND_HASH_FOREACH_PTR(ASYNC_G(process_events), event) {
+		events_copy[i++] = event;
+	} ZEND_HASH_FOREACH_END();
+
+	// Process events from the copy
+	for (i = 0; i < num_events; i++) {
+		event = events_copy[i];
+
+		// Verify event is still in the HashTable (might have been removed)
+		if (ASYNC_G(process_events) == NULL ||
+			zend_hash_index_find_ptr(ASYNC_G(process_events), (zend_ulong)event) == NULL) {
+			continue;
+		}
+
+#ifndef PHP_WIN32
+		async_process_event_t *process = (async_process_event_t *)event;
+		pid_t pid = (pid_t)process->event.process;
+		int status;
+		pid_t result = waitpid(pid, &status, WNOHANG);
+
+		if (result == pid) {
+			// Process has exited
+			if (WIFEXITED(status)) {
+				process->event.exit_code = WEXITSTATUS(status);
+			} else if (WIFSIGNALED(status)) {
+				process->event.exit_code = -WTERMSIG(status);
+			} else {
+				process->event.exit_code = -1;
+			}
+
+			ZEND_ASYNC_CALLBACKS_NOTIFY(event, NULL, NULL);
+			// Process event will be removed when stopped
+		}
+#endif
+	}
+
+	pefree(events_copy, 0);
+}
+/* }}} */
+
+/* {{{ libuv_handle_signal_events */
+static void libuv_handle_signal_events(int signum)
+{
+	if (ASYNC_G(signal_events) == NULL) {
+		return;
+	}
+
+	HashTable *events_list = zend_hash_index_find_ptr(ASYNC_G(signal_events), signum);
+	if (events_list == NULL) {
+		return;
+	}
+
+	zend_async_event_t *event;
+	ZEND_HASH_FOREACH_PTR(events_list, event) {
+		ZEND_ASYNC_CALLBACKS_NOTIFY(event, NULL, NULL);
+	} ZEND_HASH_FOREACH_END();
+}
+/* }}} */
+
+/* {{{ libuv_add_process_event */
+static void libuv_add_process_event(zend_async_event_t *event)
+{
+	// Ensure SIGCHLD handler exists
+	uv_signal_t *handler = libuv_get_or_create_signal_handler(SIGCHLD);
+	if (handler == NULL) {
+		return;
+	}
+
+	// Initialize process_events if needed
+	if (ASYNC_G(process_events) == NULL) {
+		ASYNC_G(process_events) = pecalloc(1, sizeof(HashTable), 0);
+		zend_hash_init(ASYNC_G(process_events), 0, NULL, NULL, 1);
+	}
+
+	// Add event to the process events list (use pointer address as key)
+	zend_hash_index_add_ptr(ASYNC_G(process_events), (zend_ulong)event, event);
+}
+/* }}} */
+
+/* {{{ libuv_remove_process_event */
+static void libuv_remove_process_event(zend_async_event_t *event)
+{
+	if (ASYNC_G(process_events) == NULL) {
+		return;
+	}
+
+	zend_hash_index_del(ASYNC_G(process_events), (zend_ulong)event);
+
+	// Only remove SIGCHLD handler if no more process events AND no regular signal events for SIGCHLD
+	if (zend_hash_num_elements(ASYNC_G(process_events)) == 0) {
+		bool has_sigchld_signal_events = false;
+
+		// Check if there are regular signal events for SIGCHLD
+		if (ASYNC_G(signal_events) != NULL) {
+			HashTable *sigchld_events = zend_hash_index_find_ptr(ASYNC_G(signal_events), SIGCHLD);
+			if (sigchld_events != NULL && zend_hash_num_elements(sigchld_events) > 0) {
+				has_sigchld_signal_events = true;
+			}
+		}
+
+		// Only remove handler if no signal events exist for SIGCHLD
+		if (!has_sigchld_signal_events && ASYNC_G(signal_handlers) != NULL) {
+			uv_signal_t *handler = zend_hash_index_find_ptr(ASYNC_G(signal_handlers), SIGCHLD);
+			if (handler != NULL) {
+				uv_signal_stop(handler);
+				uv_close((uv_handle_t*)handler, libuv_signal_close_cb);
+				zend_hash_index_del(ASYNC_G(signal_handlers), SIGCHLD);
+			}
+		}
+
+		zend_hash_destroy(ASYNC_G(process_events));
+		pefree(ASYNC_G(process_events), 0);
+		ASYNC_G(process_events) = NULL;
+	}
+}
+/* }}} */
+
+/////////////////////////////////////////////////////////////////////////////////
 /// Process API
 /////////////////////////////////////////////////////////////////////////////////
 
@@ -866,277 +1137,6 @@ static void libuv_process_event_stop(zend_async_event_t *event)
 	ZEND_ASYNC_DECREASE_EVENT_COUNT;
 }
 #endif
-
-/////////////////////////////////////////////////////////////////////////////////
-/// Global Signal Management API
-/////////////////////////////////////////////////////////////////////////////////
-
-/* {{{ libuv_signal_close_cb */
-static void libuv_signal_close_cb(uv_handle_t *handle)
-{
-	pefree(handle, 0);
-}
-/* }}} */
-
-/* {{{ libuv_global_signal_callback */
-static void libuv_global_signal_callback(uv_signal_t *handle, int signum)
-{
-	// Handle regular signal events for ALL signals (including SIGCHLD)
-	libuv_handle_signal_events(signum);
-
-	// Additionally handle process events if this is SIGCHLD
-	if (signum == SIGCHLD) {
-		libuv_handle_process_events();
-	}
-
-	IF_EXCEPTION_STOP_REACTOR;
-}
-/* }}} */
-
-/* {{{ libuv_get_or_create_signal_handler */
-static uv_signal_t* libuv_get_or_create_signal_handler(int signum)
-{
-	if (ASYNC_G(signal_handlers) == NULL) {
-		ASYNC_G(signal_handlers) = pecalloc(1, sizeof(HashTable), 0);
-		if (ASYNC_G(signal_handlers) == NULL) {
-			async_throw_error("Failed to allocate memory for signal handlers table");
-			return NULL;
-		}
-		zend_hash_init(ASYNC_G(signal_handlers), 0, NULL, NULL, 1);
-	}
-
-	uv_signal_t *handler = zend_hash_index_find_ptr(ASYNC_G(signal_handlers), signum);
-	if (handler != NULL) {
-		return handler;
-	}
-
-	// Create new signal handler
-	handler = pecalloc(1, sizeof(uv_signal_t), 0);
-
-	int error = uv_signal_init(UVLOOP, handler);
-	if (error < 0) {
-		async_throw_error("Failed to initialize signal handle: %s", uv_strerror(error));
-		pefree(handler, 0);
-		return NULL;
-	}
-
-	error = uv_signal_start(handler, libuv_global_signal_callback, signum);
-	if (error < 0) {
-		async_throw_error("Failed to start signal handle: %s", uv_strerror(error));
-		uv_close((uv_handle_t*)handler, libuv_signal_close_cb);
-		return NULL;
-	}
-
-	zend_hash_index_add_ptr(ASYNC_G(signal_handlers), signum, handler);
-	return handler;
-}
-/* }}} */
-
-/* {{{ libuv_add_signal_event */
-static void libuv_add_signal_event(int signum, zend_async_event_t *event)
-{
-	// Ensure signal handler exists
-	uv_signal_t *handler = libuv_get_or_create_signal_handler(signum);
-	if (handler == NULL) {
-		return;
-	}
-
-	// Initialize signal_events if needed
-	if (ASYNC_G(signal_events) == NULL) {
-		ASYNC_G(signal_events) = pecalloc(1, sizeof(HashTable), 0);
-		zend_hash_init(ASYNC_G(signal_events), 0, NULL, NULL, 1);
-	}
-
-	// Get or create events list for this signal
-	HashTable *events_list = zend_hash_index_find_ptr(ASYNC_G(signal_events), signum);
-	if (events_list == NULL) {
-		events_list = pecalloc(1, sizeof(HashTable), 0);
-		zend_hash_init(events_list, 0, NULL, NULL, 1);
-		zend_hash_index_add_ptr(ASYNC_G(signal_events), signum, events_list);
-	}
-
-	// Add event to the list (use pointer address as key)
-	zend_hash_index_add_ptr(events_list, (zend_ulong)event, event);
-}
-/* }}} */
-
-/* {{{ libuv_remove_signal_event */
-static void libuv_remove_signal_event(int signum, zend_async_event_t *event)
-{
-	if (ASYNC_G(signal_events) == NULL) {
-		return;
-	}
-
-	HashTable *events_list = zend_hash_index_find_ptr(ASYNC_G(signal_events), signum);
-	if (events_list == NULL) {
-		return;
-	}
-
-	zend_hash_index_del(events_list, (zend_ulong)event);
-
-	// If no more events for this signal, remove the handler (but check for process events if SIGCHLD)
-	if (zend_hash_num_elements(events_list) == 0) {
-		bool can_remove_handler = true;
-		
-		// For SIGCHLD, check if there are process events still active
-		if (signum == SIGCHLD && ASYNC_G(process_events) != NULL) {
-			if (zend_hash_num_elements(ASYNC_G(process_events)) > 0) {
-				can_remove_handler = false;
-			}
-		}
-		
-		if (can_remove_handler && ASYNC_G(signal_handlers) != NULL) {
-			uv_signal_t *handler = zend_hash_index_find_ptr(ASYNC_G(signal_handlers), signum);
-			if (handler != NULL) {
-				uv_signal_stop(handler);
-				uv_close((uv_handle_t*)handler, libuv_signal_close_cb);
-				zend_hash_index_del(ASYNC_G(signal_handlers), signum);
-			}
-		}
-
-		zend_hash_destroy(events_list);
-		pefree(events_list, 0);
-		zend_hash_index_del(ASYNC_G(signal_events), signum);
-	}
-}
-/* }}} */
-
-/* {{{ libuv_handle_process_events */
-static void libuv_handle_process_events(void)
-{
-	if (ASYNC_G(process_events) == NULL) {
-		return;
-	}
-
-	// Create a copy of events to iterate safely (callbacks may modify the original HashTable)
-	uint32_t num_events = zend_hash_num_elements(ASYNC_G(process_events));
-	if (num_events == 0) {
-		return;
-	}
-	
-	zend_async_event_t **events_copy = pecalloc(num_events, sizeof(zend_async_event_t *), 0);
-	if (events_copy == NULL) {
-		return;
-	}
-	
-	uint32_t i = 0;
-	zend_async_event_t *event;
-	ZEND_HASH_FOREACH_PTR(ASYNC_G(process_events), event) {
-		events_copy[i++] = event;
-	} ZEND_HASH_FOREACH_END();
-
-	// Process events from the copy
-	for (i = 0; i < num_events; i++) {
-		event = events_copy[i];
-		
-		// Verify event is still in the HashTable (might have been removed)
-		if (ASYNC_G(process_events) == NULL || 
-			zend_hash_index_find_ptr(ASYNC_G(process_events), (zend_ulong)event) == NULL) {
-			continue;
-		}
-		
-#ifndef PHP_WIN32
-		async_process_event_t *process = (async_process_event_t *)event;
-		pid_t pid = (pid_t)process->event.process;
-		int status;
-		pid_t result = waitpid(pid, &status, WNOHANG);
-
-		if (result == pid) {
-			// Process has exited
-			if (WIFEXITED(status)) {
-				process->event.exit_code = WEXITSTATUS(status);
-			} else if (WIFSIGNALED(status)) {
-				process->event.exit_code = -WTERMSIG(status);
-			} else {
-				process->event.exit_code = -1;
-			}
-
-			ZEND_ASYNC_CALLBACKS_NOTIFY(event, NULL, NULL);
-			// Process event will be removed when stopped
-		}
-#endif
-	}
-	
-	pefree(events_copy, 0);
-}
-/* }}} */
-
-/* {{{ libuv_handle_signal_events */
-static void libuv_handle_signal_events(int signum)
-{
-	if (ASYNC_G(signal_events) == NULL) {
-		return;
-	}
-
-	HashTable *events_list = zend_hash_index_find_ptr(ASYNC_G(signal_events), signum);
-	if (events_list == NULL) {
-		return;
-	}
-
-	zend_async_event_t *event;
-	ZEND_HASH_FOREACH_PTR(events_list, event) {
-		ZEND_ASYNC_CALLBACKS_NOTIFY(event, NULL, NULL);
-	} ZEND_HASH_FOREACH_END();
-}
-/* }}} */
-
-/* {{{ libuv_add_process_event */
-static void libuv_add_process_event(zend_async_event_t *event)
-{
-	// Ensure SIGCHLD handler exists
-	uv_signal_t *handler = libuv_get_or_create_signal_handler(SIGCHLD);
-	if (handler == NULL) {
-		return;
-	}
-
-	// Initialize process_events if needed
-	if (ASYNC_G(process_events) == NULL) {
-		ASYNC_G(process_events) = pecalloc(1, sizeof(HashTable), 0);
-		zend_hash_init(ASYNC_G(process_events), 0, NULL, NULL, 1);
-	}
-
-	// Add event to the process events list (use pointer address as key)
-	zend_hash_index_add_ptr(ASYNC_G(process_events), (zend_ulong)event, event);
-}
-/* }}} */
-
-/* {{{ libuv_remove_process_event */
-static void libuv_remove_process_event(zend_async_event_t *event)
-{
-	if (ASYNC_G(process_events) == NULL) {
-		return;
-	}
-
-	zend_hash_index_del(ASYNC_G(process_events), (zend_ulong)event);
-
-	// Only remove SIGCHLD handler if no more process events AND no regular signal events for SIGCHLD
-	if (zend_hash_num_elements(ASYNC_G(process_events)) == 0) {
-		bool has_sigchld_signal_events = false;
-		
-		// Check if there are regular signal events for SIGCHLD
-		if (ASYNC_G(signal_events) != NULL) {
-			HashTable *sigchld_events = zend_hash_index_find_ptr(ASYNC_G(signal_events), SIGCHLD);
-			if (sigchld_events != NULL && zend_hash_num_elements(sigchld_events) > 0) {
-				has_sigchld_signal_events = true;
-			}
-		}
-		
-		// Only remove handler if no signal events exist for SIGCHLD
-		if (!has_sigchld_signal_events && ASYNC_G(signal_handlers) != NULL) {
-			uv_signal_t *handler = zend_hash_index_find_ptr(ASYNC_G(signal_handlers), SIGCHLD);
-			if (handler != NULL) {
-				uv_signal_stop(handler);
-				uv_close((uv_handle_t*)handler, libuv_signal_close_cb);
-				zend_hash_index_del(ASYNC_G(signal_handlers), SIGCHLD);
-			}
-		}
-
-		zend_hash_destroy(ASYNC_G(process_events));
-		pefree(ASYNC_G(process_events), 0);
-		ASYNC_G(process_events) = NULL;
-	}
-}
-/* }}} */
 
 /* {{{ libuv_process_event_dispose */
 static void libuv_process_event_dispose(zend_async_event_t *event)
