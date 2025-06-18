@@ -1148,40 +1148,44 @@ static void libuv_process_event_start(zend_async_event_t *event)
 	async_process_event_t *process = (async_process_event_t *)(event);
 	pid_t pid = (pid_t)process->event.process;
 	
-	// Check if process is still alive first
-	if (kill(pid, 0) != 0) {
-		if (errno == ESRCH) {
-			// Process doesn't exist, might have already exited
-			int exit_status;
-			pid_t result = waitpid(pid, &exit_status, WNOHANG);
-			if (result == pid) {
-				if (WIFEXITED(exit_status)) {
-					process->event.exit_code = WEXITSTATUS(exit_status);
-				} else if (WIFSIGNALED(exit_status)) {
-					process->event.exit_code = -WTERMSIG(exit_status);
-				} else {
-					process->event.exit_code = -1;
-				}
-				// Process already exited, notify immediately
-				ZEND_ASYNC_CALLBACKS_NOTIFY(&process->event.base, NULL, NULL);
-				return;
-			}
-		}
-		
-		async_throw_error("Failed to monitor process %d: %s", (int)pid, strerror(errno));
-		return;
-	}
-	
-	// Add this process event to dedicated process monitoring
+	// Add handler first to guarantee we catch SIGCHLD
 	libuv_add_process_event(event);
 	
-	event->loop_ref_count++;
-	ZEND_ASYNC_INCREASE_EVENT_COUNT;
+	// Check if process already terminated (zombie state)
+	int exit_status;
+	pid_t result = waitpid(pid, &exit_status, WNOHANG);
+	
+	if (result == pid) {
+		// Process already terminated, got exit code
+		if (WIFEXITED(exit_status)) {
+			process->event.exit_code = WEXITSTATUS(exit_status);
+		} else if (WIFSIGNALED(exit_status)) {
+			process->event.exit_code = -WTERMSIG(exit_status);
+		} else {
+			process->event.exit_code = -1;
+		}
+		
+		event->stop(event);
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&process->event.base, NULL, NULL);
+	} else if (result == 0) {
+		// Process still running, wait for SIGCHLD
+		event->loop_ref_count = 1;
+		ZEND_ASYNC_INCREASE_EVENT_COUNT;
+	} else {
+		// Error: process doesn't exist or already reaped
+		libuv_remove_process_event(event);
+		zend_object * exception = async_new_exception(
+				async_ce_async_exception, "Failed to monitor process %d: %s", (int)pid, strerror(errno)
+		);
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&process->event.base,NULL, exception);
+		OBJ_RELEASE(exception);
+	}
 }
 
 static void libuv_process_event_stop(zend_async_event_t *event)
 {
 	EVENT_STOP_PROLOGUE(event);
+	ZEND_ASYNC_EVENT_SET_CLOSED(event);
 	
 	// Remove from process monitoring
 	libuv_remove_process_event(event);
