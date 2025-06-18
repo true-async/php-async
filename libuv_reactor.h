@@ -52,7 +52,7 @@ struct _async_timer_event_t {
 
 struct _async_signal_event_t {
 	zend_async_signal_event_t event;
-	uv_signal_t uv_handle;
+	// uv_signal_t removed - now using global signal management
 };
 
 struct _async_filesystem_event_t {

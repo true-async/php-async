@@ -82,6 +82,12 @@ ZEND_BEGIN_MODULE_GLOBALS(async)
 	/* The reactor */
 	uv_loop_t uvloop;
 	bool reactor_started;
+	
+	/* Global signal management for all platforms */
+	HashTable * signal_handlers;          /* signum -> uv_signal_t* */
+	HashTable * signal_events;            /* signum -> HashTable* (signal events) */
+	HashTable * process_events;           /* dedicated for SIGCHLD process events */
+
 #ifdef PHP_WIN32
 	uv_thread_t * watcherThread;
 	HANDLE ioCompletionPort;
