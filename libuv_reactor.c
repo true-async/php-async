@@ -36,6 +36,12 @@ static void libuv_add_process_event(zend_async_event_t *event);
 static void libuv_remove_process_event(zend_async_event_t *event);
 static void libuv_handle_process_events(void);
 static void libuv_handle_signal_events(int signum);
+static void libuv_signal_close_cb(uv_handle_t *handle);
+
+// Forward declarations for cleanup functions
+static void libuv_cleanup_signal_handlers(void);
+static void libuv_cleanup_signal_events(void);
+static void libuv_cleanup_process_events(void);
 
 #define UVLOOP (&ASYNC_G(uvloop))
 #define LIBUV_REACTOR ((zend_async_globals *) ASYNC_GLOBALS)
@@ -134,6 +140,11 @@ void libuv_reactor_shutdown(void)
 			// need to finish handlers
 			uv_run(UVLOOP, UV_RUN_ONCE);
 		}
+
+		// Cleanup global signal management structures
+		libuv_cleanup_signal_handlers();
+		libuv_cleanup_signal_events();
+		libuv_cleanup_process_events();
 
 		uv_loop_close(UVLOOP);
 		ASYNC_G(reactor_started) = false;
@@ -797,6 +808,56 @@ static void libuv_remove_process_event(zend_async_event_t *event)
 
 		zend_hash_destroy(ASYNC_G(process_events));
 		pefree(ASYNC_G(process_events), 0);
+		ASYNC_G(process_events) = NULL;
+	}
+}
+/* }}} */
+
+/////////////////////////////////////////////////////////////////////////////////
+/// Global Signal Management Cleanup Functions
+/////////////////////////////////////////////////////////////////////////////////
+
+/* {{{ libuv_cleanup_signal_handlers */
+static void libuv_cleanup_signal_handlers(void)
+{
+	if (ASYNC_G(signal_handlers) != NULL) {
+		uv_signal_t *handler;
+		ZEND_HASH_FOREACH_PTR(ASYNC_G(signal_handlers), handler) {
+			if (handler != NULL) {
+				uv_signal_stop(handler);
+				uv_close((uv_handle_t*)handler, libuv_signal_close_cb);
+			}
+		} ZEND_HASH_FOREACH_END();
+		
+		zend_array_destroy(ASYNC_G(signal_handlers));
+		ASYNC_G(signal_handlers) = NULL;
+	}
+}
+/* }}} */
+
+/* {{{ libuv_cleanup_signal_events */
+static void libuv_cleanup_signal_events(void)
+{
+	if (ASYNC_G(signal_events) != NULL) {
+		HashTable *events_list;
+		ZEND_HASH_FOREACH_PTR(ASYNC_G(signal_events), events_list) {
+			if (events_list != NULL) {
+				zend_hash_destroy(events_list);
+				pefree(events_list, 0);
+			}
+		} ZEND_HASH_FOREACH_END();
+		
+		zend_array_destroy(ASYNC_G(signal_events));
+		ASYNC_G(signal_events) = NULL;
+	}
+}
+/* }}} */
+
+/* {{{ libuv_cleanup_process_events */
+static void libuv_cleanup_process_events(void)
+{
+	if (ASYNC_G(process_events) != NULL) {
+		zend_array_destroy(ASYNC_G(process_events));
 		ASYNC_G(process_events) = NULL;
 	}
 }
