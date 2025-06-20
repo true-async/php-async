@@ -188,7 +188,7 @@ static switch_status execute_next_coroutine(zend_fiber_transfer *transfer)
 		// Finalizing handlers are called. Memory is freed in the correct order!
 		//
 		if (ZEND_COROUTINE_IS_CANCELLED(coroutine)) {
-			async_coroutine_finalize(NULL, async_coroutine);
+			async_coroutine_finalize_from_scheduler(async_coroutine);
 		}
 
 		coroutine->event.dispose(&coroutine->event);

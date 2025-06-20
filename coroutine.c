@@ -416,6 +416,7 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 	if (EG(exception)) {
 		if (EG(prev_exception)) {
 			zend_exception_set_previous(EG(exception), EG(prev_exception));
+			EG(prev_exception) = NULL;
 		}
 
 		exception = EG(exception);
@@ -423,9 +424,7 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 
 		zend_clear_exception();
 
-		if (instanceof_function(exception->ce, zend_ce_cancellation_exception)
-			|| zend_is_graceful_exit(exception)
-			|| zend_is_unwind_exit(exception)) {
+		if (zend_is_graceful_exit(exception) || zend_is_unwind_exit(exception)) {
 			OBJ_RELEASE(exception);
 			exception = NULL;
 		}
@@ -437,7 +436,6 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 			// If the coroutine already has an exception, we do not overwrite it.
 			// This is to prevent losing the original exception in case of multiple exceptions.
 			zend_exception_set_previous(exception, coroutine->coroutine.exception);
-			GC_DELREF(coroutine->coroutine.exception);
 		}
 
 		coroutine->coroutine.exception = exception;
@@ -466,7 +464,10 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 	zend_exception_restore();
 
 	// If the exception was handled by any handler, we do not propagate it further.
-	if (exception != NULL && ZEND_COROUTINE_IS_EXCEPTION_HANDLED(&coroutine->coroutine)) {
+	// Cancellation-type exceptions are considered handled in all cases and are not propagated further.
+	if (exception != NULL
+		&& (ZEND_COROUTINE_IS_EXCEPTION_HANDLED(&coroutine->coroutine)
+			|| instanceof_function(exception->ce, zend_ce_cancellation_exception))) {
 		OBJ_RELEASE(exception);
 		exception = NULL;
 	}
@@ -500,6 +501,57 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 			&& false == ZEND_COROUTINE_IS_ZOMBIE(&coroutine->coroutine)) {
 			ZEND_ASYNC_DECREASE_COROUTINE_COUNT
 		}
+	}
+}
+
+/**
+ * Finalizes the coroutine from the scheduler.
+ *
+ * This function is called when the coroutine is being finalized from the scheduler.
+ * It ensures that the coroutine's waker is properly handled and that any exceptions
+ * are propagated correctly.
+ *
+ * @param coroutine The coroutine to finalize.
+ */
+void async_coroutine_finalize_from_scheduler(async_coroutine_t * coroutine)
+{
+	zend_async_waker_t * waker = coroutine->coroutine.waker;
+	ZEND_ASSERT(waker != NULL && "Waker must not be NULL when finalizing coroutine from scheduler");
+
+	// Save EG(exception) state
+	zend_object * prev_exception = EG(prev_exception);
+	zend_object * exception = EG(exception);
+
+	EG(exception) = waker->error;
+	EG(prev_exception) = NULL;
+
+	waker->error = NULL;
+
+	bool do_bailout = false;
+
+	zend_try {
+		async_coroutine_finalize(NULL, coroutine);
+	} zend_catch {
+		do_bailout = true;
+	} zend_end_try();
+
+	// If an exception occurs during finalization, we need to restore the previous exception state
+	zend_object * new_exception = EG(exception);
+	zend_object * new_prev_exception = EG(prev_exception);
+
+	EG(exception) = exception;
+	EG(prev_exception) = prev_exception;
+
+	if (UNEXPECTED(new_prev_exception)) {
+		zend_throw_exception_internal(new_prev_exception);
+	}
+
+	if (UNEXPECTED(new_exception)) {
+		zend_throw_exception_internal(new_exception);
+	}
+
+	if (UNEXPECTED(do_bailout)) {
+		zend_bailout();
 	}
 }
 
