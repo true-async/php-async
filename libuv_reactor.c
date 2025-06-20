@@ -1665,9 +1665,10 @@ static void libuv_freeaddrinfo(struct addrinfo *ai)
 static void exec_on_exit(uv_process_t* process, const int64_t exit_status, int term_signal)
 {
 	async_exec_event_t *exec = process->data;
-	ZVAL_LONG(exec->event.return_value, exit_status);
+	exec->event.exit_code = exit_status;
+	exec->event.term_signal = term_signal;
 
-	exec->process->data = NULL;
+	process->data = exec->process;
 	exec->process = NULL;
 
 	uv_close((uv_handle_t*)process, libuv_close_handle_cb);
@@ -2047,7 +2048,7 @@ static int libuv_exec(
 		return -1;
 	}
 
-	zend_async_resume_when(coroutine, &exec_event->base, true, zend_async_waker_callback_resolve, NULL);
+	zend_async_resume_when(coroutine, &exec_event->base, false, zend_async_waker_callback_resolve, NULL);
 	if (UNEXPECTED(EG(exception))) {
 		return -1;
 	}
@@ -2062,7 +2063,10 @@ static int libuv_exec(
 	zval_ptr_dtor(&tmp_return_value);
 	zval_ptr_dtor(&tmp_return_buffer);
 
-	return 0;
+	int exit_code = (int)exec_event->exit_code;
+	exec_event->base.dispose(&exec_event->base);
+
+	return exit_code;
 }
 /* }}} */
 

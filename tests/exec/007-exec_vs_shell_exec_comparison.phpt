@@ -37,7 +37,7 @@ spawn(function () {
         die("skip no php executable defined");
     }
     
-    $output = shell_exec($php . ' -r "echo \'shell_exec result\';"');
+    $output = shell_exec($php . ' -r "usleep(50);echo \'shell_exec result\';"');
     
     echo "shell_exec() result: " . trim($output) . "\n";
 });
