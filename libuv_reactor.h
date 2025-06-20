@@ -22,6 +22,7 @@
 
 #ifdef PHP_WIN32
 #include "libuv/uv.h"
+#define SIGCHLD 17
 #else
 #include <uv.h>
 #endif
