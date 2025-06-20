@@ -822,6 +822,11 @@ static PHP_GINIT_FUNCTION(async)
 
 	async_globals->reactor_started = false;
 
+#ifdef PHP_ASYNC_LIBUV
+	async_globals->signal_handlers = NULL;
+	async_globals->signal_events = NULL;
+	async_globals->process_events = NULL;
+
 #ifdef PHP_WIN32
 	async_globals->watcherThread = NULL;
 	async_globals->ioCompletionPort = NULL;
@@ -829,6 +834,7 @@ static PHP_GINIT_FUNCTION(async)
 	async_globals->isRunning = false;
 	async_globals->uvloop_wakeup = NULL;
 	async_globals->pid_queue = NULL;
+#endif
 #endif
 }
 
