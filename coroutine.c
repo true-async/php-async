@@ -737,7 +737,7 @@ void async_coroutine_resume(zend_coroutine_t *coroutine, zend_object * error, co
 	coroutine->waker->status = ZEND_ASYNC_WAKER_QUEUED;
 }
 
-void async_coroutine_cancel(zend_coroutine_t *zend_coroutine, zend_object *error, const bool transfer_error, const bool is_safely)
+void async_coroutine_cancel(zend_coroutine_t *zend_coroutine, zend_object *error, bool transfer_error, const bool is_safely)
 {
 	// If the coroutine finished, do nothing.
 	if (ZEND_COROUTINE_IS_FINISHED(zend_coroutine)) {
@@ -769,7 +769,18 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine, zend_object *error
 		return;
 	}
 
+	const bool is_error_null = (error == NULL);
+
+	if (is_error_null) {
+		error = async_new_exception(async_ce_cancellation_exception, "Coroutine cancelled");
+		transfer_error = true;
+		if (UNEXPECTED(EG(exception))) {
+			return;
+		}
+	}
+
 	bool was_cancelled = ZEND_COROUTINE_IS_CANCELLED(zend_coroutine);
+	ZEND_COROUTINE_SET_CANCELLED(zend_coroutine);
 
 	if (false == ZEND_COROUTINE_IS_STARTED(zend_coroutine)) {
 
@@ -785,7 +796,6 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine, zend_object *error
 			async_scheduler_coroutine_enqueue(zend_coroutine);
 		}
 
-		ZEND_COROUTINE_SET_CANCELLED(zend_coroutine);
 		waker->status = ZEND_ASYNC_WAKER_IGNORED;
 
 		//
@@ -794,25 +804,7 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine, zend_object *error
 		// and it's a cancellation exception, then nothing needs to be done.
 		// In any other case, the cancellation exception overrides the existing exception.
 		//
-		if (waker->error != NULL) {
-			if (instanceof_function(waker->error->ce, zend_ce_cancellation_exception)) {
-				if (transfer_error) {
-					OBJ_RELEASE(error);
-				}
-			} else {
-				zend_exception_set_previous(error, waker->error);
-				waker->error = error;
-				if (false == transfer_error) {
-					GC_ADDREF(error);
-				}
-			}
-		} else {
-			waker->error = error;
-			if (false == transfer_error) {
-				GC_ADDREF(error);
-			}
-		}
-
+		ZEND_ASYNC_WAKER_APPLY_CANCELLATION(waker, error, transfer_error);
 		async_scheduler_coroutine_enqueue(zend_coroutine);
 		return;
 	}
@@ -825,35 +817,14 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine, zend_object *error
 		return;
 	}
 
-	ZEND_COROUTINE_SET_CANCELLED(zend_coroutine);
-
-	const bool is_error_null = (error == NULL);
-
-	if (is_error_null) {
-		error = async_new_exception(async_ce_cancellation_exception, "Coroutine cancelled");
-		if (UNEXPECTED(EG(exception))) {
-			return;
+	if (was_cancelled
+		&& waker->error != NULL
+		&& instanceof_function(waker->error->ce, zend_ce_cancellation_exception)) {
+		if (transfer_error) {
+			OBJ_RELEASE(error);
 		}
-	}
-
-	if (was_cancelled) {
-		if (waker->error != NULL
-			&& instanceof_function(waker->error->ce, zend_ce_cancellation_exception)) {
-			async_scheduler_coroutine_enqueue(zend_coroutine);
-			return;
-		}
-	}
-
-	if (zend_coroutine->waker->error != NULL) {
-		zend_exception_set_previous(error, zend_coroutine->waker->error);
-		// We don't release the object because zend_exception_set_previous does not increment the reference count.
-		// OBJ_RELEASE(zend_coroutine->waker->error);
-	}
-
-	zend_coroutine->waker->error = error;
-
-	if (false == transfer_error && false == is_error_null) {
-		GC_ADDREF(error);
+	} else {
+		ZEND_ASYNC_WAKER_APPLY_CANCELLATION(waker, error, transfer_error);
 	}
 
 	async_scheduler_coroutine_enqueue(zend_coroutine);

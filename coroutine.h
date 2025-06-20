@@ -53,7 +53,7 @@ void async_coroutine_cleanup(zend_fiber_context *context);
 void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t * coroutine);
 void async_coroutine_suspend(const bool from_main);
 void async_coroutine_resume(zend_coroutine_t *coroutine, zend_object * error, const bool transfer_error);
-void async_coroutine_cancel(zend_coroutine_t *zend_coroutine, zend_object *error, const bool transfer_error, const bool is_safely);
+void async_coroutine_cancel(zend_coroutine_t *zend_coroutine, zend_object *error, bool transfer_error, const bool is_safely);
 bool async_coroutine_context_set(zend_coroutine_t * z_coroutine, zval *key, zval *value);
 bool async_coroutine_context_get(zend_coroutine_t * z_coroutine, zval *key, zval *result);
 bool async_coroutine_context_has(zend_coroutine_t * z_coroutine, zval *key);
