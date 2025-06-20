@@ -757,7 +757,9 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine, zend_object *error
 		zend_async_waker_new(zend_coroutine);
 	}
 
-	if (UNEXPECTED(zend_coroutine->waker == NULL)) {
+	zend_async_waker_t * waker = zend_coroutine->waker;
+
+	if (UNEXPECTED(waker == NULL)) {
 		async_throw_error("Waker is not initialized");
 
 		if (transfer_error) {
@@ -770,13 +772,48 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine, zend_object *error
 	bool was_cancelled = ZEND_COROUTINE_IS_CANCELLED(zend_coroutine);
 
 	if (false == ZEND_COROUTINE_IS_STARTED(zend_coroutine)) {
-		zend_coroutine->waker->status = ZEND_ASYNC_WAKER_IGNORED;
-		zend_coroutine->exception = error;
 
-		if (false == transfer_error) {
-			GC_ADDREF(error);
+		if (false == ZEND_ASYNC_WAKER_IN_QUEUE(waker)) {
+			//
+			// Situation: the coroutine is not in the queue, but a cancellation is requested.
+			// It might seem like we can simply remove the coroutine,
+			// but doing so would break the flow of the coroutine's handlers.
+			// Therefore, to normalize the flow,
+			// we place the coroutine in the queue with a status of ignored,
+			// so that the flow is executed correctly.
+			//
+			async_scheduler_coroutine_enqueue(zend_coroutine);
 		}
 
+		ZEND_COROUTINE_SET_CANCELLED(zend_coroutine);
+		waker->status = ZEND_ASYNC_WAKER_IGNORED;
+
+		//
+		// Exception override:
+		// If the coroutine already has an exception
+		// and it's a cancellation exception, then nothing needs to be done.
+		// In any other case, the cancellation exception overrides the existing exception.
+		//
+		if (waker->error != NULL) {
+			if (instanceof_function(waker->error->ce, zend_ce_cancellation_exception)) {
+				if (transfer_error) {
+					OBJ_RELEASE(error);
+				}
+			} else {
+				zend_exception_set_previous(error, waker->error);
+				waker->error = error;
+				if (false == transfer_error) {
+					GC_ADDREF(error);
+				}
+			}
+		} else {
+			waker->error = error;
+			if (false == transfer_error) {
+				GC_ADDREF(error);
+			}
+		}
+
+		async_scheduler_coroutine_enqueue(zend_coroutine);
 		return;
 	}
 
@@ -798,8 +835,6 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine, zend_object *error
 			return;
 		}
 	}
-
-	zend_async_waker_t * waker = zend_coroutine->waker;
 
 	if (was_cancelled) {
 		if (waker->error != NULL
