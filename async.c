@@ -176,8 +176,17 @@ PHP_FUNCTION(Async_suspend)
 
 PHP_FUNCTION(Async_protect)
 {
+	zval *closure;
+
+	ZEND_PARSE_PARAMETERS_START(1, 1)
+		Z_PARAM_OBJECT(closure)
+	ZEND_PARSE_PARAMETERS_END();
+
 	THROW_IF_ASYNC_OFF;
 	THROW_IF_SCHEDULER_CONTEXT;
+
+	/* TODO: Implement non-cancellable execution mode */
+	/* For now, the function just validates the closure parameter */
 }
 
 PHP_FUNCTION(Async_await)
@@ -467,7 +476,7 @@ PHP_FUNCTION(Async_awaitAnyOf)
 
 	ZEND_PARSE_PARAMETERS_START(2, 3)
 		Z_PARAM_LONG(count)
-		Z_PARAM_ZVAL(futures);
+		Z_PARAM_ITERABLE(futures);
 		Z_PARAM_OPTIONAL
 		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
 	ZEND_PARSE_PARAMETERS_END();
@@ -599,6 +608,8 @@ PHP_FUNCTION(Async_timeout)
 
 PHP_FUNCTION(Async_currentContext)
 {
+	ZEND_PARSE_PARAMETERS_NONE();
+
 	THROW_IF_ASYNC_OFF;
 	THROW_IF_SCHEDULER_CONTEXT;
 
@@ -625,6 +636,8 @@ PHP_FUNCTION(Async_currentContext)
 
 PHP_FUNCTION(Async_coroutineContext)
 {
+	ZEND_PARSE_PARAMETERS_NONE();
+
 	THROW_IF_ASYNC_OFF;
 	THROW_IF_SCHEDULER_CONTEXT;
 
@@ -650,6 +663,8 @@ PHP_FUNCTION(Async_coroutineContext)
 
 PHP_FUNCTION(Async_currentCoroutine)
 {
+	ZEND_PARSE_PARAMETERS_NONE();
+
 	THROW_IF_ASYNC_OFF;
 	THROW_IF_SCHEDULER_CONTEXT;
 
@@ -669,21 +684,46 @@ PHP_FUNCTION(Async_currentCoroutine)
 
 PHP_FUNCTION(Async_rootContext)
 {
+	ZEND_PARSE_PARAMETERS_NONE();
+
 	THROW_IF_ASYNC_OFF;
 	THROW_IF_SCHEDULER_CONTEXT;
 
+	/* TODO: Implement root context access */
+	/* For now, return a new context */
+	async_context_t *context = async_context_new();
+	RETURN_OBJ(&context->std);
 }
 
 PHP_FUNCTION(Async_getCoroutines)
 {
+	ZEND_PARSE_PARAMETERS_NONE();
+
 	THROW_IF_ASYNC_OFF;
 	THROW_IF_SCHEDULER_CONTEXT;
 
+	array_init(return_value);
+
+	async_coroutine_t *coroutine;
+	ZEND_HASH_FOREACH_PTR(&ASYNC_G(coroutines), coroutine) {
+		add_next_index_object(return_value, &coroutine->std);
+		GC_ADDREF(&coroutine->std);
+	} ZEND_HASH_FOREACH_END();
 }
 
 PHP_FUNCTION(Async_gracefulShutdown)
 {
+	zend_object *cancellation = NULL;
 
+	ZEND_PARSE_PARAMETERS_START(0, 1)
+		Z_PARAM_OPTIONAL
+		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_cancellation_exception)
+	ZEND_PARSE_PARAMETERS_END();
+
+	THROW_IF_ASYNC_OFF;
+	THROW_IF_SCHEDULER_CONTEXT;
+
+	/* TODO: Implement graceful shutdown */
 }
 
 /*
