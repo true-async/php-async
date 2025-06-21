@@ -33,5 +33,5 @@ start
 end
 normal spawn works
 shutdown handler start
-Error: The operation cannot be executed while async is off
+Error: Cannot spawn a coroutine when async is disabled
 shutdown handler end
