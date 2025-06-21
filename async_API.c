@@ -49,7 +49,7 @@ zend_async_scope_t * async_provide_scope(zend_object *scope_provider)
 
 zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object * scope_provider)
 {
-	if (UNEXPECTED(ZEND_ASYNC_OFF)) {
+	if (UNEXPECTED(ZEND_ASYNC_IS_OFF)) {
 		async_throw_error("Cannot spawn a coroutine when async is disabled");
 		return NULL;
 	} else if (UNEXPECTED(ZEND_ASYNC_IS_READY)) {
