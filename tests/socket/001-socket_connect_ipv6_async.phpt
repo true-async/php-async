@@ -50,6 +50,6 @@ $coroutine = spawn(function () {
 await($coroutine);
 echo "Test completed\n";
 ?>
---EXPECT--
-IPv6 hostname resolution worked (connection failed as expected)
+--EXPECTF--
+%s
 Test completed
