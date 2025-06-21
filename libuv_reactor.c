@@ -107,7 +107,7 @@ void libuv_reactor_startup(void)
 		return;
 	}
 
-	if (ZEND_ASYNC_OFF) {
+	if (ZEND_ASYNC_IS_OFF) {
 		async_throw_error(ASYNC_OF_EXCEPTION_MESSAGE);
 		return;
 	}
