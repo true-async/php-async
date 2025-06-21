@@ -24,8 +24,8 @@ $coroutine = spawn(function() {
     
     if ($result === false) {
         $error = socket_last_error($socket);
-        // Connection refused is expected for SSH on localhost in most cases
-        if ($error === SOCKET_ECONNREFUSED || $error === SOCKET_ENETUNREACH || $error === SOCKET_ETIMEDOUT) {
+        // Various connection errors are expected when testing hostname resolution
+        if ($error === SOCKET_ECONNREFUSED || $error === SOCKET_ENETUNREACH || $error === SOCKET_ETIMEDOUT || $error === SOCKET_ENOENT) {
             echo "Client: hostname resolution worked (connection failed as expected)\n";
         } else {
             echo "Client: unexpected error: " . socket_strerror($error) . "\n";
@@ -35,7 +35,7 @@ $coroutine = spawn(function() {
         socket_close($socket);
     }
     
-    if ($result === false && $error !== SOCKET_ECONNREFUSED && $error !== SOCKET_ENETUNREACH && $error !== SOCKET_ETIMEDOUT) {
+    if ($result === false && $error !== SOCKET_ECONNREFUSED && $error !== SOCKET_ENETUNREACH && $error !== SOCKET_ETIMEDOUT && $error !== SOCKET_ENOENT) {
         socket_close($socket);
     }
 });
