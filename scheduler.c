@@ -731,7 +731,10 @@ void async_scheduler_coroutine_enqueue(zend_coroutine_t * coroutine)
 
 void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 {
-	ZEND_ASSERT(EG(exception) == NULL && "The current exception must be NULL");
+	//
+	// Before suspending the coroutine, we save the current exception state.
+	//
+	zend_exception_save();
 
 	/**
 	 * Note that the Scheduler is initialized after the first use of suspend,
@@ -740,7 +743,8 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 	if (UNEXPECTED(ZEND_ASYNC_SCHEDULER == NULL)) {
 		async_scheduler_launch();
 
-		if (UNEXPECTED(EG(exception) != NULL)) {
+		if (UNEXPECTED(EG(exception))) {
+			zend_exception_restore();
 			return;
 		}
 	}
@@ -760,11 +764,12 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 		// If an exception occurs during the startup of the Waker object,
 		// that exception belongs to the current coroutine,
 		// which means we have the right to immediately return to the point from which we were called.
-		if (UNEXPECTED(EG(exception) != NULL)) {
+		if (UNEXPECTED(EG(exception))) {
 			// Before returning, We are required to properly destroy the Waker object.
 			zend_exception_save();
 			async_scheduler_stop_waker_events(coroutine->waker);
 			zend_async_waker_destroy(coroutine);
+			zend_exception_restore();
 			zend_exception_restore();
 			return;
 		}
@@ -810,6 +815,7 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 		}
 
 		switch_to_scheduler(transfer);
+		zend_exception_restore();
 		return;
 	}
 
@@ -854,6 +860,8 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 	if (UNEXPECTED(coroutine->switch_handlers && transfer == NULL)) {
 		ZEND_COROUTINE_ENTER(coroutine);
 	}
+
+	zend_exception_restore();
 }
 
 void async_scheduler_main_loop(void)

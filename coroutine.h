@@ -37,15 +37,6 @@ struct _async_coroutine_s {
 	/* Current Zend VM execute data being run by the coroutine. */
 	zend_execute_data *execute_data;
 
-	/**
-	 * The value of EG(exception) before the suspend operation
-	 */
-	zend_object *suspended_exception;
-	/**
-	 * The value of EG(prev_exception) before the suspend operation
-	 */
-	zend_object *suspended_prev_exception;
-
 	/* Active fiber vm stack. */
 	zend_vm_stack vm_stack;
 
