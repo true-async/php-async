@@ -37,6 +37,9 @@ struct _async_coroutine_s {
 	/* Current Zend VM execute data being run by the coroutine. */
 	zend_execute_data *execute_data;
 
+	/* deferred cancellation object. */
+	zend_object * deferred_cancellation;
+
 	/* Active fiber vm stack. */
 	zend_vm_stack vm_stack;
 

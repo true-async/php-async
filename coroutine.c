@@ -831,6 +831,23 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine, zend_object *error
 		}
 	}
 
+	// If the coroutine is currently protected from cancellation, defer the cancellation.
+	if (ZEND_COROUTINE_IS_PROTECTED(zend_coroutine)) {
+		async_coroutine_t *coroutine = (async_coroutine_t *) zend_coroutine;
+
+		if (coroutine->deferred_cancellation == NULL) {
+			coroutine->deferred_cancellation = error;
+
+			if (false == transfer_error) {
+				GC_ADDREF(error);
+			}
+		} else if (transfer_error) {
+			OBJ_RELEASE(error);
+		}
+
+		return;
+	}
+
 	bool was_cancelled = ZEND_COROUTINE_IS_CANCELLED(zend_coroutine);
 	ZEND_COROUTINE_SET_CANCELLED(zend_coroutine);
 
@@ -953,6 +970,12 @@ static void coroutine_object_destroy(zend_object *object)
 		zend_object *exception = coroutine->coroutine.exception;
 		coroutine->coroutine.exception = NULL;
 		OBJ_RELEASE(exception);
+	}
+
+	if (coroutine->deferred_cancellation != NULL) {
+		zend_object *deferred_cancellation = coroutine->deferred_cancellation;
+		coroutine->deferred_cancellation = NULL;
+		OBJ_RELEASE(deferred_cancellation);
 	}
 
 	if (coroutine->finally_handlers) {

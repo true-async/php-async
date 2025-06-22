@@ -282,6 +282,11 @@ static bool resolve_deadlocks(void)
 			);
 		}
 
+		// In case a deadlock condition is detected, cancellation protection flags no longer apply.
+		if (ZEND_COROUTINE_IS_PROTECTED(&coroutine->coroutine)) {
+			ZEND_COROUTINE_CLR_PROTECTED(&coroutine->coroutine);
+		}
+
 		ZEND_ASYNC_CANCEL(
 			&coroutine->coroutine,
 			async_new_exception(async_ce_cancellation_exception, "Deadlock detected"),
@@ -390,6 +395,11 @@ static void cancel_queued_coroutines(void)
 			coroutine->exception = cancellation_exception;
 			GC_ADDREF(cancellation_exception);
 		} else {
+			// In case a deadlock condition is detected, cancellation protection flags no longer apply.
+			if (ZEND_COROUTINE_IS_PROTECTED(coroutine)) {
+				ZEND_COROUTINE_CLR_PROTECTED(coroutine);
+			}
+
 			ZEND_ASYNC_CANCEL(coroutine, cancellation_exception, false);
 		}
 

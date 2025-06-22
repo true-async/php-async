@@ -14,6 +14,7 @@
   +----------------------------------------------------------------------+
 */
 
+#include "zend_exceptions.h"
 #ifdef HAVE_CONFIG_H
 #include <config.h>
 #endif
@@ -80,28 +81,9 @@ PHP_FUNCTION(Async_spawn)
 		return;
 	}
 
-	zend_fcall_t * fcall = ecalloc(1, sizeof(zend_fcall_t));
-	fcall->fci = fci;
-	fcall->fci_cache = fcc;
-
-	if (args_count) {
-		fcall->fci.param_count = args_count;
-		fcall->fci.params = safe_emalloc(args_count, sizeof(zval), 0);
-
-		for (uint32_t i = 0; i < args_count; i++) {
-			ZVAL_COPY(&fcall->fci.params[i], &args[i]);
-		}
-	}
-
-	if (named_args) {
-		fcall->fci.named_params = named_args;
-		GC_ADDREF(named_args);
-	}
+	ZEND_ASYNC_FCALL_DEFINE(fcall, fci, fcc, args, args_count, named_args);
 
 	coroutine->coroutine.fcall = fcall;
-
-	// Keep a reference to closures or callable objects while the coroutine is running.
-	Z_TRY_ADDREF(fcall->fci.function_name);
 
 	RETURN_OBJ_COPY(&coroutine->std);
 }
@@ -138,23 +120,7 @@ PHP_FUNCTION(Async_spawnWith)
 		RETURN_THROWS();
 	}
 
-	zend_fcall_t * fcall = ecalloc(1, sizeof(zend_fcall_t));
-	fcall->fci = fci;
-	fcall->fci_cache = fcc;
-
-	if (args_count) {
-		fcall->fci.param_count = args_count;
-		fcall->fci.params = safe_emalloc(args_count, sizeof(zval), 0);
-
-		for (uint32_t i = 0; i < args_count; i++) {
-			ZVAL_COPY(&fcall->fci.params[i], &args[i]);
-		}
-	}
-
-	if (named_args) {
-		fcall->fci.named_params = named_args;
-		GC_ADDREF(named_args);
-	}
+	ZEND_ASYNC_FCALL_DEFINE(fcall, fci, fcc, args, args_count, named_args);
 
 	coroutine->coroutine.fcall = fcall;
 
@@ -182,11 +148,40 @@ PHP_FUNCTION(Async_protect)
 		Z_PARAM_OBJECT(closure)
 	ZEND_PARSE_PARAMETERS_END();
 
-	THROW_IF_ASYNC_OFF;
-	THROW_IF_SCHEDULER_CONTEXT;
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	bool do_bailout = false;
 
-	/* TODO: Implement non-cancellable execution mode */
-	/* For now, the function just validates the closure parameter */
+	zend_try {
+		if (coroutine != NULL) {
+			ZEND_COROUTINE_SET_PROTECTED(coroutine);
+		}
+
+		zval result;
+		ZVAL_UNDEF(&result);
+
+		if (UNEXPECTED(call_user_function(NULL, NULL, closure, &result, 0, NULL) == FAILURE)) {
+			zend_throw_error(NULL, "Failed to call finally handler in finished coroutine");
+			zval_ptr_dtor(&result);
+		}
+	} zend_catch {
+		do_bailout = true;
+	} zend_end_try();
+
+	if (coroutine != NULL) {
+		ZEND_COROUTINE_CLR_PROTECTED(coroutine);
+	}
+
+	if (UNEXPECTED(do_bailout)) {
+		zend_bailout();
+	}
+
+	async_coroutine_t *async_coroutine = (async_coroutine_t *) coroutine;
+
+	if (async_coroutine->deferred_cancellation) {
+		ZEND_COROUTINE_SET_CANCELLED(coroutine);
+		zend_throw_exception_internal(async_coroutine->deferred_cancellation);
+		async_coroutine->deferred_cancellation = NULL;
+	}
 }
 
 PHP_FUNCTION(Async_await)
