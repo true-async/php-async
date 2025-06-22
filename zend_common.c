@@ -110,6 +110,16 @@ uint32_t zend_current_exception_get_line(void)
 	}
 }
 
+void async_warning(const char * format, ...)
+{
+	va_list args;
+	va_start(args, format);
+	zend_string *message = zend_vstrpprintf(0, format, args);
+	va_end(args);
+	zend_error(E_CORE_WARNING, "%s", message->val);
+	zend_string_release(message);
+}
+
 void zend_new_weak_reference_from(const zval* referent, zval * retval)
 {
 	if (UNEXPECTED(EG(exception))) {

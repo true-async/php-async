@@ -114,16 +114,6 @@ zend_always_inline static void zend_object_ptr_reset(zend_object * destination)
 	destination = NULL;
 }
 
-zend_always_inline static void async_warning(const char * format, ...)
-{
-	va_list args;
-	va_start(args, format);
-	zend_string *message = zend_vstrpprintf(0, format, args);
-	va_end(args);
-	zend_error(E_CORE_WARNING, "%s", message->val);
-	zend_string_release(message);
-}
-
 zend_always_inline void *zend_object_alloc_ex(const size_t obj_size, zend_class_entry *ce)
 {
 	return pecalloc(1, obj_size, 0);
@@ -185,6 +175,8 @@ void zend_exception_to_warning(const char * format, const bool clean);
 zend_string * zend_current_exception_get_message(const bool clean);
 zend_string * zend_current_exception_get_file(void);
 uint32_t zend_current_exception_get_line(void);
+
+void async_warning(const char * format, ...);
 
 /**
  * Creates a new weak reference to the given zval.
