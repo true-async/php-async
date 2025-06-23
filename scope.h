@@ -33,6 +33,7 @@ typedef struct async_coroutines_vector_t {
 struct _async_scope_s {
 	zend_async_scope_t scope;
 	async_coroutines_vector_t coroutines;
+	uint32_t active_coroutines_count; /* Number of active (non-zombie) coroutines */
 };
 
 typedef struct _async_scope_object_s {
@@ -51,7 +52,7 @@ typedef struct _async_scope_object_s {
 static zend_always_inline void async_scope_try_dispose(async_scope_t *scope)
 {
 	if (scope->scope.scopes.length == 0 && scope->coroutines.length == 0) {
-		scope->scope.dispose(&scope->scope);
+		scope->scope.event.dispose(&scope->scope.event);
 	}
 }
 
@@ -72,6 +73,11 @@ async_scope_add_coroutine(async_scope_t *scope, async_coroutine_t *coroutine)
 
 	vector->data[vector->length++] = coroutine;
 	coroutine->coroutine.scope = &scope->scope;
+	
+	// Increment active coroutines count if coroutine is not zombie
+	if (!ZEND_COROUTINE_IS_ZOMBIE(&coroutine->coroutine)) {
+		scope->active_coroutines_count++;
+	}
 }
 
 static zend_always_inline void
@@ -80,6 +86,13 @@ async_scope_remove_coroutine(async_scope_t *scope, async_coroutine_t *coroutine)
 	async_coroutines_vector_t *vector = &scope->coroutines;
 	for (uint32_t i = 0; i < vector->length; ++i) {
 		if (vector->data[i] == coroutine) {
+			// Decrement active coroutines count if coroutine was active
+			if (false == ZEND_COROUTINE_IS_ZOMBIE(&coroutine->coroutine)) {
+				if (scope->active_coroutines_count > 0) {
+					scope->active_coroutines_count--;
+				}
+			}
+			
 			vector->data[i] = vector->data[--vector->length];
 			async_scope_try_dispose(scope);
 			return;
@@ -103,5 +116,11 @@ async_scope_free_coroutines(async_scope_t *scope)
 
 zend_async_scope_t * async_new_scope(zend_async_scope_t * parent_scope);
 void async_register_scope_ce(void);
+
+/* Check if coroutine belongs to this scope or any of its child scopes */
+bool async_scope_contains_coroutine(async_scope_t *scope, zend_coroutine_t *coroutine);
+
+/* Mark coroutine as zombie and update active count */
+void async_scope_mark_coroutine_zombie(async_scope_t *scope, async_coroutine_t *coroutine);
 
 #endif //SCOPE_H
