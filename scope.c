@@ -356,7 +356,7 @@ METHOD(isFinished)
 		RETURN_TRUE;
 	}
 
-	RETURN_BOOL(scope_is_completed(scope_object->scope));
+	RETURN_BOOL(scope_is_completed(scope_object->scope, false));
 }
 
 METHOD(isClosed)
