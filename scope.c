@@ -360,7 +360,7 @@ METHOD(awaitAfterCancellation)
 		RETURN_THROWS();
 	}
 
-	if (error_handler_fci.named_params != NULL) {
+	if (error_handler_fci.size != 0) {
 		scope_callback->error_fci = &error_handler_fci;
 		scope_callback->error_fci_cache = &error_handler_fcc;
 	} else {
@@ -555,21 +555,47 @@ static void callback_resolve_when_zombie_completed(
 	zend_coroutine_t * coroutine = scope_callback->callback.coroutine;
 
 	if (UNEXPECTED(exception != NULL && scope_callback->error_fci == NULL)) {
+		// No error handler - resume with exception
 		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
 		ZEND_ASYNC_RESUME_WITH_ERROR(coroutine, exception, false);
 		return;
 	}
 
-	if (exception != NULL) {
+	if (UNEXPECTED(exception != NULL && scope_callback->error_fci != NULL)) {
 		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
-		// Call the error handler if provided
+		
+		// Prepare parameters for handler(\Throwable $error, Scope $scope)
+		zval params[2];
+		ZVAL_OBJ(&params[0], exception);
+		ZVAL_OBJ(&params[1], scope->scope.scope_object);
+
+		// Setup function call
+		scope_callback->error_fci->param_count = 2;
+		scope_callback->error_fci->params = params;
+		
 		zval retval;
 		ZVAL_UNDEF(&retval);
+		scope_callback->error_fci->retval = &retval;
+		
 		if (UNEXPECTED(zend_call_function(scope_callback->error_fci, scope_callback->error_fci_cache) == FAILURE)) {
-			zend_throw_error(NULL, "Failed to call error handler in scope completion");
 			zval_ptr_dtor(&retval);
+			ZEND_ASYNC_RESUME_WITH_ERROR(
+				coroutine,
+				async_new_exception(async_ce_async_exception, "Failed to call error handler in scope completion"),
+				true
+			);
+
 			return;
 		}
+
+		if (UNEXPECTED(EG(exception))) {
+			zend_exception_save();
+			zend_exception_restore();
+			ZEND_ASYNC_RESUME_WITH_ERROR(coroutine, EG(exception), false);
+			zend_clear_exception();
+			return;
+		}
+		
 		zval_ptr_dtor(&retval);
 	}
 
