@@ -1,1 +1,10 @@
-* need to fix bug with sleep in main coroutine
+* METHOD(awaitAfterCancellation)
+* METHOD(isFinished)
+* METHOD(isClosed)
+* METHOD(setExceptionHandler)
+* METHOD(setChildScopeExceptionHandler)
+* METHOD(onFinally)
+* METHOD(dispose)
+* METHOD(disposeSafely)
+* METHOD(disposeAfterTimeout)
+* METHOD(getChildScopes)

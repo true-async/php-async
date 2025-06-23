@@ -34,6 +34,12 @@ static zend_object_handlers async_scope_handlers;
 //////////////////////////////////////////////////////////
 
 static void scope_dispose_coroutines_and_children(async_scope_t *scope);
+static void callback_resolve_when_zombie_completed(
+	zend_async_event_t *event, zend_async_event_callback_t *callback, void * result, zend_object *exception
+);
+
+static bool scope_is_completed(async_scope_t *scope);
+static void scope_check_completion_and_notify(async_scope_t *scope);
 
 // Event method forward declarations
 static void scope_event_start(zend_async_event_t *event);
@@ -213,20 +219,20 @@ bool async_scope_contains_coroutine(async_scope_t *scope, zend_coroutine_t *coro
 	return false;
 }
 
-void async_scope_mark_coroutine_zombie(async_scope_t *scope, async_coroutine_t *coroutine)
+void async_scope_mark_coroutine_zombie(async_coroutine_t *coroutine)
 {
+	async_scope_t *scope = (async_scope_t *) coroutine->coroutine.scope;
+
 	// Check if coroutine was active before becoming zombie
-	if (!ZEND_COROUTINE_IS_ZOMBIE(&coroutine->coroutine)) {
+	if (false == ZEND_COROUTINE_IS_ZOMBIE(&coroutine->coroutine)) {
 		// Mark as zombie and decrement active count
 		ZEND_COROUTINE_SET_ZOMBIE(&coroutine->coroutine);
 		if (scope->active_coroutines_count > 0) {
 			scope->active_coroutines_count--;
 		}
 		
-		// Check if scope is now complete and notify waiting callbacks
-		if (scope->active_coroutines_count == 0 && scope->scope.scopes.length == 0) {
-			ZEND_ASYNC_CALLBACKS_NOTIFY(&scope->scope.event, NULL, NULL);
-		}
+		// Check if scope and its parents are completed and notify
+		scope_check_completion_and_notify(scope);
 	}
 }
 
@@ -267,8 +273,7 @@ METHOD(awaitCompletion)
 	}
 
 	// Check if scope is already finished (no active coroutines and no child scopes)
-	if (scope_object->scope->active_coroutines_count == 0
-		&& scope_object->scope->scope.scopes.length == 0) {
+	if (scope_object->scope->active_coroutines_count == 0 && scope_object->scope->scope.scopes.length == 0) {
 		return;
 	}
 
@@ -313,29 +318,80 @@ METHOD(awaitAfterCancellation)
 		Z_PARAM_OBJ_OR_NULL(cancellation_obj)
 	ZEND_PARSE_PARAMETERS_END();
 
+	zend_coroutine_t *current_coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	if (UNEXPECTED(current_coroutine == NULL)) {
+		return;
+	}
+
 	async_scope_object_t *scope_object = THIS_SCOPE;
-	if (UNEXPECTED(scope_object->scope == NULL)) {
-		async_throw_error("Scope object has been disposed");
+	if (UNEXPECTED(scope_object->scope == NULL || ZEND_ASYNC_SCOPE_IS_CLOSED(&scope_object->scope->scope))) {
+		return;
+	}
+
+	if (false == ZEND_ASYNC_SCOPE_IS_CANCELLED(&scope_object->scope->scope)) {
+		async_throw_error("Attempt to await a Scope that has not been cancelled");
+	}
+
+	// Check for deadlock: current coroutine belongs to this scope or its children
+	if (async_scope_contains_coroutine(scope_object->scope, current_coroutine, 0)) {
+		async_throw_error("Cannot await completion of scope from a coroutine that belongs to the same scope or its children");
+		RETURN_THROWS();
+	}
+	if (UNEXPECTED(EG(exception))) {
 		RETURN_THROWS();
 	}
 
-	// Cancel the scope first if not already cancelled
-	if (!ZEND_ASYNC_SCOPE_IS_CLOSED(&scope_object->scope->scope)) {
-		ZEND_ASYNC_SCOPE_SET_CLOSED(&scope_object->scope->scope);
-		scope_dispose_coroutines_and_children(scope_object->scope);
+	// Check if scope is already finished (no active coroutines and no child scopes)
+	if (scope_object->scope->coroutines.length == 0 && scope_object->scope->scope.scopes.length == 0) {
+		return;
 	}
 
-	// Wait for completion
-	while (scope_object->scope->coroutines.length > 0 || scope_object->scope->scope.scopes.length > 0) {
-		ZEND_ASYNC_SUSPEND();
+	zend_async_waker_new(current_coroutine);
+	if (UNEXPECTED(EG(exception))) {
+		RETURN_THROWS();
+	}
+
+	// We need to create a custom callback to handle errors coming from coroutines.
+	scope_coroutine_callback_t *scope_callback = (scope_coroutine_callback_t *) zend_async_coroutine_callback_new(
+		current_coroutine, callback_resolve_when_zombie_completed, sizeof(scope_coroutine_callback_t)
+	);
+	if (UNEXPECTED(scope_callback == NULL)) {
+		zend_async_waker_destroy(current_coroutine);
+		RETURN_THROWS();
+	}
+
+	if (error_handler_fci.named_params != NULL) {
+		scope_callback->error_fci = &error_handler_fci;
+		scope_callback->error_fci_cache = &error_handler_fcc;
+	} else {
+		scope_callback->error_fci = NULL;
+		scope_callback->error_fci_cache = NULL;
+	}
+
+	zend_async_resume_when(
+		current_coroutine, &scope_object->scope->scope.event, true, NULL, &scope_callback->callback
+	);
+	if (UNEXPECTED(EG(exception))) {
+		zend_async_waker_destroy(current_coroutine);
+		RETURN_THROWS();
+	}
+
+	if (cancellation_obj != NULL) {
+		zend_async_resume_when(
+			current_coroutine,
+			ZEND_ASYNC_OBJECT_TO_EVENT(cancellation_obj),
+			false,
+			zend_async_waker_callback_cancel,
+			NULL
+		);
 		if (UNEXPECTED(EG(exception))) {
-			if (ZEND_FCI_INITIALIZED(error_handler_fci)) {
-				// TODO: Call error handler with exception
-				zend_clear_exception();
-			}
-			break;
+			zend_async_waker_destroy(current_coroutine);
+			RETURN_THROWS();
 		}
 	}
+
+	ZEND_ASYNC_SUSPEND();
+	zend_async_waker_destroy(current_coroutine);
 }
 
 METHOD(isFinished)
@@ -490,6 +546,38 @@ METHOD(getChildScopes)
 //////////////////////////////////////////////////////////
 /// Scope methods end
 //////////////////////////////////////////////////////////
+static void callback_resolve_when_zombie_completed(
+	zend_async_event_t *event, zend_async_event_callback_t *callback, void * result, zend_object *exception
+)
+{
+	async_scope_t *scope = (async_scope_t *) event;
+	scope_coroutine_callback_t *scope_callback = (scope_coroutine_callback_t *) callback;
+	zend_coroutine_t * coroutine = scope_callback->callback.coroutine;
+
+	if (UNEXPECTED(exception != NULL && scope_callback->error_fci == NULL)) {
+		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
+		ZEND_ASYNC_RESUME_WITH_ERROR(coroutine, exception, false);
+		return;
+	}
+
+	if (exception != NULL) {
+		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
+		// Call the error handler if provided
+		zval retval;
+		ZVAL_UNDEF(&retval);
+		if (UNEXPECTED(zend_call_function(scope_callback->error_fci, scope_callback->error_fci_cache) == FAILURE)) {
+			zend_throw_error(NULL, "Failed to call error handler in scope completion");
+			zval_ptr_dtor(&retval);
+			return;
+		}
+		zval_ptr_dtor(&retval);
+	}
+
+	if (scope->coroutines.length == 0 && scope->scope.scopes.length == 0) {
+		ZEND_ASYNC_RESUME(coroutine);
+	}
+}
+
 
 static void scope_before_coroutine_enqueue(zend_coroutine_t *coroutine, zend_async_scope_t *zend_scope, zval *result)
 {
@@ -744,4 +832,55 @@ void async_register_scope_ce(void)
 
 	async_scope_handlers.clone_obj = NULL;
 	async_scope_handlers.dtor_obj = scope_destroy;
+}
+
+/**
+ * Recursively checks if a scope and all its children are completed.
+ * A scope is considered completed when it has no active coroutines
+ * and all child scopes are also completed.
+ */
+static bool scope_is_completed(async_scope_t *scope)
+{
+	if (scope == NULL) {
+		return true;
+	}
+
+	// First check if this scope has active coroutines
+	if (scope->active_coroutines_count > 0) {
+		return false;
+	}
+
+	// Then check if all child scopes are completed
+	for (uint32_t i = 0; i < scope->scope.scopes.length; i++) {
+		async_scope_t *child_scope = (async_scope_t *) scope->scope.scopes.data[i];
+		if (!scope_is_completed(child_scope)) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+/**
+ * Checks if scope is completed and notifies waiting callbacks.
+ * If scope is completed, also recursively checks parent scopes
+ * to handle cascade completion events up the hierarchy.
+ */
+static void scope_check_completion_and_notify(async_scope_t *scope)
+{
+	if (scope == NULL) {
+		return;
+	}
+
+	// Check if current scope is completed
+	if (scope_is_completed(scope)) {
+		// Notify waiting callbacks for this scope
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&scope->scope.event, NULL, NULL);
+
+		// Recursively check parent scope
+		if (scope->scope.parent_scope != NULL) {
+			async_scope_t *parent_scope = (async_scope_t *) scope->scope.parent_scope;
+			scope_check_completion_and_notify(parent_scope);
+		}
+	}
 }

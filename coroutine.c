@@ -880,9 +880,12 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine, zend_object *error
 
 	// In safely mode, we don't forcibly terminate the coroutine,
 	// but we do mark it as a Zombie.
-	if (is_safely && error == NULL) {
-		ZEND_COROUTINE_SET_ZOMBIE(zend_coroutine);
+	if (is_safely) {
+		async_scope_mark_coroutine_zombie((async_coroutine_t *) zend_coroutine);
 		ZEND_ASYNC_DECREASE_COROUTINE_COUNT
+		if (transfer_error && error != NULL) {
+			OBJ_RELEASE(error);
+		}
 		return;
 	}
 

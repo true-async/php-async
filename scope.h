@@ -50,6 +50,11 @@ typedef struct _async_scope_object_s {
 	};
 } async_scope_object_t;
 
+typedef struct {
+	zend_coroutine_event_callback_t callback;
+	zend_fcall_info *error_fci;
+	zend_fcall_info_cache *error_fci_cache;
+} scope_coroutine_callback_t;
 
 static zend_always_inline void async_scope_try_dispose(async_scope_t *scope)
 {
@@ -123,6 +128,6 @@ void async_register_scope_ce(void);
 bool async_scope_contains_coroutine(async_scope_t *scope, zend_coroutine_t *coroutine, uint32_t depth);
 
 /* Mark coroutine as zombie and update active count */
-void async_scope_mark_coroutine_zombie(async_scope_t *scope, async_coroutine_t *coroutine);
+void async_scope_mark_coroutine_zombie(async_coroutine_t *coroutine);
 
 #endif //SCOPE_H
