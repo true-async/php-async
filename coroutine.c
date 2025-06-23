@@ -461,6 +461,9 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 	async_coroutine_call_finally_handlers(coroutine);
 	zend_async_waker_destroy(&coroutine->coroutine);
 
+	// Notify the async scope that the coroutine has finished.
+	async_scope_notify_coroutine_finished(coroutine);
+
 	zend_exception_restore();
 
 	// If the exception was handled by any handler, we do not propagate it further.

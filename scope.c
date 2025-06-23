@@ -38,8 +38,8 @@ static void callback_resolve_when_zombie_completed(
 	zend_async_event_t *event, zend_async_event_callback_t *callback, void * result, zend_object *exception
 );
 
-static bool scope_is_completed(async_scope_t *scope);
-static void scope_check_completion_and_notify(async_scope_t *scope);
+static bool scope_is_completed(async_scope_t *scope, bool with_zombies);
+static void scope_check_completion_and_notify(async_scope_t *scope, bool with_zombies);
 
 // Event method forward declarations
 static void scope_event_start(zend_async_event_t *event);
@@ -187,53 +187,6 @@ METHOD(cancel)
 	zend_async_scope_t * scope = &scope_object->scope->scope;
 
 	scope->cancel(scope, cancellation, false, ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(scope));
-}
-
-bool async_scope_contains_coroutine(async_scope_t *scope, zend_coroutine_t *coroutine, uint32_t depth)
-{
-	// Protect against stack overflow
-	if (UNEXPECTED(depth > ASYNC_SCOPE_MAX_RECURSION_DEPTH)) {
-		async_throw_error("Maximum recursion depth exceeded while checking coroutine containment");
-		return false;
-	}
-	
-	// Check if coroutine belongs directly to this scope
-	for (uint32_t i = 0; i < scope->coroutines.length; i++) {
-		if (&scope->coroutines.data[i]->coroutine == coroutine) {
-			return true;
-		}
-	}
-	
-	// Recursively check child scopes
-	for (uint32_t i = 0; i < scope->scope.scopes.length; i++) {
-		async_scope_t *child_scope = (async_scope_t *) scope->scope.scopes.data[i];
-		// Skip recursion if child scope has no coroutines
-		if (child_scope->coroutines.length == 0 && child_scope->scope.scopes.length == 0) {
-			continue;
-		}
-		if (async_scope_contains_coroutine(child_scope, coroutine, depth + 1)) {
-			return true;
-		}
-	}
-	
-	return false;
-}
-
-void async_scope_mark_coroutine_zombie(async_coroutine_t *coroutine)
-{
-	async_scope_t *scope = (async_scope_t *) coroutine->coroutine.scope;
-
-	// Check if coroutine was active before becoming zombie
-	if (false == ZEND_COROUTINE_IS_ZOMBIE(&coroutine->coroutine)) {
-		// Mark as zombie and decrement active count
-		ZEND_COROUTINE_SET_ZOMBIE(&coroutine->coroutine);
-		if (scope->active_coroutines_count > 0) {
-			scope->active_coroutines_count--;
-		}
-		
-		// Check if scope and its parents are completed and notify
-		scope_check_completion_and_notify(scope);
-	}
 }
 
 METHOD(awaitCompletion)
@@ -403,11 +356,7 @@ METHOD(isFinished)
 		RETURN_TRUE;
 	}
 
-	// Scope is finished when it has no active coroutines or child scopes
-	bool is_finished = (scope_object->scope->active_coroutines_count == 0 && 
-						scope_object->scope->scope.scopes.length == 0);
-
-	RETURN_BOOL(is_finished);
+	RETURN_BOOL(scope_is_completed(scope_object->scope));
 }
 
 METHOD(isClosed)
@@ -604,6 +553,71 @@ static void callback_resolve_when_zombie_completed(
 	}
 }
 
+bool async_scope_contains_coroutine(async_scope_t *scope, zend_coroutine_t *coroutine, uint32_t depth)
+{
+	// Protect against stack overflow
+	if (UNEXPECTED(depth > ASYNC_SCOPE_MAX_RECURSION_DEPTH)) {
+		async_throw_error("Maximum recursion depth exceeded while checking coroutine containment");
+		return false;
+	}
+
+	// Check if coroutine belongs directly to this scope
+	for (uint32_t i = 0; i < scope->coroutines.length; i++) {
+		if (&scope->coroutines.data[i]->coroutine == coroutine) {
+			return true;
+		}
+	}
+
+	// Recursively check child scopes
+	for (uint32_t i = 0; i < scope->scope.scopes.length; i++) {
+		async_scope_t *child_scope = (async_scope_t *) scope->scope.scopes.data[i];
+		// Skip recursion if child scope has no coroutines
+		if (child_scope->coroutines.length == 0 && child_scope->scope.scopes.length == 0) {
+			continue;
+		}
+		if (async_scope_contains_coroutine(child_scope, coroutine, depth + 1)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void async_scope_notify_coroutine_finished(async_coroutine_t *coroutine)
+{
+	async_scope_t *scope = (async_scope_t *) coroutine->coroutine.scope;
+
+	// Check if coroutine was active before becoming zombie
+	if (false == ZEND_COROUTINE_IS_ZOMBIE(&coroutine->coroutine)) {
+		if (scope->active_coroutines_count > 0) {
+			scope->active_coroutines_count--;
+		}
+	} else {
+		if (scope->zombie_coroutines_count > 0) {
+			scope->zombie_coroutines_count--;
+		}
+	}
+
+	scope_check_completion_and_notify(scope, true);
+}
+
+void async_scope_mark_coroutine_zombie(async_coroutine_t *coroutine)
+{
+	async_scope_t *scope = (async_scope_t *) coroutine->coroutine.scope;
+
+	// Check if coroutine was active before becoming zombie
+	if (false == ZEND_COROUTINE_IS_ZOMBIE(&coroutine->coroutine)) {
+		// Mark as zombie and decrement active count
+		ZEND_COROUTINE_SET_ZOMBIE(&coroutine->coroutine);
+		if (scope->active_coroutines_count > 0) {
+			scope->active_coroutines_count--;
+			scope->zombie_coroutines_count++;
+		}
+
+		// Check if scope and its parents are completed and notify
+		scope_check_completion_and_notify(scope, false);
+	}
+}
 
 static void scope_before_coroutine_enqueue(zend_coroutine_t *coroutine, zend_async_scope_t *zend_scope, zval *result)
 {
@@ -862,24 +876,30 @@ void async_register_scope_ce(void)
 
 /**
  * Recursively checks if a scope and all its children are completed.
- * A scope is considered completed when it has no active coroutines
- * and all child scopes are also completed.
+ * A scope is considered completed when:
+ * - It is closed OR
+ * - It has no active coroutines AND all child scopes are also completed
  */
-static bool scope_is_completed(async_scope_t *scope)
+static bool scope_is_completed(async_scope_t *scope, bool with_zombies)
 {
 	if (scope == NULL) {
 		return true;
 	}
 
-	// First check if this scope has active coroutines
-	if (scope->active_coroutines_count > 0) {
+	// If scope is closed or cancelled, it's considered completed
+	if (ZEND_ASYNC_SCOPE_IS_CLOSED(&scope->scope)) {
+		return true;
+	}
+
+	// If scope has active coroutines, it's not completed
+	if ((with_zombies ? scope->active_coroutines_count : scope->active_coroutines_count + scope->zombie_coroutines_count) > 0) {
 		return false;
 	}
 
-	// Then check if all child scopes are completed
+	// Check if all child scopes are completed
 	for (uint32_t i = 0; i < scope->scope.scopes.length; i++) {
 		async_scope_t *child_scope = (async_scope_t *) scope->scope.scopes.data[i];
-		if (!scope_is_completed(child_scope)) {
+		if (false == scope_is_completed(child_scope, with_zombies)) {
 			return false;
 		}
 	}
@@ -892,21 +912,21 @@ static bool scope_is_completed(async_scope_t *scope)
  * If scope is completed, also recursively checks parent scopes
  * to handle cascade completion events up the hierarchy.
  */
-static void scope_check_completion_and_notify(async_scope_t *scope)
+static void scope_check_completion_and_notify(async_scope_t *scope, bool with_zombies)
 {
 	if (scope == NULL) {
 		return;
 	}
 
 	// Check if current scope is completed
-	if (scope_is_completed(scope)) {
+	if (scope_is_completed(scope, true)) {
 		// Notify waiting callbacks for this scope
 		ZEND_ASYNC_CALLBACKS_NOTIFY(&scope->scope.event, NULL, NULL);
 
 		// Recursively check parent scope
 		if (scope->scope.parent_scope != NULL) {
 			async_scope_t *parent_scope = (async_scope_t *) scope->scope.parent_scope;
-			scope_check_completion_and_notify(parent_scope);
+			scope_check_completion_and_notify(parent_scope, with_zombies);
 		}
 	}
 }
