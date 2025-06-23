@@ -22,6 +22,8 @@ extern zend_class_entry * async_ce_scope;
 extern zend_class_entry * async_ce_scope_provider;
 extern zend_class_entry * async_ce_spawn_strategy;
 
+#define ASYNC_SCOPE_MAX_RECURSION_DEPTH 64
+
 typedef struct _async_scope_s async_scope_t;
 
 typedef struct async_coroutines_vector_t {
@@ -118,7 +120,7 @@ zend_async_scope_t * async_new_scope(zend_async_scope_t * parent_scope);
 void async_register_scope_ce(void);
 
 /* Check if coroutine belongs to this scope or any of its child scopes */
-bool async_scope_contains_coroutine(async_scope_t *scope, zend_coroutine_t *coroutine);
+bool async_scope_contains_coroutine(async_scope_t *scope, zend_coroutine_t *coroutine, uint32_t depth);
 
 /* Mark coroutine as zombie and update active count */
 void async_scope_mark_coroutine_zombie(async_scope_t *scope, async_coroutine_t *coroutine);

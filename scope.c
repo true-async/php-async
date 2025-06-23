@@ -183,8 +183,14 @@ METHOD(cancel)
 	scope->cancel(scope, cancellation, false, ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(scope));
 }
 
-bool async_scope_contains_coroutine(async_scope_t *scope, zend_coroutine_t *coroutine)
+bool async_scope_contains_coroutine(async_scope_t *scope, zend_coroutine_t *coroutine, uint32_t depth)
 {
+	// Protect against stack overflow
+	if (UNEXPECTED(depth > ASYNC_SCOPE_MAX_RECURSION_DEPTH)) {
+		async_throw_error("Maximum recursion depth exceeded while checking coroutine containment");
+		return false;
+	}
+	
 	// Check if coroutine belongs directly to this scope
 	for (uint32_t i = 0; i < scope->coroutines.length; i++) {
 		if (&scope->coroutines.data[i]->coroutine == coroutine) {
@@ -195,7 +201,11 @@ bool async_scope_contains_coroutine(async_scope_t *scope, zend_coroutine_t *coro
 	// Recursively check child scopes
 	for (uint32_t i = 0; i < scope->scope.scopes.length; i++) {
 		async_scope_t *child_scope = (async_scope_t *) scope->scope.scopes.data[i];
-		if (async_scope_contains_coroutine(child_scope, coroutine)) {
+		// Skip recursion if child scope has no coroutines
+		if (child_scope->coroutines.length == 0 && child_scope->scope.scopes.length == 0) {
+			continue;
+		}
+		if (async_scope_contains_coroutine(child_scope, coroutine, depth + 1)) {
 			return true;
 		}
 	}
@@ -225,7 +235,7 @@ METHOD(awaitCompletion)
 	zend_object *cancellation_obj;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_OBJ(cancellation_obj)
+		Z_PARAM_OBJ_OF_CLASS(cancellation_obj, async_ce_awaitable)
 	ZEND_PARSE_PARAMETERS_END();
 
 	zend_coroutine_t *current_coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
@@ -234,33 +244,61 @@ METHOD(awaitCompletion)
 	}
 
 	async_scope_object_t *scope_object = THIS_SCOPE;
-	if (UNEXPECTED(scope_object->scope == NULL)) {
-		async_throw_error("Scope object has been disposed");
+
+	// If the Scope has already been destroyed or closed,
+	// we immediately return.
+	if (UNEXPECTED(scope_object->scope == NULL || ZEND_ASYNC_SCOPE_IS_CLOSED(&scope_object->scope->scope))) {
+		return;
+	}
+
+	// If the scope is cancelled, throw cancellation exception
+	if (UNEXPECTED(ZEND_ASYNC_SCOPE_IS_CANCELLED(&scope_object->scope->scope))) {
+		async_throw_cancellation("The scope has been cancelled");
 		RETURN_THROWS();
 	}
 
 	// Check for deadlock: current coroutine belongs to this scope or its children
-	if (async_scope_contains_coroutine(scope_object->scope, current_coroutine)) {
-		async_throw_error("Cannot await completion of scope from a coroutine that belongs to the same scope or its children - this would cause a deadlock");
+	if (async_scope_contains_coroutine(scope_object->scope, current_coroutine, 0)) {
+		async_throw_error("Cannot await completion of scope from a coroutine that belongs to the same scope or its children");
+		RETURN_THROWS();
+	}
+	if (UNEXPECTED(EG(exception))) {
 		RETURN_THROWS();
 	}
 
 	// Check if scope is already finished (no active coroutines and no child scopes)
-	if (scope_object->scope->active_coroutines_count == 0 && scope_object->scope->scope.scopes.length == 0) {
-		return; // Already completed
+	if (scope_object->scope->active_coroutines_count == 0
+		&& scope_object->scope->scope.scopes.length == 0) {
+		return;
 	}
 
-	// Register callback to be notified when scope completes
-	zend_coroutine_event_callback_t * callback = zend_async_coroutine_callback_new(
-		current_coroutine,
-		zend_async_waker_callback_resolve,
-		0
-	);
+	zend_async_waker_new(current_coroutine);
+	if (UNEXPECTED(EG(exception))) {
+		RETURN_THROWS();
+	}
 
-	// Add callback to scope's event system
-	scope_object->scope->scope.event.add_callback(&scope_object->scope->scope.event, callback);
+	zend_async_resume_when(
+		current_coroutine, &scope_object->scope->scope.event, false, zend_async_waker_callback_resolve, NULL
+	);
+	if (UNEXPECTED(EG(exception))) {
+		zend_async_waker_destroy(current_coroutine);
+		RETURN_THROWS();
+	}
+
+	zend_async_resume_when(
+		current_coroutine,
+		ZEND_ASYNC_OBJECT_TO_EVENT(cancellation_obj),
+		false,
+		zend_async_waker_callback_cancel,
+		NULL
+	);
+	if (UNEXPECTED(EG(exception))) {
+		zend_async_waker_destroy(current_coroutine);
+		RETURN_THROWS();
+	}
 
 	ZEND_ASYNC_SUSPEND();
+	zend_async_waker_destroy(current_coroutine);
 }
 
 METHOD(awaitAfterCancellation)
