@@ -828,7 +828,7 @@ void async_await_futures(
 
 	// Free the coroutine scope if it was created for the iterator.
 	if (await_context->scope != NULL) {
-		await_context->scope->dispose(await_context->scope);
+		await_context->scope->try_to_dispose(await_context->scope);
 		await_context->scope = NULL;
 	}
 

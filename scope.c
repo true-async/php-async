@@ -187,7 +187,7 @@ METHOD(cancel)
 
 	zend_async_scope_t * scope = &scope_object->scope->scope;
 
-	scope->catch_or_cancel(scope, cancellation, false, ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(scope));
+	scope->catch_or_cancel(scope, NULL, cancellation, false, ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(scope));
 }
 
 METHOD(awaitCompletion)
@@ -763,6 +763,23 @@ static bool scope_catch_or_cancel(
 	return result;
 }
 
+static void scope_try_to_dispose(zend_async_scope_t *scope)
+{
+	async_scope_t *async_scope = (async_scope_t *) scope;
+
+	// If the scope is already closed, do nothing
+	if (ZEND_ASYNC_SCOPE_IS_CLOSED(&async_scope->scope)) {
+		return;
+	}
+
+	if (false == scope_is_completed(async_scope, true)) {
+		return;
+	}
+
+	// Dispose the scope
+	async_scope->scope.event.dispose(&async_scope->scope.event);
+}
+
 static void scope_event_start(zend_async_event_t *event)
 {
 	// Empty implementation - scopes don't need explicit start
@@ -902,6 +919,7 @@ zend_async_scope_t * async_new_scope(zend_async_scope_t * parent_scope)
 	scope->scope.before_coroutine_enqueue = scope_before_coroutine_enqueue;
 	scope->scope.after_coroutine_enqueue = scope_after_coroutine_enqueue;
 	scope->scope.catch_or_cancel = scope_catch_or_cancel;
+	scope->scope.try_to_dispose = scope_try_to_dispose;
 	scope->scope.scope_object = &scope_object->std;
 	scope->coroutines.length = 0;
 	scope->coroutines.capacity = 0;
