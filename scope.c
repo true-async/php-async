@@ -658,10 +658,7 @@ static bool scope_catch_or_cancel(
 )
 {
 	async_scope_t *async_scope = (async_scope_t *) scope;
-
-	if (exception == NULL) {
-		transfer_error = false; // No error to transfer
-	}
+	transfer_error = exception != NULL ? transfer_error : false;
 
 	if (UNEXPECTED(ZEND_ASYNC_SCOPE_IS_CLOSED(&async_scope->scope))) {
 		if (transfer_error) {
@@ -682,9 +679,13 @@ static bool scope_catch_or_cancel(
 		return true;
 	}
 
-	const bool is_error_null = (exception == NULL);
+	// If an unexpected exception occurs during the function's execution, we combine them into one.
+	if (EG(exception)) {
+		exception = zend_exception_merge(exception, true, transfer_error);
+		transfer_error = true; // Because we owned the exception
+	}
 
-	if (is_error_null) {
+	if (exception == NULL) {
 		exception = async_new_exception(async_ce_cancellation_exception, "Scope was cancelled");
 		transfer_error = true;
 		if (UNEXPECTED(EG(exception))) {
@@ -692,21 +693,46 @@ static bool scope_catch_or_cancel(
 		}
 	}
 
+	zend_object *critical_exception = NULL;
+
 	// First cancel all children scopes
 	for (uint32_t i = 0; i < scope->scopes.length; ++i) {
 		async_scope_t *child_scope = (async_scope_t *) scope->scopes.data[i];
 		child_scope->scope.catch_or_cancel(&child_scope->scope, coroutine, exception, false, is_safely);
+		if (UNEXPECTED(EG(exception))) {
+			critical_exception = zend_exception_merge(critical_exception, true, true);
+		}
 	}
 
 	// Then cancel all coroutines
 	for (uint32_t i = 0; i < async_scope->coroutines.length; ++i) {
 		async_coroutine_t *scope_coroutine = async_scope->coroutines.data[i];
 		ZEND_ASYNC_CANCEL_EX(&scope_coroutine->coroutine, exception, false, is_safely);
+		if (UNEXPECTED(EG(exception))) {
+			critical_exception = zend_exception_merge(critical_exception, true, true);
+		}
+	}
+
+	if (UNEXPECTED(critical_exception)) {
+		zend_throw_exception_internal(critical_exception);
+		if (transfer_error) {
+			OBJ_RELEASE(exception);
+		}
+
+		return false; // Propagate critical exception
 	}
 
 	// When the Scope is already in a cancelled state,
 	// we now notify all listeners about it, passing them the error.
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&async_scope->scope.event, NULL, exception);
+
+	if (UNEXPECTED(EG(exception))) {
+		if (transfer_error) {
+			OBJ_RELEASE(exception);
+		}
+
+		return false;
+	}
 
 	// If the exception was handled, or it's a cancellation exception, we don't propagate it further.
 	if (ZEND_ASYNC_EVENT_IS_EXCEPTION_HANDLED(&async_scope->scope.event)
@@ -1023,7 +1049,7 @@ bool async_scope_try_to_handle_exception(async_coroutine_t *coroutine, zend_obje
 		exception_fci->param_count = 0;
 		exception_fci->params = NULL;
 
-		if (result == SUCCESS) {
+		if (result == SUCCESS && EG(exception) == NULL) {
 			return true;
 		}
 	}
@@ -1046,7 +1072,7 @@ bool async_scope_try_to_handle_exception(async_coroutine_t *coroutine, zend_obje
 		exception_fci->param_count = 0;
 		exception_fci->params = NULL;
 
-		if (result == SUCCESS) {
+		if (result == SUCCESS && EG(exception) == NULL) {
 			return true;
 		}
 	}

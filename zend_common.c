@@ -110,6 +110,38 @@ uint32_t zend_current_exception_get_line(void)
 	}
 }
 
+zend_object* zend_exception_merge(zend_object *exception, bool to_previous, bool transfer_error)
+{
+	zend_exception_save();
+	zend_exception_restore();
+
+	if (exception == NULL) {
+		exception = EG(exception);
+		EG(exception) = NULL;
+		return exception;
+	}
+
+	if (EG(exception) == NULL) {
+		return exception;
+	}
+
+	if (to_previous) {
+		// The zend_exception_set_previous method requires ownership of the object to be transferred to it,
+		// so if ownership was not passed, we must increment the reference count by 1.
+		if (false == transfer_error) {
+			GC_ADDREF(exception);
+		}
+		zend_exception_set_previous(EG(exception), exception);
+		exception = EG(exception);
+		EG(exception) = NULL;
+	} else {
+		zend_exception_set_previous(exception, EG(exception));
+		EG(exception) = NULL;
+	}
+
+	return exception;
+}
+
 void async_warning(const char * format, ...)
 {
 	va_list args;

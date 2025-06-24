@@ -175,6 +175,7 @@ void zend_exception_to_warning(const char * format, const bool clean);
 zend_string * zend_current_exception_get_message(const bool clean);
 zend_string * zend_current_exception_get_file(void);
 uint32_t zend_current_exception_get_line(void);
+zend_object* zend_exception_merge(zend_object * exception, bool to_previous, bool transfer_error);
 
 void async_warning(const char * format, ...);
 
