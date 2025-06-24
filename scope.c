@@ -765,21 +765,17 @@ static bool scope_catch_or_cancel(
 	return result;
 }
 
-static void scope_try_to_dispose(zend_async_scope_t *scope)
+static bool scope_try_to_dispose(zend_async_scope_t *scope)
 {
 	async_scope_t *async_scope = (async_scope_t *) scope;
 
-	// If the scope is already closed, do nothing
-	if (ZEND_ASYNC_SCOPE_IS_CLOSED(&async_scope->scope)) {
-		return;
-	}
-
 	if (false == scope_is_completed(async_scope, true)) {
-		return;
+		return false;
 	}
 
 	// Dispose the scope
 	async_scope->scope.event.dispose(&async_scope->scope.event);
+	return true;
 }
 
 static void scope_event_start(zend_async_event_t *event)
@@ -960,11 +956,25 @@ static void scope_destroy(zend_object *object)
 {
 	async_scope_object_t *scope_object = (async_scope_object_t *) object;
 
-	if (scope_object->scope != NULL) {
-		async_scope_t *scope = scope_object->scope;
-		scope_object->scope = NULL;
-		scope->scope.event.dispose(&scope->scope.event);
+	if (scope_object->scope == NULL) {
+		return;
 	}
+
+	async_scope_t *scope = scope_object->scope;
+	scope_object->scope = NULL;
+
+	// At this point, the user-defined Scope object is about to be destroyed.
+	// This means we are obligated to cancel the Scope and all its child Scopes along with their coroutines.
+	// However, the Scope itself will not be destroyed.
+	zend_object *exception = async_new_exception(
+		async_ce_cancellation_exception, "Scope is being disposed due to object destruction"
+	);
+
+	scope->scope.catch_or_cancel(
+		&scope->scope, NULL, exception, true, ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(&scope->scope)
+	);
+
+	scope->scope.try_to_dispose(&scope->scope);
 }
 
 void async_register_scope_ce(void)
@@ -974,6 +984,7 @@ void async_register_scope_ce(void)
 	async_ce_scope = register_class_Async_Scope(async_ce_scope_provider);
 
 	async_ce_scope->create_object = scope_object_create;
+	async_ce_scope->default_object_handlers = &async_scope_handlers;
 
 	async_scope_handlers = std_object_handlers;
 
