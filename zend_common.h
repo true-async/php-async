@@ -235,4 +235,25 @@ zend_always_inline zif_handler zend_replace_to_string_method(zend_object * objec
 
 void zend_get_function_name_by_fci(zend_fcall_info * fci, zend_fcall_info_cache *fci_cache, zend_string **name);
 
+/**
+ * Frees memory allocated for zend_fcall_info and zend_fcall_info_cache structures.
+ * Properly decrements reference counts for all stored data.
+ *
+ * @param fci  Pointer to zend_fcall_info structure to free (can be NULL)
+ * @param fcc  Pointer to zend_fcall_info_cache structure to free (can be NULL)
+ */
+void zend_free_fci(zend_fcall_info *fci, zend_fcall_info_cache *fcc);
+
+/**
+ * Copies zend_fcall_info and zend_fcall_info_cache structures with proper memory management.
+ * Allocates new memory and properly handles reference counting.
+ *
+ * @param dest_fci  Destination fci structure (must be pre-allocated)
+ * @param dest_fcc  Destination fcc structure (must be pre-allocated)
+ * @param src_fci   Source fci structure to copy from
+ * @param src_fcc   Source fcc structure to copy from
+ */
+void zend_copy_fci(zend_fcall_info *dest_fci, zend_fcall_info_cache *dest_fcc, 
+                   zend_fcall_info *src_fci, zend_fcall_info_cache *src_fcc);
+
 #endif //ASYNC_ZEND_COMMON_H

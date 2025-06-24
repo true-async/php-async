@@ -63,6 +63,11 @@ function coroutineContext(): Context {}
 function currentCoroutine(): Coroutine {}
 
 /**
+ * Adds an onFinally handler for the current coroutine.
+ */
+//function onFinally(\Closure $callback): void {}
+
+/**
  * Returns the root Scope.
  */
 function rootContext(): Context {}

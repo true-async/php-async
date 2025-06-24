@@ -37,6 +37,12 @@ struct _async_scope_s {
 	async_coroutines_vector_t coroutines;
 	uint32_t active_coroutines_count; /* Number of active (non-zombie) coroutines */
 	uint32_t zombie_coroutines_count; /* Number of zombie coroutines */
+	
+	/* Exception handlers */
+	zend_fcall_info *exception_fci;
+	zend_fcall_info_cache *exception_fcc;
+	zend_fcall_info *child_exception_fci;
+	zend_fcall_info_cache *child_exception_fcc;
 };
 
 typedef struct _async_scope_object_s {
@@ -127,6 +133,8 @@ void async_register_scope_ce(void);
 
 /* Check if coroutine belongs to this scope or any of its child scopes */
 bool async_scope_contains_coroutine(async_scope_t *scope, zend_coroutine_t *coroutine, uint32_t depth);
+
+bool async_scope_try_to_handle_exception(async_coroutine_t *coroutine, zend_object *exception);
 
 void async_scope_notify_coroutine_finished(async_coroutine_t *coroutine);
 

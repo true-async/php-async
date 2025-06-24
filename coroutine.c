@@ -461,9 +461,6 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 	async_coroutine_call_finally_handlers(coroutine);
 	zend_async_waker_destroy(&coroutine->coroutine);
 
-	// Notify the async scope that the coroutine has finished.
-	async_scope_notify_coroutine_finished(coroutine);
-
 	zend_exception_restore();
 
 	// If the exception was handled by any handler, we do not propagate it further.
@@ -474,6 +471,23 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 		OBJ_RELEASE(exception);
 		exception = NULL;
 	}
+
+	// Before the exception leads to graceful termination,
+	// we give one last chance to handle it using Scope handlers.
+	if (exception != NULL
+		&& coroutine->coroutine.scope->catch_or_cancel(
+			coroutine->coroutine.scope,
+			&coroutine->coroutine,
+			exception,
+			false,
+			ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(coroutine->coroutine.scope)
+			)) {
+		OBJ_RELEASE(exception);
+		exception = NULL;
+	}
+
+	// Notify the async scope that the coroutine has finished.
+	async_scope_notify_coroutine_finished(coroutine);
 
 	// Otherwise, we rethrow the exception.
 	if (exception != NULL) {

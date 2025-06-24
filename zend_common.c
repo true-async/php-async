@@ -207,3 +207,54 @@ void zend_get_function_name_by_fci(zend_fcall_info * fci, zend_fcall_info_cache 
         *name = NULL;
     }
 }
+
+void zend_free_fci(zend_fcall_info *fci, zend_fcall_info_cache *fcc)
+{
+	if (fci != NULL) {
+		if (fci->params != NULL) {
+			for (uint32_t i = 0; i < fci->param_count; i++) {
+				zval_ptr_dtor(&fci->params[i]);
+			}
+			efree(fci->params);
+		}
+		if (!Z_ISUNDEF(fci->function_name)) {
+			zval_ptr_dtor(&fci->function_name);
+		}
+		if (fci->named_params != NULL) {
+			GC_DELREF(fci->named_params);
+		}
+		efree(fci);
+	}
+	if (fcc != NULL) {
+		efree(fcc);
+	}
+}
+
+void zend_copy_fci(zend_fcall_info *dest_fci, zend_fcall_info_cache *dest_fcc, 
+                   zend_fcall_info *src_fci, zend_fcall_info_cache *src_fcc)
+{
+	// Copy FCI
+	*dest_fci = *src_fci;
+	
+	// Copy function name with proper refcount
+	ZVAL_COPY(&dest_fci->function_name, &src_fci->function_name);
+	
+	// Copy parameters if any
+	if (src_fci->param_count > 0 && src_fci->params != NULL) {
+		dest_fci->params = safe_emalloc(src_fci->param_count, sizeof(zval), 0);
+		for (uint32_t i = 0; i < src_fci->param_count; i++) {
+			ZVAL_COPY(&dest_fci->params[i], &src_fci->params[i]);
+		}
+	} else {
+		dest_fci->params = NULL;
+	}
+	
+	// Copy named params if any
+	if (src_fci->named_params != NULL) {
+		dest_fci->named_params = src_fci->named_params;
+		GC_ADDREF(src_fci->named_params);
+	}
+	
+	// Copy FCC
+	*dest_fcc = *src_fcc;
+}
