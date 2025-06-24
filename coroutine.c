@@ -487,7 +487,10 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 	}
 
 	// Notify the async scope that the coroutine has finished.
-	async_scope_notify_coroutine_finished(coroutine);
+	// For the Scheduler, the coroutine's Scope may be undefined.
+	if (EXPECTED(coroutine->coroutine.scope != NULL)) {
+		async_scope_notify_coroutine_finished(coroutine);
+	}
 
 	// Otherwise, we rethrow the exception.
 	if (exception != NULL) {

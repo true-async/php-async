@@ -610,6 +610,8 @@ void async_scope_notify_coroutine_finished(async_coroutine_t *coroutine)
 {
 	async_scope_t *scope = (async_scope_t *) coroutine->coroutine.scope;
 
+	ZEND_ASSERT(scope != NULL && "Coroutine must belong to a valid scope");
+
 	// Check if coroutine was active before becoming zombie
 	if (false == ZEND_COROUTINE_IS_ZOMBIE(&coroutine->coroutine)) {
 		if (scope->active_coroutines_count > 0) {
@@ -915,6 +917,8 @@ zend_async_scope_t * async_new_scope(zend_async_scope_t * parent_scope)
 
 	scope->scope.parent_scope = parent_scope;
 	zend_async_event_t *event = &scope->scope.event;
+
+	event->ref_count = 1; // Initialize reference count
 
 	scope->scope.before_coroutine_enqueue = scope_before_coroutine_enqueue;
 	scope->scope.after_coroutine_enqueue = scope_after_coroutine_enqueue;
