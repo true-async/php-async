@@ -93,7 +93,7 @@ METHOD(inherit)
 		base_parent_scope = ZEND_ASYNC_CURRENT_SCOPE;
 	}
 
-	zend_async_scope_t *new_scope = async_new_scope(base_parent_scope);
+	zend_async_scope_t *new_scope = async_new_scope(base_parent_scope, true);
 	if (UNEXPECTED(new_scope == NULL)) {
 		RETURN_THROWS();
 	}
@@ -890,22 +890,27 @@ static void scope_dispose(zend_async_event_t *scope_event)
 	efree(scope);
 }
 
-zend_async_scope_t * async_new_scope(zend_async_scope_t * parent_scope)
+zend_async_scope_t * async_new_scope(zend_async_scope_t * parent_scope, const bool with_zend_object)
 {
 	async_scope_t *scope = ecalloc(1, sizeof(async_scope_t));
+	async_scope_object_t *scope_object = NULL;
+	scope->scope.scope_object = NULL;
 
-	async_scope_object_t *scope_object = zend_object_alloc(sizeof(async_scope_object_t), async_ce_scope);
+	if (with_zend_object) {
+		scope_object = zend_object_alloc(sizeof(async_scope_object_t), async_ce_scope);
 
-	zend_object_std_init(&scope_object->std, async_ce_scope);
-	object_properties_init(&scope_object->std, async_ce_scope);
+		zend_object_std_init(&scope_object->std, async_ce_scope);
+		object_properties_init(&scope_object->std, async_ce_scope);
 
-	if (UNEXPECTED(EG(exception))) {
-		efree(scope);
-		OBJ_RELEASE(&scope_object->std);
-		return NULL;
+		if (UNEXPECTED(EG(exception))) {
+			efree(scope);
+			OBJ_RELEASE(&scope_object->std);
+			return NULL;
+		}
+
+		scope_object->scope = scope;
+		scope->scope.scope_object = &scope_object->std;
 	}
-
-	scope_object->scope = scope;
 
 	scope->scope.parent_scope = parent_scope;
 	zend_async_event_t *event = &scope->scope.event;
@@ -916,7 +921,6 @@ zend_async_scope_t * async_new_scope(zend_async_scope_t * parent_scope)
 	scope->scope.after_coroutine_enqueue = scope_after_coroutine_enqueue;
 	scope->scope.catch_or_cancel = scope_catch_or_cancel;
 	scope->scope.try_to_dispose = scope_try_to_dispose;
-	scope->scope.scope_object = &scope_object->std;
 	scope->coroutines.length = 0;
 	scope->coroutines.capacity = 0;
 	scope->coroutines.data = NULL;
@@ -945,7 +949,13 @@ zend_async_scope_t * async_new_scope(zend_async_scope_t * parent_scope)
 
 zend_object *scope_object_create(zend_class_entry *class_entry)
 {
-	return async_new_scope(NULL)->scope_object;
+	zend_async_scope_t *scope = async_new_scope(NULL, true);
+
+	if (UNEXPECTED(scope == NULL)) {
+		return NULL;
+	}
+
+	return scope->scope_object;
 }
 
 static void scope_destroy(zend_object *object)

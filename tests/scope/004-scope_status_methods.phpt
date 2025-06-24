@@ -18,4 +18,4 @@ var_dump($scope->isClosed());
 --EXPECT--
 bool(true)
 bool(false)
-bool(true)
+bool(false)

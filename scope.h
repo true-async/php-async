@@ -128,7 +128,7 @@ async_scope_free_coroutines(async_scope_t *scope)
 	vector->capacity = 0;
 }
 
-zend_async_scope_t * async_new_scope(zend_async_scope_t * parent_scope);
+zend_async_scope_t * async_new_scope(zend_async_scope_t * parent_scope, const bool with_zend_object);
 void async_register_scope_ce(void);
 
 /* Check if coroutine belongs to this scope or any of its child scopes */

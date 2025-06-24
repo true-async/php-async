@@ -533,7 +533,7 @@ void async_scheduler_launch(void)
 	//
 
 	if (ZEND_ASYNC_MAIN_SCOPE == NULL) {
-		ZEND_ASYNC_MAIN_SCOPE = async_new_scope(NULL);
+		ZEND_ASYNC_MAIN_SCOPE = ZEND_ASYNC_NEW_SCOPE(NULL);
 
 		if (UNEXPECTED(EG(exception) != NULL)) {
 			return;
