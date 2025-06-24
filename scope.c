@@ -874,7 +874,6 @@ static void scope_dispose(zend_async_event_t *scope_event)
 
 	if (scope->scope.scope_object != NULL) {
 		((async_scope_object_t *) scope->scope.scope_object)->scope = NULL;
-		OBJ_RELEASE(scope->scope.scope_object);
 		scope->scope.scope_object = NULL;
 	}
 
