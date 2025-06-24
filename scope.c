@@ -1060,7 +1060,7 @@ bool async_scope_try_to_handle_exception(async_coroutine_t *coroutine, zend_obje
 
 	if (parent_scope != NULL && parent_scope->child_exception_fci != NULL && parent_scope->child_exception_fcc != NULL) {
 
-		zend_fcall_info *exception_fci = current_scope->exception_fci;
+		zend_fcall_info *exception_fci = parent_scope->exception_fci;
 
 		exception_fci->retval = &retval;
 		exception_fci->param_count = 3;
