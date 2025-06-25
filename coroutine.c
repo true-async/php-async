@@ -357,6 +357,7 @@ static void async_coroutine_call_finally_handlers(async_coroutine_t *coroutine)
 		NULL,
 		finally_handlers_iterator_handler,
 		0,
+		0,
 		0
 	);
 
@@ -370,7 +371,7 @@ static void async_coroutine_call_finally_handlers(async_coroutine_t *coroutine)
 	iterator->extended_dtor = finally_handlers_iterator_dtor;
 	GC_ADDREF(&coroutine->std);
 
-	async_iterator_run_in_coroutine(iterator);
+	async_iterator_run_in_coroutine(iterator, 0);
 }
 
 ///////////////////////////////////////////////////////////

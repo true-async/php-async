@@ -523,6 +523,7 @@ void iterator_coroutine_first_entry(void)
 		NULL,
 		await_iterator_handler,
 		await_context->concurrency,
+		0,
 		sizeof(async_await_iterator_iterator_t)
 	);
 

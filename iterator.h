@@ -37,13 +37,14 @@ async_iterator_t * async_iterator_new(
 	zend_fcall_t *fcall,
 	async_iterator_handler_t handler,
 	unsigned int concurrency,
+	int32_t priority,
 	size_t iterator_size
 );
 
 #define ASYNC_ITERATOR_DTOR zend_async_microtask_handler_t
 
 void async_iterator_run(async_iterator_t *iterator);
-void async_iterator_run_in_coroutine(async_iterator_t *iterator);
+void async_iterator_run_in_coroutine(async_iterator_t *iterator, int32_t priority);
 
 struct _async_iterator_t {
 	zend_async_microtask_t microtask;
@@ -53,6 +54,8 @@ struct _async_iterator_t {
 	unsigned int concurrency;
 	/* The number of active coroutines that are currently executing */
 	unsigned int active_coroutines;
+	/* Priority for coroutines created by this iterator */
+	int32_t priority;
 	/* The coroutine scope */
 	zend_async_scope_t *scope;
 	/* The internal handler */

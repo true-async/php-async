@@ -43,7 +43,7 @@ void iterator_microtask(zend_async_microtask_t *microtask)
 		return;
 	}
 
-	zend_coroutine_t * coroutine = ZEND_ASYNC_SPAWN_WITH(iterator->scope);
+	zend_coroutine_t * coroutine = ZEND_ASYNC_SPAWN_WITH_SCOPE_EX(iterator->scope, iterator->priority);
 
 	if (coroutine == NULL) {
 		return;
@@ -107,6 +107,7 @@ async_iterator_t * async_iterator_new(
 		zend_fcall_t *fcall,
 		async_iterator_handler_t handler,
 		unsigned int concurrency,
+		int32_t priority,
 		size_t iterator_size
 	)
 {
@@ -122,6 +123,7 @@ async_iterator_t * async_iterator_new(
 	iterator->state = ASYNC_ITERATOR_INIT;
 
 	iterator->concurrency = concurrency;
+	iterator->priority = priority;
 
 	if (zend_iterator == NULL) {
 		ZVAL_COPY(&iterator->array, array);
@@ -329,13 +331,13 @@ void async_iterator_run(async_iterator_t *iterator)
  * Starts the iterator in a separate coroutine.
  * @param iterator
  */
-void async_iterator_run_in_coroutine(async_iterator_t *iterator)
+void async_iterator_run_in_coroutine(async_iterator_t *iterator, int32_t priority)
 {
 	if (iterator->scope == NULL) {
 		iterator->scope = ZEND_ASYNC_CURRENT_SCOPE;
 	}
 
-	zend_coroutine_t * iterator_coroutine = ZEND_ASYNC_SPAWN_WITH(iterator->scope);
+	zend_coroutine_t * iterator_coroutine = ZEND_ASYNC_SPAWN_WITH_SCOPE_EX(iterator->scope, priority);
 	if (UNEXPECTED(iterator_coroutine == NULL || EG(exception))) {
 		return;
 	}
