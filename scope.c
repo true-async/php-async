@@ -41,6 +41,12 @@ static void callback_resolve_when_zombie_completed(
 static bool scope_can_be_disposed(async_scope_t *scope, bool with_zombies, bool check_zend_objects);
 static void scope_check_completion_and_notify(async_scope_t *scope, bool with_zombies);
 
+// Finally handlers execution functions
+static void scope_finally_handlers_iterator_handler(
+	zend_async_iterator_t *iterator, zval *value, zval *result, zend_object **exception
+);
+static void async_scope_call_finally_handlers(async_scope_t *scope);
+
 #define SCOPE_IS_COMPLETED(scope) scope_can_be_disposed(scope, false, false)
 #define SCOPE_IS_COMPLETED_WITH_ZOMBIE(scope) scope_can_be_disposed(scope, true, false)
 #define SCOPE_CAN_BE_DISPOSED(scope) scope_can_be_disposed(scope, true, true)
@@ -437,12 +443,17 @@ METHOD(setChildScopeExceptionHandler)
 
 METHOD(onFinally)
 {
-	zend_fcall_info fci;
-	zend_fcall_info_cache fcc;
+	zval *callable;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_FUNC(fci, fcc)
+		Z_PARAM_ZVAL(callable)
 	ZEND_PARSE_PARAMETERS_END();
+
+	// Validate callable
+	if (UNEXPECTED(false == zend_is_callable(callable, 0, NULL))) {
+		zend_argument_type_error(1, "argument must be callable");
+		RETURN_THROWS();
+	}
 
 	async_scope_object_t *scope_object = THIS_SCOPE;
 	if (UNEXPECTED(scope_object->scope == NULL)) {
@@ -450,8 +461,36 @@ METHOD(onFinally)
 		RETURN_THROWS();
 	}
 
-	// TODO: Store finally callback
-	// For now, just validate the callable
+	async_scope_t *scope = scope_object->scope;
+
+	// Check for completed scope - immediate execution
+	if (SCOPE_IS_COMPLETED(scope)) {
+		// Execute callable immediately with scope as parameter
+		zval result, param;
+		ZVAL_UNDEF(&result);
+		ZVAL_OBJ(&param, &scope_object->std);
+
+		if (UNEXPECTED(call_user_function(NULL, NULL, callable, &result, 1, &param) == FAILURE)) {
+			zend_throw_error(NULL, "Failed to call finally handler in finished scope");
+			zval_ptr_dtor(&result);
+			RETURN_THROWS();
+		}
+		zval_ptr_dtor(&result);
+		return;
+	}
+
+	// Lazy initialization of finally_handlers
+	if (scope->finally_handlers == NULL) {
+		scope->finally_handlers = zend_new_array(0);
+	}
+
+	// Add to queue
+	if (UNEXPECTED(zend_hash_next_index_insert(scope->finally_handlers, callable) == NULL)) {
+		async_throw_error("Failed to add finally handler to scope");
+		RETURN_THROWS();
+	}
+
+	Z_TRY_ADDREF_P(callable);
 }
 
 METHOD(dispose)
@@ -975,6 +1014,13 @@ static void scope_dispose(zend_async_event_t *scope_event)
 		zend_free_fci(scope->child_exception_fci, scope->child_exception_fcc);
 	}
 	
+	// Free finally handlers
+	if (scope->finally_handlers != NULL) {
+		zend_hash_destroy(scope->finally_handlers);
+		FREE_HASHTABLE(scope->finally_handlers);
+		scope->finally_handlers = NULL;
+	}
+	
 	async_scope_free_coroutines(scope);
 	zend_async_scope_free_children(&scope->scope);
 	efree(scope);
@@ -1026,6 +1072,9 @@ zend_async_scope_t * async_new_scope(zend_async_scope_t * parent_scope, const bo
 	scope->exception_fcc = NULL;
 	scope->child_exception_fci = NULL;
 	scope->child_exception_fcc = NULL;
+	
+	// Initialize finally handlers
+	scope->finally_handlers = NULL;
 
 	event->start = scope_event_start;
 	event->stop = scope_event_stop;
@@ -1154,6 +1203,9 @@ static void scope_check_completion_and_notify(async_scope_t *scope, bool with_zo
 
 	// Check if current scope is completed
 	if (SCOPE_IS_COMPLETED_WITH_ZOMBIE(scope)) {
+		// Execute finally handlers before notifying completion
+		async_scope_call_finally_handlers(scope);
+		
 		// Notify waiting callbacks for this scope
 		ZEND_ASYNC_CALLBACKS_NOTIFY(&scope->scope.event, NULL, NULL);
 
@@ -1227,4 +1279,44 @@ bool async_scope_try_to_handle_exception(async_coroutine_t *coroutine, zend_obje
 	}
 
 	return false; // Exception not handled
+}
+
+static void scope_finally_handlers_iterator_handler(
+	zend_async_iterator_t *iterator, zval *value, zval *result, zend_object **exception
+)
+{
+	async_scope_t *scope = (async_scope_t *) iterator->extended_data;
+	
+	// Call the finally handler with scope as parameter
+	zval param;
+	ZVAL_OBJ(&param, scope->scope.scope_object);
+	
+	if (UNEXPECTED(call_user_function(NULL, NULL, value, result, 1, &param) == FAILURE)) {
+		*exception = async_new_exception(
+			async_ce_async_exception, "Failed to call finally handler in scope"
+		);
+		return;
+	}
+}
+
+static void async_scope_call_finally_handlers(async_scope_t *scope)
+{
+	if (scope->finally_handlers == NULL || zend_hash_num_elements(scope->finally_handlers) == 0) {
+		return;
+	}
+	
+	// Create iterator to run finally handlers asynchronously
+	zend_async_iterator_t *iterator = zend_async_iterator_create(
+		scope->finally_handlers, scope_finally_handlers_iterator_handler
+	);
+	
+	if (UNEXPECTED(iterator == NULL)) {
+		return;
+	}
+	
+	// Store scope reference for handler function
+	iterator->extended_data = scope;
+	
+	// Run iterator in coroutine
+	async_iterator_run_in_coroutine(iterator);
 }

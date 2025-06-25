@@ -47,6 +47,9 @@ struct _async_scope_s {
 	zend_fcall_info_cache *exception_fcc;
 	zend_fcall_info *child_exception_fci;
 	zend_fcall_info_cache *child_exception_fcc;
+	
+	/* Finally handlers array (zval callables) - lazy initialization */
+	HashTable *finally_handlers;
 };
 
 typedef struct _async_scope_object_s {
