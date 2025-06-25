@@ -16,3 +16,4 @@ echo "Finally callback set successfully\n";
 ?>
 --EXPECT--
 Finally callback set successfully
+Finally callback executed

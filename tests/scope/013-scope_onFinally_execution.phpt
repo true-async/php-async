@@ -10,20 +10,19 @@ $called = false;
 $scope = new Scope();
 
 $coroutine = $scope->spawn(function() {
-    return "result";
+    echo "Coroutine started\n";
 });
 
-$scope->onFinally(function() use (&$called) {
-    $called = true;
+// You should understand that this handler will be invoked in a different coroutine,
+// so you cannot rely on the exact timing of when it will happen.
+$scope->onFinally(function() {
     echo "Finally handler executed\n";
 });
 
 await($coroutine);
 $scope->dispose();
 
-echo "Finally called: " . ($called ? "yes" : "no") . "\n";
-
 ?>
 --EXPECT--
+Coroutine started
 Finally handler executed
-Finally called: yes

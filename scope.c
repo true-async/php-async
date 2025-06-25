@@ -46,7 +46,7 @@ static void scope_check_completion_and_notify(async_scope_t *scope, bool with_zo
 static void async_scope_call_finally_handlers(async_scope_t *scope);
 
 #define SCOPE_IS_COMPLETED(scope) scope_can_be_disposed(scope, false, false)
-#define SCOPE_IS_COMPLETED_WITH_ZOMBIE(scope) scope_can_be_disposed(scope, true, false)
+#define SCOPE_IS_COMPLETELY_DONE(scope) scope_can_be_disposed(scope, true, false)
 #define SCOPE_CAN_BE_DISPOSED(scope) scope_can_be_disposed(scope, true, true)
 
 // Event method forward declarations
@@ -455,14 +455,6 @@ METHOD(onFinally)
 
 	async_scope_object_t *scope_object = THIS_SCOPE;
 	if (UNEXPECTED(scope_object->scope == NULL)) {
-		async_throw_error("Scope object has been disposed");
-		RETURN_THROWS();
-	}
-
-	async_scope_t *scope = scope_object->scope;
-
-	// Check for completed scope - immediate execution
-	if (SCOPE_IS_COMPLETED(scope)) {
 		// Execute callable immediately with scope as parameter
 		zval result, param;
 		ZVAL_UNDEF(&result);
@@ -476,6 +468,8 @@ METHOD(onFinally)
 		zval_ptr_dtor(&result);
 		return;
 	}
+
+	async_scope_t *scope = scope_object->scope;
 
 	// Lazy initialization of finally_handlers
 	if (scope->finally_handlers == NULL) {
@@ -687,7 +681,7 @@ static void callback_resolve_when_zombie_completed(
 		zval_ptr_dtor(&retval);
 	}
 
-	if (SCOPE_IS_COMPLETED_WITH_ZOMBIE(scope)) {
+	if (SCOPE_IS_COMPLETELY_DONE(scope)) {
 		ZEND_ASYNC_RESUME(coroutine);
 	}
 }
@@ -783,6 +777,14 @@ static bool scope_catch_or_cancel(
 			OBJ_RELEASE(exception);
 		}
 		return true; // Already closed
+	}
+
+	// If the dispose method was called by the user, and the Scope has fully completed execution at this point,
+	// we can transition it to the CLOSED status and invoke the finalizing handlers right here.
+	if (coroutine == NULL && exception == NULL && SCOPE_IS_COMPLETELY_DONE(async_scope)) {
+		ZEND_ASYNC_SCOPE_SET_CLOSED(&async_scope->scope);
+		async_scope_call_finally_handlers(async_scope);
+		return true;
 	}
 
 	ZEND_ASYNC_SCOPE_SET_CANCELLED(&async_scope->scope);
@@ -978,10 +980,19 @@ static void scope_dispose(zend_async_event_t *scope_event)
 		return;
 	}
 
+	ZEND_ASYNC_EVENT_DEL_REF(scope_event);
+
 	async_scope_t *scope = (async_scope_t *) scope_event;
 
 	ZEND_ASSERT(scope->coroutines.length == 0 && scope->scope.scopes.length == 0
 		&& "Scope should be empty before disposal");
+
+	if (scope->finally_handlers != NULL && zend_hash_num_elements(scope->finally_handlers) > 0) {
+		async_scope_call_finally_handlers(scope);
+		if (ZEND_ASYNC_EVENT_REF(scope_event) == 1) {
+			return;
+		}
+	}
 
 	if (scope->scope.parent_scope) {
 		zend_async_scope_remove_child(scope->scope.parent_scope, &scope->scope);
@@ -1159,7 +1170,7 @@ static bool scope_can_be_disposed(async_scope_t *scope, bool with_zombies, bool 
 	}
 
 	// If scope has active coroutines, it's not completed
-	if ((with_zombies ? scope->active_coroutines_count : scope->active_coroutines_count + scope->zombie_coroutines_count) > 0) {
+	if ((with_zombies ? (scope->active_coroutines_count + scope->zombie_coroutines_count) : scope->active_coroutines_count) > 0) {
 		return false;
 	}
 
@@ -1200,10 +1211,7 @@ static void scope_check_completion_and_notify(async_scope_t *scope, bool with_zo
 	}
 
 	// Check if current scope is completed
-	if (SCOPE_IS_COMPLETED_WITH_ZOMBIE(scope)) {
-		// Execute finally handlers before notifying completion
-		async_scope_call_finally_handlers(scope);
-		
+	if (SCOPE_IS_COMPLETELY_DONE(scope)) {
 		// Notify waiting callbacks for this scope
 		ZEND_ASYNC_CALLBACKS_NOTIFY(&scope->scope.event, NULL, NULL);
 
@@ -1285,7 +1293,11 @@ static zend_result scope_finally_handlers_iterator_handler(async_iterator_t *ite
 	zval rv;
 	ZVAL_UNDEF(&rv);
 	zval param;
-	ZVAL_OBJ(&param, scope->scope.scope_object);
+	if (scope->scope.scope_object) {
+		ZVAL_OBJ(&param, scope->scope.scope_object);
+	} else {
+		ZVAL_NULL(&param);
+	}
 
 	call_user_function(NULL, NULL, current, &rv, 1, &param);
 	zval_ptr_dtor(&rv);
@@ -1310,6 +1322,36 @@ static void async_scope_call_finally_handlers(async_scope_t *scope)
 		return;
 	}
 
+	if (false == ZEND_ASYNC_IS_ACTIVE) {
+		// Run handlers immediately if not in async context
+		zval *callable;
+		zval result, param;
+		ZVAL_UNDEF(&result);
+		if (scope->scope.scope_object) {
+			ZVAL_OBJ(&param, scope->scope.scope_object);
+		} else {
+			ZVAL_NULL(&param);
+		}
+
+		ZEND_HASH_FOREACH_VAL(scope->finally_handlers, callable) {
+
+			ZVAL_UNDEF(&result);
+
+			if (UNEXPECTED(call_user_function(NULL, NULL, callable, &result, 1, &param) == FAILURE)) {
+				zend_throw_error(NULL, "Failed to call finally handler in finished scope");
+				zval_ptr_dtor(&result);
+				return;
+			}
+
+			zval_ptr_dtor(&result);
+		} ZEND_HASH_FOREACH_END();
+
+		zend_array_destroy(scope->finally_handlers);
+		scope->finally_handlers = NULL;
+
+		return;
+	}
+
 	zval handlers;
 	ZVAL_ARR(&handlers, scope->finally_handlers);
 	scope->finally_handlers = NULL;
@@ -1330,9 +1372,9 @@ static void async_scope_call_finally_handlers(async_scope_t *scope)
 		return;
 	}
 
+	iterator->scope = &scope->scope;
 	iterator->extended_data = scope;
 	iterator->extended_dtor = scope_finally_handlers_iterator_dtor;
-	ZEND_ASYNC_EVENT_ADD_REF(&scope->scope.event);
 
 	async_iterator_run_in_coroutine(iterator, 1);
 }
