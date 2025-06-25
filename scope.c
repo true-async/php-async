@@ -20,6 +20,7 @@
 #include "zend_common.h"
 #include "php_async.h"
 #include "exceptions.h"
+#include "iterator.h"
 
 #define METHOD(name) PHP_METHOD(Async_Scope, name)
 
@@ -42,9 +43,6 @@ static bool scope_can_be_disposed(async_scope_t *scope, bool with_zombies, bool 
 static void scope_check_completion_and_notify(async_scope_t *scope, bool with_zombies);
 
 // Finally handlers execution functions
-static void scope_finally_handlers_iterator_handler(
-	zend_async_iterator_t *iterator, zval *value, zval *result, zend_object **exception
-);
 static void async_scope_call_finally_handlers(async_scope_t *scope);
 
 #define SCOPE_IS_COMPLETED(scope) scope_can_be_disposed(scope, false, false)
@@ -1281,21 +1279,28 @@ bool async_scope_try_to_handle_exception(async_coroutine_t *coroutine, zend_obje
 	return false; // Exception not handled
 }
 
-static void scope_finally_handlers_iterator_handler(
-	zend_async_iterator_t *iterator, zval *value, zval *result, zend_object **exception
-)
+static zend_result scope_finally_handlers_iterator_handler(async_iterator_t *iterator, zval *current, zval *key)
 {
 	async_scope_t *scope = (async_scope_t *) iterator->extended_data;
-	
-	// Call the finally handler with scope as parameter
+	zval rv;
+	ZVAL_UNDEF(&rv);
 	zval param;
 	ZVAL_OBJ(&param, scope->scope.scope_object);
-	
-	if (UNEXPECTED(call_user_function(NULL, NULL, value, result, 1, &param) == FAILURE)) {
-		*exception = async_new_exception(
-			async_ce_async_exception, "Failed to call finally handler in scope"
-		);
-		return;
+
+	call_user_function(NULL, NULL, current, &rv, 1, &param);
+	zval_ptr_dtor(&rv);
+
+	return SUCCESS;
+}
+
+static void scope_finally_handlers_iterator_dtor(zend_async_microtask_t *microtask)
+{
+	async_iterator_t *iterator = (async_iterator_t *) microtask;
+
+	if (iterator->extended_data != NULL) {
+		async_scope_t *scope = iterator->extended_data;
+		iterator->extended_data = NULL;
+		ZEND_ASYNC_EVENT_RELEASE(&scope->scope.event);
 	}
 }
 
@@ -1304,19 +1309,30 @@ static void async_scope_call_finally_handlers(async_scope_t *scope)
 	if (scope->finally_handlers == NULL || zend_hash_num_elements(scope->finally_handlers) == 0) {
 		return;
 	}
-	
-	// Create iterator to run finally handlers asynchronously
-	zend_async_iterator_t *iterator = zend_async_iterator_create(
-		scope->finally_handlers, scope_finally_handlers_iterator_handler
+
+	zval handlers;
+	ZVAL_ARR(&handlers, scope->finally_handlers);
+	scope->finally_handlers = NULL;
+
+	async_iterator_t *iterator = async_iterator_new(
+		&handlers,
+		NULL,
+		NULL,
+		scope_finally_handlers_iterator_handler,
+		0,
+		1,
+		0
 	);
-	
-	if (UNEXPECTED(iterator == NULL)) {
+
+	zval_ptr_dtor(&handlers);
+
+	if (UNEXPECTED(EG(exception))) {
 		return;
 	}
-	
-	// Store scope reference for handler function
+
 	iterator->extended_data = scope;
-	
-	// Run iterator in coroutine
-	async_iterator_run_in_coroutine(iterator);
+	iterator->extended_dtor = scope_finally_handlers_iterator_dtor;
+	ZEND_ASYNC_EVENT_ADD_REF(&scope->scope.event);
+
+	async_iterator_run_in_coroutine(iterator, 1);
 }
