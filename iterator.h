@@ -48,6 +48,8 @@ void async_iterator_run_in_coroutine(async_iterator_t *iterator, int32_t priorit
 
 struct _async_iterator_t {
 	zend_async_microtask_t microtask;
+	void (*run)(zend_async_iterator_t *iterator);
+	void (*run_in_coroutine)(zend_async_iterator_t *iterator, int32_t priority);
 	/* The current state of the iterator. See async_iterator_state_t */
 	async_iterator_state_t state;
 	/* The maximum number of concurrent tasks that can be executed at the same time */

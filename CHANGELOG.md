@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cross-thread trigger event API
 - Priority support to async iterator system
 - Coroutine priority support to TrueAsync API
+- **Iterator API integration**: Added `zend_async_iterator_t` structure to TrueAsync API with `run()` and `run_in_coroutine()` methods
 - `disposeAfterTimeout()` method for Scope
 - `awaitAfterCancellation()` method for Scope
 - Complete Scope API implementation
@@ -27,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Refactored catch_or_cancel logic according to RFC scope behavior
 - Refactored async_scheduler_coroutine_suspend to support non-zero exception context
 - Optimized iterator module
+- **Iterator structure refactoring**: Made `async_iterator_t` compatible with `zend_async_iterator_t` API by adding function pointer methods
 - Improved exception handling and cancellation logic
 - Enhanced Context API behavior for Scope
 

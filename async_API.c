@@ -888,6 +888,7 @@ void async_api_register(void)
 		get_coroutines,
 		add_microtask,
 		get_awaiting_info,
-		async_get_class_ce
+		async_get_class_ce,
+		(zend_async_new_iterator_t)async_iterator_new
 	);
 }
