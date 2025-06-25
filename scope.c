@@ -460,7 +460,9 @@ METHOD(dispose)
 
 	async_scope_object_t *scope_object = THIS_SCOPE;
 	if (scope_object->scope != NULL) {
-		scope_object->scope->scope.event.dispose(&scope_object->scope->scope.event);
+		scope_object->scope->scope.catch_or_cancel(
+			&scope_object->scope->scope, NULL, NULL, false, ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(&scope_object->scope->scope)
+		);
 	}
 }
 
@@ -470,10 +472,53 @@ METHOD(disposeSafely)
 
 	async_scope_object_t *scope_object = THIS_SCOPE;
 	if (scope_object->scope != NULL) {
-		// Set dispose safely flag
-		ZEND_ASYNC_SCOPE_SET_DISPOSE_SAFELY(&scope_object->scope->scope);
-		scope_object->scope->scope.event.dispose(&scope_object->scope->scope.event);
+		scope_object->scope->scope.catch_or_cancel(
+			&scope_object->scope->scope, NULL, NULL, false, true
+		);
 	}
+}
+
+typedef struct {
+	zend_async_event_callback_t callback;
+	async_scope_t *scope;
+} scope_timeout_callback_t;
+
+static void scope_timeout_coroutine_entry(void)
+{
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	async_scope_t *scope = (async_scope_t *) coroutine->extended_data;
+
+	if (scope == NULL) {
+		return;
+	}
+
+	coroutine->extended_data = NULL;
+
+	zend_object * exception = async_new_exception(
+		async_ce_cancellation_exception, "Scope has been disposed due to timeout"
+	);
+
+	scope->scope.catch_or_cancel(&scope->scope, NULL, exception, true, false);
+}
+
+static void scope_timeout_callback(
+	zend_async_event_t *event,
+	zend_async_event_callback_t *callback,
+	void * result,
+	zend_object *exception
+)
+{
+	scope_timeout_callback_t *scope_callback = (scope_timeout_callback_t *) callback;
+	async_scope_t *scope = scope_callback->scope;
+	event->dispose(event);
+
+	zend_coroutine_t *coroutine = ZEND_ASYNC_SPAWN_WITH(ZEND_ASYNC_MAIN_SCOPE);
+	if (UNEXPECTED(coroutine == NULL)) {
+		return;
+	}
+
+	coroutine->internal_entry = scope_timeout_coroutine_entry;
+	coroutine->extended_data = scope;
 }
 
 METHOD(disposeAfterTimeout)
@@ -490,11 +535,42 @@ METHOD(disposeAfterTimeout)
 	}
 
 	async_scope_object_t *scope_object = THIS_SCOPE;
-	if (scope_object->scope != NULL) {
-		// TODO: Implement timeout-based disposal
-		// For now, just dispose immediately
-		scope_object->scope->scope.event.dispose(&scope_object->scope->scope.event);
+	if (scope_object->scope == NULL) {
+		return;
 	}
+
+	if (ZEND_ASYNC_SCOPE_IS_CLOSED(&scope_object->scope->scope)) {
+		return;
+	}
+
+	if (scope_object->scope->coroutines.length == 0
+		&& scope_object->scope->scope.scopes.length == 0) {
+		return;
+	}
+
+	zend_async_timer_event_t *timer_event = ZEND_ASYNC_NEW_TIMER_EVENT(timeout, false);
+	if (UNEXPECTED(timer_event == NULL)) {
+		RETURN_THROWS();
+	}
+
+	scope_timeout_callback_t * callback = (scope_timeout_callback_t *) zend_async_event_callback_new(
+		scope_timeout_callback,sizeof(scope_timeout_callback_t)
+	);
+	if (UNEXPECTED(callback == NULL)) {
+		timer_event->base.dispose(&timer_event->base);
+		RETURN_THROWS();
+	}
+
+	callback->scope = scope_object->scope;
+	callback->scope->scope.event.ref_count++;
+
+	timer_event->base.add_callback(&timer_event->base, &callback->callback);
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		timer_event->base.dispose(&timer_event->base);
+		return;
+	}
+
+	timer_event->base.start(&timer_event->base);
 }
 
 METHOD(getChildScopes)
