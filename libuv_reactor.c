@@ -2071,6 +2071,109 @@ static int libuv_exec(
 /* }}} */
 
 /////////////////////////////////////////////////////////////////////////////////
+/// Trigger Event API
+/////////////////////////////////////////////////////////////////////////////////
+
+/* {{{ on_trigger_event */
+static void on_trigger_event(uv_async_t *handle)
+{
+	async_trigger_event_t *trigger = handle->data;
+
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&trigger->event.base, NULL, NULL);
+
+	IF_EXCEPTION_STOP_REACTOR;
+}
+/* }}} */
+
+/* {{{ libuv_trigger_event_trigger */
+static void libuv_trigger_event_trigger(zend_async_trigger_event_t *event)
+{
+	async_trigger_event_t *trigger = (async_trigger_event_t *)event;
+	
+	if (!ZEND_ASYNC_EVENT_IS_CLOSED(&trigger->event.base)) {
+		uv_async_send(&trigger->uv_handle);
+	}
+}
+/* }}} */
+
+/* {{{ libuv_trigger_event_start */
+static void libuv_trigger_event_start(zend_async_event_t *event)
+{
+	EVENT_START_PROLOGUE(event);
+
+	event->loop_ref_count++;
+	ZEND_ASYNC_INCREASE_EVENT_COUNT;
+}
+/* }}} */
+
+/* {{{ libuv_trigger_event_stop */
+static void libuv_trigger_event_stop(zend_async_event_t *event)
+{
+	EVENT_STOP_PROLOGUE(event);
+
+	event->loop_ref_count = 0;
+	ZEND_ASYNC_DECREASE_EVENT_COUNT;
+}
+/* }}} */
+
+/* {{{ libuv_trigger_event_dispose */
+static void libuv_trigger_event_dispose(zend_async_event_t *event)
+{
+	if (ZEND_ASYNC_EVENT_REF(event) > 1) {
+		ZEND_ASYNC_EVENT_DEL_REF(event);
+		return;
+	}
+
+	if (event->loop_ref_count > 0) {
+		event->loop_ref_count = 1;
+		event->stop(event);
+	}
+
+	zend_async_callbacks_free(event);
+
+	async_trigger_event_t *trigger = (async_trigger_event_t *)(event);
+
+	uv_close((uv_handle_t *)&trigger->uv_handle, libuv_close_handle_cb);
+}
+/* }}} */
+
+/* {{{ libuv_new_trigger_event */
+zend_async_trigger_event_t* libuv_new_trigger_event(size_t extra_size)
+{
+	START_REACTOR_OR_RETURN_NULL;
+
+	async_trigger_event_t *trigger = pecalloc(1, extra_size != 0 ?
+							sizeof(async_trigger_event_t) + extra_size :
+							sizeof(async_trigger_event_t), 0);
+
+	int error = uv_async_init(UVLOOP, &trigger->uv_handle, on_trigger_event);
+
+	if (error < 0) {
+		async_throw_error("Failed to initialize trigger handle: %s", uv_strerror(error));
+		pefree(trigger, 0);
+		return NULL;
+	}
+
+	// Link the handle to the trigger event
+	trigger->uv_handle.data = trigger;
+	trigger->event.base.extra_offset = sizeof(async_trigger_event_t);
+	trigger->event.base.ref_count = 1;
+
+	// Initialize the event methods
+	trigger->event.base.add_callback = libuv_add_callback;
+	trigger->event.base.del_callback = libuv_remove_callback;
+	trigger->event.base.start = libuv_trigger_event_start;
+	trigger->event.base.stop = libuv_trigger_event_stop;
+	trigger->event.base.dispose = libuv_trigger_event_dispose;
+
+	// Set the trigger method
+	trigger->event.trigger = libuv_trigger_event_trigger;
+
+	return &trigger->event;
+}
+/* }}} */
+
+/////////////////////////////////////////////////////////////////////////////////
 /// Socket Listening API
 /////////////////////////////////////////////////////////////////////////////////
 
@@ -2316,7 +2419,8 @@ void async_libuv_reactor_register(void)
 		libuv_getaddrinfo,
 		libuv_freeaddrinfo,
 		libuv_new_exec_event,
-		libuv_exec
+		libuv_exec,
+		libuv_new_trigger_event
 	);
 
 	zend_async_socket_listening_register(

@@ -35,6 +35,7 @@ typedef struct _async_filesystem_event_t async_filesystem_event_t;
 
 typedef struct _async_process_event_t async_process_event_t;
 typedef struct _async_thread_event_t async_thread_event_t;
+typedef struct _async_trigger_event_t async_trigger_event_t;
 
 typedef struct _async_dns_nameinfo_t async_dns_nameinfo_t;
 typedef struct _async_dns_addrinfo_t async_dns_addrinfo_t;
@@ -92,6 +93,11 @@ struct _async_exec_event_t {
 #ifdef PHP_WIN32
 	char * quoted_cmd;
 #endif
+};
+
+struct _async_trigger_event_t {
+	zend_async_trigger_event_t event;
+	uv_async_t uv_handle;
 };
 
 void async_libuv_reactor_register(void);
