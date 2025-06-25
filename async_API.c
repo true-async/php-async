@@ -47,7 +47,7 @@ zend_async_scope_t * async_provide_scope(zend_object *scope_provider)
 	return NULL;
 }
 
-zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object * scope_provider)
+zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object * scope_provider, int32_t priority)
 {
 	if (UNEXPECTED(ZEND_ASYNC_IS_OFF)) {
 		async_throw_error("Cannot spawn a coroutine when async is disabled");
@@ -141,7 +141,17 @@ zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object * scope_provider)
 
 	waker->status = ZEND_ASYNC_WAKER_QUEUED;
 
-	if (UNEXPECTED(circular_buffer_push(&ASYNC_G(coroutine_queue), &coroutine, true)) == FAILURE) {
+	// Use priority to determine enqueue method
+	zend_result enqueue_result;
+	if (priority > 0) {
+		// High priority: add to front of queue
+		enqueue_result = circular_buffer_push_front(&ASYNC_G(coroutine_queue), &coroutine, true);
+	} else {
+		// Normal or low priority: add to back of queue
+		enqueue_result = circular_buffer_push(&ASYNC_G(coroutine_queue), &coroutine, true);
+	}
+	
+	if (UNEXPECTED(enqueue_result == FAILURE)) {
 		coroutine->coroutine.event.dispose(&coroutine->coroutine.event);
 		async_throw_error("Failed to enqueue coroutine");
 		return NULL;

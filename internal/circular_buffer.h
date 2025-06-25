@@ -69,6 +69,7 @@ bool circular_buffer_is_full(const circular_buffer_t *buffer);
 bool circular_buffer_is_empty(const circular_buffer_t *buffer);
 bool circular_buffer_is_not_empty(const circular_buffer_t *buffer);
 zend_result circular_buffer_push(circular_buffer_t *buffer, const void *value, bool should_resize);
+zend_result circular_buffer_push_front(circular_buffer_t *buffer, const void *value, bool should_resize);
 zend_result circular_buffer_pop(circular_buffer_t *buffer, void *value);
 size_t circular_buffer_count(const circular_buffer_t *buffer);
 size_t circular_buffer_capacity(const circular_buffer_t *buffer);

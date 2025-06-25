@@ -382,6 +382,75 @@ zend_result circular_buffer_push(circular_buffer_t *buffer, const void *value, c
 }
 
 /**
+ * Push a value to the front (beginning) of the circular buffer.
+ * This means inserting before the current tail position.
+ * If the buffer is full and cannot resize, falls back to normal push.
+ */
+zend_result circular_buffer_push_front(circular_buffer_t *buffer, const void *value, const bool should_resize)
+{
+    ZEND_ASSERT(buffer != NULL && "Buffer cannot be NULL");
+    ZEND_ASSERT(buffer->data != NULL && "Buffer data cannot be NULL");
+    ZEND_ASSERT(value != NULL && "Value cannot be NULL");
+    ZEND_ASSERT(buffer->head < buffer->capacity && "Head index out of bounds");
+    ZEND_ASSERT(buffer->tail < buffer->capacity && "Tail index out of bounds");
+    ZEND_ASSERT(buffer->item_size > 0 && "Item size must be positive");
+
+    // First check if resize is needed
+    if (should_resize) {
+        // Check resize conditions once
+        bool need_increase = circular_buffer_is_full(buffer);
+        bool need_decrease = !need_increase && should_decrease(buffer);
+        
+        if (need_increase || need_decrease) {
+            if (circular_buffer_realloc(buffer, 0) == FAILURE) {
+                return FAILURE;
+            }
+        }
+    }
+
+    // If buffer is full after potential resize, fall back to normal push
+    if (circular_buffer_is_full(buffer)) {
+        if (should_resize) {
+            // Should not happen if resize worked correctly
+            ASYNC_ERROR(E_WARNING, "Buffer is still full after resize attempt");
+            return FAILURE;
+        } else {
+            // Fall back to normal push behavior
+            return circular_buffer_push(buffer, value, false);
+        }
+    }
+
+    /*
+     * Push front operation:
+     * 1. Move tail backward (with wraparound)
+     * 2. Store data at new tail position
+     * 
+     * Visual example:
+     * Before: [ A| B| C|  ]  head=3, tail=0
+     *           ^
+     *         tail
+     * 
+     * After:  [X| A| B| C]  head=3, tail=3 (wrapped around)
+     *                   ^
+     *                 tail
+     */
+    ZEND_ASSERT(!circular_buffer_is_full(buffer) && "Buffer should not be full at this point");
+    
+    // Move tail backward (with wraparound)
+    if (buffer->tail == 0) {
+        buffer->tail = buffer->capacity - 1;
+    } else {
+        buffer->tail--;
+    }
+    
+    memcpy((char *)buffer->data + buffer->tail * buffer->item_size, value, buffer->item_size);
+
+    ZEND_ASSERT(buffer->tail < buffer->capacity && "Tail index should be valid after decrement");
+    
+    return SUCCESS;
+}
+
+/**
  * Pop a value from the circular buffer.
  */
 zend_result circular_buffer_pop(circular_buffer_t *buffer, void *value)
