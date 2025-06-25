@@ -38,6 +38,10 @@ struct _async_scope_s {
 	uint32_t active_coroutines_count; /* Number of active (non-zombie) coroutines */
 	uint32_t zombie_coroutines_count; /* Number of zombie coroutines */
 	
+	/* Spawned file and line number */
+	zend_string *filename;
+	uint32_t lineno;
+	
 	/* Exception handlers */
 	zend_fcall_info *exception_fci;
 	zend_fcall_info_cache *exception_fcc;

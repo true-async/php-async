@@ -38,9 +38,12 @@ static void callback_resolve_when_zombie_completed(
 	zend_async_event_t *event, zend_async_event_callback_t *callback, void * result, zend_object *exception
 );
 
-static bool scope_is_completed(async_scope_t *scope, bool with_zombies);
+static bool scope_can_be_disposed(async_scope_t *scope, bool with_zombies, bool check_zend_objects);
 static void scope_check_completion_and_notify(async_scope_t *scope, bool with_zombies);
 
+#define SCOPE_IS_COMPLETED(scope) scope_can_be_disposed(scope, false, false)
+#define SCOPE_IS_COMPLETED_WITH_ZOMBIE(scope) scope_can_be_disposed(scope, true, false)
+#define SCOPE_CAN_BE_DISPOSED(scope) scope_can_be_disposed(scope, true, true)
 
 // Event method forward declarations
 static void scope_event_start(zend_async_event_t *event);
@@ -357,7 +360,7 @@ METHOD(isFinished)
 		RETURN_TRUE;
 	}
 
-	RETURN_BOOL(scope_is_completed(scope_object->scope, false));
+	RETURN_BOOL(SCOPE_IS_COMPLETED(scope_object->scope));
 }
 
 METHOD(isClosed)
@@ -571,7 +574,7 @@ static void callback_resolve_when_zombie_completed(
 		zval_ptr_dtor(&retval);
 	}
 
-	if (scope_is_completed(scope, true)) {
+	if (SCOPE_IS_COMPLETED_WITH_ZOMBIE(scope)) {
 		ZEND_ASYNC_RESUME(coroutine);
 	}
 }
@@ -769,8 +772,18 @@ static bool scope_try_to_dispose(zend_async_scope_t *scope)
 {
 	async_scope_t *async_scope = (async_scope_t *) scope;
 
-	if (false == scope_is_completed(async_scope, true)) {
+	if (false == SCOPE_CAN_BE_DISPOSED(async_scope)) {
 		return false;
+	}
+
+	// Dispose all child scopes
+	for (uint32_t i = 0; i < async_scope->scope.scopes.length; ++i) {
+		async_scope_t *child_scope = (async_scope_t *) async_scope->scope.scopes.data[i];
+		child_scope->scope.event.dispose(&child_scope->scope.event);
+		if (UNEXPECTED(EG(exception))) {
+			// If an exception occurs during child scope disposal, we stop further processing
+			return false;
+		}
 	}
 
 	// Dispose the scope
@@ -832,22 +845,17 @@ static bool scope_replay(zend_async_event_t *event, zend_async_event_callback_t 
 static zend_string* scope_info(zend_async_event_t *event)
 {
 	async_scope_t *scope = (async_scope_t *) event;
+	uint32_t scope_id = 0;
 
-	const char *status;
-	if (ZEND_ASYNC_SCOPE_IS_CLOSED(&scope->scope)) {
-		status = "closed";
-	} else if (scope->coroutines.length == 0 && scope->scope.scopes.length == 0) {
-		status = "finished";
-	} else {
-		status = "running";
+	if (scope->scope.scope_object != NULL) {
+		scope_id = scope->scope.scope_object->handle;
 	}
 
-	return zend_strpprintf(0,
-		"Scope %s with %d coroutines and %d child scopes",
-		status,
-		scope->coroutines.length,
-		scope->scope.scopes.length
-	);
+	if (scope->filename != NULL) {
+		return zend_strpprintf(0, "Scope #%d created at %s:%d", scope_id, ZSTR_VAL(scope->filename), scope->lineno);
+	} else {
+		return zend_strpprintf(0, "Scope #%d", scope_id);
+	}
 }
 
 static void scope_dispose(zend_async_event_t *scope_event)
@@ -877,6 +885,12 @@ static void scope_dispose(zend_async_event_t *scope_event)
 		scope->scope.scope_object = NULL;
 	}
 
+	// Free spawn location filename
+	if (scope->filename != NULL) {
+		zend_string_release(scope->filename);
+		scope->filename = NULL;
+	}
+	
 	// Free exception handlers
 	if (scope->exception_fci != NULL || scope->exception_fcc != NULL) {
 		zend_free_fci(scope->exception_fci, scope->exception_fcc);
@@ -925,6 +939,11 @@ zend_async_scope_t * async_new_scope(zend_async_scope_t * parent_scope, const bo
 	scope->coroutines.capacity = 0;
 	scope->coroutines.data = NULL;
 	scope->active_coroutines_count = 0;
+	
+	// Initialize spawn location
+	scope->filename = NULL;
+	scope->lineno = 0;
+	zend_apply_current_filename_and_line(&scope->filename, &scope->lineno);
 	
 	// Initialize exception handlers
 	scope->exception_fci = NULL;
@@ -1005,7 +1024,7 @@ void async_register_scope_ce(void)
  * - It is closed OR
  * - It has no active coroutines AND all child scopes are also completed
  */
-static bool scope_is_completed(async_scope_t *scope, bool with_zombies)
+static bool scope_can_be_disposed(async_scope_t *scope, bool with_zombies, bool can_be_disposed)
 {
 	if (scope == NULL) {
 		return true;
@@ -1021,10 +1040,24 @@ static bool scope_is_completed(async_scope_t *scope, bool with_zombies)
 		return false;
 	}
 
+	// If a Scope has no active coroutines,
+	// it can be disposed provided that it is either cancelled or
+	// its Zend object has already been destroyed.
+	if (can_be_disposed
+		&& false == (ZEND_ASYNC_SCOPE_IS_CANCELLED(&scope->scope) || scope->scope.scope_object == NULL)) {
+		return false;
+	}
+
 	// Check if all child scopes are completed
 	for (uint32_t i = 0; i < scope->scope.scopes.length; i++) {
 		async_scope_t *child_scope = (async_scope_t *) scope->scope.scopes.data[i];
-		if (false == scope_is_completed(child_scope, with_zombies)) {
+
+		if (can_be_disposed
+			&& false == (ZEND_ASYNC_SCOPE_IS_CANCELLED(&child_scope->scope) || child_scope->scope.scope_object == NULL)) {
+			return false;
+		}
+
+		if (false == scope_can_be_disposed(child_scope, with_zombies, can_be_disposed)) {
 			return false;
 		}
 	}
@@ -1044,7 +1077,7 @@ static void scope_check_completion_and_notify(async_scope_t *scope, bool with_zo
 	}
 
 	// Check if current scope is completed
-	if (scope_is_completed(scope, true)) {
+	if (SCOPE_IS_COMPLETED_WITH_ZOMBIE(scope)) {
 		// Notify waiting callbacks for this scope
 		ZEND_ASYNC_CALLBACKS_NOTIFY(&scope->scope.event, NULL, NULL);
 
