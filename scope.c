@@ -30,6 +30,67 @@ zend_class_entry * async_ce_spawn_strategy = NULL;
 
 static zend_object_handlers async_scope_handlers;
 
+static zend_always_inline void
+async_scope_add_coroutine(async_scope_t *scope, async_coroutine_t *coroutine)
+{
+	async_coroutines_vector_t *vector = &scope->coroutines;
+
+	if (vector->data == NULL) {
+		vector->data = safe_emalloc(4, sizeof(async_coroutine_t *), 0);
+		vector->capacity = 4;
+	}
+
+	if (vector->length == vector->capacity) {
+		vector->capacity *= 2;
+		vector->data = safe_erealloc(vector->data, vector->capacity, sizeof(async_coroutine_t *), 0);
+	}
+
+	vector->data[vector->length++] = coroutine;
+	coroutine->coroutine.scope = &scope->scope;
+
+	// Increment active coroutines count if coroutine is not zombie
+	if (ZEND_COROUTINE_IS_ZOMBIE(&coroutine->coroutine)) {
+		scope->zombie_coroutines_count++;
+	} else {
+		scope->active_coroutines_count++;
+	}
+}
+
+static zend_always_inline void
+async_scope_remove_coroutine(async_scope_t *scope, async_coroutine_t *coroutine)
+{
+	async_coroutines_vector_t *vector = &scope->coroutines;
+	for (uint32_t i = 0; i < vector->length; ++i) {
+		if (vector->data[i] == coroutine) {
+			// Decrement active coroutines count if coroutine was active
+			if (false == ZEND_COROUTINE_IS_ZOMBIE(&coroutine->coroutine)) {
+				if (scope->active_coroutines_count > 0) {
+					scope->active_coroutines_count--;
+				} else if (scope->zombie_coroutines_count > 0) {
+					scope->zombie_coroutines_count--;
+				}
+			}
+
+			vector->data[i] = vector->data[--vector->length];
+			return;
+		}
+	}
+}
+
+static zend_always_inline void
+async_scope_free_coroutines(async_scope_t *scope)
+{
+	async_coroutines_vector_t *vector = &scope->coroutines;
+
+	if (vector->data != NULL) {
+		efree(vector->data);
+	}
+
+	vector->data = NULL;
+	vector->length = 0;
+	vector->capacity = 0;
+}
+
 //////////////////////////////////////////////////////////
 /// Scope methods
 //////////////////////////////////////////////////////////
@@ -722,18 +783,8 @@ void async_scope_notify_coroutine_finished(async_coroutine_t *coroutine)
 
 	ZEND_ASSERT(scope != NULL && "Coroutine must belong to a valid scope");
 
-	// Check if coroutine was active before becoming zombie
-	if (false == ZEND_COROUTINE_IS_ZOMBIE(&coroutine->coroutine)) {
-		if (scope->active_coroutines_count > 0) {
-			scope->active_coroutines_count--;
-		}
-	} else {
-		if (scope->zombie_coroutines_count > 0) {
-			scope->zombie_coroutines_count--;
-		}
-	}
-
-	scope_check_completion_and_notify(scope, true);
+	async_scope_remove_coroutine(scope, coroutine);
+	scope->scope.try_to_dispose(&scope->scope);
 }
 
 void async_scope_mark_coroutine_zombie(async_coroutine_t *coroutine)
@@ -772,11 +823,13 @@ static bool scope_catch_or_cancel(
 	async_scope_t *async_scope = (async_scope_t *) scope;
 	transfer_error = exception != NULL ? transfer_error : false;
 
+	// If this is a user action rather than an error propagated from a coroutine,
+	// and the Scope is already closed, exit immediately.
 	if (UNEXPECTED(ZEND_ASYNC_SCOPE_IS_CLOSED(&async_scope->scope))) {
 		if (transfer_error) {
 			OBJ_RELEASE(exception);
 		}
-		return true; // Already closed
+		return coroutine == NULL; // Already closed
 	}
 
 	// If the dispose method was called by the user, and the Scope has fully completed execution at this point,
@@ -1165,7 +1218,8 @@ static bool scope_can_be_disposed(async_scope_t *scope, bool with_zombies, bool 
 	}
 
 	// If scope is closed or cancelled, it's considered completed
-	if (ZEND_ASYNC_SCOPE_IS_CLOSED(&scope->scope)) {
+	if (false == can_be_disposed
+		&& (ZEND_ASYNC_SCOPE_IS_CLOSED(&scope->scope) || ZEND_ASYNC_SCOPE_IS_CANCELLED(&scope->scope))) {
 		return true;
 	}
 
@@ -1185,11 +1239,6 @@ static bool scope_can_be_disposed(async_scope_t *scope, bool with_zombies, bool 
 	// Check if all child scopes are completed
 	for (uint32_t i = 0; i < scope->scope.scopes.length; i++) {
 		async_scope_t *child_scope = (async_scope_t *) scope->scope.scopes.data[i];
-
-		if (can_be_disposed
-			&& false == (ZEND_ASYNC_SCOPE_IS_CANCELLED(&child_scope->scope) || child_scope->scope.scope_object == NULL)) {
-			return false;
-		}
 
 		if (false == scope_can_be_disposed(child_scope, with_zombies, can_be_disposed)) {
 			return false;
@@ -1310,10 +1359,14 @@ static void scope_finally_handlers_iterator_dtor(zend_async_microtask_t *microta
 	async_iterator_t *iterator = (async_iterator_t *) microtask;
 
 	if (iterator->extended_data != NULL) {
-		async_scope_t *scope = iterator->extended_data;
 		iterator->extended_data = NULL;
-		ZEND_ASYNC_EVENT_RELEASE(&scope->scope.event);
 	}
+
+	//
+	// If everything is correct,
+	// the Scope will destroy itself as soon as the coroutine created within it completes execution.
+	// Therefore, there's no point in taking additional actions to clean up resources.
+	//
 }
 
 static void async_scope_call_finally_handlers(async_scope_t *scope)
@@ -1352,6 +1405,16 @@ static void async_scope_call_finally_handlers(async_scope_t *scope)
 		return;
 	}
 
+	// Create special child scope for finally handlers
+	//
+	// We don't increase the reference count of the Scope
+	// because creating a new child Scope will keep the parent in memory.
+	//
+	zend_async_scope_t *child_scope = ZEND_ASYNC_NEW_SCOPE(&scope->scope);
+	if (UNEXPECTED(child_scope == NULL)) {
+		return;
+	}
+
 	zval handlers;
 	ZVAL_ARR(&handlers, scope->finally_handlers);
 	scope->finally_handlers = NULL;
@@ -1372,7 +1435,7 @@ static void async_scope_call_finally_handlers(async_scope_t *scope)
 		return;
 	}
 
-	iterator->scope = &scope->scope;
+	iterator->scope = child_scope;
 	iterator->extended_data = scope;
 	iterator->extended_dtor = scope_finally_handlers_iterator_dtor;
 

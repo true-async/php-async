@@ -16,19 +16,16 @@ try {
 }
 
 // Test 2: Error in finally handler
-try {
-    $scope->onFinally(function() {
-        throw new Exception("Error in finally handler");
-    });
-    
-    $coroutine = $scope->spawn(function() { 
-        return "test"; 
-    });
-    await($coroutine);
-    $scope->dispose();
-} catch (Exception $e) {
-    echo "Caught finally handler error: " . $e->getMessage() . "\n";
-}
+$scope->onFinally(function() {
+    throw new Exception("Error in finally handler");
+});
+
+$coroutine = $scope->spawn(function() {
+    return "test";
+});
+
+await($coroutine);
+$scope->dispose();
 
 ?>
 --EXPECT--

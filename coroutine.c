@@ -491,6 +491,7 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 	// For the Scheduler, the coroutine's Scope may be undefined.
 	if (EXPECTED(coroutine->coroutine.scope != NULL)) {
 		async_scope_notify_coroutine_finished(coroutine);
+		coroutine->coroutine.scope = NULL;
 	}
 
 	// Otherwise, we rethrow the exception.
@@ -939,7 +940,7 @@ static void coroutine_object_destroy(zend_object *object)
 		&& "Coroutine waker must be dequeued before destruction");
 
 	if (coroutine->coroutine.scope != NULL) {
-		async_scope_remove_coroutine((async_scope_t *) coroutine->coroutine.scope, coroutine);
+		async_scope_notify_coroutine_finished(coroutine);
 		coroutine->coroutine.scope = NULL;
 	}
 

@@ -10,26 +10,24 @@ $calls = [];
 $scope = new Scope();
 
 $coroutine = $scope->spawn(function() { 
-    return "test"; 
+    echo "Spawned coroutine\n";
 });
 
-$scope->onFinally(function() use (&$calls) {
-    $calls[] = "first";
+$scope->onFinally(function() {
     echo "First finally handler\n";
 });
 
-$scope->onFinally(function() use (&$calls) {
-    $calls[] = "second";
+$scope->onFinally(function() {
     echo "Second finally handler\n";
 });
 
 await($coroutine);
-$scope->dispose();
 
-echo "Handlers called: " . implode(", ", $calls) . "\n";
+echo "End of main coroutine\n";
 
 ?>
 --EXPECT--
+Spawned coroutine
+End of main coroutine
 First finally handler
 Second finally handler
-Handlers called: first, second
