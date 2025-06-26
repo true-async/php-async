@@ -973,3 +973,7 @@ zend_module_entry async_module_entry = {
 	NULL,
 	STANDARD_MODULE_PROPERTIES_EX
 };
+
+#ifdef COMPILE_DL_ASYNC
+ZEND_GET_MODULE(async)
+#endif
