@@ -416,6 +416,7 @@ static void async_coroutine_call_finally_handlers(async_coroutine_t *coroutine)
 		NULL,
 		NULL,
 		finally_handlers_iterator_handler,
+		coroutine->coroutine.scope,
 		0,
 		0,
 		0

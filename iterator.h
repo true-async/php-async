@@ -36,6 +36,7 @@ async_iterator_t * async_iterator_new(
 	zend_object_iterator *zend_iterator,
 	zend_fcall_t *fcall,
 	async_iterator_handler_t handler,
+	zend_async_scope_t *scope,
 	unsigned int concurrency,
 	int32_t priority,
 	size_t iterator_size

@@ -1482,6 +1482,7 @@ static void async_scope_call_finally_handlers(async_scope_t *scope)
 		NULL,
 		NULL,
 		scope_finally_handlers_iterator_handler,
+		child_scope,
 		0,
 		1,
 		0
@@ -1498,7 +1499,6 @@ static void async_scope_call_finally_handlers(async_scope_t *scope)
 	context->scope = scope;
 	context->composite_exception = NULL;
 
-	iterator->scope = child_scope;
 	iterator->extended_data = context;
 	iterator->extended_dtor = scope_finally_handlers_iterator_dtor;
 

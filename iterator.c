@@ -106,6 +106,7 @@ async_iterator_t * async_iterator_new(
 		zend_object_iterator *zend_iterator,
 		zend_fcall_t *fcall,
 		async_iterator_handler_t handler,
+		zend_async_scope_t *scope,
 		unsigned int concurrency,
 		int32_t priority,
 		size_t iterator_size
@@ -128,6 +129,11 @@ async_iterator_t * async_iterator_new(
 
 	iterator->concurrency = concurrency;
 	iterator->priority = priority;
+
+	if (scope == NULL) {
+		scope = ZEND_ASYNC_CURRENT_SCOPE;
+	}
+	iterator->scope = scope;
 
 	if (zend_iterator == NULL) {
 		ZVAL_COPY(&iterator->array, array);

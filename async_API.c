@@ -522,6 +522,7 @@ void iterator_coroutine_first_entry(void)
 		await_iterator->zend_iterator,
 		NULL,
 		await_iterator_handler,
+		ZEND_ASYNC_CURRENT_SCOPE,
 		await_context->concurrency,
 		0,
 		sizeof(async_await_iterator_iterator_t)
