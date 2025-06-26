@@ -17,6 +17,7 @@
 
 #include <zend_API.h>
 #include <zend_exceptions.h>
+#include "php.h"
 
 #include "exceptions_arginfo.h"
 
@@ -26,6 +27,35 @@ zend_class_entry * async_ce_input_output_exception = NULL;
 zend_class_entry * async_ce_timeout_exception = NULL;
 zend_class_entry * async_ce_poll_exception = NULL;
 zend_class_entry * async_ce_dns_exception = NULL;
+zend_class_entry * async_ce_composite_exception = NULL;
+
+PHP_METHOD(Async_CompositeException, addException)
+{
+	zval *exception;
+
+	ZEND_PARSE_PARAMETERS_START(1, 1)
+		Z_PARAM_OBJECT_OF_CLASS(exception, zend_ce_throwable)
+	ZEND_PARSE_PARAMETERS_END();
+
+	zval *object = ZEND_THIS;
+	async_composite_exception_add_exception(Z_OBJ_P(object), Z_OBJ_P(exception), true);
+}
+
+PHP_METHOD(Async_CompositeException, getExceptions)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	zval *object = ZEND_THIS;
+	zval *exceptions_prop = zend_read_property(
+		async_ce_composite_exception, Z_OBJ_P(object), "exceptions", sizeof("exceptions")-1, 0, NULL
+	);
+
+	if (Z_TYPE_P(exceptions_prop) == IS_ARRAY) {
+		RETURN_ZVAL(exceptions_prop, 1, 0);
+	} else {
+		array_init(return_value);
+	}
+}
 
 void async_register_exceptions_ce(void)
 {
@@ -35,6 +65,7 @@ void async_register_exceptions_ce(void)
 	async_ce_timeout_exception = register_class_Async_TimeoutException(zend_ce_exception);
 	async_ce_poll_exception = register_class_Async_PollException(zend_ce_exception);
 	async_ce_dns_exception = register_class_Async_DnsException(zend_ce_exception);
+	async_ce_composite_exception = register_class_Async_CompositeException(zend_ce_exception);
 }
 
 zend_object * async_new_exception(zend_class_entry *exception_ce, const char *format, ...)
@@ -127,4 +158,43 @@ ZEND_API ZEND_COLD zend_object * async_throw_poll(const char *format, ...)
 
 	va_end(args);
 	return obj;
+}
+
+ZEND_API ZEND_COLD zend_object * async_new_composite_exception(void)
+{
+	zval composite;
+	object_init_ex(&composite, async_ce_composite_exception);
+	return Z_OBJ(composite);
+}
+
+ZEND_API ZEND_COLD void async_composite_exception_add_exception(zend_object *composite, zend_object *exception, bool transfer)
+{
+	if (composite == NULL || exception == NULL) {
+		return;
+	}
+	
+	zval *exceptions_prop = zend_read_property(
+		async_ce_composite_exception, composite, "exceptions", sizeof("exceptions")-1, 0, NULL
+	);
+	
+	if (Z_TYPE_P(exceptions_prop) == IS_ARRAY) {
+		zval exception_zval;
+		ZVAL_OBJ(&exception_zval, exception);
+
+		if (UNEXPECTED(zend_hash_next_index_insert(Z_ARRVAL_P(exceptions_prop), &exception_zval) == NULL)) {
+			zend_error(E_CORE_WARNING, "Failed to add exception to composite exception");
+
+			if (transfer) {
+				OBJ_RELEASE(exception);
+			}
+
+			return;
+		}
+
+		if (false == transfer) {
+			GC_ADDREF(exception);
+		}
+	} else if (transfer) {
+		OBJ_RELEASE(exception);
+	}
 }

@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.0] - TBD
 
 ### Added
+- **CompositeException**: New exception class for handling multiple exceptions that occur in finally handlers
+    - Automatically collects multiple exceptions from `onFinally` handlers in both Scope and Coroutine
+    - Provides `addException()` method to add exceptions to the composite
+    - Provides `getExceptions()` method to retrieve all collected exceptions
+    - Ensures all finally handlers are executed even when exceptions occur
 - Complete implementation of `onFinally()` method for `Async\Scope` class
 - Cross-thread trigger event API
 - Priority support to async iterator system

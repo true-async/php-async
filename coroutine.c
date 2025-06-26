@@ -317,15 +317,64 @@ METHOD(onFinally)
 /// async_coroutine_call_finally_handlers
 ///////////////////////////////////////////////////////////
 
+// Structure for coroutine finally handlers context
+typedef struct {
+	async_coroutine_t *coroutine;
+	zend_object *composite_exception;
+} coroutine_finally_handlers_context_t;
+
 static zend_result finally_handlers_iterator_handler(async_iterator_t *iterator, zval *current, zval *key)
 {
+	coroutine_finally_handlers_context_t *context = (coroutine_finally_handlers_context_t *) iterator->extended_data;
+	async_coroutine_t *coroutine = context->coroutine;
 	zval rv;
 	ZVAL_UNDEF(&rv);
 	zval param;
-	ZVAL_OBJ(&param, &((async_coroutine_t *) iterator->extended_data)->std);
+	ZVAL_OBJ(&param, &coroutine->std);
 
 	call_user_function(NULL, NULL, current, &rv, 1, &param);
 	zval_ptr_dtor(&rv);
+
+	// Check for exceptions after handler execution
+	if (EG(exception)) {
+		zend_exception_save();
+		zend_exception_restore();
+		zend_object *current_exception = EG(exception);
+		GC_ADDREF(current_exception);
+		zend_clear_exception();
+		
+		// Check for graceful/unwind exit exceptions
+		if (zend_is_graceful_exit(current_exception) || zend_is_unwind_exit(current_exception)) {
+			// Release CompositeException if exists
+			if (context->composite_exception) {
+				OBJ_RELEASE(context->composite_exception);
+				context->composite_exception = NULL;
+			}
+			// Throw graceful/unwind exit and stop iteration
+			zend_throw_exception_internal(current_exception);
+			return SUCCESS;
+		}
+		
+		// Handle regular exceptions
+		if (context->composite_exception == NULL) {
+			context->composite_exception = current_exception;
+		} else if (!instanceof_function(context->composite_exception->ce, async_ce_composite_exception)) {
+			// Create CompositeException and add first exception
+			zend_object * composite_exception = async_new_composite_exception();
+			if (UNEXPECTED(composite_exception == NULL)) {
+				// If we can't create CompositeException, throw the current one
+				zend_throw_exception_internal(current_exception);
+				return SUCCESS;
+			}
+
+			async_composite_exception_add_exception(composite_exception, context->composite_exception, true);
+			async_composite_exception_add_exception(composite_exception, current_exception, true);
+			context->composite_exception = composite_exception;
+		} else {
+			// Add exception to existing CompositeException
+			async_composite_exception_add_exception(context->composite_exception, current_exception, true);
+		}
+	}
 
 	return SUCCESS;
 }
@@ -335,9 +384,20 @@ static void finally_handlers_iterator_dtor(zend_async_microtask_t *microtask)
 	async_iterator_t * iterator = (async_iterator_t *) microtask;
 
 	if (iterator->extended_data != NULL) {
-		async_coroutine_t *coroutine = iterator->extended_data;
+		coroutine_finally_handlers_context_t *context = (coroutine_finally_handlers_context_t *) iterator->extended_data;
+		
+		// Throw CompositeException if any exceptions were collected
+		if (context->composite_exception != NULL) {
+			zend_throw_exception_internal(context->composite_exception);
+			context->composite_exception = NULL;
+		}
+		
+		// Release coroutine reference
+		OBJ_RELEASE(&context->coroutine->std);
+		
+		// Free the context
+		efree(context);
 		iterator->extended_data = NULL;
-		OBJ_RELEASE(&coroutine->std);
 	}
 }
 
@@ -367,7 +427,12 @@ static void async_coroutine_call_finally_handlers(async_coroutine_t *coroutine)
 		return;
 	}
 
-	iterator->extended_data = coroutine;
+	// Create context for finally handlers
+	coroutine_finally_handlers_context_t *context = ecalloc(1, sizeof(coroutine_finally_handlers_context_t));
+	context->coroutine = coroutine;
+	context->composite_exception = NULL;
+
+	iterator->extended_data = context;
 	iterator->extended_dtor = finally_handlers_iterator_dtor;
 	GC_ADDREF(&coroutine->std);
 

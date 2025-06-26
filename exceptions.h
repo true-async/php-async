@@ -27,6 +27,7 @@ extern zend_class_entry * async_ce_input_output_exception;
 extern zend_class_entry * async_ce_timeout_exception;
 extern zend_class_entry * async_ce_poll_exception;
 extern zend_class_entry * async_ce_dns_exception;
+extern zend_class_entry * async_ce_composite_exception;
 
 void async_register_exceptions_ce(void);
 ZEND_API ZEND_COLD zend_object * async_new_exception(zend_class_entry *exception_ce, const char *format, ...);
@@ -35,6 +36,8 @@ ZEND_API ZEND_COLD zend_object * async_throw_cancellation(const char *format, ..
 ZEND_API ZEND_COLD zend_object * async_throw_input_output(const char *format, ...);
 ZEND_API ZEND_COLD zend_object * async_throw_timeout(const char *format, const zend_long timeout);
 ZEND_API ZEND_COLD zend_object * async_throw_poll(const char *format, ...);
+ZEND_API ZEND_COLD zend_object * async_new_composite_exception(void);
+ZEND_API void async_composite_exception_add_exception(zend_object *composite, zend_object *exception, bool transfer);
 
 END_EXTERN_C()
 

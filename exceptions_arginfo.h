@@ -1,5 +1,21 @@
 /* This is a generated file, edit the .stub.php file instead.
- * Stub hash: 025ec0b799c94dabfa41c37f735172dd8a7fb1bb */
+ * Stub hash: 36d1b17add65c708e2b11b1c651eee54d31dee1c */
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_CompositeException_addException, 0, 1, IS_VOID, 0)
+	ZEND_ARG_OBJ_INFO(0, exception, Throwable, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_CompositeException_getExceptions, 0, 0, IS_ARRAY, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_METHOD(Async_CompositeException, addException);
+ZEND_METHOD(Async_CompositeException, getExceptions);
+
+static const zend_function_entry class_Async_CompositeException_methods[] = {
+	ZEND_ME(Async_CompositeException, addException, arginfo_class_Async_CompositeException_addException, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_CompositeException, getExceptions, arginfo_class_Async_CompositeException_getExceptions, ZEND_ACC_PUBLIC)
+	ZEND_FE_END
+};
 
 static zend_class_entry *register_class_Async_CancellationException(zend_class_entry *class_entry_CancellationException)
 {
@@ -57,6 +73,22 @@ static zend_class_entry *register_class_Async_PollException(zend_class_entry *cl
 
 	INIT_NS_CLASS_ENTRY(ce, "Async", "PollException", NULL);
 	class_entry = zend_register_internal_class_with_flags(&ce, class_entry_Exception, 0);
+
+	return class_entry;
+}
+
+static zend_class_entry *register_class_Async_CompositeException(zend_class_entry *class_entry_Exception)
+{
+	zend_class_entry ce, *class_entry;
+
+	INIT_NS_CLASS_ENTRY(ce, "Async", "CompositeException", class_Async_CompositeException_methods);
+	class_entry = zend_register_internal_class_with_flags(&ce, class_entry_Exception, ZEND_ACC_FINAL);
+
+	zval property_exceptions_default_value;
+	ZVAL_EMPTY_ARRAY(&property_exceptions_default_value);
+	zend_string *property_exceptions_name = zend_string_init("exceptions", sizeof("exceptions") - 1, 1);
+	zend_declare_typed_property(class_entry, property_exceptions_name, &property_exceptions_default_value, ZEND_ACC_PRIVATE, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_ARRAY));
+	zend_string_release(property_exceptions_name);
 
 	return class_entry;
 }

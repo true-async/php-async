@@ -35,3 +35,23 @@ class TimeoutException extends \Exception {}
  * Exception thrown when a poll operation fails.
  */
 class PollException extends \Exception {}
+
+/**
+ * Exception that can contain multiple exceptions.
+ * Used when multiple exceptions occur in finally handlers.
+ */
+final class CompositeException extends \Exception
+{
+    private array $exceptions = [];
+    
+    /**
+     * Add an exception to the composite.
+     */
+    public function addException(\Throwable $exception): void {}
+    
+    /**
+     * Get all exceptions stored in this composite.
+     * @return array Array of Throwable objects
+     */
+    public function getExceptions(): array {}
+}
