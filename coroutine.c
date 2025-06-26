@@ -379,31 +379,39 @@ static zend_result finally_handlers_iterator_handler(async_iterator_t *iterator,
 	return SUCCESS;
 }
 
-static void finally_handlers_iterator_dtor(zend_async_microtask_t *microtask)
+static void finally_handlers_iterator_dtor(zend_async_iterator_t *zend_iterator)
 {
-	async_iterator_t * iterator = (async_iterator_t *) microtask;
+	async_iterator_t * iterator = (async_iterator_t *) zend_iterator;
 
-	if (iterator->extended_data != NULL) {
-		coroutine_finally_handlers_context_t *context = (coroutine_finally_handlers_context_t *) iterator->extended_data;
-		
-		// Throw CompositeException if any exceptions were collected
-		if (context->composite_exception != NULL) {
-			zend_throw_exception_internal(context->composite_exception);
-			context->composite_exception = NULL;
-		}
-		
-		// Release coroutine reference
-		OBJ_RELEASE(&context->coroutine->std);
-		
-		// Free the context
-		efree(context);
-		iterator->extended_data = NULL;
+	if (UNEXPECTED(iterator->extended_data == NULL)) {
+		return;
 	}
+
+	coroutine_finally_handlers_context_t *context = iterator->extended_data;
+
+	// Throw CompositeException if any exceptions were collected
+	if (context->composite_exception != NULL) {
+		zend_throw_exception_internal(context->composite_exception);
+		context->composite_exception = NULL;
+	}
+
+	// Release coroutine reference
+	OBJ_RELEASE(&context->coroutine->std);
+
+	// Free the context
+	efree(context);
+	iterator->extended_data = NULL;
 }
 
 static void async_coroutine_call_finally_handlers(async_coroutine_t *coroutine)
 {
 	if (coroutine->finally_handlers == NULL || zend_hash_num_elements(coroutine->finally_handlers) == 0) {
+		return;
+	}
+
+	// Create a special child scope for finally handlers
+	zend_async_scope_t *child_scope = ZEND_ASYNC_NEW_SCOPE(coroutine->coroutine.scope);
+	if (UNEXPECTED(child_scope == NULL)) {
 		return;
 	}
 
@@ -416,7 +424,7 @@ static void async_coroutine_call_finally_handlers(async_coroutine_t *coroutine)
 		NULL,
 		NULL,
 		finally_handlers_iterator_handler,
-		coroutine->coroutine.scope,
+		child_scope,
 		0,
 		0,
 		0

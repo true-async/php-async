@@ -70,7 +70,7 @@ void iterator_dtor(zend_async_microtask_t *microtask)
 		// Call the extended destructor if it exists
 		ASYNC_ITERATOR_DTOR extended_dtor = iterator->extended_dtor;
 		iterator->extended_dtor = NULL;
-		extended_dtor(microtask);
+		extended_dtor((zend_async_iterator_t *)iterator);
 	}
 
 	// Free hash iterator if it was allocated

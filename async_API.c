@@ -885,6 +885,7 @@ void async_api_register(void)
 		async_scheduler_coroutine_enqueue,
 		async_coroutine_resume,
 		async_coroutine_cancel,
+		async_spawn_and_throw,
 		graceful_shutdown,
 		get_coroutines,
 		add_microtask,

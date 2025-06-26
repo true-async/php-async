@@ -18,6 +18,7 @@
 
 #include <zend_portability.h>
 #include <zend_property_hooks.h>
+#include <Zend/zend_async_API.h>
 
 BEGIN_EXTERN_C()
 
@@ -38,6 +39,7 @@ ZEND_API ZEND_COLD zend_object * async_throw_timeout(const char *format, const z
 ZEND_API ZEND_COLD zend_object * async_throw_poll(const char *format, ...);
 ZEND_API ZEND_COLD zend_object * async_new_composite_exception(void);
 ZEND_API void async_composite_exception_add_exception(zend_object *composite, zend_object *exception, bool transfer);
+bool async_spawn_and_throw(zend_object *exception, zend_async_scope_t *scope, int32_t priority);
 
 END_EXTERN_C()
 

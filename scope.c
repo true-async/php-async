@@ -1402,23 +1402,25 @@ static zend_result scope_finally_handlers_iterator_handler(async_iterator_t *ite
 	return SUCCESS;
 }
 
-static void scope_finally_handlers_iterator_dtor(zend_async_microtask_t *microtask)
+static void scope_finally_handlers_iterator_dtor(zend_async_iterator_t *z_iterator)
 {
-	async_iterator_t *iterator = (async_iterator_t *) microtask;
+	async_iterator_t *iterator = (async_iterator_t *) z_iterator;
 
-	if (iterator->extended_data != NULL) {
-		scope_finally_handlers_context_t *context = (scope_finally_handlers_context_t *) iterator->extended_data;
-		
-		// Throw CompositeException if any exceptions were collected
-		if (context->composite_exception != NULL) {
-			zend_throw_exception_internal(context->composite_exception);
-			context->composite_exception = NULL;
-		}
-		
-		// Free the context
-		efree(context);
-		iterator->extended_data = NULL;
+	if (UNEXPECTED(iterator->extended_data == NULL)) {
+		return;
 	}
+
+	scope_finally_handlers_context_t *context = iterator->extended_data;
+
+	// Throw CompositeException if any exceptions were collected
+	if (context->composite_exception != NULL) {
+		zend_throw_exception_internal(context->composite_exception);
+		context->composite_exception = NULL;
+	}
+
+	// Free the context
+	efree(context);
+	iterator->extended_data = NULL;
 
 	//
 	// If everything is correct,
@@ -1430,36 +1432,6 @@ static void scope_finally_handlers_iterator_dtor(zend_async_microtask_t *microta
 static void async_scope_call_finally_handlers(async_scope_t *scope)
 {
 	if (scope->finally_handlers == NULL || zend_hash_num_elements(scope->finally_handlers) == 0) {
-		return;
-	}
-
-	if (false == ZEND_ASYNC_IS_ACTIVE) {
-		// Run handlers immediately if not in async context
-		zval *callable;
-		zval result, param;
-		ZVAL_UNDEF(&result);
-		if (scope->scope.scope_object) {
-			ZVAL_OBJ(&param, scope->scope.scope_object);
-		} else {
-			ZVAL_NULL(&param);
-		}
-
-		ZEND_HASH_FOREACH_VAL(scope->finally_handlers, callable) {
-
-			ZVAL_UNDEF(&result);
-
-			if (UNEXPECTED(call_user_function(NULL, NULL, callable, &result, 1, &param) == FAILURE)) {
-				zend_throw_error(NULL, "Failed to call finally handler in finished scope");
-				zval_ptr_dtor(&result);
-				return;
-			}
-
-			zval_ptr_dtor(&result);
-		} ZEND_HASH_FOREACH_END();
-
-		zend_array_destroy(scope->finally_handlers);
-		scope->finally_handlers = NULL;
-
 		return;
 	}
 

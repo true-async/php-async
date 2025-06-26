@@ -20,6 +20,7 @@
 #include "php.h"
 
 #include "exceptions_arginfo.h"
+#include "zend_common.h"
 
 zend_class_entry * async_ce_async_exception = NULL;
 zend_class_entry * async_ce_cancellation_exception = NULL;
@@ -197,4 +198,80 @@ ZEND_API ZEND_COLD void async_composite_exception_add_exception(zend_object *com
 	} else if (transfer) {
 		OBJ_RELEASE(exception);
 	}
+}
+
+static void exception_coroutine_finally_callback(
+	zend_async_event_t *event,
+	zend_async_event_callback_t *callback,
+	void * result,
+	zend_object *exception
+)
+{
+	zend_coroutine_t *coroutine = (zend_coroutine_t *) event;
+
+	if (coroutine->extended_data != NULL) {
+		zend_object *exception_obj = coroutine->extended_data;
+		coroutine->extended_data = NULL;
+		zend_throw_exception_internal(exception_obj);
+	}
+}
+
+static void exception_coroutine_entry(void)
+{
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (UNEXPECTED(coroutine == NULL || coroutine->extended_data == NULL)) {
+		return;
+	}
+
+	zend_object *exception = coroutine->extended_data;
+	coroutine->extended_data = NULL;
+
+	zend_throw_exception_internal(exception);
+}
+
+bool async_spawn_and_throw(zend_object *exception, zend_async_scope_t *scope, int32_t priority)
+{
+	bool need_new_scope = false;
+
+	if (scope == NULL) {
+		scope = ZEND_ASYNC_CURRENT_SCOPE;
+	}
+
+	if (ZEND_ASYNC_SCOPE_IS_CANCELLED(scope) || ZEND_ASYNC_SCOPE_IS_CLOSED(scope)) {
+		scope = scope->parent_scope;
+		need_new_scope = true;
+	}
+
+	if (scope == NULL || ZEND_ASYNC_SCOPE_IS_CLOSED(scope)) {
+		async_warning("To throw an exception in a coroutine, "
+				"the Scope must be active or have a parent that is not closed.");
+		return false;
+	}
+
+	if (need_new_scope) {
+		scope = ZEND_ASYNC_NEW_SCOPE(scope);
+		if (UNEXPECTED(scope == NULL)) {
+			async_warning("Failed to create a new Scope for throwing an exception in a coroutine.");
+			return false;
+		}
+	}
+
+	zend_coroutine_t *coroutine = ZEND_ASYNC_SPAWN_WITH_SCOPE_EX(scope, priority);
+	if (UNEXPECTED(coroutine == NULL)) {
+		async_warning("Failed to spawn a coroutine for throwing an exception.");
+		return false;
+	}
+
+	coroutine->event.add_callback(&coroutine->event, ZEND_ASYNC_EVENT_CALLBACK(exception_coroutine_finally_callback));
+	if (UNEXPECTED(EG(exception))) {
+		coroutine->event.dispose(&coroutine->event);
+		return false;
+	}
+
+	coroutine->internal_entry = exception_coroutine_entry;
+	coroutine->extended_data = exception;
+	GC_ADDREF(exception);
+
+	return true;
 }
