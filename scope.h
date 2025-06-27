@@ -76,8 +76,6 @@ void async_register_scope_ce(void);
 /* Check if coroutine belongs to this scope or any of its child scopes */
 bool async_scope_contains_coroutine(async_scope_t *scope, zend_coroutine_t *coroutine, uint32_t depth);
 
-bool async_scope_try_to_handle_exception(async_coroutine_t *coroutine, zend_object *exception);
-
 void async_scope_notify_coroutine_finished(async_coroutine_t *coroutine);
 
 /* Mark coroutine as zombie and update active count */

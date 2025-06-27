@@ -314,25 +314,14 @@ METHOD(onFinally)
 ///////////////////////////////////////////////////////////
 
 ///////////////////////////////////////////////////////////
-/// async_coroutine_call_finally_handlers
+/// Finally handlers functions
 ///////////////////////////////////////////////////////////
-
-// Structure for coroutine finally handlers context
-typedef struct {
-	async_coroutine_t *coroutine;
-	zend_object *composite_exception;
-} coroutine_finally_handlers_context_t;
-
 static zend_result finally_handlers_iterator_handler(async_iterator_t *iterator, zval *current, zval *key)
 {
-	coroutine_finally_handlers_context_t *context = (coroutine_finally_handlers_context_t *) iterator->extended_data;
-	async_coroutine_t *coroutine = context->coroutine;
+	finally_handlers_context_t *context = (finally_handlers_context_t *) iterator->extended_data;
 	zval rv;
 	ZVAL_UNDEF(&rv);
-	zval param;
-	ZVAL_OBJ(&param, &coroutine->std);
-
-	call_user_function(NULL, NULL, current, &rv, 1, &param);
+	call_user_function(NULL, NULL, current, &rv, context->params_count, context->params);
 	zval_ptr_dtor(&rv);
 
 	// Check for exceptions after handler execution
@@ -342,7 +331,7 @@ static zend_result finally_handlers_iterator_handler(async_iterator_t *iterator,
 		zend_object *current_exception = EG(exception);
 		GC_ADDREF(current_exception);
 		zend_clear_exception();
-		
+
 		// Check for graceful/unwind exit exceptions
 		if (zend_is_graceful_exit(current_exception) || zend_is_unwind_exit(current_exception)) {
 			// Release CompositeException if exists
@@ -354,7 +343,7 @@ static zend_result finally_handlers_iterator_handler(async_iterator_t *iterator,
 			zend_throw_exception_internal(current_exception);
 			return SUCCESS;
 		}
-		
+
 		// Handle regular exceptions
 		if (context->composite_exception == NULL) {
 			context->composite_exception = current_exception;
@@ -387,37 +376,59 @@ static void finally_handlers_iterator_dtor(zend_async_iterator_t *zend_iterator)
 		return;
 	}
 
-	coroutine_finally_handlers_context_t *context = iterator->extended_data;
+	finally_handlers_context_t *context = iterator->extended_data;
 
 	// Throw CompositeException if any exceptions were collected
 	if (context->composite_exception != NULL) {
-		zend_throw_exception_internal(context->composite_exception);
+
+		async_scope_t *scope = (async_scope_t *) context->scope;
+
+		if (ZEND_ASYNC_SCOPE_CATCH(
+			&scope->scope,
+			&context->coroutine->coroutine,
+			NULL,
+			context->composite_exception,
+			false,
+			ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(&scope->scope)
+		)) {
+			OBJ_RELEASE(context->composite_exception);
+		} else {
+			zend_throw_exception_internal(context->composite_exception);
+		}
+
 		context->composite_exception = NULL;
 	}
 
-	// Release coroutine reference
-	OBJ_RELEASE(&context->coroutine->std);
+	if (context->dtor != NULL) {
+		context->dtor(context);
+		context->dtor = NULL;
+	}
 
 	// Free the context
 	efree(context);
 	iterator->extended_data = NULL;
+
+	//
+	// If everything is correct,
+	// the Scope will destroy itself as soon as the coroutine created within it completes execution.
+	// Therefore, there's no point in taking additional actions to clean up resources.
+	//
 }
 
-static void async_coroutine_call_finally_handlers(async_coroutine_t *coroutine)
+bool async_call_finally_handlers(HashTable *finally_handlers, finally_handlers_context_t *context, int32_t priority)
 {
-	if (coroutine->finally_handlers == NULL || zend_hash_num_elements(coroutine->finally_handlers) == 0) {
-		return;
+	if (finally_handlers == NULL || zend_hash_num_elements(finally_handlers) == 0) {
+		return false;
 	}
 
 	// Create a special child scope for finally handlers
-	zend_async_scope_t *child_scope = ZEND_ASYNC_NEW_SCOPE(coroutine->coroutine.scope);
+	zend_async_scope_t *child_scope = ZEND_ASYNC_NEW_SCOPE(context->scope);
 	if (UNEXPECTED(child_scope == NULL)) {
-		return;
+		return false;
 	}
 
 	zval handlers;
-	ZVAL_ARR(&handlers, coroutine->finally_handlers);
-	coroutine->finally_handlers = NULL;
+	ZVAL_ARR(&handlers, finally_handlers);
 
 	async_iterator_t * iterator = async_iterator_new(
 		&handlers,
@@ -426,26 +437,26 @@ static void async_coroutine_call_finally_handlers(async_coroutine_t *coroutine)
 		finally_handlers_iterator_handler,
 		child_scope,
 		0,
-		0,
+		priority,
 		0
 	);
 
 	zval_ptr_dtor(&handlers);
 
 	if (UNEXPECTED(EG(exception))) {
-		return;
+		return false;
 	}
 
-	// Create context for finally handlers
-	coroutine_finally_handlers_context_t *context = ecalloc(1, sizeof(coroutine_finally_handlers_context_t));
-	context->coroutine = coroutine;
 	context->composite_exception = NULL;
-
 	iterator->extended_data = context;
 	iterator->extended_dtor = finally_handlers_iterator_dtor;
-	GC_ADDREF(&coroutine->std);
+	async_iterator_run_in_coroutine(iterator, priority);
 
-	async_iterator_run_in_coroutine(iterator, 0);
+	if (UNEXPECTED(EG(exception))) {
+		return false;
+	}
+
+	return true;
 }
 
 ///////////////////////////////////////////////////////////
@@ -471,6 +482,34 @@ void async_coroutine_cleanup(zend_fiber_context *context)
 	
 
 	OBJ_RELEASE(&coroutine->std);
+}
+
+static void finally_context_dtor(finally_handlers_context_t *context)
+{
+	if (context->coroutine != NULL) {
+		// Release the coroutine reference
+		OBJ_RELEASE(&context->coroutine->std);
+		context->coroutine = NULL;
+	}
+}
+
+static zend_always_inline void coroutine_call_finally_handlers(async_coroutine_t * coroutine)
+{
+	HashTable *finally_handlers = coroutine->finally_handlers;
+	coroutine->finally_handlers = NULL;
+	finally_handlers_context_t *finally_context = ecalloc(1, sizeof(finally_handlers_context_t));
+	finally_context->coroutine = coroutine;
+	finally_context->scope = coroutine->coroutine.scope;
+	finally_context->dtor = finally_context_dtor;
+	finally_context->params_count = 1;
+	ZVAL_OBJ(&finally_context->params[0], &coroutine->std);
+
+	if (async_call_finally_handlers(finally_handlers, finally_context, 1)) {
+		GC_ADDREF(&coroutine->std); // Keep reference to coroutine while handlers are running
+	} else {
+		efree(finally_context);
+		zend_array_destroy(finally_handlers);
+	}
 }
 
 void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t * coroutine)
@@ -533,7 +572,10 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 	}
 
 	// Call finally handlers if any
-	async_coroutine_call_finally_handlers(coroutine);
+	if (coroutine->finally_handlers != NULL && zend_hash_num_elements(coroutine->finally_handlers) > 0) {
+		coroutine_call_finally_handlers(coroutine);
+	}
+
 	zend_async_waker_destroy(&coroutine->coroutine);
 
 	zend_exception_restore();
@@ -549,10 +591,10 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 
 	// Before the exception leads to graceful termination,
 	// we give one last chance to handle it using Scope handlers.
-	if (exception != NULL
-		&& coroutine->coroutine.scope->catch_or_cancel(
+	if (exception != NULL && ZEND_ASYNC_SCOPE_CATCH(
 			coroutine->coroutine.scope,
 			&coroutine->coroutine,
+			NULL,
 			exception,
 			false,
 			ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(coroutine->coroutine.scope)

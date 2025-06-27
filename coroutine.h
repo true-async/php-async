@@ -50,6 +50,22 @@ struct _async_coroutine_s {
 	zend_object std;
 };
 
+typedef struct _finally_handlers_context_s finally_handlers_context_t;
+
+// Structure for finally handlers context
+struct _finally_handlers_context_s {
+	union {
+		void *target;
+		async_coroutine_t *coroutine;
+	};
+	zend_async_scope_t *scope;
+	HashTable *finally_handlers;
+	zend_object *composite_exception;
+	void (*dtor)(finally_handlers_context_t *context);
+	uint32_t params_count;
+	zval params[1];
+};
+
 void async_register_coroutine_ce(void);
 zend_coroutine_t *async_new_coroutine(zend_async_scope_t *scope);
 void async_coroutine_cleanup(zend_fiber_context *context);
@@ -62,5 +78,6 @@ bool async_coroutine_context_set(zend_coroutine_t * z_coroutine, zval *key, zval
 bool async_coroutine_context_get(zend_coroutine_t * z_coroutine, zval *key, zval *result);
 bool async_coroutine_context_has(zend_coroutine_t * z_coroutine, zval *key);
 bool async_coroutine_context_delete(zend_coroutine_t * z_coroutine, zval *key);
+bool async_call_finally_handlers(HashTable *finally_handlers, finally_handlers_context_t *context, int32_t priority);
 
 #endif //COROUTINE_H
