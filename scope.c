@@ -881,7 +881,7 @@ static bool scope_catch_or_cancel(
 	//
 
 	if (false == is_cancellation
-		&& (async_scope->child_exception_fci != NULL || async_scope->child_exception_fcc != NULL)
+		&& (async_scope->exception_fci != NULL || async_scope->child_exception_fci != NULL)
 		&& try_to_handle_exception(
 			async_scope, (async_scope_t *) from_scope, exception, (async_coroutine_t *) coroutine
 		)) {
@@ -959,8 +959,6 @@ static bool scope_catch_or_cancel(
 			false
 		);
 	}
-
-	goto exit_true;
 
 exit_false:
 	result = false;

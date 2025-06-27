@@ -232,24 +232,13 @@ static void exception_coroutine_entry(void)
 
 bool async_spawn_and_throw(zend_object *exception, zend_async_scope_t *scope, int32_t priority)
 {
-	bool need_new_scope = false;
-
 	if (scope == NULL) {
 		scope = ZEND_ASYNC_CURRENT_SCOPE;
 	}
 
+	// If the current Scope can no longer create coroutines, we use a trick.
+	// We create a child Scope with a single coroutine.
 	if (ZEND_ASYNC_SCOPE_IS_CANCELLED(scope) || ZEND_ASYNC_SCOPE_IS_CLOSED(scope)) {
-		scope = scope->parent_scope;
-		need_new_scope = true;
-	}
-
-	if (scope == NULL || ZEND_ASYNC_SCOPE_IS_CLOSED(scope)) {
-		async_warning("To throw an exception in a coroutine, "
-				"the Scope must be active or have a parent that is not closed.");
-		return false;
-	}
-
-	if (need_new_scope) {
 		scope = ZEND_ASYNC_NEW_SCOPE(scope);
 		if (UNEXPECTED(scope == NULL)) {
 			async_warning("Failed to create a new Scope for throwing an exception in a coroutine.");
