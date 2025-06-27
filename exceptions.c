@@ -193,15 +193,8 @@ ZEND_API ZEND_COLD void async_composite_exception_add_exception(zend_object *com
 	}
 }
 
-static void exception_coroutine_finally_callback(
-	zend_async_event_t *event,
-	zend_async_event_callback_t *callback,
-	void * result,
-	zend_object *exception
-)
+static void exception_coroutine_dispose(zend_coroutine_t *coroutine)
 {
-	zend_coroutine_t *coroutine = (zend_coroutine_t *) event;
-
 	if (coroutine->extended_data != NULL) {
 		zend_object *exception_obj = coroutine->extended_data;
 		coroutine->extended_data = NULL;
@@ -245,14 +238,9 @@ bool async_spawn_and_throw(zend_object *exception, zend_async_scope_t *scope, in
 		return false;
 	}
 
-	coroutine->event.add_callback(&coroutine->event, ZEND_ASYNC_EVENT_CALLBACK(exception_coroutine_finally_callback));
-	if (UNEXPECTED(EG(exception))) {
-		coroutine->event.dispose(&coroutine->event);
-		return false;
-	}
-
 	coroutine->internal_entry = exception_coroutine_entry;
 	coroutine->extended_data = exception;
+	coroutine->extended_dispose = exception_coroutine_dispose;
 	GC_ADDREF(exception);
 
 	return true;

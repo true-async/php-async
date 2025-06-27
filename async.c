@@ -945,18 +945,6 @@ PHP_RINIT_FUNCTION(async) /* {{{ */
 	return SUCCESS;
 } /* }}} */
 
-PHP_RSHUTDOWN_FUNCTION(async) /* {{{ */
-{
-	ZEND_ASYNC_REACTOR_SHUTDOWN();
-
-	circular_buffer_dtor(&ASYNC_G(microtasks));
-	circular_buffer_dtor(&ASYNC_G(coroutine_queue));
-	zend_hash_destroy(&ASYNC_G(coroutines));
-
-	//async_host_name_list_dtor();
-	return SUCCESS;
-} /* }}} */
-
 zend_module_entry async_module_entry = {
 	STANDARD_MODULE_HEADER,
 	PHP_ASYNC_NAME,
@@ -964,7 +952,7 @@ zend_module_entry async_module_entry = {
 	PHP_MINIT(async),
 	PHP_MSHUTDOWN(async),
 	PHP_RINIT(async),
-	PHP_RSHUTDOWN(async),
+	NULL,
 	PHP_MINFO(async),
 	PHP_ASYNC_VERSION,
 	PHP_MODULE_GLOBALS(async),

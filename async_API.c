@@ -201,6 +201,17 @@ static void graceful_shutdown(void)
 	start_graceful_shutdown();
 }
 
+static void engine_shutdown(void)
+{
+	ZEND_ASYNC_REACTOR_SHUTDOWN();
+
+	circular_buffer_dtor(&ASYNC_G(microtasks));
+	circular_buffer_dtor(&ASYNC_G(coroutine_queue));
+	zend_hash_destroy(&ASYNC_G(coroutines));
+
+	//async_host_name_list_dtor();
+}
+
 zend_array * get_coroutines(void)
 {
 	return &ASYNC_G(coroutines);
@@ -891,6 +902,7 @@ void async_api_register(void)
 		add_microtask,
 		get_awaiting_info,
 		async_get_class_ce,
-		(zend_async_new_iterator_t)async_iterator_new
+		(zend_async_new_iterator_t)async_iterator_new,
+		engine_shutdown
 	);
 }
