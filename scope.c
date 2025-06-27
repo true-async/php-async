@@ -1335,16 +1335,17 @@ static zend_always_inline bool try_to_handle_exception(
 	ZVAL_OBJ(&parameters[1], &coroutine->std);
 	ZVAL_OBJ(&parameters[2], exception);
 
-	// We're trying to handle the exception using a callback function within the current Scope.
-	if (current_scope->exception_fci != NULL && current_scope->exception_fcc != NULL) {
+	// If the exception came from another child Scope,
+	// we first try to handle it using the child Scope exception handler.
+	if (from_scope != NULL && current_scope->child_exception_fci != NULL && current_scope->child_exception_fcc != NULL) {
 
-		zend_fcall_info *exception_fci = current_scope->exception_fci;
+		zend_fcall_info *exception_fci = current_scope->child_exception_fci;
 
 		exception_fci->retval = &retval;
 		exception_fci->param_count = 3;
 		exception_fci->params = &parameters[0];
 
-		zend_result result = zend_call_function(exception_fci, current_scope->exception_fcc);
+		zend_result result = zend_call_function(exception_fci, current_scope->child_exception_fcc);
 		Z_TRY_DELREF(retval);
 		exception_fci->retval = NULL;
 		exception_fci->param_count = 0;
@@ -1355,19 +1356,16 @@ static zend_always_inline bool try_to_handle_exception(
 		}
 	}
 
-	// If the previous attempt didn't work,
-	// we try to handle the error using the parent handler via setChildScopeExceptionHandler.
-	const async_scope_t * parent_scope = (async_scope_t *) current_scope->scope.parent_scope;
+	// Second attempt is to handle the exception using the current Scope's exception handler.
+	if (current_scope->exception_fci != NULL && current_scope->exception_fcc != NULL) {
 
-	if (parent_scope != NULL && parent_scope->child_exception_fci != NULL && parent_scope->child_exception_fcc != NULL) {
-
-		zend_fcall_info *exception_fci = parent_scope->exception_fci;
+		zend_fcall_info *exception_fci = current_scope->exception_fci;
 
 		exception_fci->retval = &retval;
 		exception_fci->param_count = 3;
 		exception_fci->params = &parameters[0];
 
-		zend_result result = zend_call_function(exception_fci, parent_scope->child_exception_fcc);
+		zend_result result = zend_call_function(exception_fci, current_scope->exception_fcc);
 		Z_TRY_DELREF(retval);
 		exception_fci->retval = NULL;
 		exception_fci->param_count = 0;
