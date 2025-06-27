@@ -42,9 +42,9 @@ $coro->onFinally(function($coroutine) {
 
 ?>
 --EXPECT--
+Caught single exception: Exception - Original exception
 Caught CompositeException
-Number of exceptions: 4
-Exception 1: Exception - Original exception
-Exception 2: Exception - First exception
-Exception 3: RuntimeException - Second exception
-Exception 4: InvalidArgumentException - Third exception
+Number of exceptions: 3
+Exception 1: Exception - First exception
+Exception 2: RuntimeException - Second exception
+Exception 3: InvalidArgumentException - Third exception

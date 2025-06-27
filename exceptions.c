@@ -173,30 +173,23 @@ ZEND_API ZEND_COLD void async_composite_exception_add_exception(zend_object *com
 	if (composite == NULL || exception == NULL) {
 		return;
 	}
-	
-	zval *exceptions_prop = zend_read_property(
-		async_ce_composite_exception, composite, "exceptions", sizeof("exceptions")-1, 0, NULL
-	);
-	
-	if (Z_TYPE_P(exceptions_prop) == IS_ARRAY) {
-		zval exception_zval;
-		ZVAL_OBJ(&exception_zval, exception);
 
-		if (UNEXPECTED(zend_hash_next_index_insert(Z_ARRVAL_P(exceptions_prop), &exception_zval) == NULL)) {
-			zend_error(E_CORE_WARNING, "Failed to add exception to composite exception");
+	zval *exceptions_prop = &composite->properties_table[7];
 
-			if (transfer) {
-				OBJ_RELEASE(exception);
-			}
+	if (Z_TYPE_P(exceptions_prop) == IS_UNDEF) {
+		array_init(exceptions_prop);
+	}
 
-			return;
+	zval exception_zval;
+	ZVAL_OBJ(&exception_zval, exception);
+
+	if (UNEXPECTED(zend_hash_next_index_insert(Z_ARRVAL_P(exceptions_prop), &exception_zval) == NULL)) {
+		zend_error(E_CORE_WARNING, "Failed to add exception to composite exception");
+		if (transfer) {
+			OBJ_RELEASE(exception);
 		}
-
-		if (false == transfer) {
-			GC_ADDREF(exception);
-		}
-	} else if (transfer) {
-		OBJ_RELEASE(exception);
+	} else if (false == transfer) {
+		GC_ADDREF(exception);
 	}
 }
 

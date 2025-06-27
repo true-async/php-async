@@ -1,5 +1,5 @@
 /* This is a generated file, edit the .stub.php file instead.
- * Stub hash: 36d1b17add65c708e2b11b1c651eee54d31dee1c */
+ * Stub hash: 9bd64d6113fa23a91c46300cf51db636fea98124 */
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_CompositeException_addException, 0, 1, IS_VOID, 0)
 	ZEND_ARG_OBJ_INFO(0, exception, Throwable, 0)
@@ -82,10 +82,10 @@ static zend_class_entry *register_class_Async_CompositeException(zend_class_entr
 	zend_class_entry ce, *class_entry;
 
 	INIT_NS_CLASS_ENTRY(ce, "Async", "CompositeException", class_Async_CompositeException_methods);
-	class_entry = zend_register_internal_class_with_flags(&ce, class_entry_Exception, ZEND_ACC_FINAL);
+	class_entry = zend_register_internal_class_with_flags(&ce, class_entry_Exception, ZEND_ACC_FINAL|ZEND_ACC_NO_DYNAMIC_PROPERTIES);
 
 	zval property_exceptions_default_value;
-	ZVAL_EMPTY_ARRAY(&property_exceptions_default_value);
+	ZVAL_UNDEF(&property_exceptions_default_value);
 	zend_string *property_exceptions_name = zend_string_init("exceptions", sizeof("exceptions") - 1, 1);
 	zend_declare_typed_property(class_entry, property_exceptions_name, &property_exceptions_default_value, ZEND_ACC_PRIVATE, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_ARRAY));
 	zend_string_release(property_exceptions_name);

@@ -39,10 +39,11 @@ class PollException extends \Exception {}
 /**
  * Exception that can contain multiple exceptions.
  * Used when multiple exceptions occur in finally handlers.
+ * @strict-properties
  */
 final class CompositeException extends \Exception
 {
-    private array $exceptions = [];
+    private array $exceptions;
     
     /**
      * Add an exception to the composite.
