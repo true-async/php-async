@@ -1,0 +1,50 @@
+--TEST--
+Coroutine onFinally multiple exceptions handling
+--FILE--
+<?php
+
+use function Async\spawn;
+use Async\CompositeException;
+use Async\Scope;
+
+$scope = new Scope();
+
+$scope->setExceptionHandler(function($scope, $coroutine, $exception) {
+    if ($exception instanceof CompositeException) {
+        echo "Caught CompositeException\n";
+        echo "Number of exceptions: " . count($exception->getExceptions()) . "\n";
+        
+        $exceptions = $exception->getExceptions();
+        foreach ($exceptions as $i => $ex) {
+            echo "Exception " . ($i + 1) . ": " . get_class($ex) . " - " . $ex->getMessage() . "\n";
+        }
+    } else {
+        echo "Caught single exception: " . get_class($exception) . " - " . $exception->getMessage() . "\n";
+    }
+});
+
+$coro = $scope->spawn(function() {
+    throw new Exception("Original exception");
+});
+
+// Add multiple finally handlers that will throw exceptions
+$coro->onFinally(function($coroutine) {
+    throw new Exception("First exception");
+});
+
+$coro->onFinally(function($coroutine) {
+    throw new RuntimeException("Second exception"); 
+});
+
+$coro->onFinally(function($coroutine) {
+    throw new InvalidArgumentException("Third exception");
+});
+
+?>
+--EXPECT--
+Caught CompositeException
+Number of exceptions: 4
+Exception 1: Exception - Original exception
+Exception 2: Exception - First exception
+Exception 3: RuntimeException - Second exception
+Exception 4: InvalidArgumentException - Third exception
