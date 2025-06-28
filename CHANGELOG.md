@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.0] - TBD
 
 ### Added
+- **Async-aware destructor handling (PHP Core)**: Implemented `async_shutdown_destructors()` function to properly 
+  handle destructors that may suspend execution in async context
 - **CompositeException**: New exception class for handling multiple exceptions that occur in finally handlers
     - Automatically collects multiple exceptions from `onFinally` handlers in both Scope and Coroutine
     - Provides `addException()` method to add exceptions to the composite
