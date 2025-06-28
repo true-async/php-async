@@ -479,7 +479,6 @@ void async_coroutine_cleanup(zend_fiber_context *context)
 	zend_vm_stack_destroy();
 	EG(vm_stack) = current_stack;
 	coroutine->execute_data = NULL;
-	
 
 	OBJ_RELEASE(&coroutine->std);
 }
