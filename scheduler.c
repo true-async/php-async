@@ -348,10 +348,8 @@ static void async_scheduler_dtor(void)
 	zend_hash_destroy(&ASYNC_G(coroutines));
 	zend_hash_init(&ASYNC_G(coroutines), 0, NULL, NULL, 0);
 
-	ZEND_ASYNC_CURRENT_COROUTINE = NULL;
 	ZEND_ASYNC_GRACEFUL_SHUTDOWN = false;
 	ZEND_ASYNC_SCHEDULER_CONTEXT = false;
-	ZEND_ASYNC_DEACTIVATE;
 
 	zend_exception_restore();
 }
@@ -655,6 +653,9 @@ void async_scheduler_main_coroutine_suspend(void)
 	EG(current_fiber_context) = transfer->context;
 
 	switch_to_scheduler(NULL);
+
+	ZEND_ASYNC_CURRENT_COROUTINE = NULL;
+	ZEND_ASYNC_DEACTIVATE;
 
 	if (ASYNC_G(main_transfer)) {
 		efree(ASYNC_G(main_transfer));

@@ -10,7 +10,7 @@ register_shutdown_function(function() {
     
     try {
         spawn(function() {
-            echo "should not execute\n";
+            echo "should execute\n";
         });
         echo "spawn succeeded\n";
     } catch (Async\AsyncException $e) {
@@ -33,5 +33,6 @@ start
 end
 normal spawn works
 shutdown handler start
-Error: Cannot spawn a coroutine when async is disabled
+spawn succeeded
 shutdown handler end
+should execute

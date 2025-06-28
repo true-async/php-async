@@ -774,6 +774,9 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(zend_fiber_transfer *transfer)
 	// The scheduler coroutine always terminates into the main execution flow.
 	//
 	if (UNEXPECTED(&coroutine->coroutine == ZEND_ASYNC_SCHEDULER)) {
+
+		ZEND_ASYNC_SCHEDULER = NULL;
+
 		if (transfer != ASYNC_G(main_transfer)) {
 
 			if (UNEXPECTED(Z_TYPE(transfer->value) == IS_OBJECT)) {
