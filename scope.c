@@ -95,7 +95,6 @@ async_scope_free_coroutines(async_scope_t *scope)
 /// Scope methods
 //////////////////////////////////////////////////////////
 
-static void scope_dispose_coroutines_and_children(async_scope_t *scope);
 static void callback_resolve_when_zombie_completed(
 	zend_async_event_t *event, zend_async_event_callback_t *callback, void * result, zend_object *exception
 );
