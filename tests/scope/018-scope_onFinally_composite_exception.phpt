@@ -43,7 +43,6 @@ $scope->dispose();
 
 ?>
 --EXPECT--
-Caught single exception: Exception - Original exception
 Caught CompositeException
 Number of exceptions: 3
 Exception 1: Exception - First exception

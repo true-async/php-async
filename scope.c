@@ -1389,6 +1389,10 @@ static zend_always_inline bool try_to_handle_exception(
 static void async_scope_call_finally_handlers_dtor(finally_handlers_context_t *context)
 {
 	zend_async_scope_t *scope = context->target;
+	if (ZEND_ASYNC_EVENT_REF(&scope->event) > 0) {
+		ZEND_ASYNC_EVENT_DEL_REF(&scope->event);
+	}
+
 	scope->try_to_dispose(scope);
 	context->target = NULL;
 }
