@@ -259,8 +259,22 @@ static bool resolve_deadlocks(void)
 {
 	zval *value;
 
+	const zend_long active_coroutines = ZEND_ASYNC_ACTIVE_COROUTINE_COUNT;
+	const zend_long real_coroutines = zend_hash_num_elements(&ASYNC_G(coroutines));
+
+	if (active_coroutines > real_coroutines) {
+		async_warning(
+			"The active coroutine counter contains an incorrect value: %u, real counter: %u.",
+			active_coroutines, real_coroutines
+		);
+	}
+
+	if (real_coroutines == 0) {
+		return false;
+	}
+
 	async_warning(
-		"no active coroutines, deadlock detected. Coroutines in waiting: %u", ZEND_ASYNC_ACTIVE_COROUTINE_COUNT
+		"no active coroutines, deadlock detected. Coroutines in waiting: %u", real_coroutines
 	);
 
 	ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), value)
@@ -655,6 +669,7 @@ void async_scheduler_main_coroutine_suspend(void)
 	switch_to_scheduler(NULL);
 
 	ZEND_ASYNC_CURRENT_COROUTINE = NULL;
+	ZEND_ASSERT(ZEND_ASYNC_ACTIVE_COROUTINE_COUNT == 0 && "The active coroutine counter must be 1 at this point");
 	ZEND_ASYNC_DEACTIVATE;
 
 	if (ASYNC_G(main_transfer)) {

@@ -104,7 +104,7 @@ static bool scope_can_be_disposed(async_scope_t *scope, bool with_zombies, bool 
 static void scope_check_completion_and_notify(async_scope_t *scope, bool with_zombies);
 
 // Finally handlers execution functions
-static void async_scope_call_finally_handlers(async_scope_t *scope);
+static bool async_scope_call_finally_handlers(async_scope_t *scope);
 
 // Structure for scope finally handlers context
 typedef struct {
@@ -1068,18 +1068,21 @@ static void scope_dispose(zend_async_event_t *scope_event)
 		return;
 	}
 
-	ZEND_ASYNC_EVENT_DEL_REF(scope_event);
+	if (ZEND_ASYNC_EVENT_REF(scope_event) == 1) {
+		ZEND_ASYNC_EVENT_DEL_REF(scope_event);
+	}
 
 	async_scope_t *scope = (async_scope_t *) scope_event;
 
 	ZEND_ASSERT(scope->coroutines.length == 0 && scope->scope.scopes.length == 0
 		&& "Scope should be empty before disposal");
 
-	if (scope->finally_handlers != NULL && zend_hash_num_elements(scope->finally_handlers) > 0) {
-		async_scope_call_finally_handlers(scope);
-		if (ZEND_ASYNC_EVENT_REF(scope_event) == 1) {
-			return;
-		}
+	if (scope->finally_handlers != NULL
+		&& zend_hash_num_elements(scope->finally_handlers) > 0
+		&& async_scope_call_finally_handlers(scope)) {
+		// If finally handlers were called, we don't dispose the scope yet
+		ZEND_ASYNC_EVENT_ADD_REF(&scope->scope.event);
+		return;
 	}
 
 	if (scope->scope.parent_scope) {
@@ -1106,9 +1109,13 @@ static void scope_dispose(zend_async_event_t *scope_event)
 	// Free exception handlers
 	if (scope->exception_fci != NULL || scope->exception_fcc != NULL) {
 		zend_free_fci(scope->exception_fci, scope->exception_fcc);
+		scope->exception_fci = NULL;
+		scope->exception_fcc = NULL;
 	}
 	if (scope->child_exception_fci != NULL || scope->child_exception_fcc != NULL) {
 		zend_free_fci(scope->child_exception_fci, scope->child_exception_fcc);
+		scope->child_exception_fci = NULL;
+		scope->child_exception_fcc = NULL;
 	}
 	
 	// Free finally handlers
@@ -1379,10 +1386,17 @@ static zend_always_inline bool try_to_handle_exception(
 	return false; // Exception not handled
 }
 
-static void async_scope_call_finally_handlers(async_scope_t *scope)
+static void async_scope_call_finally_handlers_dtor(finally_handlers_context_t *context)
+{
+	zend_async_scope_t *scope = context->target;
+	scope->try_to_dispose(scope);
+	context->target = NULL;
+}
+
+static bool async_scope_call_finally_handlers(async_scope_t *scope)
 {
 	if (scope->finally_handlers == NULL || zend_hash_num_elements(scope->finally_handlers) == 0) {
-		return;
+		return false;
 	}
 
 	HashTable *finally_handlers = scope->finally_handlers;
@@ -1390,7 +1404,7 @@ static void async_scope_call_finally_handlers(async_scope_t *scope)
 	finally_handlers_context_t *finally_context = ecalloc(1, sizeof(finally_handlers_context_t));
 	finally_context->target = scope;
 	finally_context->scope = &scope->scope;
-	finally_context->dtor = NULL;
+	finally_context->dtor = async_scope_call_finally_handlers_dtor;
 	finally_context->params_count = 1;
 
 	if (scope->scope.scope_object != NULL) {
@@ -1402,5 +1416,9 @@ static void async_scope_call_finally_handlers(async_scope_t *scope)
 	if (false == async_call_finally_handlers(finally_handlers, finally_context, 1)) {
 		efree(finally_context);
 		zend_array_destroy(finally_handlers);
+		return false;
+	} else {
+		ZEND_ASYNC_EVENT_ADD_REF(&scope->scope.event);
+		return true;
 	}
 }

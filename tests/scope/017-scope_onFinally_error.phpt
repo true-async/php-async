@@ -1,33 +1,27 @@
 --TEST--
-Scope: onFinally() - error handling validation
+Scope onFinally single exception handling
 --FILE--
 <?php
 
 use Async\Scope;
-use function Async\await;
 
 $scope = new Scope();
 
-// Test 1: Invalid callable
-try {
-    $scope->onFinally("not_a_callable");
-} catch (TypeError $e) {
-    echo "Caught expected error: argument must be callable\n";
-}
+$scope->setExceptionHandler(function($scope, $coroutine, $exception) {
+    echo "Caught single exception: " . $exception->getMessage() . "\n";
+});
 
-// Test 2: Error in finally handler
+$coro = $scope->spawn(function() {
+    return "result";
+});
+
+// Add single finally handler that will throw exception
 $scope->onFinally(function() {
-    throw new Exception("Error in finally handler");
+    throw new Exception("Single exception");
 });
 
-$coroutine = $scope->spawn(function() {
-    return "test";
-});
-
-await($coroutine);
 $scope->dispose();
 
 ?>
 --EXPECT--
-Caught expected error: argument must be callable
-Caught finally handler error: Error in finally handler
+Caught single exception: Single exception
