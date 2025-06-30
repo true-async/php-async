@@ -164,7 +164,7 @@ bool libuv_reactor_execute(bool no_wait)
 /* {{{ libuv_reactor_loop_alive */
 bool libuv_reactor_loop_alive(void)
 {
-	if (UVLOOP == NULL) {
+	if (!ASYNC_G(reactor_started)) {
 		return false;
 	}
 
