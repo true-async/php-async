@@ -15,6 +15,7 @@
 */
 
 #include "zend_exceptions.h"
+#include "zend_closures.h"
 #ifdef HAVE_CONFIG_H
 #include <config.h>
 #endif
@@ -142,10 +143,10 @@ PHP_FUNCTION(Async_suspend)
 
 PHP_FUNCTION(Async_protect)
 {
-	zval *closure;
+	zend_object *closure;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_OBJECT(closure)
+		Z_PARAM_OBJ_OF_CLASS(closure, zend_ce_closure)
 	ZEND_PARSE_PARAMETERS_END();
 
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
@@ -159,7 +160,10 @@ PHP_FUNCTION(Async_protect)
 		zval result;
 		ZVAL_UNDEF(&result);
 
-		if (UNEXPECTED(call_user_function(NULL, NULL, closure, &result, 0, NULL) == FAILURE)) {
+		zval closure_zval;
+		ZVAL_OBJ(&closure_zval, closure);
+
+		if (UNEXPECTED(call_user_function(NULL, NULL, &closure_zval, &result, 0, NULL) == FAILURE)) {
 			zend_throw_error(NULL, "Failed to call finally handler in finished coroutine");
 			zval_ptr_dtor(&result);
 		}
