@@ -3,10 +3,6 @@ PHP_ARG_ENABLE([async],
   [AS_HELP_STRING([--enable-async],
     [Enable True Async])])
 
-PHP_ARG_WITH([async_libuv],
-  [for True Async LibUV support],
-  [AS_HELP_STRING([--with-async-libuv],
-    [Build True Async with LibUv support])], yes)
 
 if test "$PHP_ASYNC" = "yes"; then
   dnl Define a symbol for C code.
@@ -24,10 +20,6 @@ if test "$PHP_ASYNC" = "yes"; then
   PHP_INSTALL_HEADERS([ext/async],
     [php_async.h coroutine.h scope.h scheduler.h exceptions.h iterator.h async_API.h context.h])
 
-  if test "$PHP_ASYNC_LIBUV" = "yes"; then
-    if test "$PHP_ASYNC" != "yes"; then
-      AC_MSG_ERROR([libuv requires True Async API. Use --enable-async.])
-    fi
 
     AC_PATH_PROG(PKG_CONFIG, pkg-config, no)
 
@@ -85,5 +77,4 @@ if test "$PHP_ASYNC" = "yes"; then
     dnl Add libuv-specific reactor code.
     PHP_ADD_SOURCES([ext/async], [libuv_reactor.c])
     PHP_INSTALL_HEADERS([ext/async], [libuv_reactor.h])
-  fi
 fi

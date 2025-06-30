@@ -1,7 +1,6 @@
 // vim:ft=javascript
 
 ARG_ENABLE('async', 'Enable True Async', 'no');
-ARG_WITH('async_libuv', 'Build True Async with libuv support', 'yes');
 
 if (PHP_ASYNC == "yes") {
 
@@ -10,7 +9,7 @@ if (PHP_ASYNC == "yes") {
     }
 
     if (!PHP_ASYNC_API || PHP_ASYNC_API != "yes") {
-        ERROR("PHP TRUE ASYNC API is required. Please configure PHP with --enable-experimental-async-api.");
+        ERROR("PHP TRUE ASYNC API is required. Please configure PHP with --with-async-api.");
     }
 
     EXTENSION("async", "async.c coroutine.c scope.c scheduler.c exceptions.c iterator.c async_API.c");
@@ -27,25 +26,19 @@ if (PHP_ASYNC == "yes") {
     PHP_INSTALL_HEADERS("ext/async", "iterator.h");
     PHP_INSTALL_HEADERS("ext/async", "async_API.h");
     PHP_INSTALL_HEADERS("ext/async", "context.h");
-}
 
-if (PHP_ASYNC_LIBUV == "yes") {
-    if (PHP_ASYNC != "yes") {
-        ERROR("libuv requires True Async API to be enabled. Use --enable-async");
+    if (CHECK_HEADER_ADD_INCLUDE("libuv/uv.h", "CFLAGS_UV", PHP_PHP_BUILD + "\\include")
+        && CHECK_LIB("libuv.lib", "libuv")) {
+
+        PHP_INSTALL_HEADERS("ext/async", "libuv_reactor.h");
+
+        ADD_SOURCES("ext/async", "libuv_reactor.c");
+        ADD_FLAG("CFLAGS", "/D PHP_ASYNC_LIBUV");
+        ADD_FLAG("LIBS", "libuv.lib Dbghelp.lib Userenv.lib");
     } else {
-        if (CHECK_HEADER_ADD_INCLUDE("libuv/uv.h", "CFLAGS_UV", PHP_PHP_BUILD + "\\include")
-            && CHECK_LIB("libuv.lib", "libuv")) {
-
-            PHP_INSTALL_HEADERS("ext/async", "libuv_reactor.h");
-
-            ADD_SOURCES("ext/async", "libuv_reactor.c");
-            ADD_FLAG("CFLAGS", "/D PHP_ASYNC_LIBUV");
-            ADD_FLAG("LIBS", "libuv.lib Dbghelp.lib Userenv.lib");
-        } else {
-            ERROR("Libuv components are not found. The search was performed in the directory: '" + PHP_PHP_BUILD +
-                  "'.\nTo compile PHP TRUE ASYNC with LibUV:\n" +
-                  "1. Copy files from 'libuv\\include' to '" + PHP_PHP_BUILD + "\\include\\libuv\\'\n" +
-                  "2. Build libuv.lib and copy it to '" + PHP_PHP_BUILD + "\\lib\\'");
-        }
+        ERROR("Libuv components are not found. The search was performed in the directory: '" + PHP_PHP_BUILD +
+              "'.\nTo compile PHP TRUE ASYNC with LibUV:\n" +
+              "1. Copy files from 'libuv\\include' to '" + PHP_PHP_BUILD + "\\include\\libuv\\'\n" +
+              "2. Build libuv.lib and copy it to '" + PHP_PHP_BUILD + "\\lib\\'");
     }
 }
