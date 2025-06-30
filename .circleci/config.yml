@@ -78,13 +78,21 @@ jobs:
               libpng-dev \
               libfreetype6-dev \
               libuv1-dev
+
       - run:
-          name: Download php-async (main) into ext/
+          name: Clone php-src
           command: |
-            git clone --depth=1 --branch=main https://github.com/true-async/php-async /tmp/php-async
-            cp -r /tmp/php-async/* ./ext/
+            git clone --depth=1 --branch=true-async-stable https://github.com/true-async/php-src php-src
+
       - run:
-          name: ./configure
+          name: Copy php-async into php-src/ext/async
+          command: |
+            mkdir -p php-src/ext/async
+            cp -r ./* php-src/ext/async/
+
+      - run:
+          name: Configure PHP
+          working_directory: php-src
           command: |
             ./buildconf -f
             ./configure \
@@ -152,20 +160,50 @@ jobs:
               --with-pdo-firebird \
               --enable-async \
               --disable-phpdbg
+
       - run:
           name: make
+          working_directory: php-src
           no_output_timeout: 30m
-          command: make -j2 > /dev/null
+          command: make -j2 | tee build.log
+
       - run:
           name: make install
+          working_directory: php-src
           command: |
             sudo make install
             sudo mkdir -p /etc/php.d
-            sudo chmod 777 /etc/php.d
-            echo opcache.enable_cli=1 > /etc/php.d/opcache.ini
-            echo opcache.protect_memory=1 >> /etc/php.d/opcache.ini
+            sudo chmod 755 /etc/php.d
+            echo opcache.enable_cli=1 | sudo tee /etc/php.d/opcache.ini
+            echo opcache.protect_memory=1 | sudo tee -a /etc/php.d/opcache.ini
+
       - run:
-          name: Test
+          name: Wait for MySQL
+          command: |
+            for i in {1..30}; do
+              if mysql -h 127.0.0.1 -uroot -e "SELECT 1" > /dev/null 2>&1; then
+                echo "MySQL is ready"
+                break
+              fi
+              echo "Waiting for MySQL..."
+              sleep 1
+            done
+
+      - run:
+          name: Wait for PostgreSQL
+          command: |
+            for i in {1..30}; do
+              if PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d test -c "SELECT 1" > /dev/null 2>&1; then
+                echo "PostgreSQL is ready"
+                break
+              fi
+              echo "Waiting for PostgreSQL..."
+              sleep 1
+            done
+
+      - run:
+          name: Run tests
+          working_directory: php-src
           no_output_timeout: 30m
           command: |
             sapi/cli/php run-tests.php \
