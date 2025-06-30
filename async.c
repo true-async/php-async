@@ -572,10 +572,14 @@ PHP_FUNCTION(Async_delay)
 		return;
 	}
 
-	zend_async_waker_new_with_timeout(coroutine, ms, NULL);
+	if (UNEXPECTED(ms == 0)) {
+		ZEND_ASYNC_ENQUEUE_COROUTINE(ZEND_ASYNC_CURRENT_COROUTINE);
+	} else {
+		zend_async_waker_new_with_timeout(coroutine, ms, NULL);
 
-	if (UNEXPECTED(EG(exception) != NULL)) {
-		RETURN_THROWS();
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			RETURN_THROWS();
+		}
 	}
 
 	ZEND_ASYNC_SUSPEND();
