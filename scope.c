@@ -1136,7 +1136,7 @@ zend_async_scope_t * async_new_scope(zend_async_scope_t * parent_scope, const bo
 	scope->scope.scope_object = NULL;
 
 	if (with_zend_object) {
-		scope_object = zend_object_alloc_ex(sizeof(async_scope_object_t), async_ce_scope);
+		scope_object = ZEND_OBJECT_ALLOC_EX(sizeof(async_scope_object_t), async_ce_scope);
 
 		zend_object_std_init(&scope_object->std, async_ce_scope);
 		object_properties_init(&scope_object->std, async_ce_scope);

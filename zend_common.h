@@ -114,16 +114,13 @@ zend_always_inline static void zend_object_ptr_reset(zend_object * destination)
 	destination = NULL;
 }
 
-zend_always_inline static void *zend_object_alloc_ex(const size_t obj_size, zend_class_entry *ce)
-{
-	return pecalloc(1, obj_size, 0);
-}
+#define ZEND_OBJECT_ALLOC_EX(obj_size, ce) pecalloc(1, obj_size, 0)
 
-#define DEFINE_ZEND_RAW_OBJECT(type, var, class_entry) type *var = (type *) zend_object_alloc_ex(sizeof(type), class_entry)
+#define DEFINE_ZEND_RAW_OBJECT(type, var, class_entry) type *var = (type *) ZEND_OBJECT_ALLOC_EX(sizeof(type), class_entry)
 
 zend_always_inline zend_object* zend_object_internal_create(const size_t obj_size, zend_class_entry *class_entry)
 {
-	zend_object * object = zend_object_alloc_ex(obj_size, class_entry);
+	zend_object * object = ZEND_OBJECT_ALLOC_EX(obj_size, class_entry);
 
 	zend_object_std_init(object, class_entry);
 	object_properties_init(object, class_entry);
