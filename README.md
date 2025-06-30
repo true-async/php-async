@@ -73,11 +73,13 @@ Please see the [LibUV installation guide](https://github.com/libuv/libuv)
 
    ```
    ./buildconf
-   ./configure --enable-experimental-async-api --enable-async
+   ./configure --enable-async
    make && sudo make install
    ```
 
    We can use `--enable-debug` to enable debug mode, which is useful for development.
+   
+   **Note:** The `--enable-experimental-async-api` option is no longer needed as the Async API is now enabled by default in the core.
 
 ---
 
@@ -102,9 +104,11 @@ Please see the [LibUV installation guide](https://github.com/libuv/libuv)
    ```
    cd \path\to\php-src
    buildconf
-   configure --enable-experimental-async-api --enable-async
+   configure --enable-async
    nmake
    ```
+
+   **Note:** The `--enable-experimental-async-api` option is no longer needed as the Async API is now enabled by default in the core.
 
 ---
 
