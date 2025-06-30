@@ -114,7 +114,7 @@ zend_always_inline static void zend_object_ptr_reset(zend_object * destination)
 	destination = NULL;
 }
 
-zend_always_inline void *zend_object_alloc_ex(const size_t obj_size, zend_class_entry *ce)
+zend_always_inline static void *zend_object_alloc_ex(const size_t obj_size, zend_class_entry *ce)
 {
 	return pecalloc(1, obj_size, 0);
 }
