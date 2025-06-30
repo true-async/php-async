@@ -2,9 +2,9 @@ name: PHP Build
 
 on:
   push:
-    branches: [main]
+    branches: [build]
   pull_request:
-    branches: [main]
+    branches: [build]
 
 jobs:
   build:
@@ -55,13 +55,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            gcc g++ autoconf bison re2c \
-            libgmp-dev libicu-dev libtidy-dev libsasl2-dev \
-            libzip-dev libbz2-dev libsqlite3-dev libonig-dev libcurl4-openssl-dev \
+            gcc g++ autoconf bison re2c locales locales-all ldap-utils openssl slapd \
+            libgmp-dev libicu-dev libtidy-dev libenchant-2-dev libsasl2-dev libxpm-dev \
+            libzip-dev libbz2-dev libsqlite3-dev libwebp-dev libonig-dev libcurl4-openssl-dev \
             libxml2-dev libxslt1-dev libpq-dev libreadline-dev libldap2-dev libsodium-dev \
-            libargon2-dev \
-            firebird-dev \
-            libuv1-dev
+            libargon2-dev libsnmp-dev snmp snmp-mibs-downloader snmpd freetds-dev dovecot-core \
+            sendmail firebird-dev liblmdb-dev libtokyocabinet-dev libdb-dev libqdbm-dev \
+            libjpeg-dev libpng-dev libfreetype6-dev libuv1-dev
+          g++ --version
+          sudo mkdir -p /var/lib/snmp && sudo chown $(id -u):$(id -g) /var/lib/snmp
 
       - name: Configure PHP
         working-directory: php-src
@@ -69,6 +71,9 @@ jobs:
           ./buildconf -f
           ./configure \
             --enable-zts \
+            --enable-option-checking=fatal \
+            --prefix=/usr \
+            --disable-phpdbg \
             --enable-fpm \
             --enable-opcache \
             --with-pdo-mysql=mysqlnd \
@@ -78,6 +83,12 @@ jobs:
             --with-pdo-sqlite \
             --enable-intl \
             --without-pear \
+            --enable-gd \
+            --with-jpeg \
+            --with-webp \
+            --with-freetype \
+            --with-xpm \
+            --enable-exif \
             --with-zip \
             --with-zlib \
             --enable-soap \
@@ -99,6 +110,7 @@ jobs:
             --enable-bcmath \
             --enable-calendar \
             --enable-ftp \
+            --with-enchant=/usr \
             --enable-sysvmsg \
             --with-ffi \
             --enable-zend-test \
@@ -112,6 +124,10 @@ jobs:
             --with-cdb \
             --enable-flatfile \
             --enable-inifile \
+            --with-tcadb \
+            --with-lmdb \
+            --with-qdbm \
+            --with-snmp \
             --with-config-file-path=/etc \
             --with-config-file-scan-dir=/etc/php.d \
             --with-pdo-firebird \
@@ -130,7 +146,7 @@ jobs:
           } > /etc/php.d/opcache.ini
 
       - name: Run tests
-        working-directory: php-src/ext/async
+        working-directory: php-src
         env:
           MIBS: +ALL
         run: |
