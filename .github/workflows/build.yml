@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - main
+      - build
   pull_request:
     branches:
       - main
+      - build
 
 jobs:
   build:
@@ -35,15 +37,8 @@ jobs:
     steps:
       - name: Checkout php-async repo
         uses: actions/checkout@v4
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            gcc g++ autoconf bison re2c \
-            libxml2-dev libsqlite3-dev libcurl4-openssl-dev \
-            libpq-dev libmysqlclient-dev libssl-dev libzip-dev \
-            build-essential
+        with:
+          path: async
 
       - name: Clone php-src (true-async-stable)
         run: |
@@ -52,33 +47,150 @@ jobs:
       - name: Copy php-async extension into php-src
         run: |
           mkdir -p php-src/ext/async
-          cp -r ./* php-src/ext/async/
+          cp -r async/* php-src/ext/async/
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+              gcc \
+              g++ \
+              autoconf \
+              bison \
+              re2c \
+              locales \
+              locales-all \
+              ldap-utils \
+              openssl \
+              slapd \
+              libgmp-dev \
+              libicu-dev \
+              libtidy-dev \
+              libenchant-2-dev \
+              libsasl2-dev \
+              libxpm-dev \
+              libzip-dev \
+              libbz2-dev \
+              libsqlite3-dev \
+              libwebp-dev \
+              libonig-dev \
+              libcurl4-openssl-dev \
+              libxml2-dev \
+              libxslt1-dev \
+              libpq-dev \
+              libreadline-dev \
+              libldap2-dev \
+              libsodium-dev \
+              libargon2-dev \
+              libsnmp-dev \
+              snmpd \
+              freetds-dev \
+              dovecot-core \
+              sendmail \
+              firebird-dev \
+              liblmdb-dev \
+              libtokyocabinet-dev \
+              libdb-dev \
+              libqdbm-dev \
+              libjpeg-dev \
+              libpng-dev \
+              libfreetype6-dev \
+              libuv1-dev
+          g++ --version        
 
       - name: Configure PHP
         working-directory: php-src
         run: |
           ./buildconf -f
-          ./configure \
-            --enable-debug \
-            --enable-async \
-            --enable-pdo \
-            --with-pdo-mysql=mysqlnd \
-            --enable-sockets \
-            --with-sqlite3 \
-            --with-curl \
-            --enable-ftp \
-            --with-pdo-pgsql
+            ./configure \
+              --enable-zts \
+              --enable-option-checking=fatal \
+              --prefix=/usr \
+              --disable-phpdbg \
+              --enable-fpm \
+              --enable-opcache \
+              --with-pdo-mysql=mysqlnd \
+              --with-mysqli=mysqlnd \
+              --with-pgsql \
+              --with-pdo-pgsql \
+              --with-pdo-sqlite \
+              --enable-intl \
+              --without-pear \
+              --enable-gd \
+              --with-jpeg \
+              --with-webp \
+              --with-freetype \
+              --with-xpm \
+              --enable-exif \
+              --with-zip \
+              --with-zlib \
+              --enable-soap \
+              --enable-xmlreader \
+              --with-xsl \
+              --with-tidy \
+              --enable-sysvsem \
+              --enable-sysvshm \
+              --enable-shmop \
+              --enable-pcntl \
+              --with-readline \
+              --enable-mbstring \
+              --with-curl \
+              --with-gettext \
+              --enable-sockets \
+              --with-bz2 \
+              --with-openssl \
+              --with-gmp \
+              --enable-bcmath \
+              --enable-calendar \
+              --enable-ftp \
+              --with-enchant=/usr \
+              --enable-sysvmsg \
+              --with-ffi \
+              --enable-zend-test \
+              --enable-dl-test=shared \
+              --with-ldap \
+              --with-ldap-sasl \
+              --with-password-argon2 \
+              --with-mhash \
+              --with-sodium \
+              --enable-dba \
+              --with-cdb \
+              --enable-flatfile \
+              --enable-inifile \
+              --with-tcadb \
+              --with-lmdb \
+              --with-qdbm \
+              --with-snmp \
+              --with-config-file-path=/etc \
+              --with-config-file-scan-dir=/etc/php.d \
+              --with-pdo-firebird \
+              --enable-async
 
       - name: Build PHP
         working-directory: php-src
         run: |
           make -j$(nproc)
           sudo make install
+          sudo mkdir -p /etc/php.d
+          sudo chmod 777 /etc/php.d
+          echo opcache.enable_cli=1 > /etc/php.d/opcache.ini
+          echo opcache.protect_memory=1 >> /etc/php.d/opcache.ini          
 
       - name: Run tests
         working-directory: php-src
         run: |
-          sapi/cli/php run-tests.php -P -q -x -j2 \
+          sapi/cli/php run-tests.php \
+            -d zend_extension=opcache.so \
+            -d opcache.enable_cli=1 \
+            -d opcache.jit_buffer_size=64M \
+            -d opcache.jit=tracing \
+            -d zend_test.observer.enabled=1 \
+            -d zend_test.observer.show_output=0 \
+            -P -q -x -j2 \
             -g FAIL,BORK,LEAK,XLEAK \
-            --no-progress --offline --show-diff --show-slow 1000 \
-            --set-timeout 120 --repeat 2
+            --no-progress \
+            --offline \
+            --show-diff \
+            --show-slow 1000 \
+            --set-timeout 120 \
+            --repeat 2
