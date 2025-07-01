@@ -340,7 +340,7 @@ static zend_result finally_handlers_iterator_handler(async_iterator_t *iterator,
 				context->composite_exception = NULL;
 			}
 			// Throw graceful/unwind exit and stop iteration
-			zend_throw_exception_internal(current_exception);
+			async_rethrow_exception(current_exception);
 			return SUCCESS;
 		}
 
@@ -352,7 +352,7 @@ static zend_result finally_handlers_iterator_handler(async_iterator_t *iterator,
 			zend_object * composite_exception = async_new_composite_exception();
 			if (UNEXPECTED(composite_exception == NULL)) {
 				// If we can't create CompositeException, throw the current one
-				zend_throw_exception_internal(current_exception);
+				async_rethrow_exception(current_exception);
 				return SUCCESS;
 			}
 
@@ -393,7 +393,7 @@ static void finally_handlers_iterator_dtor(zend_async_iterator_t *zend_iterator)
 		)) {
 			OBJ_RELEASE(context->composite_exception);
 		} else {
-			zend_throw_exception_internal(context->composite_exception);
+			async_rethrow_exception(context->composite_exception);
 		}
 
 		context->composite_exception = NULL;
@@ -615,7 +615,7 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 
 		// Otherwise, we rethrow the exception.
 		if (exception != NULL) {
-			zend_throw_exception_internal(exception);
+			async_rethrow_exception(exception);
 		}
 
 		if (EG(exception)) {
@@ -691,11 +691,11 @@ void async_coroutine_finalize_from_scheduler(async_coroutine_t * coroutine)
 	EG(prev_exception) = prev_exception;
 
 	if (UNEXPECTED(new_prev_exception)) {
-		zend_throw_exception_internal(new_prev_exception);
+		async_rethrow_exception(new_prev_exception);
 	}
 
 	if (UNEXPECTED(new_exception)) {
-		zend_throw_exception_internal(new_exception);
+		async_rethrow_exception(new_exception);
 	}
 
 	if (UNEXPECTED(do_bailout)) {
@@ -844,7 +844,7 @@ static bool coroutine_replay(zend_async_event_t *event, zend_async_event_callbac
 
 	if (exception == NULL && coroutine->coroutine.exception != NULL) {
 		GC_ADDREF(coroutine->coroutine.exception);
-		zend_throw_exception_internal(coroutine->coroutine.exception);
+		async_rethrow_exception(coroutine->coroutine.exception);
 	} else if (exception != NULL && coroutine->coroutine.exception != NULL) {
 		*exception = coroutine->coroutine.exception;
 		GC_ADDREF(*exception);

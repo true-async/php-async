@@ -183,7 +183,7 @@ PHP_FUNCTION(Async_protect)
 
 	if (async_coroutine->deferred_cancellation) {
 		ZEND_COROUTINE_SET_CANCELLED(coroutine);
-		zend_throw_exception_internal(async_coroutine->deferred_cancellation);
+		async_rethrow_exception(async_coroutine->deferred_cancellation);
 		async_coroutine->deferred_cancellation = NULL;
 	}
 }

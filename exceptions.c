@@ -198,7 +198,7 @@ static void exception_coroutine_dispose(zend_coroutine_t *coroutine)
 	if (coroutine->extended_data != NULL) {
 		zend_object *exception_obj = coroutine->extended_data;
 		coroutine->extended_data = NULL;
-		zend_throw_exception_internal(exception_obj);
+		async_rethrow_exception(exception_obj);
 	}
 }
 
@@ -213,7 +213,7 @@ static void exception_coroutine_entry(void)
 	zend_object *exception = coroutine->extended_data;
 	coroutine->extended_data = NULL;
 
-	zend_throw_exception_internal(exception);
+	async_rethrow_exception(exception);
 }
 
 bool async_spawn_and_throw(zend_object *exception, zend_async_scope_t *scope, int32_t priority)
@@ -244,4 +244,36 @@ bool async_spawn_and_throw(zend_object *exception, zend_async_scope_t *scope, in
 	GC_ADDREF(exception);
 
 	return true;
+}
+
+void async_rethrow_exception(zend_object *exception)
+{
+	if (EG(current_execute_data)) {
+		zend_throw_exception_internal(exception);
+	} else {
+		async_apply_exception_to_context(exception);
+	}
+}
+
+void async_apply_exception_to_context(zend_object *exception)
+{
+	if (UNEXPECTED(exception == NULL)) {
+		return;
+	}
+
+	zend_object *previous = EG(exception);
+
+	if (previous && zend_is_unwind_exit(previous)) {
+		/* Don't replace unwinding exception with different exception. */
+		OBJ_RELEASE(exception);
+		return;
+	}
+
+	zend_exception_set_previous(exception, EG(exception));
+
+	EG(exception) = exception;
+
+	if (previous) {
+		return;
+	}
 }

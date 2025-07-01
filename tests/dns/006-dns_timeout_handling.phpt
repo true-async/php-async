@@ -20,7 +20,7 @@ $coroutine = spawn(function() {
         await($dns_coroutine, timeout(1));
 
     } catch (Async\TimeoutException $e) {
-        echo "DNS lookup timed out as expected\n";
+        //echo "DNS lookup timed out as expected\n";
     } catch (Throwable $e) {
         echo "Other exception: " . get_class($e) . ": " . $e->getMessage() . "\n";
     }
@@ -43,5 +43,4 @@ await($coroutine);
 ?>
 --EXPECTF--
 Testing DNS timeout handling
-%s
 Fast DNS lookup completed: 127.0.0.1

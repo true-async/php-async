@@ -1519,7 +1519,7 @@ static zend_async_dns_nameinfo_t * libuv_getnameinfo(const struct sockaddr *addr
 	);
 
 	if (error < 0) {
-		zend_throw_exception_internal(async_new_exception(
+		async_rethrow_exception(async_new_exception(
 			async_ce_dns_exception, "Failed to initialize getnameinfo handle: %s", uv_strerror(error)
 		));
 		pefree(name_info, 0);
@@ -1626,7 +1626,7 @@ static zend_async_dns_addrinfo_t* libuv_getaddrinfo(
 	);
 
 	if (error < 0) {
-		zend_throw_exception_internal(async_new_exception(
+		async_rethrow_exception(async_new_exception(
 			async_ce_dns_exception, "Failed to initialize getaddrinfo handle: %s", uv_strerror(error)
 		));
 

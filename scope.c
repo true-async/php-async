@@ -936,7 +936,7 @@ static bool scope_catch_or_cancel(
 	}
 
 	if (UNEXPECTED(critical_exception)) {
-		zend_throw_exception_internal(critical_exception);
+		async_rethrow_exception(critical_exception);
 		goto exit_false;
 	}
 

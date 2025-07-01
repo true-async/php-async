@@ -137,7 +137,7 @@ static zend_always_inline void switch_context(async_coroutine_t *coroutine, zend
 
 	// Transfer the exception to the current coroutine.
 	if (UNEXPECTED(transfer.flags & ZEND_FIBER_TRANSFER_FLAG_ERROR)) {
-		zend_throw_exception_internal(Z_OBJ(transfer.value));
+		async_rethrow_exception(Z_OBJ(transfer.value));
 		ZVAL_NULL(&transfer.value);
 	}
 }
@@ -216,7 +216,7 @@ static switch_status execute_next_coroutine(zend_fiber_transfer *transfer)
 		return COROUTINE_SWITCHED;
 	} else if (ZEND_ASYNC_CURRENT_COROUTINE == coroutine) {
 		if (error != NULL) {
-			zend_throw_exception_internal(error);
+			async_rethrow_exception(error);
 		}
 		return COROUTINE_SWITCHED;
 	} else {
@@ -637,6 +637,8 @@ void async_scheduler_launch(void)
  */
 void async_scheduler_main_coroutine_suspend(void)
 {
+	bool do_bailout = false;
+
 	if (UNEXPECTED(ZEND_ASYNC_SCHEDULER == NULL)) {
 		async_scheduler_launch();
 
@@ -648,6 +650,7 @@ void async_scheduler_main_coroutine_suspend(void)
 	async_coroutine_t * coroutine = (async_coroutine_t *)ZEND_ASYNC_CURRENT_COROUTINE;
 	zend_fiber_transfer * transfer = ASYNC_G(main_transfer);
 
+	zend_try {
 	// We reach this point when the main coroutine has completed its execution.
 	async_coroutine_finalize(transfer, coroutine);
 
@@ -667,6 +670,10 @@ void async_scheduler_main_coroutine_suspend(void)
 	EG(current_fiber_context) = transfer->context;
 
 	switch_to_scheduler(NULL);
+
+	} zend_catch {
+		do_bailout = true;
+	} zend_end_try();
 
 	ZEND_ASYNC_CURRENT_COROUTINE = NULL;
 	ZEND_ASSERT(ZEND_ASYNC_ACTIVE_COROUTINE_COUNT == 0 && "The active coroutine counter must be 1 at this point");
@@ -689,6 +696,13 @@ void async_scheduler_main_coroutine_suspend(void)
 	zend_object * exit_exception = ZEND_ASYNC_EXIT_EXCEPTION;
 	ZEND_ASYNC_EXIT_EXCEPTION = NULL;
 
+	if (UNEXPECTED(do_bailout)) {
+		if (exit_exception != NULL) {
+			OBJ_RELEASE(exit_exception);
+		}
+		zend_bailout();
+	}
+
 	//
 	// Before exiting completely, we rethrow the exit exception
 	// that was raised somewhere in other coroutines.
@@ -697,7 +711,7 @@ void async_scheduler_main_coroutine_suspend(void)
 		zend_exception_set_previous(EG(exception), exit_exception);
 		GC_DELREF(exit_exception);
 	} else if (exit_exception != NULL) {
-		zend_throw_exception_internal(exit_exception);
+		async_rethrow_exception(exit_exception);
 	}
 }
 
