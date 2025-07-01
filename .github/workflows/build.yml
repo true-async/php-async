@@ -8,7 +8,19 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: windows-latest  
+            platform: windows
+          - os: macos-latest
+            platform: macos
+    
+    runs-on: ${{ matrix.os }}
 
     services:
       mysql:
@@ -51,7 +63,8 @@ jobs:
           mkdir -p php-src/ext/async
           cp -r async/* php-src/ext/async/
 
-      - name: Install build dependencies
+      - name: Install build dependencies (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -63,7 +76,32 @@ jobs:
             firebird-dev \
             libuv1-dev
 
-      - name: Configure PHP
+      - name: Install build dependencies (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          choco install -y visualstudio2022buildtools
+          choco install -y git
+          choco install -y cmake
+          choco install -y vcpkg
+          vcpkg install libuv:x64-windows
+          vcpkg install openssl:x64-windows
+          vcpkg install zlib:x64-windows
+          vcpkg integrate install
+        shell: cmd
+
+      - name: Install build dependencies (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install autoconf bison re2c
+          brew install gmp icu4c tidyhtml5 
+          brew install libzip bzip2 sqlite oniguruma curl
+          brew install libxml2 libxslt postgresql readline ldns libsodium
+          brew install argon2 libuv openssl@3
+          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix icu4c)/lib/pkgconfig:$(brew --prefix libxml2)/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
+          echo "PATH=$(brew --prefix bison)/bin:$PATH" >> $GITHUB_ENV
+
+      - name: Configure PHP (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
         working-directory: php-src
         run: |
           ./buildconf -f
@@ -117,7 +155,87 @@ jobs:
             --with-pdo-firebird \
             --enable-async
 
-      - name: Build PHP
+      - name: Configure PHP (Windows)
+        if: matrix.os == 'windows-latest'
+        working-directory: php-src
+        run: |
+          call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+          buildconf.bat --force
+          configure.bat --enable-snapshot-build --enable-debug-pack --with-pdo-oci=C:\oracle\product\19.0.0\client_1\sdk,shared --with-oci8=C:\oracle\product\19.0.0\client_1\sdk,shared --enable-object-out-dir=../obj/ --enable-com-dotnet=shared --with-mcrypt=static --without-analyzer --with-pgo
+        shell: cmd
+
+      - name: Build PHP (Windows)
+        if: matrix.os == 'windows-latest'
+        working-directory: php-src
+        run: |
+          call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+          nmake
+        shell: cmd
+
+      - name: Configure PHP (macOS)
+        if: matrix.os == 'macos-latest'
+        working-directory: php-src
+        run: |
+          ./buildconf -f
+          ./configure \
+            --enable-zts \
+            --enable-fpm \
+            --enable-opcache \
+            --with-pdo-mysql=mysqlnd \
+            --with-mysqli=mysqlnd \
+            --with-pdo-sqlite \
+            --enable-intl \
+            --without-pear \
+            --with-zip \
+            --with-zlib \
+            --enable-soap \
+            --enable-xmlreader \
+            --with-xsl \
+            --enable-sysvsem \
+            --enable-sysvshm \
+            --enable-shmop \
+            --enable-pcntl \
+            --with-readline \
+            --enable-mbstring \
+            --with-curl \
+            --with-gettext \
+            --enable-sockets \
+            --with-bz2 \
+            --with-openssl=$(brew --prefix openssl@3) \
+            --with-gmp \
+            --enable-bcmath \
+            --enable-calendar \
+            --enable-ftp \
+            --enable-sysvmsg \
+            --with-ffi \
+            --enable-zend-test \
+            --enable-dl-test=shared \
+            --with-password-argon2 \
+            --with-mhash \
+            --with-sodium \
+            --enable-dba \
+            --with-cdb \
+            --enable-flatfile \
+            --enable-inifile \
+            --with-config-file-path=/usr/local/etc \
+            --with-config-file-scan-dir=/usr/local/etc/php.d \
+            --enable-async
+
+      - name: Build PHP (macOS)
+        if: matrix.os == 'macos-latest'
+        working-directory: php-src
+        run: |
+          make -j"$(sysctl -n hw.ncpu)"
+          sudo make install
+          sudo mkdir -p /usr/local/etc/php.d
+          sudo chmod 777 /usr/local/etc/php.d
+          {
+            echo "opcache.enable_cli=1"
+            echo "opcache.protect_memory=1"
+          } > /usr/local/etc/php.d/opcache.ini
+
+      - name: Build PHP (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
         working-directory: php-src
         run: |
           make -j"$(nproc)"
@@ -129,7 +247,51 @@ jobs:
             echo "opcache.protect_memory=1"
           } > /etc/php.d/opcache.ini
 
-      - name: Run tests
+      - name: Run tests (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: php-src/ext/async
+        run: |
+          /usr/local/bin/php -v
+          /usr/local/bin/php ../../run-tests.php \
+            -d zend_extension=opcache.so \
+            -d opcache.enable_cli=1 \
+            -d opcache.jit_buffer_size=64M \
+            -d opcache.jit=tracing \
+            -d zend_test.observer.enabled=1 \
+            -d zend_test.observer.show_output=0 \
+            -P -q -x -j2 \
+            -g FAIL,BORK,LEAK,XLEAK \
+            --no-progress \
+            --offline \
+            --show-diff \
+            --show-slow 1000 \
+            --set-timeout 120 \
+            --repeat 2
+
+      - name: Run tests (Windows)
+        if: matrix.os == 'windows-latest'
+        working-directory: php-src/ext/async
+        run: |
+          php.exe -v
+          php.exe ../../run-tests.php ^
+            -d zend_extension=opcache.dll ^
+            -d opcache.enable_cli=1 ^
+            -d opcache.jit_buffer_size=64M ^
+            -d opcache.jit=tracing ^
+            -d zend_test.observer.enabled=1 ^
+            -d zend_test.observer.show_output=0 ^
+            -P -q -x -j2 ^
+            -g FAIL,BORK,LEAK,XLEAK ^
+            --no-progress ^
+            --offline ^
+            --show-diff ^
+            --show-slow 1000 ^
+            --set-timeout 120 ^
+            --repeat 2
+        shell: cmd
+
+      - name: Run tests (macOS)
+        if: matrix.os == 'macos-latest'
         working-directory: php-src/ext/async
         run: |
           /usr/local/bin/php -v
