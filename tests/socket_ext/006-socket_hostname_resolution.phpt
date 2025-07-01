@@ -20,7 +20,7 @@ $coroutine = spawn(function() {
     
     // Test hostname resolution - connect to localhost (should resolve async)
     echo "Client: resolving hostname\n";
-    $result = @socket_connect($socket, "localhost", 22); // SSH port usually exists or gives connection refused
+    $result = @socket_connect($socket, "localhost", 65000);
     
     if ($result === false) {
         $error = socket_last_error($socket);

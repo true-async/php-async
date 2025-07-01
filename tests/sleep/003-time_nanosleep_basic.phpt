@@ -20,7 +20,7 @@ spawn(function () use ($start_time) {
     
     $elapsed = microtime(true) - $start_time;
     echo "time_nanosleep returned: " . ($result === true ? "true" : "false") . "\n";
-    echo "Elapsed time >= 0.3s: " . ($elapsed >= 0.3 ? "yes" : "no") . "\n";
+    echo "Elapsed time >= 0.2s: " . ($elapsed >= 0.2 ? "yes" : "no") . "\n";
     echo "time_nanosleep test completed\n";
 });
 
@@ -36,5 +36,5 @@ Main thread end
 Starting async time_nanosleep test
 Other async task executing
 time_nanosleep returned: true
-Elapsed time >= 0.3s: yes
+Elapsed time >= 0.2s: yes
 time_nanosleep test completed

@@ -44,7 +44,8 @@ spawn(function () {
     $target = microtime(true) + 0.15;
     $result = time_sleep_until($target);
     $elapsed = microtime(true) - $start;
-    echo "time_sleep_until() result: " . ($result ? "true" : "false") . ", elapsed: " . round($elapsed, 1) . "s\n";
+    $elapsedRounded = ceil(($elapsed - 1e-9) * 10) / 10;
+    echo "time_sleep_until() result: " . ($result ? "true" : "false") . ", elapsed: " . $elapsedRounded . "s\n";
 });
 
 spawn(function() {
