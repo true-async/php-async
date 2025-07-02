@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - TBD
+
+### Added
+- **Garbage Collection Support**: Implemented comprehensive GC handlers for async objects
+    - Added `async_coroutine_object_gc()` function to track all ZVALs in coroutine structures
+    - Added `async_scope_object_gc()` function to track ZVALs in scope structures  
+    - Proper GC tracking for context HashTables (values and keys)
+    - GC support for finally handlers, exception handlers, and function call parameters
+    - GC tracking for waker events, internal context, and nested async structures
+    - Prevents memory leaks in complex async applications with circular references
+
+### Fixed
+- Memory management improvements for long-running async applications
+- Proper cleanup of coroutine and scope objects during garbage collection cycles
+
 ## [0.2.0] - TBD
 
 ### Added

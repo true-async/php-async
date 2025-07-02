@@ -1229,6 +1229,58 @@ static void scope_destroy(zend_object *object)
 	}
 }
 
+static HashTable *async_scope_object_gc(zend_object *object, zval **table, int *num)
+{
+	async_scope_object_t *scope_obj = (async_scope_object_t *)object;
+	async_scope_t *scope = scope_obj->scope;
+
+	if (scope == NULL) {
+		*table = NULL;
+		*num = 0;
+		return NULL; // No scope to collect
+	}
+
+	zend_get_gc_buffer *buf = zend_get_gc_buffer_create();
+
+	/* Add exception handler ZVALs if present */
+	if (scope->exception_fci) {
+		zend_get_gc_buffer_add_zval(buf, &scope->exception_fci->function_name);
+	}
+
+	/* Add child exception handler ZVALs if present */
+	if (scope->child_exception_fci) {
+		zend_get_gc_buffer_add_zval(buf, &scope->child_exception_fci->function_name);
+	}
+
+	/* Add finally handlers if present */
+	if (scope->finally_handlers) {
+		zval *val;
+		ZEND_HASH_FOREACH_VAL(scope->finally_handlers, val) {
+			zend_get_gc_buffer_add_zval(buf, val);
+		} ZEND_HASH_FOREACH_END();
+	}
+
+	/* Add context ZVALs if present */
+	if (scope->scope.context) {
+		/* Cast to actual context implementation to access HashTables */
+		async_context_t *context = (async_context_t *)scope->scope.context;
+		
+		/* Add all values from context->values HashTable */
+		zval *val;
+		ZEND_HASH_FOREACH_VAL(&context->values, val) {
+			zend_get_gc_buffer_add_zval(buf, val);
+		} ZEND_HASH_FOREACH_END();
+		
+		/* Add all object keys from context->keys HashTable */
+		ZEND_HASH_FOREACH_VAL(&context->keys, val) {
+			zend_get_gc_buffer_add_zval(buf, val);
+		} ZEND_HASH_FOREACH_END();
+	}
+
+	zend_get_gc_buffer_use(buf, table, num);
+	return NULL;
+}
+
 void async_register_scope_ce(void)
 {
 	async_ce_scope_provider = register_class_Async_ScopeProvider();
@@ -1242,6 +1294,7 @@ void async_register_scope_ce(void)
 
 	async_scope_handlers.clone_obj = NULL;
 	async_scope_handlers.dtor_obj = scope_destroy;
+	async_scope_handlers.get_gc = async_scope_object_gc;
 }
 
 /**
