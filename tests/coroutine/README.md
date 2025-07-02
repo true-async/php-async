@@ -21,18 +21,35 @@ This directory contains tests for the Coroutine class methods implementation.
 - `007-coroutine_spawn_location.phpt` - Tests getSpawnFileAndLine() and getSpawnLocation()
 - `008-coroutine_suspend_location.phpt` - Tests getSuspendFileAndLine() and getSuspendLocation()
 
-### TODO Implementation Methods
+### Debug and Context Methods
 - `009-coroutine_getTrace.phpt` - Tests getTrace() (returns empty array)
 - `010-coroutine_getAwaitingInfo.phpt` - Tests getAwaitingInfo()
 - `011-coroutine_asHiPriority.phpt` - Tests asHiPriority() (returns same coroutine)
-- `012-coroutine_getContext.phpt` - Tests getContext() (returns null)
+- `012-coroutine_getContext.phpt` - Tests getContext() method
+
+### Finally Handlers
+- `014-coroutine_onFinally_basic.phpt` - Tests onFinally() basic functionality
+- `015-coroutine_onFinally_finished.phpt` - Tests onFinally() on finished coroutines
+- `016-coroutine_onFinally_multiple.phpt` - Tests multiple finally handlers
+- `017-coroutine_onFinally_single_exception.phpt` - Tests finally handlers with exceptions
+- `018-coroutine_onFinally_multiple_exceptions.phpt` - Tests CompositeException handling
+
+### Garbage Collection
+- `019-coroutine_gc_basic.phpt` - Tests basic GC handler functionality
+- `020-coroutine_gc_with_finally.phpt` - Tests GC with finally handlers
+- `021-coroutine_gc_with_context.phpt` - Tests GC with context data
+- `022-coroutine_gc_suspended.phpt` - Tests GC for suspended coroutines
+- `023-coroutine_gc_with_exception.phpt` - Tests GC with exception objects
+- `024-coroutine_gc_multiple_zvals.phpt` - Tests GC with multiple ZVALs
+- `025-coroutine_gc_waker_scope.phpt` - Tests GC with waker and scope structures
 
 ## Notes
 
 Some methods have TODO implementations and return placeholder values:
 - `getTrace()` - Returns empty array (needs fiber stack trace implementation)
 - `asHiPriority()` - Returns same coroutine (needs scheduler priority implementation)
-- `getContext()` - Returns null (needs Context API implementation)
-- `onFinally()` - Not implemented (needs callback registration)
 
-These tests verify the basic API contract and will need updates when the full implementations are added.
+The coroutine implementation now includes:
+- Complete `onFinally()` support with CompositeException handling
+- Full garbage collection support to prevent memory leaks
+- Context API integration for coroutine-local storage
