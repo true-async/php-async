@@ -1229,7 +1229,7 @@ static void scope_destroy(zend_object *object)
 	}
 }
 
-static HashTable *async_scope_object_gc(zend_object *object, zval **table, int *num)
+static HashTable *scope_object_gc(zend_object *object, zval **table, int *num)
 {
 	async_scope_object_t *scope_obj = (async_scope_object_t *)object;
 	async_scope_t *scope = scope_obj->scope;
@@ -1281,6 +1281,32 @@ static HashTable *async_scope_object_gc(zend_object *object, zval **table, int *
 	return NULL;
 }
 
+static void scope_object_free(zend_object *object)
+{
+	async_scope_object_t *scope_object = (async_scope_object_t *) object;
+
+	async_scope_t *scope = scope_object->scope;
+
+	if (scope == NULL) {
+		return;
+	}
+
+	scope_object->scope = NULL;
+	scope->scope.scope_object = NULL;
+	zend_object_std_dtor(&scope_object->std);
+
+	// At this point, the user-defined Scope object is about to be destroyed.
+	// This means we are obligated to cancel the Scope and all its child Scopes along with their coroutines.
+	// However, the Scope itself will not be destroyed.
+	if (false == scope->scope.try_to_dispose(&scope->scope)) {
+		zend_object *exception = async_new_exception(
+			async_ce_cancellation_exception, "Scope is being disposed due to object destruction"
+		);
+
+		ZEND_ASYNC_SCOPE_CANCEL(&scope->scope, exception, true, ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(&scope->scope));
+	}
+}
+
 void async_register_scope_ce(void)
 {
 	async_ce_scope_provider = register_class_Async_ScopeProvider();
@@ -1294,7 +1320,8 @@ void async_register_scope_ce(void)
 
 	async_scope_handlers.clone_obj = NULL;
 	async_scope_handlers.dtor_obj = scope_destroy;
-	async_scope_handlers.get_gc = async_scope_object_gc;
+	async_scope_handlers.get_gc = scope_object_gc;
+	async_scope_handlers.free_obj = scope_object_free;
 }
 
 /**

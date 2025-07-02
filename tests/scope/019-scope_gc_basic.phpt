@@ -5,6 +5,7 @@ Scope: GC handler basic functionality
 
 use Async\Scope;
 use function Async\spawn;
+use function Async\suspend;
 
 // Test that GC handler is registered and functioning for scope
 $scope = new Scope();
@@ -15,6 +16,8 @@ $coroutine = $scope->spawn(function() {
 
 // Force garbage collection to ensure our GC handler is called
 $collected = gc_collect_cycles();
+
+suspend(); // Suspend to simulate coroutine lifecycle
 
 // Check that coroutine completed successfully
 $result = $coroutine->getResult();
