@@ -1185,7 +1185,7 @@ zend_coroutine_t *async_new_coroutine(zend_async_scope_t *scope)
 
 static HashTable *async_coroutine_object_gc(zend_object *object, zval **table, int *num)
 {
-	async_coroutine_t *coroutine = (async_coroutine_t *)object;
+	async_coroutine_t *coroutine = (async_coroutine_t *)ZEND_ASYNC_OBJECT_TO_EVENT(object);
 	zend_get_gc_buffer *buf = zend_get_gc_buffer_create();
 
 	/* Always add basic ZVALs from coroutine structure */
