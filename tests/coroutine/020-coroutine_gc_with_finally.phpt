@@ -4,6 +4,7 @@ Coroutine: GC handler with finally handlers
 <?php
 
 use function Async\spawn;
+use function Async\suspend;
 
 // Test GC with finally handlers containing callable ZVALs
 $coroutine = spawn(function() {
@@ -17,6 +18,8 @@ $coroutine->onFinally(function() {
 
 // Force garbage collection
 $collected = gc_collect_cycles();
+
+suspend(); // Suspend to simulate coroutine lifecycle
 
 // Wait for completion
 $result = $coroutine->getResult();

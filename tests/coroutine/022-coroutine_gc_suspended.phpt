@@ -16,8 +16,9 @@ $coroutine = spawn(function() {
 // Force garbage collection while coroutine is suspended
 $collected = gc_collect_cycles();
 
-// Resume and complete coroutine
-$coroutine->resume();
+suspend(); // Suspend to simulate coroutine lifecycle
+$result = $coroutine->getResult();
+suspend(); // Ensure coroutine is resumed
 $result = $coroutine->getResult();
 
 var_dump($result);

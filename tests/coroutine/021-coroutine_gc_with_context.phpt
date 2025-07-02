@@ -4,6 +4,7 @@ Coroutine: GC handler with context data
 <?php
 
 use function Async\spawn;
+use function Async\suspend;
 use Async\Context;
 
 // Test GC with coroutine context containing ZVALs
@@ -23,6 +24,8 @@ $coroutine = spawn(function() use ($context, $obj_key) {
 
 // Force garbage collection to test context ZVAL tracking
 $collected = gc_collect_cycles();
+
+suspend(); // Suspend to simulate coroutine lifecycle
 
 // Get result
 $result = $coroutine->getResult();

@@ -4,6 +4,7 @@ Coroutine: GC handler with multiple ZVALs
 <?php
 
 use function Async\spawn;
+use function Async\suspend;
 
 // Test GC with coroutine containing multiple ZVALs
 $test_data = ["key1" => "value1", "key2" => "value2"];
@@ -24,6 +25,8 @@ $coroutine->onFinally(function() {
 
 // Force garbage collection
 $collected = gc_collect_cycles();
+
+suspend(); // Suspend to simulate coroutine lifecycle
 
 // Get result
 $result = $coroutine->getResult();

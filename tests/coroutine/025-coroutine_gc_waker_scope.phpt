@@ -4,6 +4,7 @@ Coroutine: GC handler with waker and scope structures
 <?php
 
 use function Async\spawn;
+use function Async\suspend;
 use Async\Scope;
 
 // Test GC with coroutine containing waker and scope structures
@@ -17,6 +18,8 @@ $coroutine = $scope->spawn(function() {
 
 // Force garbage collection to test waker/scope ZVAL tracking
 $collected = gc_collect_cycles();
+
+suspend(); // Suspend to simulate coroutine lifecycle
 
 // Get result
 $result = $coroutine->getResult();

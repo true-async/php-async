@@ -4,6 +4,8 @@ Coroutine: GC handler with exception objects
 <?php
 
 use function Async\spawn;
+use function Async\suspend;
+use function Async\await;
 
 // Test GC with coroutine that has exception
 $coroutine = spawn(function() {
@@ -15,7 +17,7 @@ $collected = gc_collect_cycles();
 
 // Get exception
 try {
-    $coroutine->getResult();
+    await($coroutine);
 } catch (Exception $e) {
     var_dump($e->getMessage());
 }
