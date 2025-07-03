@@ -1,5 +1,5 @@
 /* This is a generated file, edit the .stub.php file instead.
- * Stub hash: 550ad17a2db4553cda2febb49bb18249b62b8415 */
+ * Stub hash: bee063ddc53348cc4a6ad23b9fc3415acc6d86f2 */
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_Coroutine_getId, 0, 0, IS_LONG, 0)
 ZEND_END_ARG_INFO()
@@ -44,8 +44,8 @@ ZEND_END_ARG_INFO()
 
 #define arginfo_class_Async_Coroutine_getAwaitingInfo arginfo_class_Async_Coroutine_getTrace
 
-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_Coroutine_cancel, 0, 1, IS_VOID, 0)
-	ZEND_ARG_OBJ_INFO(0, cancellationException, CancellationException, 0)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_Coroutine_cancel, 0, 0, IS_VOID, 0)
+	ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, cancellationException, CancellationException, 1, "null")
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_Coroutine_onFinally, 0, 1, IS_VOID, 0)

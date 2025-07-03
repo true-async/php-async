@@ -256,10 +256,11 @@ METHOD(getAwaitingInfo)
 
 METHOD(cancel)
 {
-	zend_object *exception;
+	zend_object *exception = NULL;
 
-	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_OBJ_OF_CLASS(exception, zend_ce_cancellation_exception)
+	ZEND_PARSE_PARAMETERS_START(0, 1)
+		Z_PARAM_OPTIONAL;
+		Z_PARAM_OBJ_OF_CLASS_OR_NULL(exception, zend_ce_cancellation_exception)
 	ZEND_PARSE_PARAMETERS_END();
 
 	ZEND_ASYNC_CANCEL(&THIS_COROUTINE->coroutine, exception, false);
@@ -581,6 +582,12 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 		}
 
 		zend_async_waker_destroy(&coroutine->coroutine);
+
+		if (coroutine->coroutine.extended_dispose != NULL) {
+			const zend_async_coroutine_dispose dispose = coroutine->coroutine.extended_dispose;
+			coroutine->coroutine.extended_dispose = NULL;
+			dispose(&coroutine->coroutine);
+		}
 
 		zend_exception_restore();
 
