@@ -61,7 +61,8 @@ jobs:
             libxml2-dev libxslt1-dev libpq-dev libreadline-dev libldap2-dev libsodium-dev \
             libargon2-dev \
             firebird-dev \
-            libuv1-dev
+            libuv1-dev \
+            valgrind
 
       - name: Configure PHP
         working-directory: php-src
@@ -134,6 +135,7 @@ jobs:
         run: |
           /usr/local/bin/php -v
           /usr/local/bin/php ../../run-tests.php \
+            -m \
             -d zend_extension=opcache.so \
             -d opcache.enable_cli=1 \
             -d opcache.jit_buffer_size=64M \
