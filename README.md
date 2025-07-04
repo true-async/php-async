@@ -31,6 +31,21 @@ tightly integrated at the core level.
 PHP TRUE ASYNC is supported for PHP 8.5.0 and later.
 `LibUV` is the primary reactor implementation for this extension.
 
+### Requirements
+
+- **PHP 8.5.0+**
+- **LibUV ≥ 1.44.0** (required) - Fixes critical `UV_RUN_ONCE` busy loop issue that could cause high CPU usage
+
+### Why LibUV 1.44.0+ is Required
+
+Prior to libuv 1.44, there was a critical issue in `uv__io_poll()`/`uv__run_pending` logic that could cause the event loop to "stick" after the first callback when running in `UV_RUN_ONCE` mode, especially when new ready events appeared within callbacks. This resulted in:
+
+- **High CPU usage** due to busy loops
+- **Performance degradation** in async applications
+- **Inconsistent event loop behavior** affecting TrueAsync API reliability
+
+The fix in libuv 1.44 ensures that `UV_RUN_ONCE` properly returns after processing all ready callbacks in the current iteration, meeting the "forward progress" specification requirements. This is essential for TrueAsync's performance and reliability.
+
 ---
 
 ### Unix / macOS
@@ -67,7 +82,31 @@ PHP TRUE ASYNC is supported for PHP 8.5.0 and later.
 
 4. **Install LibUV:**:
    
-Please see the [LibUV installation guide](https://github.com/libuv/libuv)
+**IMPORTANT:** LibUV version 1.44.0 or later is required.
+
+For Debian/Ubuntu:
+```bash
+# Check if system libuv meets requirements (≥1.44.0)
+pkg-config --modversion libuv
+
+# If version is too old, install from source:
+wget https://github.com/libuv/libuv/archive/v1.44.0.tar.gz
+tar -xzf v1.44.0.tar.gz
+cd libuv-1.44.0
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+make -j$(nproc)
+sudo make install
+sudo ldconfig
+```
+
+For macOS:
+```bash
+# Homebrew usually has recent versions
+brew install libuv
+```
+
+Please see the [LibUV installation guide](https://github.com/libuv/libuv) for more details.
 
 5. **Configure and build:**
 

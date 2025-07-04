@@ -30,6 +30,9 @@ if (PHP_ASYNC == "yes") {
     if (CHECK_HEADER_ADD_INCLUDE("libuv/uv.h", "CFLAGS_UV", PHP_PHP_BUILD + "\\include")
         && CHECK_LIB("libuv.lib", "libuv")) {
 
+        // Note: libuv >= 1.44.0 is required for UV_RUN_ONCE busy loop fix
+        // For Windows builds, manually verify libuv version meets requirements
+        
         PHP_INSTALL_HEADERS("ext/async", "libuv_reactor.h");
 
         ADD_SOURCES("ext/async", "libuv_reactor.c");
@@ -39,6 +42,7 @@ if (PHP_ASYNC == "yes") {
         ERROR("Libuv components are not found. The search was performed in the directory: '" + PHP_PHP_BUILD +
               "'.\nTo compile PHP TRUE ASYNC with LibUV:\n" +
               "1. Copy files from 'libuv\\include' to '" + PHP_PHP_BUILD + "\\include\\libuv\\'\n" +
-              "2. Build libuv.lib and copy it to '" + PHP_PHP_BUILD + "\\lib\\'");
+              "2. Build libuv.lib and copy it to '" + PHP_PHP_BUILD + "\\lib\\'\n" +
+              "3. IMPORTANT: Use libuv >= 1.44.0 (fixes UV_RUN_ONCE busy loop issue)");
     }
 }
