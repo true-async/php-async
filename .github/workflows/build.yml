@@ -159,7 +159,7 @@ jobs:
             -d opcache.jit=tracing \
             -d zend_test.observer.enabled=1 \
             -d zend_test.observer.show_output=0 \
-            -P -q -x -j2 \
+            -P -q -x -j4 \
             -g FAIL,BORK,LEAK,XLEAK \
             --no-progress \
             --offline \
@@ -167,9 +167,3 @@ jobs:
             --show-slow 2000 \
             --set-timeout 120 \
             --repeat 2
-          /usr/local/bin/php ../../run-tests.php \
-            -m \
-            --no-progress \
-            --show-diff \
-            --offline \
-            --set-timeout 120
