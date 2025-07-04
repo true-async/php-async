@@ -153,7 +153,6 @@ jobs:
         run: |
           /usr/local/bin/php -v
           /usr/local/bin/php ../../run-tests.php \
-            -m \
             -d zend_extension=opcache.so \
             -d opcache.enable_cli=1 \
             -d opcache.jit_buffer_size=64M \
@@ -168,3 +167,12 @@ jobs:
             --show-slow 1000 \
             --set-timeout 120 \
             --repeat 2
+          /usr/local/bin/php ../../run-tests.php \
+            -m \
+            -P -q -x -j2 \
+            -g FAIL,BORK,LEAK,XLEAK \
+            --no-progress \
+            --offline \
+            --show-diff \
+            --show-slow 1000 \
+            --set-timeout 120 \
