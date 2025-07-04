@@ -6,6 +6,7 @@ awaitAny() - coroutine throws exception
 use function Async\spawn;
 use function Async\awaitAny;
 use function Async\delay;
+use function Async\suspend;
 
 echo "start\n";
 
@@ -15,7 +16,7 @@ $coroutines = [
         return "first";
     }),
     spawn(function() {
-        delay(20);
+        suspend();
         throw new RuntimeException("test exception");
     }),
 ];
