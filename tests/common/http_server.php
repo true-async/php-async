@@ -60,7 +60,8 @@ function async_test_server_start(?string $router = null): AsyncTestServerInfo {
         }
 
         $output = file_get_contents($output_file);
-        if (preg_match('@PHP \S* Development Server \(https?://(.*?:\d+)\) started@', $output, $matches)) {
+        // Handle both formats: with and without timestamp prefix
+        if (preg_match('@(?:\[[^\]]+\] )?PHP \S* Development Server \(https?://(.*?:\d+)\) started@', $output, $matches)) {
             $bound = $matches[1];
             break;
         }
