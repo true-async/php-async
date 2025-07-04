@@ -27,7 +27,9 @@ function async_test_server_start(?string $router = null): AsyncTestServerInfo {
 
     $cmd = [$php_executable, '-t', $doc_root, '-n', '-S', 'localhost:0', $router];
 
-    $output_file = tempnam(sys_get_temp_dir(), 'async_test_server_output');
+    // Use unique temp file with PID and microtime for parallel workers
+    $unique_id = getmypid() . '_' . microtime(true);
+    $output_file = tempnam(sys_get_temp_dir(), "async_test_server_output_{$unique_id}_");
     $output_file_fd = fopen($output_file, 'ab');
     if ($output_file_fd === false) {
         die(sprintf("Failed opening output file %s\n", $output_file));
@@ -43,7 +45,7 @@ function async_test_server_start(?string $router = null): AsyncTestServerInfo {
         2 => $output_file_fd,
     );
     $handle = proc_open($cmd, $descriptorspec, $pipes, $doc_root, null, array("suppress_errors" => true));
-
+    
     // Wait for the server to start
     $bound = null;
     for ($i = 0; $i < 60; $i++) {
@@ -52,6 +54,7 @@ function async_test_server_start(?string $router = null): AsyncTestServerInfo {
         if (empty($status['running'])) {
             echo "Server failed to start\n";
             printf("Server output:\n%s\n", file_get_contents($output_file));
+            fclose($output_file_fd);
             proc_terminate($handle);
             exit(1);
         }
@@ -66,6 +69,7 @@ function async_test_server_start(?string $router = null): AsyncTestServerInfo {
     if ($bound === null) {
         echo "Server did not output startup message\n";
         printf("Server output:\n%s\n", file_get_contents($output_file));
+        fclose($output_file_fd);
         proc_terminate($handle);
         exit(1);
     }
@@ -91,12 +95,13 @@ function async_test_server_start(?string $router = null): AsyncTestServerInfo {
 
     if ($error) {
         echo $error;
+        fclose($output_file_fd);
         proc_terminate($handle);
         exit(1);
     }
 
     register_shutdown_function(
-        function($handle) use($doc_root, $output_file) {
+        function($handle) use($doc_root, $output_file, $output_file_fd) {
             if (is_resource($handle) && get_resource_type($handle) === 'process') {
                 $status = proc_get_status($handle);
                 if ($status !== false && $status['running']) {
@@ -109,6 +114,9 @@ function async_test_server_start(?string $router = null): AsyncTestServerInfo {
                     printf("Server exited with non-zero status: %d\n", $status['exitcode']);
                     printf("Server output:\n%s\n", file_get_contents($output_file));
                 }
+            }
+            if (is_resource($output_file_fd)) {
+                fclose($output_file_fd);
             }
             @unlink($output_file);
             remove_directory($doc_root);
