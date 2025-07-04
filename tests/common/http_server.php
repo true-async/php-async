@@ -48,12 +48,21 @@ function async_test_server_start(?string $router = null): AsyncTestServerInfo {
     
     // Wait for the server to start
     $bound = null;
-    for ($i = 0; $i < 60; $i++) {
-        usleep(50000); // 50ms per try
+    for ($i = 0; $i < 120; $i++) { // Increased timeout for CI
+        usleep(100000); // 100ms per try (was 50ms)
+        
+        // Force flush the output file
+        if (is_resource($output_file_fd)) {
+            fflush($output_file_fd);
+        }
+        
         $status = proc_get_status($handle);
         if (empty($status['running'])) {
+            $output_content = file_get_contents($output_file);
             echo "Server failed to start\n";
-            printf("Server output:\n%s\n", file_get_contents($output_file));
+            printf("Server output:\n%s\n", $output_content);
+            printf("Output file: %s\n", $output_file);
+            printf("Status: %s\n", print_r($status, true));
             fclose($output_file_fd);
             proc_terminate($handle);
             exit(1);
@@ -65,11 +74,25 @@ function async_test_server_start(?string $router = null): AsyncTestServerInfo {
             $bound = $matches[1];
             break;
         }
+        
+        // Debug output every 20 iterations in CI
+        if ($i > 0 && $i % 20 == 0 && getenv('CI')) {
+            printf("Debug: iteration %d, output length: %d\n", $i, strlen($output));
+        }
     }
     
     if ($bound === null) {
+        $output_content = file_get_contents($output_file);
+        $final_status = proc_get_status($handle);
+        
         echo "Server did not output startup message\n";
-        printf("Server output:\n%s\n", file_get_contents($output_file));
+        printf("Server output:\n%s\n", $output_content);
+        printf("Output file: %s (size: %d)\n", $output_file, filesize($output_file));
+        printf("Final status: %s\n", print_r($final_status, true));
+        printf("Command: %s\n", implode(' ', $cmd));
+        printf("Doc root: %s\n", $doc_root);
+        printf("Router: %s\n", $router ?? 'default');
+        
         fclose($output_file_fd);
         proc_terminate($handle);
         exit(1);
