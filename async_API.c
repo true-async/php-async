@@ -321,9 +321,9 @@ void async_waiting_callback(
 	// remove the callback from the event
 	// We remove the callback because we treat all events
 	// as FUTURE-type objects, where the trigger can be activated only once.
-	ZEND_ASYNC_EVENT_CALLBACK_ADD_REF(callback)
+	ZEND_ASYNC_EVENT_CALLBACK_ADD_REF(callback);
 	event->del_callback(event, callback);
-	ZEND_ASYNC_EVENT_CALLBACK_DEC_REF(callback)
+	ZEND_ASYNC_EVENT_CALLBACK_DEC_REF(callback);
 
 	if (exception != NULL) {
 		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
@@ -420,9 +420,9 @@ void async_waiting_cancellation_callback(
 	async_await_context_t * await_context = await_callback->await_context;
 
 	await_context->resolved_count++;
-	ZEND_ASYNC_EVENT_CALLBACK_ADD_REF(callback)
+	ZEND_ASYNC_EVENT_CALLBACK_ADD_REF(callback);
 	event->del_callback(event, callback);
-	ZEND_ASYNC_EVENT_CALLBACK_DEC_REF(callback)
+	ZEND_ASYNC_EVENT_CALLBACK_DEC_REF(callback);
 
 	if (exception != NULL) {
 		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
