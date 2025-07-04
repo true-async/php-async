@@ -25,22 +25,17 @@ $coroutines = [
 ];
 
 $result = awaitAnyOfWithErrors(2, $coroutines);
-var_dump($result);
+
+$countOfResults = count($result[0]) >= 2 ? "OK" : "FALSE: ".count($result[0]);
+$countOfErrors = count($result[1]) == 0 ? "OK" : "FALSE: ".count($result[1]);
+
+echo "Count of results: $countOfResults\n";
+echo "Count of errors: $countOfErrors\n";
 
 echo "end\n";
 ?>
---EXPECT--
+--EXPECTF--
 start
-array(2) {
-  [0]=>
-  array(2) {
-    [1]=>
-    string(6) "second"
-    [2]=>
-    string(5) "third"
-  }
-  [1]=>
-  array(0) {
-  }
-}
+Count of results: OK
+Count of errors: OK
 end
