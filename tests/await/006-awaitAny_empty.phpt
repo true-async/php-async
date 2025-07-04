@@ -8,11 +8,13 @@ use function Async\awaitAny;
 echo "start\n";
 
 $result = awaitAny([]);
-var_dump($result);
+
+$resultCheck = $result === null ? "OK" : "FALSE: " . var_export($result, true);
+echo "Result is null: $resultCheck\n";
 
 echo "end\n";
 ?>
 --EXPECT--
 start
-NULL
+Result is null: OK
 end

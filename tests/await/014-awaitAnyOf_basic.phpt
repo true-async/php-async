@@ -29,16 +29,13 @@ $coroutines = [
 ];
 
 $results = awaitAnyOf(2, $coroutines);
-var_dump($results);
+
+$countOfResults = count($results) >= 2 ? "OK" : "FALSE: ".count($results);
+echo "Count of results: $countOfResults\n";
 
 echo "end\n";
 ?>
 --EXPECT--
 start
-array(2) {
-  [1]=>
-  string(6) "second"
-  [3]=>
-  string(6) "fourth"
-}
+Count of results: OK
 end

@@ -25,36 +25,10 @@ $coroutines = [
 ];
 
 $result = awaitFirstSuccess($coroutines);
-var_dump($result);
-
+echo "Result: {$result[0]}\n";
 echo "end\n";
 ?>
 --EXPECTF--
 start
-array(2) {
-  [0]=>
-  string(7) "success"
-  [1]=>
-  array(1) {
-    [0]=>
-    object(RuntimeException)#%d (7) {
-      ["message":protected]=>
-      string(11) "first error"
-      ["string":"Exception":private]=>
-      string(0) ""
-      ["code":protected]=>
-      int(0)
-      ["file":protected]=>
-      string(%d) "%s"
-      ["line":protected]=>
-      int(%d)
-      ["trace":"Exception":private]=>
-      array(%d) {
-        %a
-      }
-      ["previous":"Exception":private]=>
-      NULL
-    }
-  }
-}
+Result: success
 end

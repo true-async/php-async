@@ -22,7 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Memory management improvements for long-running async applications
 - Proper cleanup of coroutine and scope objects during garbage collection cycles
 
-## [0.2.0] - TBD
+### Changed
+- **LibUV requirement increased to ≥ 1.44.0** - Requires libuv version 1.44.0 or later to ensure proper UV_RUN_ONCE behavior and prevent busy loop issues that could cause high CPU usage
+
+
+## [0.2.0] - 2025-07-01
 
 ### Added
 - **Async-aware destructor handling (PHP Core)**: Implemented `async_shutdown_destructors()` function to properly 

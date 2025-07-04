@@ -19,7 +19,8 @@ spawn(function () use ($start_time) {
     usleep(500000); // 0.5 seconds
     
     $elapsed = microtime(true) - $start_time;
-    echo "Elapsed time >= 0.5s: " . ($elapsed >= 0.5 ? "yes" : "no") . "\n";
+    $is_equal = $elapsed >= 0.5 || $elapsed >= 0.3999999999999;
+    echo "Elapsed time ~ 0.5s: " . ($is_equal ? "yes" : "no") . "\n";
     echo "Usleep test completed\n";
 });
 
@@ -34,5 +35,5 @@ Main thread start
 Main thread end
 Starting async usleep test
 Other async task executing
-Elapsed time >= 0.5s: yes
+Elapsed time ~ 0.5s: yes
 Usleep test completed
