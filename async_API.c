@@ -263,9 +263,11 @@ static zend_class_entry* async_get_class_ce(zend_async_class type)
 ////////////////////////////////////////////////////////////////////
 
 #define AWAIT_ALL(await_context) ((await_context)->waiting_count == 0 || (await_context)->waiting_count == (await_context)->total)
-#define ITERATOR_IS_FINISHED(await_context) \
-	((await_context->ignore_errors ? await_context->success_count : await_context->resolved_count) >= await_context->waiting_count || \
-		(await_context->total != 0 && await_context->resolved_count >= await_context->total) \
+#define AWAIT_ITERATOR_IS_FINISHED(await_context) \
+	((await_context->waiting_count > 0 \
+		&& (await_context->ignore_errors ? await_context->success_count : await_context->resolved_count) \
+			>= await_context->waiting_count) || \
+	(await_context->total != 0 && await_context->resolved_count >= await_context->total) \
 	)
 
 static zend_always_inline zend_async_event_t * zval_to_event(const zval * current)
@@ -388,7 +390,7 @@ void async_waiting_callback(
 		}
 	}
 
-	if (UNEXPECTED(ITERATOR_IS_FINISHED(await_context))) {
+	if (UNEXPECTED(AWAIT_ITERATOR_IS_FINISHED(await_context))) {
 		ZEND_ASYNC_RESUME(await_callback->callback.coroutine);
 	}
 
@@ -471,7 +473,8 @@ zend_result await_iterator_handler(async_iterator_t *iterator, zval *current, zv
 
 	async_await_callback_t * callback = ecalloc(1, sizeof(async_await_callback_t));
 	callback->callback.base.callback = async_waiting_callback;
-	callback->await_context = await_iterator->await_context;
+	async_await_context_t * await_context = await_iterator->await_context;
+	callback->await_context = await_context;
 
 	ZVAL_COPY(&callback->key, key);
 
@@ -490,21 +493,26 @@ zend_result await_iterator_handler(async_iterator_t *iterator, zval *current, zv
 	}
 
 	// Add the empty element to the results array if all elements are awaited
-	if (await_iterator->await_context->results != NULL && AWAIT_ALL(await_iterator->await_context)) {
+	if (await_context->results != NULL && AWAIT_ALL(await_context)) {
 		if (Z_TYPE(callback->key) == IS_STRING) {
-			zend_hash_add_empty_element(await_iterator->await_context->results, Z_STR_P(key));
+			zend_hash_add_empty_element(await_context->results, Z_STR_P(key));
 		} else if (Z_TYPE(callback->key) == IS_LONG) {
-			zend_hash_index_add_empty_element(await_iterator->await_context->results, Z_LVAL_P(key));
+			zend_hash_index_add_empty_element(await_context->results, Z_LVAL_P(key));
 		}
-	} else if (await_iterator->await_context->results != NULL && await_iterator->await_context->fill_missing_with_null) {
+	} else if (await_context->results != NULL && await_context->fill_missing_with_null) {
 		if (Z_TYPE(callback->key) == IS_STRING) {
-			zend_hash_add(await_iterator->await_context->results, Z_STR_P(key), &EG(uninitialized_zval));
+			zend_hash_add(await_context->results, Z_STR_P(key), &EG(uninitialized_zval));
 		} else if (Z_TYPE(callback->key) == IS_LONG) {
-			zend_hash_index_add(await_iterator->await_context->results, Z_LVAL_P(key), &EG(uninitialized_zval));
+			zend_hash_index_add(await_context->results, Z_LVAL_P(key), &EG(uninitialized_zval));
 		}
 	}
 
 	zend_async_resume_when(await_iterator->waiting_coroutine, awaitable, false, NULL, &callback->callback);
+	if (UNEXPECTED(EG(exception))) {
+		return FAILURE;
+	}
+
+	await_context->futures_count++;
 
 	return SUCCESS;
 }
@@ -539,7 +547,7 @@ void iterator_coroutine_first_entry(void)
 		await_iterator_handler,
 		ZEND_ASYNC_CURRENT_SCOPE,
 		await_context->concurrency,
-		0,
+		ZEND_COROUTINE_HI_PRIORITY,
 		sizeof(async_await_iterator_iterator_t)
 	);
 
@@ -569,7 +577,7 @@ void iterator_coroutine_finish_callback(
 			exception,
 			false
 		);
-	} else if (ITERATOR_IS_FINISHED(iterator->await_context)) {
+	} else if (AWAIT_ITERATOR_IS_FINISHED(iterator->await_context)) {
 		// If iteration is finished, resume the waiting coroutine
 		ZEND_ASYNC_RESUME(iterator->waiting_coroutine);
 	}
@@ -587,6 +595,9 @@ void async_await_iterator_coroutine_dispose(zend_coroutine_t *coroutine)
 	if (iterator->zend_iterator != NULL) {
 		zend_object_iterator *zend_iterator = iterator->zend_iterator;
 		iterator->zend_iterator = NULL;
+
+		// When the iterator has finished, it’s now possible to specify the exact number of elements since it’s known.
+		iterator->await_context->total = iterator->await_context->futures_count;
 
 		if (zend_iterator->funcs->invalidate_current) {
 			zend_iterator->funcs->invalidate_current(zend_iterator);
@@ -742,6 +753,7 @@ void async_await_futures(
 
 	await_context = ecalloc(1, sizeof(async_await_context_t));
 	await_context->total = futures != NULL ? (int) zend_hash_num_elements(futures) : 0;
+	await_context->futures_count = 0;
 	await_context->waiting_count = count > 0 ? count : await_context->total;
 	await_context->resolved_count = 0;
 	await_context->success_count = 0;
@@ -833,7 +845,7 @@ void async_await_futures(
 			return;
 		}
 
-		zend_coroutine_t * iterator_coroutine = ZEND_ASYNC_SPAWN_WITH(scope);
+		zend_coroutine_t * iterator_coroutine = ZEND_ASYNC_SPAWN_WITH_SCOPE_EX(scope, ZEND_COROUTINE_HI_PRIORITY);
 
 		if (UNEXPECTED(iterator_coroutine == NULL || EG(exception))) {
 			await_context->dtor(await_context);

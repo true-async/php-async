@@ -29,6 +29,9 @@ struct _async_await_context_t
 	unsigned int ref_count;
 	/* The total number of futures to wait for */
 	unsigned int total;
+	/* The current number of futures being awaited.
+	 * This counter is used in the case of a zend_iterator, since the total number of elements is unknown. */
+	unsigned int futures_count;
 	/* The number of futures that are currently waiting */
 	unsigned int waiting_count;
 	/* The number of futures that have been resolved */
