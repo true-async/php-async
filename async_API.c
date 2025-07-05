@@ -196,11 +196,6 @@ zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object * scope_provider,
 	return &coroutine->coroutine;
 }
 
-static void graceful_shutdown(void)
-{
-	start_graceful_shutdown();
-}
-
 static void engine_shutdown(void)
 {
 	ZEND_ASYNC_REACTOR_SHUTDOWN();
@@ -906,7 +901,7 @@ void async_api_register(void)
 		async_coroutine_resume,
 		async_coroutine_cancel,
 		async_spawn_and_throw,
-		graceful_shutdown,
+		start_graceful_shutdown,
 		get_coroutines,
 		add_microtask,
 		get_awaiting_info,

@@ -104,7 +104,15 @@ ZEND_API ZEND_COLD zend_object * async_throw_error(const char *format, ...)
 	zend_string *message = zend_vstrpprintf(0, format, args);
 	va_end(args);
 
-	zend_object *obj = zend_throw_exception(async_ce_async_exception, ZSTR_VAL(message), 0);
+	zend_object *obj = NULL;
+
+	if (EXPECTED(EG(current_execute_data))) {
+		 obj = zend_throw_exception(async_ce_async_exception, ZSTR_VAL(message), 0);
+	} else {
+		obj = async_new_exception(async_ce_async_exception, ZSTR_VAL(message));
+		async_apply_exception_to_context(obj);
+	}
+
 	zend_string_release(message);
 	return obj;
 }
@@ -124,7 +132,14 @@ ZEND_API ZEND_COLD zend_object * async_throw_cancellation(const char *format, ..
 	va_list args;
 	va_start(args, format);
 
-	zend_object *obj = zend_throw_exception_ex(async_ce_cancellation_exception, 0, format, args);
+	zend_object *obj = NULL;
+
+	if (EXPECTED(EG(current_execute_data))) {
+		obj = zend_throw_exception_ex(async_ce_cancellation_exception, 0, format, args);
+	} else {
+		obj = async_new_exception(async_ce_cancellation_exception, format, args);
+		async_apply_exception_to_context(obj);
+	}
 
 	va_end(args);
 	return obj;
@@ -137,7 +152,14 @@ ZEND_API ZEND_COLD zend_object * async_throw_input_output(const char *format, ..
 	va_list args;
 	va_start(args, format);
 
-	zend_object *obj = zend_throw_exception_ex(async_ce_input_output_exception, 0, format, args);
+	zend_object *obj = NULL;
+
+	if (EXPECTED(EG(current_execute_data))) {
+		obj = zend_throw_exception_ex(async_ce_input_output_exception, 0, format, args);
+	} else {
+		obj = async_new_exception(async_ce_input_output_exception, format, args);
+		async_apply_exception_to_context(obj);
+	}
 
 	va_end(args);
 	return obj;
@@ -147,7 +169,13 @@ ZEND_API ZEND_COLD zend_object * async_throw_timeout(const char *format, const z
 {
 	format = format ? format : "A timeout of %u microseconds occurred";
 
-	return zend_throw_exception_ex(async_ce_timeout_exception, 0, format, timeout);
+	if (EXPECTED(EG(current_execute_data))) {
+		return zend_throw_exception_ex(async_ce_timeout_exception, 0, format, timeout);
+	} else {
+		zend_object *obj = async_new_exception(async_ce_timeout_exception, format, timeout);
+		async_apply_exception_to_context(obj);
+		return obj;
+	}
 }
 
 ZEND_API ZEND_COLD zend_object * async_throw_poll(const char *format, ...)
@@ -155,7 +183,14 @@ ZEND_API ZEND_COLD zend_object * async_throw_poll(const char *format, ...)
 	va_list args;
 	va_start(args, format);
 
-	zend_object *obj = zend_throw_exception_ex(async_ce_poll_exception, 0, format, args);
+	zend_object *obj = NULL;
+
+	if (EXPECTED(EG(current_execute_data))) {
+		obj = zend_throw_exception_ex(async_ce_poll_exception, 0, format, args);
+	} else {
+		obj = async_new_exception(async_ce_poll_exception, format, args);
+		async_apply_exception_to_context(obj);
+	}
 
 	va_end(args);
 	return obj;
