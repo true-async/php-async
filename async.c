@@ -157,16 +157,21 @@ PHP_FUNCTION(Async_protect)
 			ZEND_COROUTINE_SET_PROTECTED(coroutine);
 		}
 
-		zval result;
-		ZVAL_UNDEF(&result);
+		ZVAL_UNDEF(return_value);
 
 		zval closure_zval;
 		ZVAL_OBJ(&closure_zval, closure);
 
-		if (UNEXPECTED(call_user_function(NULL, NULL, &closure_zval, &result, 0, NULL) == FAILURE)) {
+		if (UNEXPECTED(call_user_function(NULL, NULL, &closure_zval, return_value, 0, NULL) == FAILURE)) {
 			zend_throw_error(NULL, "Failed to call finally handler in finished coroutine");
-			zval_ptr_dtor(&result);
+			zval_ptr_dtor(return_value);
 		}
+
+		if (Z_TYPE_P(return_value) == IS_UNDEF) {
+			// If the closure did not return a value, we return NULL.
+			ZVAL_NULL(return_value);
+		}
+
 	} zend_catch {
 		do_bailout = true;
 	} zend_end_try();
@@ -177,6 +182,10 @@ PHP_FUNCTION(Async_protect)
 
 	if (UNEXPECTED(do_bailout)) {
 		zend_bailout();
+	}
+
+	if (UNEXPECTED(coroutine == NULL)) {
+		return;
 	}
 
 	async_coroutine_t *async_coroutine = (async_coroutine_t *) coroutine;

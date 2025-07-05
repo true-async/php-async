@@ -1,5 +1,5 @@
 /* This is a generated file, edit the .stub.php file instead.
- * Stub hash: a36a9014653f09bffce4905a89824544b244b409 */
+ * Stub hash: b989a1b584dc4bcf2a4adab7210e04f1f157c75a */
 
 ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_Async_spawn, 0, 1, Async\\Coroutine, 0)
 	ZEND_ARG_TYPE_INFO(0, task, IS_CALLABLE, 0)
@@ -15,7 +15,7 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_suspend, 0, 0, IS_VOID, 0)
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_protect, 0, 1, IS_VOID, 0)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_protect, 0, 1, IS_MIXED, 0)
 	ZEND_ARG_OBJ_INFO(0, closure, Closure, 0)
 ZEND_END_ARG_INFO()
 

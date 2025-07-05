@@ -33,7 +33,7 @@ function suspend(): void {}
 /**
  * Execute the provided closure in non-cancellable mode.
  */
-function protect(\Closure $closure): void {}
+function protect(\Closure $closure): mixed {}
 
 function await(Awaitable $awaitable, ?Awaitable $cancellation = null): mixed {}
 
