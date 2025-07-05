@@ -196,11 +196,6 @@ zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object * scope_provider,
 	return &coroutine->coroutine;
 }
 
-static void graceful_shutdown(void)
-{
-	start_graceful_shutdown();
-}
-
 static void engine_shutdown(void)
 {
 	ZEND_ASYNC_REACTOR_SHUTDOWN();
@@ -299,11 +294,10 @@ void async_waiting_callback_dispose(zend_async_event_callback_t *callback, zend_
 
 	await_callback->await_context = NULL;
 
-	if (await_context == NULL) {
-		return;
+	if (await_context != NULL) {
+		await_context->dtor(await_context);
 	}
 
-	await_context->dtor(await_context);
 	await_callback->prev_dispose(callback, event);
 }
 
@@ -322,7 +316,9 @@ void async_waiting_callback(
 	// remove the callback from the event
 	// We remove the callback because we treat all events
 	// as FUTURE-type objects, where the trigger can be activated only once.
+	ZEND_ASYNC_EVENT_CALLBACK_ADD_REF(callback);
 	event->del_callback(event, callback);
+	ZEND_ASYNC_EVENT_CALLBACK_DEC_REF(callback);
 
 	if (exception != NULL) {
 		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
@@ -356,6 +352,7 @@ void async_waiting_callback(
 			false
 		);
 
+		callback->dispose(callback, NULL);
 		return;
 	}
 
@@ -366,6 +363,7 @@ void async_waiting_callback(
 			ZEND_ASYNC_RESUME(await_callback->callback.coroutine);
 		}
 
+		callback->dispose(callback, NULL);
 		return;
 	}
 
@@ -393,6 +391,8 @@ void async_waiting_callback(
 	if (UNEXPECTED(ITERATOR_IS_FINISHED(await_context))) {
 		ZEND_ASYNC_RESUME(await_callback->callback.coroutine);
 	}
+
+	callback->dispose(callback, NULL);
 }
 
 /**
@@ -415,7 +415,9 @@ void async_waiting_cancellation_callback(
 	async_await_context_t * await_context = await_callback->await_context;
 
 	await_context->resolved_count++;
+	ZEND_ASYNC_EVENT_CALLBACK_ADD_REF(callback);
 	event->del_callback(event, callback);
+	ZEND_ASYNC_EVENT_CALLBACK_DEC_REF(callback);
 
 	if (exception != NULL) {
 		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
@@ -445,6 +447,8 @@ void async_waiting_cancellation_callback(
 	if (await_context->total != 0 && await_context->resolved_count >= await_context->total) {
 		ZEND_ASYNC_RESUME(await_callback->callback.coroutine);
 	}
+
+	callback->dispose(callback, NULL);
 }
 
 zend_result await_iterator_handler(async_iterator_t *iterator, zval *current, zval *key)
@@ -897,7 +901,7 @@ void async_api_register(void)
 		async_coroutine_resume,
 		async_coroutine_cancel,
 		async_spawn_and_throw,
-		graceful_shutdown,
+		start_graceful_shutdown,
 		get_coroutines,
 		add_microtask,
 		get_awaiting_info,

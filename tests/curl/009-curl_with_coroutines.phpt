@@ -13,8 +13,6 @@ use function Async\awaitAll;
 $server = async_test_server_start();
 
 function make_curl_request($server, $id) {
-    echo "Coroutine $id: starting\n";
-    
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, "http://localhost:{$server->port}/");
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -25,12 +23,12 @@ function make_curl_request($server, $id) {
     
     curl_close($ch);
     
-    echo "Coroutine $id: completed (HTTP $http_code)\n";
-    
     return [
         'id' => $id,
         'response' => $response,
-        'http_code' => $http_code
+        'http_code' => $http_code,
+        'start_msg' => "Coroutine $id: starting",
+        'complete_msg' => "Coroutine $id: completed (HTTP $http_code)"
     ];
 }
 
@@ -45,8 +43,31 @@ $coroutines = [
 
 $results = awaitAll($coroutines);
 
+// Collect and sort messages
+$start_messages = [];
+$complete_messages = [];
+$result_messages = [];
+
 foreach ($results as $result) {
-    echo "Result {$result['id']}: {$result['response']}\n";
+    $start_messages[] = $result['start_msg'];
+    $complete_messages[] = $result['complete_msg'];
+    $result_messages[] = "Result {$result['id']}: {$result['response']}";
+}
+
+// Sort all messages by ID
+sort($start_messages);
+sort($complete_messages);
+sort($result_messages);
+
+// Output in consistent order
+foreach ($start_messages as $msg) {
+    echo $msg . "\n";
+}
+foreach ($complete_messages as $msg) {
+    echo $msg . "\n";
+}
+foreach ($result_messages as $msg) {
+    echo $msg . "\n";
 }
 
 echo "Test end\n";

@@ -458,7 +458,7 @@ void start_graceful_shutdown(void)
 
 	// If the exit exception is not defined, we will define it.
 	if (EG(exception) == NULL && ZEND_ASYNC_EXIT_EXCEPTION == NULL) {
-		async_throw_error("Graceful shutdown mode is activated");
+		zend_error(E_CORE_WARNING, "Graceful shutdown mode was started");
 	}
 
 	if (EG(exception) != NULL) {
@@ -676,7 +676,7 @@ void async_scheduler_main_coroutine_suspend(void)
 	} zend_end_try();
 
 	ZEND_ASYNC_CURRENT_COROUTINE = NULL;
-	ZEND_ASSERT(ZEND_ASYNC_ACTIVE_COROUTINE_COUNT == 0 && "The active coroutine counter must be 1 at this point");
+	ZEND_ASSERT(ZEND_ASYNC_ACTIVE_COROUTINE_COUNT == 0 && "The active coroutine counter must be 0 at this point");
 	ZEND_ASYNC_DEACTIVATE;
 
 	if (ASYNC_G(main_transfer)) {

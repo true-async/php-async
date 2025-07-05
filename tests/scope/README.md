@@ -17,6 +17,19 @@ This directory contains tests for the Async\Scope functionality.
 - **011-scope_on_finally.phpt**: Finally callback setup
 - **012-scope_dispose_after_timeout.phpt**: Timeout-based disposal
 
+### Finally Handlers
+- **013-scope_onFinally_execution.phpt**: Finally handlers execution testing
+- **014-scope_onFinally_completed.phpt**: Finally handlers on completed scopes  
+- **015-scope_onFinally_multiple.phpt**: Multiple finally handlers
+- **016-scope_onFinally_parameter.phpt**: Finally handlers with parameters
+- **017-scope_onFinally_error.phpt**: Error handling in finally handlers
+- **018-scope_onFinally_composite_exception.phpt**: CompositeException in finally handlers
+
+### Garbage Collection
+- **019-scope_gc_basic.phpt**: Basic GC handler functionality
+- **020-scope_gc_with_finally.phpt**: GC with finally handlers
+- **021-scope_gc_with_context.phpt**: GC with context data
+
 ## Running Tests
 
 To run these tests:
@@ -31,6 +44,8 @@ make test TESTS="ext/async/tests/scope/001-scope_construct_basic.phpt"
 
 ## Notes
 
-- These tests cover the basic API functionality
-- Some advanced features like exception handling and timeouts need further implementation
+- These tests cover the complete Scope API functionality
+- Includes comprehensive finally handler support with CompositeException handling
+- Features full garbage collection support to prevent memory leaks in scoped async operations
 - Tests should be run in a properly configured async environment
+- Exception handling and timeout functionality is fully implemented and tested

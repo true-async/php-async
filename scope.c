@@ -1229,6 +1229,84 @@ static void scope_destroy(zend_object *object)
 	}
 }
 
+static HashTable *scope_object_gc(zend_object *object, zval **table, int *num)
+{
+	async_scope_object_t *scope_obj = (async_scope_object_t *)object;
+	async_scope_t *scope = scope_obj->scope;
+
+	if (scope == NULL) {
+		*table = NULL;
+		*num = 0;
+		return NULL; // No scope to collect
+	}
+
+	zend_get_gc_buffer *buf = zend_get_gc_buffer_create();
+
+	/* Add exception handler ZVALs if present */
+	if (scope->exception_fci) {
+		zend_get_gc_buffer_add_zval(buf, &scope->exception_fci->function_name);
+	}
+
+	/* Add child exception handler ZVALs if present */
+	if (scope->child_exception_fci) {
+		zend_get_gc_buffer_add_zval(buf, &scope->child_exception_fci->function_name);
+	}
+
+	/* Add finally handlers if present */
+	if (scope->finally_handlers) {
+		zval *val;
+		ZEND_HASH_FOREACH_VAL(scope->finally_handlers, val) {
+			zend_get_gc_buffer_add_zval(buf, val);
+		} ZEND_HASH_FOREACH_END();
+	}
+
+	/* Add context ZVALs if present */
+	if (scope->scope.context) {
+		/* Cast to actual context implementation to access HashTables */
+		async_context_t *context = (async_context_t *)scope->scope.context;
+		
+		/* Add all values from context->values HashTable */
+		zval *val;
+		ZEND_HASH_FOREACH_VAL(&context->values, val) {
+			zend_get_gc_buffer_add_zval(buf, val);
+		} ZEND_HASH_FOREACH_END();
+		
+		/* Add all object keys from context->keys HashTable */
+		ZEND_HASH_FOREACH_VAL(&context->keys, val) {
+			zend_get_gc_buffer_add_zval(buf, val);
+		} ZEND_HASH_FOREACH_END();
+	}
+
+	zend_get_gc_buffer_use(buf, table, num);
+	return NULL;
+}
+
+static void scope_object_free(zend_object *object)
+{
+	async_scope_object_t *scope_object = (async_scope_object_t *) object;
+
+	async_scope_t *scope = scope_object->scope;
+
+	if (scope == NULL) {
+		return;
+	}
+
+	scope_object->scope = NULL;
+	scope->scope.scope_object = NULL;
+	zend_object_std_dtor(&scope_object->std);
+
+	// At this point, the user-defined Scope object is about to be destroyed.
+	// This means we are obligated to cancel the Scope and all its child Scopes along with their coroutines.
+	// However, the Scope itself will not be destroyed.
+	if (false == scope->scope.try_to_dispose(&scope->scope)) {
+		zend_object *exception = async_new_exception(
+			async_ce_cancellation_exception, "Scope is being disposed due to object destruction"
+		);
+
+		ZEND_ASYNC_SCOPE_CANCEL(&scope->scope, exception, true, ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(&scope->scope));
+	}
+}
+
 void async_register_scope_ce(void)
 {
 	async_ce_scope_provider = register_class_Async_ScopeProvider();
@@ -1242,6 +1320,8 @@ void async_register_scope_ce(void)
 
 	async_scope_handlers.clone_obj = NULL;
 	async_scope_handlers.dtor_obj = scope_destroy;
+	async_scope_handlers.get_gc = scope_object_gc;
+	async_scope_handlers.free_obj = scope_object_free;
 }
 
 /**
@@ -1332,12 +1412,29 @@ static zend_always_inline bool try_to_handle_exception(
 		}
 	}
 
+	async_scope_object_t *scope_object = NULL;
+
+	if (UNEXPECTED(current_scope->scope.scope_object == NULL)) {
+		// The PHP Scope object might already be destroyed by the time the internal Scope still exists.
+		// To normalize this situation, we’ll create a fake Scope object that will serve as a bridge.
+		scope_object = ZEND_OBJECT_ALLOC_EX(sizeof(async_scope_object_t), async_ce_scope);
+		zend_object_std_init(&scope_object->std, async_ce_scope);
+		object_properties_init(&scope_object->std, async_ce_scope);
+
+		if (UNEXPECTED(EG(exception))) {
+			OBJ_RELEASE(&scope_object->std);
+			return false;
+		}
+
+		GC_ADDREF(&scope_object->std);
+		scope_object->scope = current_scope;
+	}
 
 	// Prototype: function (Async\Scope $scope, Async\Coroutine $coroutine, Throwable $e)
 	zval retval;
 	zval parameters[3];
 	ZVAL_UNDEF(&retval);
-	ZVAL_OBJ(&parameters[0], current_scope->scope.scope_object);
+	ZVAL_OBJ(&parameters[0], scope_object != NULL ? &scope_object->std : current_scope->scope.scope_object);
 	ZVAL_OBJ(&parameters[1], &coroutine->std);
 	ZVAL_OBJ(&parameters[2], exception);
 
@@ -1358,6 +1455,14 @@ static zend_always_inline bool try_to_handle_exception(
 		exception_fci->params = NULL;
 
 		if (result == SUCCESS && EG(exception) == NULL) {
+			if (UNEXPECTED(scope_object != NULL)) {
+				scope_object->scope = NULL; // Clear reference to avoid double release
+				if (GC_REFCOUNT(&scope_object->std) > 1) {
+					GC_DELREF(&scope_object->std);
+				}
+				OBJ_RELEASE(&scope_object->std);
+			}
+
 			return true;
 		}
 	}
@@ -1378,8 +1483,24 @@ static zend_always_inline bool try_to_handle_exception(
 		exception_fci->params = NULL;
 
 		if (result == SUCCESS && EG(exception) == NULL) {
+			if (UNEXPECTED(scope_object != NULL)) {
+				scope_object->scope = NULL;
+				if (GC_REFCOUNT(&scope_object->std) > 1) {
+					GC_DELREF(&scope_object->std);
+				}
+				OBJ_RELEASE(&scope_object->std);
+			}
+
 			return true;
 		}
+	}
+
+	if (UNEXPECTED(scope_object != NULL)) {
+		scope_object->scope = NULL;
+		if (GC_REFCOUNT(&scope_object->std) > 1) {
+			GC_DELREF(&scope_object->std);
+		}
+		OBJ_RELEASE(&scope_object->std);
 	}
 
 	return false; // Exception not handled

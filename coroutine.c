@@ -25,6 +25,7 @@
 #include "scope.h"
 #include "zend_common.h"
 #include "zend_exceptions.h"
+#include "zend_generators.h"
 #include "zend_ini.h"
 
 #define METHOD(name) PHP_METHOD(Async_Coroutine, name)
@@ -255,10 +256,11 @@ METHOD(getAwaitingInfo)
 
 METHOD(cancel)
 {
-	zend_object *exception;
+	zend_object *exception = NULL;
 
-	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_OBJ_OF_CLASS(exception, zend_ce_cancellation_exception)
+	ZEND_PARSE_PARAMETERS_START(0, 1)
+		Z_PARAM_OPTIONAL;
+		Z_PARAM_OBJ_OF_CLASS_OR_NULL(exception, zend_ce_cancellation_exception)
 	ZEND_PARSE_PARAMETERS_END();
 
 	ZEND_ASYNC_CANCEL(&THIS_COROUTINE->coroutine, exception, false);
@@ -581,6 +583,12 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 
 		zend_async_waker_destroy(&coroutine->coroutine);
 
+		if (coroutine->coroutine.extended_dispose != NULL) {
+			const zend_async_coroutine_dispose dispose = coroutine->coroutine.extended_dispose;
+			coroutine->coroutine.extended_dispose = NULL;
+			dispose(&coroutine->coroutine);
+		}
+
 		zend_exception_restore();
 
 		// If the exception was handled by any handler, we do not propagate it further.
@@ -618,21 +626,22 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 			async_rethrow_exception(exception);
 		}
 
-		if (EG(exception)) {
-			if (!(coroutine->flags & ZEND_FIBER_FLAG_DESTROYED)
-				|| !(zend_is_graceful_exit(EG(exception)) || zend_is_unwind_exit(EG(exception)))
-			) {
-				coroutine->flags |= ZEND_FIBER_FLAG_THREW;
-				transfer->flags = ZEND_FIBER_TRANSFER_FLAG_ERROR;
-
-				ZVAL_OBJ_COPY(&transfer->value, EG(exception));
-			}
-
-			zend_clear_exception();
-		}
 	} zend_catch {
 		do_bailout = true;
 	} zend_end_try();
+
+	if (UNEXPECTED(EG(exception))) {
+		if (!(coroutine->flags & ZEND_FIBER_FLAG_DESTROYED)
+			|| !(zend_is_graceful_exit(EG(exception)) || zend_is_unwind_exit(EG(exception)))
+		) {
+			coroutine->flags |= ZEND_FIBER_FLAG_THREW;
+			transfer->flags = ZEND_FIBER_TRANSFER_FLAG_ERROR;
+
+			ZVAL_OBJ_COPY(&transfer->value, EG(exception));
+		}
+
+		zend_clear_exception();
+	}
 
 	if (EXPECTED(ZEND_ASYNC_SCHEDULER != &coroutine->coroutine)) {
 		// Permanently remove the coroutine from the Scheduler.
@@ -640,9 +649,8 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 			zend_error(E_CORE_ERROR, "Failed to remove coroutine from the list");
 		}
 
-		// Decrease the active coroutine count if the coroutine is not a zombie and is started.
-		if (ZEND_COROUTINE_IS_STARTED(&coroutine->coroutine)
-			&& false == ZEND_COROUTINE_IS_ZOMBIE(&coroutine->coroutine)) {
+		// Decrease the active coroutine count if the coroutine is not a zombie.
+		if (false == ZEND_COROUTINE_IS_ZOMBIE(&coroutine->coroutine)) {
 			ZEND_ASYNC_DECREASE_COROUTINE_COUNT
 		}
 	}
@@ -723,6 +731,7 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(zend_fiber_transfer *transfer)
 	}
 
 	EG(vm_stack) = NULL;
+	bool should_start_graceful_shutdown = false;
 
 	zend_first_try {
 		zend_vm_stack stack = zend_vm_stack_new_page(ZEND_FIBER_VM_STACK_SIZE, NULL);
@@ -759,15 +768,30 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(zend_fiber_transfer *transfer)
 			coroutine->coroutine.internal_entry();
 		}
 
-		async_coroutine_finalize(transfer, coroutine);
-
 	} zend_catch {
 		coroutine->flags |= ZEND_FIBER_FLAG_BAILOUT;
 		transfer->flags = ZEND_FIBER_TRANSFER_FLAG_BAILOUT;
+		should_start_graceful_shutdown = true;
+	} zend_end_try();
+
+	zend_first_try {
+		async_coroutine_finalize(transfer, coroutine);
+	} zend_catch {
+		coroutine->flags |= ZEND_FIBER_FLAG_BAILOUT;
+		transfer->flags = ZEND_FIBER_TRANSFER_FLAG_BAILOUT;
+		should_start_graceful_shutdown = true;
 	} zend_end_try();
 
 	coroutine->context.cleanup = &async_coroutine_cleanup;
 	coroutine->vm_stack = EG(vm_stack);
+
+	if (UNEXPECTED(should_start_graceful_shutdown)) {
+		zend_first_try {
+			ZEND_ASYNC_SHUTDOWN();
+		} zend_catch {
+			zend_error(E_CORE_WARNING, "A critical error was detected during the initiation of the graceful shutdown mode.");
+		} zend_end_try();
+	}
 
 	//
 	// The scheduler coroutine always terminates into the main execution flow.
@@ -779,7 +803,9 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(zend_fiber_transfer *transfer)
 		if (transfer != ASYNC_G(main_transfer)) {
 
 			if (UNEXPECTED(Z_TYPE(transfer->value) == IS_OBJECT)) {
-				zval_ptr_dtor(&transfer->value);
+				zend_first_try {
+					zval_ptr_dtor(&transfer->value);
+				} zend_end_try();
 				zend_error(E_CORE_WARNING, "The transfer value must be NULL when the main coroutine is resumed");
 			}
 
@@ -1182,6 +1208,138 @@ zend_coroutine_t *async_new_coroutine(zend_async_scope_t *scope)
 	return &coroutine->coroutine;
 }
 
+static HashTable *async_coroutine_object_gc(zend_object *object, zval **table, int *num)
+{
+	async_coroutine_t *coroutine = (async_coroutine_t *)ZEND_ASYNC_OBJECT_TO_EVENT(object);
+	zend_get_gc_buffer *buf = zend_get_gc_buffer_create();
+
+	/* Always add basic ZVALs from coroutine structure */
+	zend_get_gc_buffer_add_zval(buf, &coroutine->coroutine.result);
+	
+	/* Add objects that may be present */
+	if (coroutine->coroutine.exception) {
+		zend_get_gc_buffer_add_obj(buf, coroutine->coroutine.exception);
+	}
+	
+	if (coroutine->deferred_cancellation) {
+		zend_get_gc_buffer_add_obj(buf, coroutine->deferred_cancellation);
+	}
+
+	/* Add finally handlers if present */
+	if (coroutine->finally_handlers) {
+		zval *val;
+		ZEND_HASH_FOREACH_VAL(coroutine->finally_handlers, val) {
+			zend_get_gc_buffer_add_zval(buf, val);
+		} ZEND_HASH_FOREACH_END();
+	}
+
+	/* Add internal context HashTable if present */
+	if (coroutine->coroutine.internal_context) {
+		zval *val;
+		ZEND_HASH_FOREACH_VAL(coroutine->coroutine.internal_context, val) {
+			zend_get_gc_buffer_add_zval(buf, val);
+		} ZEND_HASH_FOREACH_END();
+	}
+
+	/* Add fcall function name and parameters if present */
+	if (coroutine->coroutine.fcall) {
+		zend_get_gc_buffer_add_zval(buf, &coroutine->coroutine.fcall->fci.function_name);
+		
+		/* Add function parameters */
+		if (coroutine->coroutine.fcall->fci.param_count > 0 && coroutine->coroutine.fcall->fci.params) {
+			for (uint32_t i = 0; i < coroutine->coroutine.fcall->fci.param_count; i++) {
+				zend_get_gc_buffer_add_zval(buf, &coroutine->coroutine.fcall->fci.params[i]);
+			}
+		}
+	}
+
+	/* Add waker-related ZVALs if present */
+	if (coroutine->coroutine.waker) {
+		zend_get_gc_buffer_add_zval(buf, &coroutine->coroutine.waker->result);
+		
+		if (coroutine->coroutine.waker->error) {
+			zend_get_gc_buffer_add_obj(buf, coroutine->coroutine.waker->error);
+		}
+		
+		/* Add events HashTable contents */
+		zval *event_val;
+		zval zval_object;
+		ZEND_HASH_FOREACH_VAL(&coroutine->coroutine.waker->events, event_val) {
+
+			zend_async_event_t *event = (zend_async_event_t *) Z_PTR_P(event_val);
+
+			if (ZEND_ASYNC_EVENT_IS_REFERENCE(event) || ZEND_ASYNC_EVENT_IS_ZEND_OBJ(event)) {
+				ZVAL_OBJ(&zval_object, ZEND_ASYNC_EVENT_TO_OBJECT(event));
+				zend_get_gc_buffer_add_zval(buf, &zval_object);
+			}
+		} ZEND_HASH_FOREACH_END();
+		
+		/* Add triggered events if present */
+		if (coroutine->coroutine.waker->triggered_events) {
+			ZEND_HASH_FOREACH_VAL(coroutine->coroutine.waker->triggered_events, event_val) {
+				zend_get_gc_buffer_add_zval(buf, event_val);
+			} ZEND_HASH_FOREACH_END();
+		}
+	}
+
+	/* Add context ZVALs if present */
+	if (coroutine->coroutine.context) {
+		/* Cast to actual context implementation to access HashTables */
+		async_context_t *context = (async_context_t *)coroutine->coroutine.context;
+		
+		/* Add all values from context->values HashTable */
+		zval *val;
+		ZEND_HASH_FOREACH_VAL(&context->values, val) {
+			zend_get_gc_buffer_add_zval(buf, val);
+		} ZEND_HASH_FOREACH_END();
+		
+		/* Add all object keys from context->keys HashTable */
+		ZEND_HASH_FOREACH_VAL(&context->keys, val) {
+			zend_get_gc_buffer_add_zval(buf, val);
+		} ZEND_HASH_FOREACH_END();
+	}
+
+	/* Check if we should traverse execution stack (similar to fibers) */
+	if (coroutine->context.status != ZEND_FIBER_STATUS_SUSPENDED || 
+		!coroutine->execute_data) {
+		zend_get_gc_buffer_use(buf, table, num);
+		return NULL;
+	}
+
+	/* Traverse execution stack for suspended coroutines */
+	HashTable *lastSymTable = NULL;
+	zend_execute_data *ex = coroutine->execute_data;
+	for (; ex; ex = ex->prev_execute_data) {
+		HashTable *symTable;
+		if (ZEND_CALL_INFO(ex) & ZEND_CALL_GENERATOR) {
+			zend_generator *generator = (zend_generator*)ex->return_value;
+			if (!(generator->flags & ZEND_GENERATOR_CURRENTLY_RUNNING)) {
+				continue;
+			}
+			symTable = zend_generator_frame_gc(buf, generator);
+		} else {
+			symTable = zend_unfinished_execution_gc_ex(ex, 
+				ex->func && ZEND_USER_CODE(ex->func->type) ? ex->call : NULL, 
+				buf, false);
+		}
+		if (symTable) {
+			if (lastSymTable) {
+				zval *val;
+				ZEND_HASH_FOREACH_VAL(lastSymTable, val) {
+					if (EXPECTED(Z_TYPE_P(val) == IS_INDIRECT)) {
+						val = Z_INDIRECT_P(val);
+					}
+					zend_get_gc_buffer_add_zval(buf, val);
+				} ZEND_HASH_FOREACH_END();
+			}
+			lastSymTable = symTable;
+		}
+	}
+
+	zend_get_gc_buffer_use(buf, table, num);
+	return lastSymTable;
+}
+
 static zend_object_handlers coroutine_handlers;
 
 void async_register_coroutine_ce(void)
@@ -1197,6 +1355,7 @@ void async_register_coroutine_ce(void)
 	coroutine_handlers.clone_obj = NULL;
 	coroutine_handlers.dtor_obj = coroutine_object_destroy;
 	coroutine_handlers.free_obj = coroutine_free;
+	coroutine_handlers.get_gc = async_coroutine_object_gc;
 }
 
 //////////////////////////////////////////////////////////////////////

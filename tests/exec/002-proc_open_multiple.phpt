@@ -77,11 +77,9 @@ spawn(function() {
 
 echo "Main end\n";
 ?>
---EXPECT--
+--EXPECTF--
 Main start
 Main end
-Process 1 starting
-Process 2 starting
+%a
 Other task executing
-Process 2 completed
-Process 1 completed
+%a

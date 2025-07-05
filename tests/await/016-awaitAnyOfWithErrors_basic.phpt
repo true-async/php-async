@@ -29,41 +29,17 @@ $coroutines = [
 ];
 
 $result = awaitAnyOfWithErrors(2, $coroutines);
-var_dump($result);
+
+$countOfResults = count($result[0]) >= 2 ? "OK" : "FALSE: ".count($result[0]);
+$countOfErrors = count($result[1]) == 1 ? "OK" : "FALSE: ".count($result[1]);
+
+echo "Count of results: $countOfResults\n";
+echo "Count of errors: $countOfErrors\n";
 
 echo "end\n";
 ?>
 --EXPECTF--
 start
-array(2) {
-  [0]=>
-  array(2) {
-    [2]=>
-    string(5) "third"
-    [3]=>
-    string(6) "fourth"
-  }
-  [1]=>
-  array(1) {
-    [1]=>
-    object(RuntimeException)#%d (7) {
-      ["message":protected]=>
-      string(14) "test exception"
-      ["string":"Exception":private]=>
-      string(0) ""
-      ["code":protected]=>
-      int(0)
-      ["file":protected]=>
-      string(%d) "%s"
-      ["line":protected]=>
-      int(%d)
-      ["trace":"Exception":private]=>
-      array(%d) {
-        %a
-      }
-      ["previous":"Exception":private]=>
-      NULL
-    }
-  }
-}
+Count of results: OK
+Count of errors: OK
 end

@@ -61,7 +61,26 @@ jobs:
             libxml2-dev libxslt1-dev libpq-dev libreadline-dev libldap2-dev libsodium-dev \
             libargon2-dev \
             firebird-dev \
-            libuv1-dev
+            valgrind cmake
+
+      - name: Install LibUV >= 1.44.0
+        run: |
+          # Check if system libuv meets requirements
+          if pkg-config --exists libuv && pkg-config --atleast-version=1.44.0 libuv; then
+            echo "System libuv version: $(pkg-config --modversion libuv)"
+            sudo apt-get install -y libuv1-dev
+          else
+            echo "Installing LibUV 1.44.0 from source"
+            wget https://github.com/libuv/libuv/archive/v1.44.0.tar.gz
+            tar -xzf v1.44.0.tar.gz
+            cd libuv-1.44.0
+            mkdir build && cd build
+            cmake .. -DCMAKE_BUILD_TYPE=Release
+            make -j$(nproc)
+            sudo make install
+            sudo ldconfig
+            cd ../..
+          fi
 
       - name: Configure PHP
         working-directory: php-src
@@ -140,11 +159,11 @@ jobs:
             -d opcache.jit=tracing \
             -d zend_test.observer.enabled=1 \
             -d zend_test.observer.show_output=0 \
-            -P -q -x -j2 \
+            -P -q -x -j4 \
             -g FAIL,BORK,LEAK,XLEAK \
             --no-progress \
             --offline \
             --show-diff \
-            --show-slow 1000 \
+            --show-slow 2000 \
             --set-timeout 120 \
             --repeat 2

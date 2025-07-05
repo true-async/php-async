@@ -10,43 +10,57 @@ if (!function_exists("exec") || !function_exists("shell_exec")) {
 <?php
 
 use function Async\spawn;
+use function Async\awaitAll;
 
 echo "Starting comparison test\n";
 
-spawn(function () {
-    echo "Testing exec() async\n";
-    
-    $php = getenv('TEST_PHP_EXECUTABLE');
-    if ($php === false) {
-        die("skip no php executable defined");
-    }
-    
-    $output = [];
-    $return_var = null;
-    
-    exec($php . ' -r "echo \'exec result\';"', $output, $return_var);
-    
-    echo "exec() result: " . implode("", $output) . " (code: $return_var)\n";
-});
+$results = [];
 
-spawn(function () {
-    echo "Testing shell_exec() async\n";
+$tasks = [
+    spawn(function () use (&$results) {
+        echo "Testing exec() async\n";
+        
+        $php = getenv('TEST_PHP_EXECUTABLE');
+        if ($php === false) {
+            die("skip no php executable defined");
+        }
+        
+        $output = [];
+        $return_var = null;
+        
+        exec($php . ' -r "echo \'exec result\';"', $output, $return_var);
+        
+        $results[] = "exec() result: " . implode("", $output) . " (code: $return_var)";
+    }),
     
-    $php = getenv('TEST_PHP_EXECUTABLE');
-    if ($php === false) {
-        die("skip no php executable defined");
-    }
+    spawn(function () use (&$results) {
+        echo "Testing shell_exec() async\n";
+        
+        $php = getenv('TEST_PHP_EXECUTABLE');
+        if ($php === false) {
+            die("skip no php executable defined");
+        }
+        
+        $output = shell_exec($php . ' -r "usleep(50);echo \'shell_exec result\';"');
+        
+        $results[] = "shell_exec() result: " . trim($output);
+    }),
     
-    $output = shell_exec($php . ' -r "usleep(50);echo \'shell_exec result\';"');
-    
-    echo "shell_exec() result: " . trim($output) . "\n";
-});
-
-spawn(function() {
-    echo "Background task running\n";
-});
+    spawn(function() {
+        echo "Background task running\n";
+    })
+];
 
 echo "Comparison test completed\n";
+
+// Wait for all tasks to complete
+awaitAll($tasks);
+
+// Sort and output results
+sort($results);
+foreach ($results as $result) {
+    echo $result . "\n";
+}
 ?>
 --EXPECT--
 Starting comparison test
