@@ -1,5 +1,12 @@
 --TEST--
 Memory exhaustion bailout with exception in onFinally handler
+--SKIPIF--
+<?php
+$zend_mm_enabled = getenv("USE_ZEND_ALLOC");
+if ($zend_mm_enabled === "0") {
+    die("skip Zend MM disabled");
+}
+?>
 --INI--
 memory_limit=2M
 --FILE--
