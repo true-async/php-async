@@ -6,38 +6,36 @@ Async\protect: multiple cancellation attempts during protected block
 use function Async\spawn;
 use function Async\protect;
 use function Async\await;
+use function Async\suspend;
 
 $coroutine = spawn(function() {
     echo "coroutine start\n";
     
     protect(function() {
         echo "protected block\n";
-        
-        // Simulate longer work
-        for ($i = 0; $i < 2; $i++) {
+        for ($i = 1; $i <= 2; $i++) {
             echo "work: $i\n";
+            suspend(); // Simulate work
         }
     });
     
     echo "after protect\n";
 });
 
+suspend();
+
 // Try to cancel multiple times
 $coroutine->cancel();
+suspend();
 $coroutine->cancel();
+suspend();
 $coroutine->cancel();
 
-try {
-    await($coroutine);
-} catch (Exception $e) {
-    echo "caught exception: " . $e->getMessage() . "\n";
-}
+await($coroutine);
 
 ?>
 --EXPECTF--
 coroutine start
 protected block
-work: 0
 work: 1
-after protect
-caught exception: %s
+work: 2

@@ -39,9 +39,9 @@ echo "end\n";
 ?>
 --EXPECT--
 start
+child coroutine
 main start
 protected block start
-child coroutine
 await result: child result
 protected block end
 main end

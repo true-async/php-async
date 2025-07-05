@@ -6,40 +6,30 @@ Async\protect: cancellation is deferred during protected block
 use function Async\spawn;
 use function Async\protect;
 use function Async\await;
+use function Async\suspend;
 
 $coroutine = spawn(function() {
     echo "coroutine start\n";
     
     protect(function() {
         echo "protected block start\n";
-        
-        // Simulate work in protected block
-        for ($i = 0; $i < 3; $i++) {
-            echo "protected work: $i\n";
-        }
-        
+        suspend();
         echo "protected block end\n";
     });
     
     echo "coroutine end\n";
 });
 
+suspend();
+
 // Try to cancel the coroutine
 $coroutine->cancel();
 
 // Wait for completion
-try {
-    await($coroutine);
-} catch (Exception $e) {
-    echo "caught exception: " . $e->getMessage() . "\n";
-}
+await($coroutine);
 
 ?>
 --EXPECTF--
 coroutine start
 protected block start
-protected work: 0
-protected work: 1
-protected work: 2
 protected block end
-caught exception: %s

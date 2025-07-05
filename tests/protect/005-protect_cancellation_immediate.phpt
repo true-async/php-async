@@ -6,32 +6,33 @@ Async\protect: cancellation applied immediately after protected block
 use function Async\spawn;
 use function Async\protect;
 use function Async\await;
+use function Async\suspend;
 
 $coroutine = spawn(function() {
     echo "before protect\n";
-    
-    protect(function() {
-        echo "in protect\n";
-    });
-    
-    echo "after protect\n";
-    
-    // This should not be reached due to deferred cancellation
-    echo "this should not print\n";
+
+    try {
+        // This will be protected, and cancellation will be applied immediately after this block
+        protect(function() {
+            echo "in protect\n";
+            suspend();
+            echo "finished protect\n";
+        });
+    } catch (\CancellationException $e) {
+        echo "caught exception: " . $e->getMessage() . "\n";
+    }
 });
+
+suspend();
 
 // Cancel the coroutine
 $coroutine->cancel();
 
-try {
-    await($coroutine);
-} catch (Exception $e) {
-    echo "caught exception: " . $e->getMessage() . "\n";
-}
+await($coroutine);
 
 ?>
 --EXPECTF--
 before protect
 in protect
-after protect
+finished protect
 caught exception: %s
