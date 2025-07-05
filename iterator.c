@@ -194,9 +194,23 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 			// or just set it to the array
 			iterator->target_hash = Z_ARRVAL(iterator->array);
 		}
+	} else {
+		iterator->position = 0;
+		iterator->hash_iterator = -1;
+
+		if (iterator->zend_iterator->funcs->rewind) {
+			iterator->zend_iterator->funcs->rewind(iterator->zend_iterator);
+		}
+
+		if (UNEXPECTED(EG(exception))) {
+			iterator->state = ASYNC_ITERATOR_FINISHED;
+			iterator->microtask.is_cancelled = true;
+			return;
+		}
 	}
 
 	zval * current;
+	zval current_item;
 	zval key;
 
 	while (iterator->state != ASYNC_ITERATOR_FINISHED) {
@@ -205,6 +219,11 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 			current = zend_hash_get_current_data_ex(iterator->target_hash, &iterator->position);
 		} else if (SUCCESS == iterator->zend_iterator->funcs->valid(iterator->zend_iterator)) {
 			current = iterator->zend_iterator->funcs->get_current_data(iterator->zend_iterator);
+
+			if (current != NULL) {
+				ZVAL_COPY_VALUE(&current_item, current);
+				current = &current_item;
+			}
 		} else {
 			current = NULL;
 		}
@@ -228,9 +247,6 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 				continue;
 			}
 		}
-
-		/* Ensure the value is a reference. Otherwise, the location of the value may be freed. */
-		ZVAL_MAKE_REF(current);
 
 		/* Retrieve key */
 		if (iterator->target_hash != NULL) {

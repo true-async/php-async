@@ -543,6 +543,8 @@ void iterator_coroutine_first_entry(void)
 		sizeof(async_await_iterator_iterator_t)
 	);
 
+	iterator->await_iterator = await_iterator;
+
 	if (UNEXPECTED(iterator == NULL)) {
 		return;
 	}
@@ -558,8 +560,7 @@ void iterator_coroutine_finish_callback(
 	zend_object *exception
 )
 {
-	async_await_iterator_t * iterator = (async_await_iterator_t *)
-			((zend_coroutine_event_callback_t*) callback)->coroutine->extended_data;
+	async_await_iterator_t * iterator = (async_await_iterator_t *) ((zend_coroutine_t*) event)->extended_data;
 
 	if (exception != NULL) {
 		// Resume the waiting coroutine with the exception
@@ -582,6 +583,16 @@ void async_await_iterator_coroutine_dispose(zend_coroutine_t *coroutine)
 
 	async_await_iterator_t * iterator = (async_await_iterator_t *) coroutine->extended_data;
 	coroutine->extended_data = NULL;
+
+	if (iterator->zend_iterator != NULL) {
+		zend_object_iterator *zend_iterator = iterator->zend_iterator;
+		iterator->zend_iterator = NULL;
+
+		if (zend_iterator->funcs->invalidate_current) {
+			zend_iterator->funcs->invalidate_current(zend_iterator);
+		}
+		zend_iterator_dtor(zend_iterator);
+	}
 
 	efree(iterator);
 }
@@ -836,6 +847,7 @@ void async_await_futures(
 		iterator->zend_iterator = zend_iterator;
 		iterator->waiting_coroutine = coroutine;
 		iterator->iterator_coroutine = iterator_coroutine;
+		iterator->await_context = await_context;
 
 		iterator_coroutine->extended_data = iterator;
 		iterator_coroutine->extended_dispose = async_await_iterator_coroutine_dispose;
