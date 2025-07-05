@@ -626,21 +626,22 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 			async_rethrow_exception(exception);
 		}
 
-		if (EG(exception)) {
-			if (!(coroutine->flags & ZEND_FIBER_FLAG_DESTROYED)
-				|| !(zend_is_graceful_exit(EG(exception)) || zend_is_unwind_exit(EG(exception)))
-			) {
-				coroutine->flags |= ZEND_FIBER_FLAG_THREW;
-				transfer->flags = ZEND_FIBER_TRANSFER_FLAG_ERROR;
-
-				ZVAL_OBJ_COPY(&transfer->value, EG(exception));
-			}
-
-			zend_clear_exception();
-		}
 	} zend_catch {
 		do_bailout = true;
 	} zend_end_try();
+
+	if (UNEXPECTED(EG(exception))) {
+		if (!(coroutine->flags & ZEND_FIBER_FLAG_DESTROYED)
+			|| !(zend_is_graceful_exit(EG(exception)) || zend_is_unwind_exit(EG(exception)))
+		) {
+			coroutine->flags |= ZEND_FIBER_FLAG_THREW;
+			transfer->flags = ZEND_FIBER_TRANSFER_FLAG_ERROR;
+
+			ZVAL_OBJ_COPY(&transfer->value, EG(exception));
+		}
+
+		zend_clear_exception();
+	}
 
 	if (EXPECTED(ZEND_ASYNC_SCHEDULER != &coroutine->coroutine)) {
 		// Permanently remove the coroutine from the Scheduler.
@@ -648,9 +649,8 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 			zend_error(E_CORE_ERROR, "Failed to remove coroutine from the list");
 		}
 
-		// Decrease the active coroutine count if the coroutine is not a zombie and is started.
-		if (ZEND_COROUTINE_IS_STARTED(&coroutine->coroutine)
-			&& false == ZEND_COROUTINE_IS_ZOMBIE(&coroutine->coroutine)) {
+		// Decrease the active coroutine count if the coroutine is not a zombie.
+		if (false == ZEND_COROUTINE_IS_ZOMBIE(&coroutine->coroutine)) {
 			ZEND_ASYNC_DECREASE_COROUTINE_COUNT
 		}
 	}
@@ -731,6 +731,7 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(zend_fiber_transfer *transfer)
 	}
 
 	EG(vm_stack) = NULL;
+	bool should_start_graceful_shutdown = false;
 
 	zend_first_try {
 		zend_vm_stack stack = zend_vm_stack_new_page(ZEND_FIBER_VM_STACK_SIZE, NULL);
@@ -767,15 +768,30 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(zend_fiber_transfer *transfer)
 			coroutine->coroutine.internal_entry();
 		}
 
-		async_coroutine_finalize(transfer, coroutine);
-
 	} zend_catch {
 		coroutine->flags |= ZEND_FIBER_FLAG_BAILOUT;
 		transfer->flags = ZEND_FIBER_TRANSFER_FLAG_BAILOUT;
+		should_start_graceful_shutdown = true;
+	} zend_end_try();
+
+	zend_first_try {
+		async_coroutine_finalize(transfer, coroutine);
+	} zend_catch {
+		coroutine->flags |= ZEND_FIBER_FLAG_BAILOUT;
+		transfer->flags = ZEND_FIBER_TRANSFER_FLAG_BAILOUT;
+		should_start_graceful_shutdown = true;
 	} zend_end_try();
 
 	coroutine->context.cleanup = &async_coroutine_cleanup;
 	coroutine->vm_stack = EG(vm_stack);
+
+	if (UNEXPECTED(should_start_graceful_shutdown)) {
+		zend_first_try {
+			ZEND_ASYNC_SHUTDOWN();
+		} zend_catch {
+			zend_error(E_CORE_WARNING, "A critical error was detected during the initiation of the graceful shutdown mode.");
+		} zend_end_try();
+	}
 
 	//
 	// The scheduler coroutine always terminates into the main execution flow.
@@ -787,7 +803,9 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(zend_fiber_transfer *transfer)
 		if (transfer != ASYNC_G(main_transfer)) {
 
 			if (UNEXPECTED(Z_TYPE(transfer->value) == IS_OBJECT)) {
-				zval_ptr_dtor(&transfer->value);
+				zend_first_try {
+					zval_ptr_dtor(&transfer->value);
+				} zend_end_try();
 				zend_error(E_CORE_WARNING, "The transfer value must be NULL when the main coroutine is resumed");
 			}
 

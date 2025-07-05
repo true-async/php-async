@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.3.0] - TBD
 
 ### Added
+- **Bailout Tests**: Added 15 tests covering memory exhaustion and stack overflow scenarios in async operations
 - **Garbage Collection Support**: Implemented comprehensive GC handlers for async objects
     - Added `async_coroutine_object_gc()` function to track all ZVALs in coroutine structures
     - Added `async_scope_object_gc()` function to track ZVALs in scope structures  
