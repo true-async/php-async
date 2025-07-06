@@ -410,7 +410,7 @@ static void async_waiting_callback(
 		ZEND_ASYNC_RESUME(await_callback->callback.coroutine);
 	}
 
-	callback->dispose(callback, NULL);
+	ZEND_ASYNC_EVENT_CALLBACK_RELEASE(callback);
 }
 
 /**
@@ -491,8 +491,7 @@ static zend_result await_iterator_handler(async_iterator_t *iterator, zval *curr
 		return FAILURE;
 	}
 
-	// @todo: Objects that are already closed must be handled using the replay function.
-	if (awaitable == NULL || ZEND_ASYNC_EVENT_IS_CLOSED(awaitable)) {
+	if (awaitable == NULL || zend_async_waker_is_event_exists(await_iterator->waiting_coroutine, awaitable)) {
 		return SUCCESS;
 	}
 
@@ -535,7 +534,20 @@ static zend_result await_iterator_handler(async_iterator_t *iterator, zval *curr
 		}
 	}
 
-	zend_async_resume_when(await_iterator->waiting_coroutine, awaitable, false, NULL, &callback->callback);
+	if (ZEND_ASYNC_EVENT_IS_CLOSED(awaitable)) {
+		//
+		// The event is already closed.
+		// But if it supports the replay method, we can retrieve the resulting value again.
+		//
+		if (false == awaitable->replay) {
+			return SUCCESS;
+		}
+
+		awaitable->replay(awaitable, &callback->callback.base, NULL, NULL);
+	} else {
+		zend_async_resume_when(await_iterator->waiting_coroutine, awaitable, false, NULL, &callback->callback);
+	}
+
 	if (UNEXPECTED(EG(exception))) {
 		return FAILURE;
 	}

@@ -44,7 +44,7 @@ class ConcurrentIterator implements Iterator
 echo "start\n";
 
 $functions = [
-    function() { suspend(); return "slow"; },
+    function() { suspend(); suspend(); return "slow"; },
     function() { return "fast"; },
     function() { suspend(); return "medium"; },
 ];

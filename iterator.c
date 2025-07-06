@@ -212,6 +212,7 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 	zval * current;
 	zval current_item;
 	zval key;
+	ZVAL_UNDEF(&current_item);
 
 	while (iterator->state != ASYNC_ITERATOR_FINISHED) {
 
@@ -221,7 +222,7 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 			current = iterator->zend_iterator->funcs->get_current_data(iterator->zend_iterator);
 
 			if (current != NULL) {
-				ZVAL_COPY_VALUE(&current_item, current);
+				ZVAL_COPY(&current_item, current);
 				current = &current_item;
 			}
 		} else {
@@ -244,6 +245,7 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
                     iterator->zend_iterator->funcs->move_forward(iterator->zend_iterator);
                 }
 
+				zval_ptr_dtor(&current_item);
 				continue;
 			}
 		}
@@ -276,6 +278,8 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 			/* Call the internal function */
 			result = iterator->handler(iterator, current, &key);
 		}
+
+		zval_ptr_dtor(&current_item);
 
 		if (result == SUCCESS) {
 
