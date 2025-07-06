@@ -178,6 +178,13 @@ async_iterator_t * async_iterator_new(
 	return iterator;
 }
 
+#define RETURN_IF_EXCEPTION(iterator) \
+	if (UNEXPECTED(EG(exception))) { \
+		iterator->state = ASYNC_ITERATOR_FINISHED; \
+		iterator->microtask.is_cancelled = true; \
+		return; \
+	}
+
 static zend_always_inline void iterate(async_iterator_t *iterator)
 {
 	zend_result result = SUCCESS;
@@ -227,11 +234,7 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 			} ITERATOR_SAFE_MOVING_END(iterator);
 		}
 
-		if (UNEXPECTED(EG(exception))) {
-			iterator->state = ASYNC_ITERATOR_FINISHED;
-			iterator->microtask.is_cancelled = true;
-			return;
-		}
+		RETURN_IF_EXCEPTION(iterator);
 	}
 
 	zval * current;
@@ -244,7 +247,10 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 		if (iterator->target_hash != NULL) {
 			current = zend_hash_get_current_data_ex(iterator->target_hash, &iterator->position);
 		} else if (SUCCESS == iterator->zend_iterator->funcs->valid(iterator->zend_iterator)) {
+
+			RETURN_IF_EXCEPTION(iterator);
 			current = iterator->zend_iterator->funcs->get_current_data(iterator->zend_iterator);
+			RETURN_IF_EXCEPTION(iterator);
 
 			if (current != NULL) {
 				ZVAL_COPY(&current_item, current);
@@ -262,15 +268,26 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 
 		/* Skip undefined indirect elements */
 		if (Z_TYPE_P(current) == IS_INDIRECT) {
+
 			current = Z_INDIRECT_P(current);
+			zval_ptr_dtor(&current_item);
+
 			if (Z_TYPE_P(current) == IS_UNDEF) {
 				if (iterator->zend_iterator == NULL) {
                     zend_hash_move_forward(Z_ARR(iterator->array));
                 } else {
-                    iterator->zend_iterator->funcs->move_forward(iterator->zend_iterator);
+
+                	if (iterator->state == ASYNC_ITERATOR_MOVING) {
+                		return;
+                	}
+
+                	ITERATOR_SAFE_MOVING_START(iterator) {
+                		iterator->zend_iterator->funcs->move_forward(iterator->zend_iterator);
+                	} ITERATOR_SAFE_MOVING_END(iterator);
+
+                	RETURN_IF_EXCEPTION(iterator);
                 }
 
-				zval_ptr_dtor(&current_item);
 				continue;
 			}
 		}
@@ -280,6 +297,7 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 			zend_hash_get_current_key_zval_ex(iterator->target_hash, &key, &iterator->position);
         } else {
             iterator->zend_iterator->funcs->get_current_key(iterator->zend_iterator, &key);
+        	RETURN_IF_EXCEPTION(iterator);
         }
 
 		/*
@@ -304,11 +322,7 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
         		iterator->zend_iterator->funcs->move_forward(iterator->zend_iterator);
         	} ITERATOR_SAFE_MOVING_END(iterator);
 
-        	if (UNEXPECTED(EG(exception))) {
-        		iterator->state = ASYNC_ITERATOR_FINISHED;
-        		iterator->microtask.is_cancelled = true;
-        		return;
-        	}
+        	RETURN_IF_EXCEPTION(iterator);
         }
 
 		if (iterator->fcall != NULL) {
