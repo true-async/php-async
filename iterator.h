@@ -27,8 +27,9 @@ typedef zend_result (*async_iterator_handler_t)(async_iterator_t *iterator, zval
 typedef enum
 {
 	ASYNC_ITERATOR_INIT = 0,
-	ASYNC_ITERATOR_STARTED = 1,
-	ASYNC_ITERATOR_FINISHED = 2,
+	ASYNC_ITERATOR_MOVING,
+	ASYNC_ITERATOR_STARTED,
+	ASYNC_ITERATOR_FINISHED,
 } async_iterator_state_t;
 
 async_iterator_t * async_iterator_new(

@@ -39,7 +39,8 @@ void iterator_microtask(zend_async_microtask_t *microtask)
 {
 	async_iterator_t *iterator = (async_iterator_t *) microtask;
 
-	if (iterator->state == ASYNC_ITERATOR_FINISHED || iterator->active_coroutines >= iterator->concurrency) {
+	if (iterator->state == ASYNC_ITERATOR_FINISHED
+		|| (iterator->concurrency > 0 && iterator->active_coroutines >= iterator->concurrency)) {
 		return;
 	}
 
@@ -100,6 +101,27 @@ void iterator_dtor(zend_async_microtask_t *microtask)
 
 	efree(microtask);
 }
+
+//
+// Start of the block for safe iterator modification.
+//
+// Safe iterator modification means making changes during which no new iterator coroutines will be created,
+// because the iterator’s state is undefined.
+//
+#define ITERATOR_SAFE_MOVING_START(iterator)		\
+	(iterator)->state = ASYNC_ITERATOR_MOVING;		\
+	(iterator)->microtask.is_cancelled = true;		\
+	uint32_t prev_ref_count = (iterator)->microtask.ref_count;
+
+//
+// End of the block for safe iterator modification.
+//
+#define ITERATOR_SAFE_MOVING_END(iterator)			\
+	(iterator)->state = ASYNC_ITERATOR_STARTED;		\
+	if (prev_ref_count != (iterator)->microtask.ref_count) {	\
+		(iterator)->microtask.is_cancelled = false;				\
+		ZEND_ASYNC_ADD_MICROTASK(&(iterator)->microtask);		\
+	}
 
 async_iterator_t * async_iterator_new(
 		zval *array,
@@ -194,12 +216,15 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 			// or just set it to the array
 			iterator->target_hash = Z_ARRVAL(iterator->array);
 		}
-	} else {
+	} else if (iterator->state == ASYNC_ITERATOR_INIT) {
+		iterator->state = ASYNC_ITERATOR_STARTED;
 		iterator->position = 0;
 		iterator->hash_iterator = -1;
 
 		if (iterator->zend_iterator->funcs->rewind) {
-			iterator->zend_iterator->funcs->rewind(iterator->zend_iterator);
+			ITERATOR_SAFE_MOVING_START(iterator) {
+				iterator->zend_iterator->funcs->rewind(iterator->zend_iterator);
+			} ITERATOR_SAFE_MOVING_END(iterator);
 		}
 
 		if (UNEXPECTED(EG(exception))) {
@@ -266,7 +291,24 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 	    	// And update the iterator position
 	    	EG(ht_iterators)[iterator->hash_iterator].pos = iterator->position;
         } else {
-            iterator->zend_iterator->funcs->move_forward(iterator->zend_iterator);
+
+        	if (iterator->state == ASYNC_ITERATOR_MOVING) {
+        		// The iterator is in a state of waiting for a position change.
+        		// The coroutine cannot continue execution because
+        		// it cannot move the iterator to the next position.
+        		// We exit immediately.
+        		return;
+			}
+
+        	ITERATOR_SAFE_MOVING_START(iterator) {
+        		iterator->zend_iterator->funcs->move_forward(iterator->zend_iterator);
+        	} ITERATOR_SAFE_MOVING_END(iterator);
+
+        	if (UNEXPECTED(EG(exception))) {
+        		iterator->state = ASYNC_ITERATOR_FINISHED;
+        		iterator->microtask.is_cancelled = true;
+        		return;
+        	}
         }
 
 		if (iterator->fcall != NULL) {

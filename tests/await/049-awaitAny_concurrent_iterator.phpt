@@ -17,15 +17,13 @@ class ConcurrentIterator implements Iterator
     }
 
     public function rewind(): void {
+        suspend(); // Simulate concurrent access
         $this->position = 0;
     }
 
     public function current(): mixed {
-        // Suspend during iteration
-        $position = $this->position;
-        suspend();
-        
-        return spawn($this->items[$position]);
+        echo "Current item at position: {$this->position}\n";
+        return spawn($this->items[$this->position]);
     }
 
     public function key(): mixed {
@@ -33,6 +31,7 @@ class ConcurrentIterator implements Iterator
     }
 
     public function next(): void {
+        suspend(); // Simulate concurrent access
         $this->position++;
     }
 
@@ -51,6 +50,14 @@ $functions = [
 
 $iterator = new ConcurrentIterator($functions);
 
+spawn(function() {
+    // Simulate some processing
+    for ($i = 1; $i <= 3; $i++) {
+        echo "Processing item $i\n";
+        suspend();
+    }
+});
+
 $result = awaitAny($iterator);
 
 echo "Result: $result\n";
@@ -59,5 +66,11 @@ echo "end\n";
 ?>
 --EXPECT--
 start
+Processing item 1
+Processing item 2
+Current item at position: 0
+Processing item 3
+Current item at position: 1
+Current item at position: 2
 Result: fast
 end

@@ -18,7 +18,7 @@ function concurrentGenerator($functions) {
 echo "start\n";
 
 $functions = [
-    function() { throw new RuntimeException("error"); },
+    function() { suspend(); throw new RuntimeException("error"); },
     function() { return "success"; },
     function() { return "another success"; },
 ];

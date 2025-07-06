@@ -406,7 +406,7 @@ static void async_waiting_callback(
 		}
 	}
 
-	if (UNEXPECTED(AWAIT_ITERATOR_IS_FINISHED(await_context))) {
+	if (UNEXPECTED(AWAIT_ITERATOR_IS_FINISHED(await_context) && await_callback->callback.coroutine != NULL)) {
 		ZEND_ASYNC_RESUME(await_callback->callback.coroutine);
 	}
 
