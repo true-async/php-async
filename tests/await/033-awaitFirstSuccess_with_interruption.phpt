@@ -61,4 +61,9 @@ echo "end\n";
 ?>
 --EXPECTF--
 start
-Fatal error: Uncaught Exception:%a
+
+Fatal error: Uncaught Exception: Unexpected interruption in %s:%d
+Stack trace:
+#0 [internal function]: {closure:%s:%d}()
+#1 {main}
+  thrown in %s on line %d
