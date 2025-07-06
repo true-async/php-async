@@ -33,11 +33,9 @@ echo "end\n";
 start
 array(2) {
   [0]=>
-  array(3) {
+  array(2) {
     [0]=>
     string(5) "first"
-    [1]=>
-    NULL
     [2]=>
     string(5) "third"
   }

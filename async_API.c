@@ -517,17 +517,20 @@ static zend_result await_iterator_handler(async_iterator_t *iterator, zval *curr
 	}
 
 	// Add the empty element to the results array if all elements are awaited
-	if (await_context->results != NULL && AWAIT_ALL(await_context)) {
+	if (await_context->results != NULL && await_context->fill_missing_with_null) {
 		if (Z_TYPE(callback->key) == IS_STRING) {
 			zend_hash_add_empty_element(await_context->results, Z_STR_P(key));
 		} else if (Z_TYPE(callback->key) == IS_LONG) {
 			zend_hash_index_add_empty_element(await_context->results, Z_LVAL_P(key));
 		}
-	} else if (await_context->results != NULL && await_context->fill_missing_with_null) {
+	} else if (await_context->results != NULL) {
+		zval undef_val;
+		// The PRT NULL type is used to fill the array with empty elements that will later be removed.
+		ZVAL_PTR(&undef_val, NULL);
 		if (Z_TYPE(callback->key) == IS_STRING) {
-			zend_hash_add(await_context->results, Z_STR_P(key), &EG(uninitialized_zval));
+			zend_hash_add(await_context->results, Z_STR_P(key), &undef_val);
 		} else if (Z_TYPE(callback->key) == IS_LONG) {
-			zend_hash_index_add(await_context->results, Z_LVAL_P(key), &EG(uninitialized_zval));
+			zend_hash_index_add(await_context->results, Z_LVAL_P(key), &undef_val);
 		}
 	}
 
@@ -619,7 +622,7 @@ static void iterator_coroutine_first_entry(void)
 		await_iterator_handler,
 		ZEND_ASYNC_CURRENT_SCOPE,
 		await_context->concurrency,
-		ZEND_COROUTINE_HI_PRIORITY,
+		ZEND_COROUTINE_NORMAL,
 		sizeof(async_await_iterator_iterator_t)
 	);
 
@@ -653,6 +656,10 @@ static void iterator_coroutine_finish_callback(
 )
 {
 	async_await_iterator_t * iterator = (async_await_iterator_t *) ((zend_coroutine_t*) event)->extended_data;
+
+	if (iterator == NULL) {
+		return;
+	}
 
 	if (exception != NULL) {
 		// Resume the waiting coroutine with the exception
@@ -855,7 +862,7 @@ void async_await_futures(
 	await_context->fill_missing_with_null = fill_missing_with_null;
 	await_context->cancel_on_exit = cancel_on_exit;
 
-	if (AWAIT_ALL(await_context)) {
+	if (false == fill_missing_with_null && AWAIT_ALL(await_context)) {
 		tmp_results = zend_new_array(await_context->total);
 		await_context->results = tmp_results;
 	} else {
@@ -868,6 +875,10 @@ void async_await_futures(
 
 	if (futures != NULL)
 	{
+		zval undef_val;
+		// The PRT NULL type is used to fill the array with empty elements that will later be removed.
+		ZVAL_PTR(&undef_val, NULL);
+
 		ZEND_HASH_FOREACH_KEY_VAL(futures, index, key, current) {
 
 			// An array element can be either an object implementing
@@ -896,19 +907,19 @@ void async_await_futures(
 				ZVAL_STR(&callback->key, key);
 				zval_add_ref(&callback->key);
 
-				if (await_context->results != NULL && AWAIT_ALL(await_context)) {
+				if (await_context->results != NULL && await_context->fill_missing_with_null) {
 					zend_hash_add_empty_element(await_context->results, key);
-				} else if (await_context->results != NULL && await_context->fill_missing_with_null) {
-					zend_hash_add(await_context->results, key, &EG(uninitialized_zval));
+				} else if (await_context->results != NULL) {
+					zend_hash_add(await_context->results, key, &undef_val);
 				}
 
 			} else {
 				ZVAL_LONG(&callback->key, index);
 
-				if (await_context->results != NULL && AWAIT_ALL(await_context)) {
+				if (await_context->results != NULL && await_context->fill_missing_with_null) {
 					zend_hash_index_add_empty_element(await_context->results, index);
-				} else if (await_context->results != NULL && await_context->fill_missing_with_null) {
-					zend_hash_index_add_new(await_context->results, index, &EG(uninitialized_zval));
+				} else if (await_context->results != NULL) {
+					zend_hash_index_add_new(await_context->results, index, &undef_val);
 				}
 			}
 
@@ -939,7 +950,7 @@ void async_await_futures(
 			return;
 		}
 
-		zend_coroutine_t * iterator_coroutine = ZEND_ASYNC_SPAWN_WITH_SCOPE_EX(scope, ZEND_COROUTINE_HI_PRIORITY);
+		zend_coroutine_t * iterator_coroutine = ZEND_ASYNC_SPAWN_WITH(scope);
 
 		if (UNEXPECTED(iterator_coroutine == NULL || EG(exception))) {
 			zend_iterator_dtor(zend_iterator);
@@ -979,19 +990,13 @@ void async_await_futures(
 		async_cancel_awaited_futures(await_context, futures);
 	}
 
-	// Free the coroutine scope if it was created for the iterator.
-	if (await_context->scope != NULL) {
-		await_context->scope->try_to_dispose(await_context->scope);
-		await_context->scope = NULL;
-	}
-
 	// Remove all undefined buckets from the results array.
 	if (tmp_results != NULL) {
 
 		// foreach results as key => value
-		// if value is UNDEFINED then continue
+		// if value is PTR then continue
 		ZEND_HASH_FOREACH_KEY_VAL(tmp_results, index, key, current) {
-			if (Z_TYPE_P(current) == IS_UNDEF) {
+			if (Z_TYPE_P(current) == IS_PTR && Z_PTR_P(current) == NULL) {
 				continue;
 			}
 

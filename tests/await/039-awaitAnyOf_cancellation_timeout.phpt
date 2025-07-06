@@ -11,17 +11,17 @@ use function Async\timeout;
 
 $coroutines = [
     spawn(function() {
-        delay(100); // Will be cancelled
+        delay(10); // Will be cancelled
         return "slow";
     }),
     
     spawn(function() {
-        delay(200); // Will be cancelled
+        delay(10); // Will be cancelled
         return "very slow";
     }),
     
     spawn(function() {
-        delay(300); // Will be cancelled
+        delay(10); // Will be cancelled
         return "extremely slow";
     })
 ];
@@ -29,7 +29,7 @@ $coroutines = [
 echo "start\n";
 
 try {
-    $results = awaitAnyOf(2, $coroutines, timeout(50));
+    $results = awaitAnyOf(2, $coroutines, timeout(1));
     echo "Unexpected success\n";
 } catch (Async\TimeoutException $e) {
     echo "Timeout caught as expected\n";

@@ -6,21 +6,17 @@ awaitAll() - with Generator
 use function Async\spawn;
 use function Async\awaitAll;
 use function Async\await;
-use function Async\delay;
 
 function createCoroutines() {
     yield spawn(function() {
-        delay(10);
         return "first";
     });
     
     yield spawn(function() {
-        delay(20);
         return "second";
     });
     
     yield spawn(function() {
-        delay(30);
         return "third";
     });
 }

@@ -22,7 +22,7 @@ class TestIterator implements Iterator
     }
 
     public function current(): mixed {
-        return $this->items[$this->position];
+        return spawn($this->items[$this->position]);
     }
 
     public function key(): mixed {
@@ -41,22 +41,12 @@ class TestIterator implements Iterator
 echo "start\n";
 
 $coroutines = [
-    spawn(function() {
-        delay(10);
-        return "first";
-    }),
-    spawn(function() {
-        delay(20);
+    fn() => "first",
+    function() {
         throw new RuntimeException("error");
-    }),
-    spawn(function() {
-        delay(30);
-        return "third";
-    }),
-    spawn(function() {
-        delay(40);
-        return "fourth";
-    }),
+    },
+    fn() => "third",
+    fn() => "fourth",
 ];
 
 $iterator = new TestIterator($coroutines);

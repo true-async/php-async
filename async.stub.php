@@ -41,7 +41,7 @@ function awaitAny(iterable $triggers, ?Awaitable $cancellation = null): mixed {}
 
 function awaitFirstSuccess(iterable $triggers, ?Awaitable $cancellation = null): mixed {}
 
-function awaitAll(iterable $triggers, ?Awaitable $cancellation = null, bool $fillNull = false): array {}
+function awaitAll(iterable $triggers, ?Awaitable $cancellation = null): array {}
 
 function awaitAllWithErrors(iterable $triggers, ?Awaitable $cancellation = null, bool $fillNull = false): array {}
 

@@ -6,21 +6,17 @@ awaitAll() - with fillNull parameter
 use function Async\spawn;
 use function Async\awaitAll;
 use function Async\await;
-use function Async\delay;
 
 $coroutines = [
     spawn(function() {
-        delay(10);
         return "success";
     }),
     
     spawn(function() {
-        delay(20);
         throw new RuntimeException("error");
     }),
     
     spawn(function() {
-        delay(30);
         return "another success";
     })
 ];

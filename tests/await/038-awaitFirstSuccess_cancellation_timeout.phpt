@@ -11,12 +11,11 @@ use function Async\timeout;
 
 $coroutines = [
     spawn(function() {
-        delay(10);
         throw new RuntimeException("fast error");
     }),
     
     spawn(function() {
-        delay(100); // Will be cancelled before success
+        delay(10); // Will be cancelled before success
         return "success";
     })
 ];
@@ -24,7 +23,7 @@ $coroutines = [
 echo "start\n";
 
 try {
-    $result = awaitFirstSuccess($coroutines, timeout(50));
+    $result = awaitFirstSuccess($coroutines, timeout(1));
     echo "Unexpected success\n";
 } catch (Async\TimeoutException $e) {
     echo "Timeout caught as expected\n";

@@ -11,15 +11,14 @@ echo "start\n";
 
 $coroutines = [
     spawn(function() {
-        delay(10);
+        suspend();
         throw new RuntimeException("first error");
     }),
     spawn(function() {
-        delay(20);
         return "success";
     }),
     spawn(function() {
-        delay(30);
+        suspend();
         return "another success";
     }),
 ];

@@ -6,21 +6,17 @@ awaitFirstSuccess() - with Generator
 use function Async\spawn;
 use function Async\awaitFirstSuccess;
 use function Async\await;
-use function Async\delay;
 
 function createCoroutines() {
     yield spawn(function() {
-        delay(10);
         throw new RuntimeException("error");
     });
     
     yield spawn(function() {
-        delay(20);
         return "success";
     });
     
     yield spawn(function() {
-        delay(30);
         return "another success";
     });
 }

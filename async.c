@@ -418,8 +418,10 @@ PHP_FUNCTION(Async_awaitAll)
 		0,
 		results,
 		NULL,
-		false,
-		false
+		// For awaitAll, it’s always necessary to fill the result with NULL,
+		// because the order of keys matters.
+		true,
+		true
 		);
 
 	if (EG(exception)) {
@@ -434,11 +436,13 @@ PHP_FUNCTION(Async_awaitAllWithErrors)
 {
 	zval * futures;
 	zend_object * cancellation = NULL;
+	bool fill_null = false;
 
-	ZEND_PARSE_PARAMETERS_START(1, 2)
+	ZEND_PARSE_PARAMETERS_START(1, 3)
 		Z_PARAM_ZVAL(futures);
 		Z_PARAM_OPTIONAL
 		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
+		Z_PARAM_BOOL(fill_null);
 	ZEND_PARSE_PARAMETERS_END();
 
 	SCHEDULER_LAUNCH;
@@ -454,7 +458,7 @@ PHP_FUNCTION(Async_awaitAllWithErrors)
 		0,
 		results,
 		errors,
-		false,
+		fill_null,
 		true
 		);
 

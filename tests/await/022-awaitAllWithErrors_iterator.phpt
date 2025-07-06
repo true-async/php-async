@@ -22,7 +22,9 @@ class TestIterator implements Iterator
     }
 
     public function current(): mixed {
-        return $this->items[$this->position];
+        // We create a coroutine inside the iteration because
+        // this is the only way to ensure it will definitely be captured by await.
+        return spawn($this->items[$this->position]);
     }
 
     public function key(): mixed {
@@ -40,22 +42,19 @@ class TestIterator implements Iterator
 
 echo "start\n";
 
-$coroutines = [
-    spawn(function() {
-        return "success";
-    }),
-    spawn(function() {
-        throw new RuntimeException("error");
-    }),
-    spawn(function() {
-        return "another success";
-    }),
+// Note that we cannot create coroutines before the iterator runs,
+// because in that case the coroutines would start earlier,
+// and the await expression wouldn’t have a chance to capture them.
+$functions = [
+    fn() => "success",
+    fn() => throw new RuntimeException("error"),
+    fn() => "another success",
 ];
 
-$iterator = new TestIterator($coroutines);
+$iterator = new TestIterator($functions);
 $result = awaitAllWithErrors($iterator);
 
-$countOfResults = count($result[0]) == 3 ? "OK" : "FALSE: ".count($result[0]);
+$countOfResults = count($result[0]) == 2 ? "OK" : "FALSE: ".count($result[0]);
 $countOfErrors = count($result[1]) == 1 ? "OK" : "FALSE: ".count($result[1]);
 
 echo "Count of results: $countOfResults\n";
