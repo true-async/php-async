@@ -5,7 +5,6 @@ awaitAll() - basic usage with multiple coroutines
 
 use function Async\spawn;
 use function Async\awaitAll;
-use function Async\delay;
 
 echo "start\n";
 

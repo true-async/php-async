@@ -6,7 +6,6 @@ awaitAnyOf() - with Iterator
 use function Async\spawn;
 use function Async\awaitAnyOf;
 use function Async\await;
-use function Async\delay;
 
 class TestIterator implements Iterator
 {

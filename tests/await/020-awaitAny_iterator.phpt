@@ -6,7 +6,7 @@ awaitAny() - with Iterator
 use function Async\spawn;
 use function Async\awaitAny;
 use function Async\await;
-use function Async\delay;
+use function Async\suspend;
 
 class TestIterator implements Iterator
 {
@@ -22,7 +22,9 @@ class TestIterator implements Iterator
     }
 
     public function current(): mixed {
-        return $this->items[$this->position];
+        // We create a coroutine inside the iteration because
+        // this is the only way to ensure it will definitely be captured by await.
+        return spawn($this->items[$this->position]);
     }
 
     public function key(): mixed {
@@ -40,22 +42,23 @@ class TestIterator implements Iterator
 
 echo "start\n";
 
-$coroutines = [
-    spawn(function() {
-        delay(50);
+// Note that we cannot create coroutines before the iterator runs,
+// because in that case the coroutines would start earlier,
+// and the await expression wouldn't have a chance to capture them.
+$functions = [
+    function() {
+        suspend();
         return "slow";
-    }),
-    spawn(function() {
-        delay(10);
+    },
+    function() {
         return "fast";
-    }),
-    spawn(function() {
-        delay(30);
+    },
+    function() {
         return "medium";
-    }),
+    },
 ];
 
-$iterator = new TestIterator($coroutines);
+$iterator = new TestIterator($functions);
 $result = awaitAny($iterator);
 
 echo "Result: $result\n";

@@ -5,25 +5,20 @@ awaitAnyOf() - basic usage with count parameter
 
 use function Async\spawn;
 use function Async\awaitAnyOf;
-use function Async\delay;
 
 echo "start\n";
 
 $coroutines = [
     spawn(function() {
-        delay(80);
         return "first";
     }),
     spawn(function() {
-        delay(20);
         return "second";
     }),
     spawn(function() {
-        delay(60);
         return "third";
     }),
     spawn(function() {
-        delay(25);
         return "fourth";
     }),
 ];

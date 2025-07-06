@@ -523,7 +523,7 @@ static zend_result await_iterator_handler(async_iterator_t *iterator, zval *curr
 		} else if (Z_TYPE(callback->key) == IS_LONG) {
 			zend_hash_index_add_empty_element(await_context->results, Z_LVAL_P(key));
 		}
-	} else if (await_context->results != NULL) {
+	} else if (await_context->results != NULL && await_context->preserve_key_order) {
 		zval undef_val;
 		// The PRT NULL type is used to fill the array with empty elements that will later be removed.
 		ZVAL_PTR(&undef_val, NULL);
@@ -558,6 +558,14 @@ static void await_iterator_dispose(async_await_iterator_t * iterator)
 
 		// When the iterator has finished, it’s now possible to specify the exact number of elements since it’s known.
 		iterator->await_context->total = iterator->await_context->futures_count;
+
+		// Scenario: the iterator has already finished, and there’s nothing left to await.
+		// In that case, the coroutine needs to be terminated.
+		if ((AWAIT_ITERATOR_IS_FINISHED(iterator->await_context) || iterator->await_context->total == 0)
+			&& iterator->waiting_coroutine != NULL
+			&& false == ZEND_ASYNC_WAKER_IN_QUEUE(iterator->waiting_coroutine->waker)) {
+			ZEND_ASYNC_RESUME(iterator->waiting_coroutine);
+		}
 
 		if (zend_iterator->funcs->invalidate_current) {
 			zend_iterator->funcs->invalidate_current(zend_iterator);
@@ -788,6 +796,7 @@ static void async_cancel_awaited_futures(async_await_context_t * await_context, 
  * @param results HashTable to store results.
  * @param errors HashTable to store errors.
  * @param fill_missing_with_null Whether to fill missing results with null.
+ * @param preserve_key_order Whether to preserve the order of keys in results.
  * @param cancel_on_exit Whether to cancel awaiting on exit.
  */
 void async_await_futures(
@@ -800,6 +809,7 @@ void async_await_futures(
 	HashTable *results,
 	HashTable *errors,
 	bool fill_missing_with_null,
+	bool preserve_key_order,
 	bool cancel_on_exit
 )
 {
@@ -860,9 +870,10 @@ void async_await_futures(
 	await_context->ignore_errors = ignore_errors;
 	await_context->concurrency = concurrency;
 	await_context->fill_missing_with_null = fill_missing_with_null;
+	await_context->preserve_key_order = preserve_key_order;
 	await_context->cancel_on_exit = cancel_on_exit;
 
-	if (false == fill_missing_with_null && AWAIT_ALL(await_context)) {
+	if (preserve_key_order && false == fill_missing_with_null) {
 		tmp_results = zend_new_array(await_context->total);
 		await_context->results = tmp_results;
 	} else {
@@ -907,18 +918,18 @@ void async_await_futures(
 				ZVAL_STR(&callback->key, key);
 				zval_add_ref(&callback->key);
 
-				if (await_context->results != NULL && await_context->fill_missing_with_null) {
+				if (await_context->results != NULL && fill_missing_with_null) {
 					zend_hash_add_empty_element(await_context->results, key);
-				} else if (await_context->results != NULL) {
+				} else if (await_context->results != NULL && preserve_key_order) {
 					zend_hash_add(await_context->results, key, &undef_val);
 				}
 
 			} else {
 				ZVAL_LONG(&callback->key, index);
 
-				if (await_context->results != NULL && await_context->fill_missing_with_null) {
+				if (await_context->results != NULL && fill_missing_with_null) {
 					zend_hash_index_add_empty_element(await_context->results, index);
-				} else if (await_context->results != NULL) {
+				} else if (await_context->results != NULL && preserve_key_order) {
 					zend_hash_index_add_new(await_context->results, index, &undef_val);
 				}
 			}

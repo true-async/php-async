@@ -6,7 +6,6 @@ awaitAllWithErrors() - with Iterator
 use function Async\spawn;
 use function Async\awaitAllWithErrors;
 use function Async\await;
-use function Async\delay;
 
 class TestIterator implements Iterator
 {

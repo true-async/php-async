@@ -317,6 +317,7 @@ PHP_FUNCTION(Async_awaitAny)
 		results,
 		NULL,
 		false,
+		false,
 		false
 	);
 
@@ -366,6 +367,7 @@ PHP_FUNCTION(Async_awaitFirstSuccess)
 		results,
 		errors,
 		false,
+		false,
 		true
 	);
 
@@ -399,11 +401,13 @@ PHP_FUNCTION(Async_awaitAll)
 {
 	zval * futures;
 	zend_object * cancellation = NULL;
+	bool preserve_key_order = true;
 
-	ZEND_PARSE_PARAMETERS_START(1, 2)
+	ZEND_PARSE_PARAMETERS_START(1, 3)
 		Z_PARAM_ZVAL(futures);
 		Z_PARAM_OPTIONAL
 		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
+		Z_PARAM_BOOL(preserve_key_order);
 	ZEND_PARSE_PARAMETERS_END();
 
 	SCHEDULER_LAUNCH;
@@ -421,6 +425,7 @@ PHP_FUNCTION(Async_awaitAll)
 		// For awaitAll, it’s always necessary to fill the result with NULL,
 		// because the order of keys matters.
 		true,
+		preserve_key_order,
 		true
 		);
 
@@ -436,12 +441,14 @@ PHP_FUNCTION(Async_awaitAllWithErrors)
 {
 	zval * futures;
 	zend_object * cancellation = NULL;
+	bool preserve_key_order = true;
 	bool fill_null = false;
 
-	ZEND_PARSE_PARAMETERS_START(1, 3)
+	ZEND_PARSE_PARAMETERS_START(1, 4)
 		Z_PARAM_ZVAL(futures);
 		Z_PARAM_OPTIONAL
 		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
+		Z_PARAM_BOOL(preserve_key_order);
 		Z_PARAM_BOOL(fill_null);
 	ZEND_PARSE_PARAMETERS_END();
 
@@ -459,6 +466,7 @@ PHP_FUNCTION(Async_awaitAllWithErrors)
 		results,
 		errors,
 		fill_null,
+		preserve_key_order,
 		true
 		);
 
@@ -485,12 +493,14 @@ PHP_FUNCTION(Async_awaitAnyOf)
 	zval * futures;
 	zend_object * cancellation = NULL;
 	zend_long count = 0;
+	bool preserve_key_order = true;
 
-	ZEND_PARSE_PARAMETERS_START(2, 3)
+	ZEND_PARSE_PARAMETERS_START(2, 4)
 		Z_PARAM_LONG(count)
 		Z_PARAM_ITERABLE(futures);
 		Z_PARAM_OPTIONAL
 		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
+		Z_PARAM_BOOL(preserve_key_order);
 	ZEND_PARSE_PARAMETERS_END();
 
 	SCHEDULER_LAUNCH;
@@ -510,6 +520,7 @@ PHP_FUNCTION(Async_awaitAnyOf)
 		results,
 		NULL,
 		false,
+		preserve_key_order,
 		false
 		);
 
@@ -526,12 +537,16 @@ PHP_FUNCTION(Async_awaitAnyOfWithErrors)
 	zval * futures;
 	zend_object * cancellation = NULL;
 	zend_long count = 0;
+	bool preserve_key_order = true;
+	bool fill_null = false;
 
-	ZEND_PARSE_PARAMETERS_START(2, 3)
+	ZEND_PARSE_PARAMETERS_START(2, 5)
 		Z_PARAM_LONG(count)
 		Z_PARAM_ZVAL(futures);
 		Z_PARAM_OPTIONAL
 		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
+		Z_PARAM_BOOL(preserve_key_order);
+		Z_PARAM_BOOL(fill_null);
 	ZEND_PARSE_PARAMETERS_END();
 
 	HashTable * results = zend_new_array(8);
@@ -547,7 +562,8 @@ PHP_FUNCTION(Async_awaitAnyOfWithErrors)
 		0,
 		results,
 		errors,
-		false,
+		fill_null,
+		preserve_key_order,
 		true
 		);
 

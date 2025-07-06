@@ -5,16 +5,14 @@ awaitAll() - test for double free issue with many coroutines
 
 use function Async\spawn;
 use function Async\awaitAll;
-use function Async\delay;
 
 echo "start\n";
 
 $coroutines = [];
 
-// create multiple coroutines that will return values after a delay
+// create multiple coroutines that will return values
 for ($i = 1; $i <= 100; $i++) {
     $coroutines[] = spawn(function() use ($i) {
-        delay($i);
         return "coroutine $i";
     });
 }

@@ -6,7 +6,6 @@ awaitAnyOfWithErrors() - with Iterator
 use function Async\spawn;
 use function Async\awaitAnyOfWithErrors;
 use function Async\await;
-use function Async\delay;
 
 class TestIterator implements Iterator
 {
@@ -42,9 +41,7 @@ echo "start\n";
 
 $coroutines = [
     fn() => "first",
-    function() {
-        throw new RuntimeException("error");
-    },
+    fn() => throw new RuntimeException("error"),
     fn() => "third",
     fn() => "fourth",
 ];

@@ -41,13 +41,13 @@ function awaitAny(iterable $triggers, ?Awaitable $cancellation = null): mixed {}
 
 function awaitFirstSuccess(iterable $triggers, ?Awaitable $cancellation = null): mixed {}
 
-function awaitAll(iterable $triggers, ?Awaitable $cancellation = null): array {}
+function awaitAll(iterable $triggers, ?Awaitable $cancellation = null, bool $preserveKeyOrder = true): array {}
 
-function awaitAllWithErrors(iterable $triggers, ?Awaitable $cancellation = null, bool $fillNull = false): array {}
+function awaitAllWithErrors(iterable $triggers, ?Awaitable $cancellation = null, bool $preserveKeyOrder = true, bool $fillNull = false): array {}
 
-function awaitAnyOf(int $count, iterable $triggers, ?Awaitable $cancellation = null): array {}
+function awaitAnyOf(int $count, iterable $triggers, ?Awaitable $cancellation = null, bool $preserveKeyOrder = true): array {}
 
-function awaitAnyOfWithErrors(int $count, iterable $triggers, ?Awaitable $cancellation = null): array {}
+function awaitAnyOfWithErrors(int $count, iterable $triggers, ?Awaitable $cancellation = null, bool $preserveKeyOrder= true, bool $fillNull = false): array {}
 
 function delay(int $ms): void {}
 

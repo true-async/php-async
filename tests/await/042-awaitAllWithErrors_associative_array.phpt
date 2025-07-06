@@ -6,21 +6,17 @@ awaitAllWithErrors() - with associative array
 use function Async\spawn;
 use function Async\awaitAllWithErrors;
 use function Async\await;
-use function Async\delay;
 
 $coroutines = [
     'success1' => spawn(function() {
-        delay(10);
         return "first success";
     }),
     
     'error1' => spawn(function() {
-        delay(20);
         throw new RuntimeException("first error");
     }),
     
     'success2' => spawn(function() {
-        delay(30);
         return "second success";
     })
 ];

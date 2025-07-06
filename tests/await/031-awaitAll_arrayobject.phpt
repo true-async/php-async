@@ -6,28 +6,16 @@ awaitAll() - with ArrayObject
 use function Async\spawn;
 use function Async\awaitAll;
 use function Async\await;
-use function Async\delay;
 
-$arrayObject = new ArrayObject([
-    spawn(function() {
-        delay(10);
-        return "first";
-    }),
-    
-    spawn(function() {
-        delay(20);
-        return "second";
-    }),
-    
-    spawn(function() {
-        delay(30);
-        return "third";
-    })
-]);
+$coroutines = [
+    spawn(fn() => "first"),
+    spawn(fn() => "second"),
+    spawn(fn() => "third"),
+];
 
 echo "start\n";
 
-$results = awaitAll($arrayObject);
+$results = awaitAll(new ArrayObject($coroutines));
 
 echo "Count: " . count($results) . "\n";
 echo "Result 0: {$results[0]}\n";

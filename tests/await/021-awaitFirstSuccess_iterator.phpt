@@ -6,7 +6,6 @@ awaitFirstSuccess() - with Iterator
 use function Async\spawn;
 use function Async\awaitFirstSuccess;
 use function Async\await;
-use function Async\delay;
 
 class TestIterator implements Iterator
 {
@@ -22,7 +21,9 @@ class TestIterator implements Iterator
     }
 
     public function current(): mixed {
-        return $this->items[$this->position];
+        // We create a coroutine inside the iteration because
+        // this is the only way to ensure it will definitely be captured by await.
+        return spawn($this->items[$this->position]);
     }
 
     public function key(): mixed {
@@ -40,22 +41,16 @@ class TestIterator implements Iterator
 
 echo "start\n";
 
-$coroutines = [
-    spawn(function() {
-        delay(10);
-        throw new RuntimeException("error");
-    }),
-    spawn(function() {
-        delay(20);
-        return "success";
-    }),
-    spawn(function() {
-        delay(30);
-        return "another success";
-    }),
+// Note that we cannot create coroutines before the iterator runs,
+// because in that case the coroutines would start earlier,
+// and the await expression wouldn't have a chance to capture them.
+$functions = [
+    fn() => throw new RuntimeException("error"),
+    fn() => "success",
+    fn() => "another success",
 ];
 
-$iterator = new TestIterator($coroutines);
+$iterator = new TestIterator($functions);
 $result = awaitFirstSuccess($iterator);
 
 echo "Result: {$result[0]}\n";

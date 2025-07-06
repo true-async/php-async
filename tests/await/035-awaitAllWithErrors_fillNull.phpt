@@ -24,7 +24,7 @@ $coroutines = [
 echo "start\n";
 
 // Test with fillNull = true
-$result = awaitAllWithErrors($coroutines, null, true);
+$result = awaitAllWithErrors($coroutines, null, fillNull:true);
 
 echo "Count of results: " . count($result[0]) . "\n";
 echo "Count of errors: " . count($result[1]) . "\n";

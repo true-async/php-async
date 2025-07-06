@@ -10,22 +10,18 @@ use function Async\delay;
 
 function createCoroutines() {
     yield spawn(function() {
-        delay(10);
         return "first";
     });
     
     yield spawn(function() {
-        delay(20);
         throw new RuntimeException("error");
     });
     
     yield spawn(function() {
-        delay(30);
         return "third";
     });
     
     yield spawn(function() {
-        delay(40);
         return "fourth";
     });
 }

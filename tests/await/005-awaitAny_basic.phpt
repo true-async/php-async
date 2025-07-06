@@ -6,20 +6,20 @@ awaitAny() - basic usage with multiple coroutines
 use function Async\spawn;
 use function Async\awaitAny;
 use function Async\delay;
+use function Async\suspend;
 
 echo "start\n";
 
 $coroutines = [
     spawn(function() {
-        delay(50);
+        suspend();
         return "first";
     }),
     spawn(function() {
-        delay(20);
         return "second";
     }),
     spawn(function() {
-        delay(100);
+        suspend();
         return "third";
     }),
 ];

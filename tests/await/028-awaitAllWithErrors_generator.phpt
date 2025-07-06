@@ -26,7 +26,7 @@ echo "start\n";
 $generator = createCoroutines();
 $result = awaitAllWithErrors($generator);
 
-$countOfResults = count($result[0]) == 3 ? "OK" : "FALSE: ".count($result[0]);
+$countOfResults = count($result[0]) == 2 ? "OK" : "FALSE: ".count($result[0]);
 $countOfErrors = count($result[1]) == 1 ? "OK" : "FALSE: ".count($result[1]);
 
 echo "Count of results: $countOfResults\n";

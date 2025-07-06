@@ -6,7 +6,6 @@ awaitAll() - with empty iterable
 use function Async\spawn;
 use function Async\awaitAll;
 use function Async\await;
-use function Async\delay;
 
 // Test with empty array
 echo "start\n";

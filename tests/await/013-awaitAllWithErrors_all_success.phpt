@@ -5,7 +5,6 @@ awaitAllWithErrors() - all coroutines succeed
 
 use function Async\spawn;
 use function Async\awaitAllWithErrors;
-use function Async\delay;
 
 echo "start\n";
 

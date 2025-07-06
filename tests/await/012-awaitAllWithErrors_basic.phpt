@@ -5,21 +5,17 @@ awaitAllWithErrors() - basic usage with mixed success and error
 
 use function Async\spawn;
 use function Async\awaitAllWithErrors;
-use function Async\delay;
 
 echo "start\n";
 
 $coroutines = [
     spawn(function() {
-        delay(50);
         return "first";
     }),
     spawn(function() {
-        delay(20);
         throw new RuntimeException("test exception");
     }),
     spawn(function() {
-        delay(30);
         return "third";
     }),
 ];

@@ -5,17 +5,14 @@ awaitFirstSuccess() - all coroutines throw exceptions
 
 use function Async\spawn;
 use function Async\awaitFirstSuccess;
-use function Async\delay;
 
 echo "start\n";
 
 $coroutines = [
     spawn(function() {
-        delay(20);
         throw new RuntimeException("first error");
     }),
     spawn(function() {
-        delay(30);
         throw new RuntimeException("second error");
     }),
 ];

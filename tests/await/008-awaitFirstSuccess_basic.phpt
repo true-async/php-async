@@ -5,7 +5,7 @@ awaitFirstSuccess() - basic usage with mixed success and error
 
 use function Async\spawn;
 use function Async\awaitFirstSuccess;
-use function Async\delay;
+use function Async\suspend;
 
 echo "start\n";
 

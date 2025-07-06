@@ -6,21 +6,17 @@ awaitFirstSuccess() - when all coroutines throw errors
 use function Async\spawn;
 use function Async\awaitFirstSuccess;
 use function Async\await;
-use function Async\delay;
 
 $coroutines = [
     spawn(function() {
-        delay(10);
         throw new RuntimeException("first error");
     }),
     
     spawn(function() {
-        delay(20);
         throw new InvalidArgumentException("second error");
     }),
     
     spawn(function() {
-        delay(30);
         throw new LogicException("third error");
     })
 ];

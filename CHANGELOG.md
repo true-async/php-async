@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - GC support for finally handlers, exception handlers, and function call parameters
     - GC tracking for waker events, internal context, and nested async structures
     - Prevents memory leaks in complex async applications with circular references
+- **Key Order Preservation**: Added `preserveKeyOrder` parameter to async await functions
+    - Added `preserve_key_order` parameter to `async_await_futures()` API function
+    - Added `preserve_key_order` field to `async_await_context_t` structure
+    - Enhanced `awaitAll()`, `awaitAllWithErrors()`, `awaitAnyOf()`, and `awaitAnyOfWithErrors()` functions with `preserveKeyOrder` parameter (defaults to `true`)
+    - Allows controlling whether the original key order is maintained in result arrays
 
 ### Fixed
 - Memory management improvements for long-running async applications

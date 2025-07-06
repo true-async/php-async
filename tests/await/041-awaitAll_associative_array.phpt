@@ -6,21 +6,17 @@ awaitAll() - with associative array
 use function Async\spawn;
 use function Async\awaitAll;
 use function Async\await;
-use function Async\delay;
 
 $coroutines = [
     'task1' => spawn(function() {
-        delay(10);
         return "first";
     }),
     
     'task2' => spawn(function() {
-        delay(20);
         return "second";
     }),
     
     'task3' => spawn(function() {
-        delay(30);
         return "third";
     })
 ];

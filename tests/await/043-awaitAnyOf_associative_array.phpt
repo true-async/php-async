@@ -6,26 +6,21 @@ awaitAnyOf() - with associative array
 use function Async\spawn;
 use function Async\awaitAnyOf;
 use function Async\await;
-use function Async\delay;
 
 $coroutines = [
     'slow' => spawn(function() {
-        delay(50);
         return "slow task";
     }),
     
     'fast' => spawn(function() {
-        delay(10);
         return "fast task";
     }),
     
     'medium' => spawn(function() {
-        delay(30);
         return "medium task";
     }),
     
     'very_slow' => spawn(function() {
-        delay(100);
         return "very slow task";
     })
 ];

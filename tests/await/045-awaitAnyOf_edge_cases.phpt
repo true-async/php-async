@@ -6,16 +6,13 @@ awaitAnyOf() - edge cases with count parameter
 use function Async\spawn;
 use function Async\awaitAnyOf;
 use function Async\await;
-use function Async\delay;
 
 $coroutines = [
     spawn(function() {
-        delay(10);
         return "first";
     }),
     
     spawn(function() {
-        delay(20);
         return "second";
     })
 ];
