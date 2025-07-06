@@ -962,7 +962,7 @@ void async_await_futures(
 			return;
 		}
 
-		zend_coroutine_t * iterator_coroutine = ZEND_ASYNC_SPAWN_WITH_SCOPE_EX(scope, ZEND_COROUTINE_HI_PRIORITY);
+		zend_coroutine_t * iterator_coroutine = ZEND_ASYNC_SPAWN_WITH_SCOPE_EX(scope, ZEND_COROUTINE_NORMAL);
 
 		if (UNEXPECTED(iterator_coroutine == NULL || EG(exception))) {
 			zend_iterator_dtor(zend_iterator);
