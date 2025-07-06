@@ -491,6 +491,7 @@ static zend_result await_iterator_handler(async_iterator_t *iterator, zval *curr
 		return FAILURE;
 	}
 
+	// @todo: Objects that are already closed must be handled using the replay function.
 	if (awaitable == NULL || ZEND_ASYNC_EVENT_IS_CLOSED(awaitable)) {
 		return SUCCESS;
 	}
@@ -961,7 +962,7 @@ void async_await_futures(
 			return;
 		}
 
-		zend_coroutine_t * iterator_coroutine = ZEND_ASYNC_SPAWN_WITH(scope);
+		zend_coroutine_t * iterator_coroutine = ZEND_ASYNC_SPAWN_WITH_SCOPE_EX(scope, ZEND_COROUTINE_HI_PRIORITY);
 
 		if (UNEXPECTED(iterator_coroutine == NULL || EG(exception))) {
 			zend_iterator_dtor(zend_iterator);

@@ -22,18 +22,16 @@ $coroutines = [
 ];
 
 echo "start\n";
-
-try {
-    $result = awaitFirstSuccess($coroutines);
-    echo "Unexpected success: " . print_r($result, true) . "\n";
-} catch (Exception $e) {
-    echo "Exception caught: " . get_class($e) . " - " . $e->getMessage() . "\n";
-}
-
+$result = awaitFirstSuccess($coroutines);
+$error = $result[1] ?? null;
+$errorsCount = count($result[1] ?? []);
+echo "Result: " . ($result[0] === null ? "NULL" : "FAILED") . "\n";
+echo "Errors count: $errorsCount\n";
 echo "end\n";
 
 ?>
 --EXPECT--
 start
-Exception caught: RuntimeException - first error
+Result: NULL
+Errors count: 3
 end
