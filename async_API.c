@@ -739,7 +739,6 @@ static void async_cancel_awaited_futures(async_await_context_t * await_context, 
 		zend_async_event_t* awaitable = zval_to_event(current);
 
 		if (UNEXPECTED(EG(exception))) {
-			await_context->dtor(await_context);
 			return;
 		}
 

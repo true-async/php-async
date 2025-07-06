@@ -932,7 +932,6 @@ void async_coroutine_resume(zend_coroutine_t *coroutine, zend_object * error, co
 	if (error != NULL) {
 		if (coroutine->waker->error != NULL) {
 			zend_exception_set_previous(error, coroutine->waker->error);
-			OBJ_RELEASE(coroutine->waker->error);
 		}
 
 		coroutine->waker->error = error;
