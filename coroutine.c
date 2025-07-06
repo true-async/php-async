@@ -557,6 +557,9 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 					coroutine->coroutine.exception = exception;
 					GC_ADDREF(exception);
 				}
+			} else {
+				coroutine->coroutine.exception = exception;
+				GC_ADDREF(exception);
 			}
 		} else if (coroutine->coroutine.exception != NULL) {
 			// If the coroutine has an exception, we keep it.
