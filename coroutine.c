@@ -552,13 +552,12 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 		// Hold the exception inside coroutine if it is not NULL.
 		if (exception != NULL) {
 			if (coroutine->coroutine.exception != NULL) {
-				// If the coroutine already has an exception, we do not overwrite it.
-				// This is to prevent losing the original exception in case of multiple exceptions.
-				zend_exception_set_previous(exception, coroutine->coroutine.exception);
+				if (false == instanceof_function(exception->ce, zend_ce_cancellation_exception)) {
+					zend_exception_set_previous(exception, coroutine->coroutine.exception);
+					coroutine->coroutine.exception = exception;
+					GC_ADDREF(exception);
+				}
 			}
-
-			coroutine->coroutine.exception = exception;
-			GC_ADDREF(exception);
 		} else if (coroutine->coroutine.exception != NULL) {
 			// If the coroutine has an exception, we keep it.
 			exception = coroutine->coroutine.exception;
@@ -931,13 +930,25 @@ void async_coroutine_resume(zend_coroutine_t *coroutine, zend_object * error, co
 
 	if (error != NULL) {
 		if (coroutine->waker->error != NULL) {
-			zend_exception_set_previous(error, coroutine->waker->error);
-		}
 
-		coroutine->waker->error = error;
+			if (false == instanceof_function(error->ce, zend_ce_cancellation_exception)) {
+				zend_exception_set_previous(error, coroutine->waker->error);
+				coroutine->waker->error = error;
 
-		if (false == transfer_error) {
-			GC_ADDREF(error);
+				if (false == transfer_error) {
+					GC_ADDREF(error);
+				}
+			} else {
+				if (transfer_error) {
+					OBJ_RELEASE(error);
+				}
+			}
+		} else {
+			coroutine->waker->error = error;
+
+			if (false == transfer_error) {
+				GC_ADDREF(error);
+			}
 		}
 	}
 
