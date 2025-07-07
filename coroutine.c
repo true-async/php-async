@@ -978,8 +978,28 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine, zend_object *error
 		return;
 	}
 
-	if (ZEND_ASYNC_SCHEDULER_CONTEXT && zend_coroutine == ZEND_ASYNC_CURRENT_COROUTINE) {
-		zend_throw_error(zend_ce_cancellation_exception, "Coroutine has been canceled");
+	// An attempt to cancel a coroutine that is currently running.
+	// In this case, nothing actually happens immediately;
+	// however, the coroutine is marked as having been cancelled,
+	// and the cancellation exception is stored as its result.
+	if (UNEXPECTED(zend_coroutine == ZEND_ASYNC_CURRENT_COROUTINE)) {
+
+		ZEND_COROUTINE_SET_CANCELLED(zend_coroutine);
+
+		if (zend_coroutine->exception == NULL) {
+			zend_coroutine->exception = error;
+
+			if (false == transfer_error) {
+				GC_ADDREF(error);
+			}
+		}
+
+		if (zend_coroutine->exception == NULL) {
+			zend_coroutine->exception = async_new_exception(
+				async_ce_cancellation_exception, "Coroutine cancelled"
+			);
+		}
+
 		return;
 	}
 
