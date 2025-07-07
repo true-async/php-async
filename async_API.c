@@ -39,6 +39,10 @@ zend_async_scope_t * async_provide_scope(zend_object *scope_provider)
 
 	zval_ptr_dtor(&retval);
 
+	if (Z_TYPE(retval) == IS_NULL) {
+		return NULL;
+	}
+
 	zend_async_throw(
 		ZEND_ASYNC_EXCEPTION_DEFAULT,
 		"Scope provider must return an instance of Async\\Scope"
@@ -111,8 +115,11 @@ zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object * scope_provider,
 		return NULL;
 	}
 
+	const bool is_spawn_strategy = scope_provider != NULL
+								&& instanceof_function(scope_provider->ce, async_ce_spawn_strategy);
+
 	// call SpawnStrategy::beforeCoroutineEnqueue
-	if (scope_provider != NULL) {
+	if (is_spawn_strategy) {
 		zval coroutine_zval, scope_zval;
 		ZVAL_OBJ(&coroutine_zval, &coroutine->std);
 		ZVAL_OBJ(&scope_zval, scope->scope_object);
@@ -164,7 +171,7 @@ zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object * scope_provider,
 	}
 
 	// call SpawnStrategy::afterCoroutineEnqueue
-	if (scope_provider != NULL) {
+	if (is_spawn_strategy) {
 		zval coroutine_zval, scope_zval;
 		ZVAL_OBJ(&coroutine_zval, &coroutine->std);
 		ZVAL_OBJ(&scope_zval, scope->scope_object);
