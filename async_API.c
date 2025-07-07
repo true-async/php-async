@@ -562,9 +562,18 @@ static zend_result await_iterator_handler(async_iterator_t *iterator, zval *curr
  * It cleans up the internal state and releases resources.
  *
  * @param iterator
+ * @param concurrent_iterator
  */
-static void await_iterator_dispose(async_await_iterator_t * iterator)
+static void await_iterator_dispose(async_await_iterator_t * iterator, async_iterator_t *concurrent_iterator)
 {
+	// If the iterator was completed with an exception,
+	// pass that exception to the coroutine that is waiting.
+	if (concurrent_iterator != NULL && concurrent_iterator->exception != NULL) {
+		zend_object *exception = concurrent_iterator->exception;
+		concurrent_iterator->exception = NULL;
+		ZEND_ASYNC_RESUME_WITH_ERROR(iterator->waiting_coroutine, exception, true);
+	}
+
 	if (iterator->zend_iterator != NULL) {
 		zend_object_iterator *zend_iterator = iterator->zend_iterator;
 		iterator->zend_iterator = NULL;
@@ -602,7 +611,7 @@ static void await_iterator_finish_callback(zend_async_iterator_t *internal_itera
 	async_await_iterator_t * await_iterator = iterator->await_iterator;
 	iterator->await_iterator = NULL;
 
-	await_iterator_dispose(await_iterator);
+	await_iterator_dispose(await_iterator, &iterator->iterator);
 }
 
 /**
@@ -632,7 +641,7 @@ static void iterator_coroutine_first_entry(void)
 	async_await_context_t * await_context = await_iterator->await_context;
 
 	if (UNEXPECTED(await_context == NULL)) {
-		await_iterator_dispose(await_iterator);
+		await_iterator_dispose(await_iterator, NULL);
 		return;
 	}
 
@@ -651,7 +660,7 @@ static void iterator_coroutine_first_entry(void)
 	iterator->iterator.extended_dtor = await_iterator_finish_callback;
 
 	if (UNEXPECTED(iterator == NULL)) {
-		await_iterator_dispose(await_iterator);
+		await_iterator_dispose(await_iterator, NULL);
 		return;
 	}
 
@@ -704,7 +713,7 @@ static void async_await_iterator_coroutine_dispose(zend_coroutine_t *coroutine)
 	async_await_iterator_t * await_iterator = (async_await_iterator_t *) coroutine->extended_data;
 	coroutine->extended_data = NULL;
 
-	await_iterator_dispose(await_iterator);
+	await_iterator_dispose(await_iterator, NULL);
 }
 
 static void await_context_dtor(async_await_context_t *context)
