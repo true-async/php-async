@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Proper cleanup of coroutine and scope objects during garbage collection cycles
 - **Async Iterator API**:
     - Fixed iterator state management to prevent memory leaks
+- Fixed the `spawnWith()` function for interaction with the `ScopeProvider` and `SpawnStrategy` interface
 
 ### Changed
 - **LibUV requirement increased to ≥ 1.44.0** - Requires libuv version 1.44.0 or later to ensure proper UV_RUN_ONCE behavior and prevent busy loop issues that could cause high CPU usage
