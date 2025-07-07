@@ -192,11 +192,27 @@ async_iterator_t * async_iterator_new(
 		return; \
 	}
 
+#define RETURN_IF_EXCEPTION_AND(iterator, and) \
+	if (UNEXPECTED(EG(exception))) { \
+		iterator->state = ASYNC_ITERATOR_FINISHED; \
+		iterator->microtask.is_cancelled = true; \
+		and; \
+		return; \
+	}
+
 static zend_always_inline void iterate(async_iterator_t *iterator)
 {
 	zend_result result = SUCCESS;
 	zval retval;
 	ZVAL_UNDEF(&retval);
+
+	if (UNEXPECTED(iterator->state == ASYNC_ITERATOR_MOVING)) {
+		// The iterator is in a state of waiting for a position change.
+		// The coroutine cannot continue execution because
+		// it cannot move the iterator to the next position.
+		// We exit immediately.
+		return;
+	}
 
 	zend_fcall_info fci;
 
@@ -251,12 +267,21 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 
 	while (iterator->state != ASYNC_ITERATOR_FINISHED) {
 
+		if (iterator->state == ASYNC_ITERATOR_MOVING) {
+			// The iterator is in a state of waiting for a position change.
+			// The coroutine cannot continue execution because
+			// it cannot move the iterator to the next position.
+			break;
+		}
+
 		if (iterator->target_hash != NULL) {
 			current = zend_hash_get_current_data_ex(iterator->target_hash, &iterator->position);
 		} else if (SUCCESS == iterator->zend_iterator->funcs->valid(iterator->zend_iterator)) {
 
 			RETURN_IF_EXCEPTION(iterator);
-			current = iterator->zend_iterator->funcs->get_current_data(iterator->zend_iterator);
+			ITERATOR_SAFE_MOVING_START(iterator) {
+				current = iterator->zend_iterator->funcs->get_current_data(iterator->zend_iterator);
+			} ITERATOR_SAFE_MOVING_END(iterator);
 			RETURN_IF_EXCEPTION(iterator);
 
 			if (current != NULL) {
@@ -303,8 +328,11 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 		if (iterator->target_hash != NULL) {
 			zend_hash_get_current_key_zval_ex(iterator->target_hash, &key, &iterator->position);
         } else {
-            iterator->zend_iterator->funcs->get_current_key(iterator->zend_iterator, &key);
-        	RETURN_IF_EXCEPTION(iterator);
+        	ITERATOR_SAFE_MOVING_START(iterator) {
+        		iterator->zend_iterator->funcs->get_current_key(iterator->zend_iterator, &key);
+        	} ITERATOR_SAFE_MOVING_END(iterator);
+
+        	RETURN_IF_EXCEPTION_AND(iterator, zval_ptr_dtor(&current_item));
         }
 
 		/*
@@ -317,19 +345,11 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 	    	EG(ht_iterators)[iterator->hash_iterator].pos = iterator->position;
         } else {
 
-        	if (iterator->state == ASYNC_ITERATOR_MOVING) {
-        		// The iterator is in a state of waiting for a position change.
-        		// The coroutine cannot continue execution because
-        		// it cannot move the iterator to the next position.
-        		// We exit immediately.
-        		return;
-			}
-
         	ITERATOR_SAFE_MOVING_START(iterator) {
         		iterator->zend_iterator->funcs->move_forward(iterator->zend_iterator);
         	} ITERATOR_SAFE_MOVING_END(iterator);
 
-        	RETURN_IF_EXCEPTION(iterator);
+        	RETURN_IF_EXCEPTION_AND(iterator, zval_ptr_dtor(&current_item));
         }
 
 		if (iterator->fcall != NULL) {
