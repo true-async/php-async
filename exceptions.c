@@ -281,6 +281,49 @@ bool async_spawn_and_throw(zend_object *exception, zend_async_scope_t *scope, in
 	return true;
 }
 
+/**
+ * Extracts the current exception from the global state, saves it, and clears it.
+ *
+ * @return The extracted exception object with an increased reference count.
+ */
+zend_object * async_extract_exception(void)
+{
+	zend_exception_save();
+	zend_exception_restore();
+	zend_object *exception = EG(exception);
+	GC_ADDREF(exception);
+	zend_clear_exception();
+
+	return exception;
+}
+
+/**
+ * Applies the current exception to the provided exception pointer.
+ *
+ * If the current exception is not a cancellation exception or a graceful/unwind exit,
+ * it extracts the current exception and sets it as the new exception.
+ * If `to_exception` is not NULL, it sets the previous exception to the extracted one.
+ *
+ * @param to_exception Pointer to a pointer where the new exception will be set.
+ */
+void async_apply_exception(zend_object **to_exception)
+{
+	if (UNEXPECTED(EG(exception)
+		&& false == (
+			instanceof_function(EG(exception)->ce, zend_ce_cancellation_exception)
+			|| zend_is_graceful_exit(EG(exception)) || zend_is_unwind_exit(EG(exception))
+		))) {
+
+		zend_object *exception = async_extract_exception();
+
+		if (*to_exception != NULL) {
+			zend_exception_set_previous(exception, *to_exception);
+		}
+
+		*to_exception = exception;
+	}
+}
+
 void async_rethrow_exception(zend_object *exception)
 {
 	if (EG(current_execute_data)) {

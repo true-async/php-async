@@ -99,6 +99,12 @@ void iterator_dtor(zend_async_microtask_t *microtask)
 		iterator->fcall = NULL;
 	}
 
+	if (iterator->exception != NULL) {
+		zend_object *exception = iterator->exception;
+		iterator->exception = NULL;
+		OBJ_RELEASE(exception);
+	}
+
 	efree(microtask);
 }
 
@@ -155,6 +161,7 @@ async_iterator_t * async_iterator_new(
 	if (scope == NULL) {
 		scope = ZEND_ASYNC_CURRENT_SCOPE;
 	}
+
 	iterator->scope = scope;
 
 	if (zend_iterator == NULL) {
@@ -411,6 +418,7 @@ void async_iterator_run(async_iterator_t *iterator)
 	ZEND_ASYNC_ADD_MICROTASK(&iterator->microtask);
 
 	iterate(iterator);
+	async_iterator_apply_exception(iterator);
 }
 
 /**
@@ -431,4 +439,20 @@ void async_iterator_run_in_coroutine(async_iterator_t *iterator, int32_t priorit
 	iterator_coroutine->extended_data = iterator;
 	iterator_coroutine->internal_entry = coroutine_entry;
 	iterator_coroutine->extended_dispose = coroutine_extended_dispose;
+}
+
+void async_iterator_apply_exception(async_iterator_t *iterator)
+{
+	async_apply_exception(&iterator->exception);
+
+	if (iterator->exception == NULL || ZEND_ASYNC_SCOPE_IS_CANCELLED(iterator->scope)) {
+		return;
+	}
+
+	ZEND_ASYNC_SCOPE_CANCEL(
+		iterator->scope,
+		async_new_exception(async_ce_cancellation_exception, "Cancellation of the iterator due to an exception"),
+		true,
+		ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(iterator->scope)
+	);
 }

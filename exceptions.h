@@ -41,7 +41,9 @@ ZEND_API ZEND_COLD zend_object * async_new_composite_exception(void);
 ZEND_API void async_composite_exception_add_exception(zend_object *composite, zend_object *exception, bool transfer);
 bool async_spawn_and_throw(zend_object *exception, zend_async_scope_t *scope, int32_t priority);
 void async_apply_exception_to_context(zend_object *exception);
+zend_object * async_extract_exception(void);
 void async_rethrow_exception(zend_object *exception);
+void async_apply_exception(zend_object **to_exception);
 
 END_EXTERN_C()
 

@@ -27,9 +27,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Memory management improvements for long-running async applications
 - Proper cleanup of coroutine and scope objects during garbage collection cycles
+- **Async Iterator API**:
+    - Fixed iterator state management to prevent memory leaks
 
 ### Changed
 - **LibUV requirement increased to ≥ 1.44.0** - Requires libuv version 1.44.0 or later to ensure proper UV_RUN_ONCE behavior and prevent busy loop issues that could cause high CPU usage
+- **Async Iterator API**:
+    - Proper handling of `REWIND`/`NEXT` states in a concurrent environment. 
+      The iterator code now stops iteration in 
+      coroutines if the iterator is in the process of changing its position.
+    - Added functionality for proper handling of exceptions from `Zend iterators` (`\Iterator` and `generators`).
+      An exception that occurs in the iterator can now be handled by the iterator’s owner.
 
 
 ## [0.2.0] - 2025-07-01
