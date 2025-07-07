@@ -49,5 +49,4 @@ Warning: the coroutine was suspended in file: %s, line: %d will be canceled in U
 Warning: the coroutine was suspended in file: %s, line: %d will be canceled in Unknown on line %d
 Caught exception: Deadlock detected
 coroutine1 finished
-Caught exception: Deadlock detected
 coroutine2 finished
