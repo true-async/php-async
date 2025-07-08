@@ -799,6 +799,16 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 	// This causes timers to start, POLL objects to begin waiting for events, and so on.
 	//
 	if (transfer == NULL && coroutine != NULL && coroutine->waker != NULL) {
+
+		// Let’s check that the coroutine has something to wait for;
+		// otherwise, it’s a potential deadlock.
+		if (coroutine->waker->events.nNumOfElements == 0) {
+			async_throw_error("The coroutine has no events to wait for");
+			zend_async_waker_destroy(coroutine);
+			zend_exception_restore();
+			return;
+		}
+
 		async_scheduler_start_waker_events(coroutine->waker);
 
 		// If an exception occurs during the startup of the Waker object,

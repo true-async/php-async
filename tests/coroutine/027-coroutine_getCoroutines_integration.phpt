@@ -5,8 +5,10 @@ getCoroutines() - integration with coroutine lifecycle management
 
 use function Async\spawn;
 use function Async\getCoroutines;
+use function Async\currentCoroutine;
 use function Async\suspend;
 use function Async\awaitAll;
+use function Async\awaitAllWithErrors;
 
 echo "start\n";
 
@@ -28,16 +30,33 @@ echo "After spawning 5: {$after_spawn}\n";
 
 // Verify all coroutines are in the list
 $all_coroutines = getCoroutines();
-$our_coroutines = array_slice($all_coroutines, $initial_count, 5);
-echo "Found our coroutines: " . count($our_coroutines) . "\n";
+$currentCoroutine = currentCoroutine();
 
-foreach ($our_coroutines as $index => $coroutine) {
+// It’s necessary to check that all coroutines are in the list, regardless of their index.
+foreach ($coroutines as $index => $coroutine) {
+    if (!in_array($coroutine, $all_coroutines, true)) {
+        echo "ERROR: Coroutine $index not found in getCoroutines()\n";
+    }
+}
+
+if (!in_array($currentCoroutine, $all_coroutines, true)) {
+    echo "ERROR: Current coroutine not found in getCoroutines()\n";
+}
+
+foreach ($coroutines as $index => $coroutine) {
     echo "Coroutine {$index} is suspended: " . ($coroutine->isSuspended() ? "true" : "false") . "\n";
 }
 
 // Test 2: Cancel some coroutines
 $coroutines[0]->cancel();
 $coroutines[2]->cancel();
+
+// Check if status is updated
+foreach ($coroutines as $index => $coroutine) {
+    echo "Coroutine {$index} is isCancellationRequested: " . ($coroutine->isCancellationRequested() ? "true" : "false") . "\n";
+}
+
+awaitAllWithErrors($coroutines); // Ensure we yield to allow cancellation to take effect
 
 $after_partial_cancel = count(getCoroutines()) - $initial_count;
 echo "After cancelling 2: {$after_partial_cancel}\n";
@@ -72,14 +91,19 @@ echo "end\n";
 --EXPECTF--
 start
 Initial count: 0
-After spawning 5: 5
+After spawning 5: 6
 Found our coroutines: 5
 Coroutine 0 is suspended: true
 Coroutine 1 is suspended: true
 Coroutine 2 is suspended: true
 Coroutine 3 is suspended: true
 Coroutine 4 is suspended: true
-After cancelling 2: 3
+Coroutine 0 is isCancellationRequested: true
+Coroutine 1 is isCancellationRequested: false
+Coroutine 2 is isCancellationRequested: true
+Coroutine 3 is isCancellationRequested: false
+Coroutine 4 is isCancellationRequested: false
+After cancelling 2: 4
 Completed results: 3
 Final count: 0
 Concurrent: coroutine_0: before=%d, after=%d

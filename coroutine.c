@@ -1072,7 +1072,6 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine, zend_object *error
 		// In any other case, the cancellation exception overrides the existing exception.
 		//
 		ZEND_ASYNC_WAKER_APPLY_CANCELLATION(waker, error, transfer_error);
-		ZEND_ASYNC_DECREASE_COROUTINE_COUNT;
 		async_scheduler_coroutine_enqueue(zend_coroutine);
 		return;
 	}
