@@ -4,7 +4,7 @@ Context inheritance through scope hierarchy
 <?php
 
 use function Async\spawn;
-use function Async\currentCoroutine;
+use function Async\currentContext;
 
 echo "start\n";
 
@@ -15,7 +15,7 @@ $parent_scope = new \Async\Scope();
 $parent_coroutine = $parent_scope->spawn(function() {
     echo "parent coroutine started\n";
     
-    $context = \Async\currentCoroutine()->getContext();
+    $context = \Async\currentContext();
     
     // Set values in parent context
     $context->set('parent_key', 'parent_value');
@@ -34,7 +34,7 @@ $child_scope = \Async\Scope::inherit($parent_scope);
 $child_coroutine = $child_scope->spawn(function() {
     echo "child coroutine started\n";
     
-    $context = \Async\currentCoroutine()->getContext();
+    $context = \Async\currentContext();
     
     // Test find() - should find parent values
     echo "find parent_key: " . ($context->find('parent_key') ?: 'null') . "\n";
