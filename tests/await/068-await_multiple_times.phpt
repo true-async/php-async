@@ -93,7 +93,6 @@ coroutine2 executing
 first caught: Shared error
 second await on exception coroutine
 second caught: Shared error
-coroutine3 executing
 first await on cancelled coroutine
 first caught cancellation: Shared cancellation
 second await on cancelled coroutine

@@ -7,6 +7,7 @@ use function Async\spawn;
 use function Async\await;
 use function Async\suspend;
 use function Async\timeout;
+use function Async\delay;
 
 echo "start\n";
 
@@ -36,8 +37,7 @@ try {
 // Test 2: Timeout cancellation
 $timeout_coroutine = spawn(function() {
     echo "timeout coroutine started\n";
-    suspend();
-    suspend(); // Will be cancelled by timeout
+    delay(50); // Will be cancelled by timeout
     echo "timeout coroutine should not complete\n";
     return "timeout_result";
 });
@@ -45,10 +45,11 @@ $timeout_coroutine = spawn(function() {
 echo "timeout coroutine spawned\n";
 
 try {
-    $result = await($timeout_coroutine, timeout(50)); // 50ms timeout
+    $result = await($timeout_coroutine, timeout(1));
     echo "timeout await should not succeed\n";
 } catch (\Async\TimeoutException $e) {
     echo "timeout cancellation caught: " . get_class($e) . ": " . $e->getMessage() . "\n";
+    $timeout_coroutine->cancel(new \Async\CancellationException("Timeout after 1 milliseconds"));
 } catch (\Async\CancellationException $e) {
     echo "timeout as cancellation: " . get_class($e) . ": " . $e->getMessage() . "\n";
 } catch (Throwable $e) {
@@ -70,7 +71,7 @@ suspend();
 $race_coroutine->cancel(new \Async\CancellationException("Manual wins"));
 
 try {
-    $result = await($race_coroutine, timeout(100)); // Should get manual cancel, not timeout
+    $result = await($race_coroutine, timeout(1)); // Should get manual cancel, not timeout
     echo "race await should not succeed\n";
 } catch (\Async\CancellationException $e) {
     echo "race cancellation caught: " . get_class($e) . ": " . $e->getMessage() . "\n";
@@ -90,7 +91,7 @@ manual coroutine cancelled
 manual cancellation caught: Async\CancellationException: Manual cancel message
 timeout coroutine spawned
 timeout coroutine started
-timeout cancellation caught: %s: %s
+timeout cancellation caught: Async\TimeoutException: Timeout occurred after 1 milliseconds
 race coroutine started
 race cancellation caught: Async\CancellationException: Manual wins
 end

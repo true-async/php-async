@@ -30,7 +30,12 @@ $coroutine2 = spawn(function() {
 });
 
 // Wait for completion
-suspend();
+try {
+    await($coroutine2); // This will suspend until the coroutine is done
+} catch (Throwable $e) {
+    // Catch any exceptions during suspend
+    echo "suspend error: " . $e->getMessage() . "\n";
+}
 
 echo "coroutine2 finished: " . ($coroutine2->isFinished() ? "true" : "false") . "\n";
 
@@ -64,6 +69,7 @@ coroutine1 executing
 coroutine1 finished: true
 await result: success_result
 coroutine2 executing
+suspend error: Coroutine error
 coroutine2 finished: true
 caught exception: Coroutine error
 coroutine3 executing

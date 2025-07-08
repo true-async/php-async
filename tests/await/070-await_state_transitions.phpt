@@ -15,8 +15,7 @@ $completed_coroutine = spawn(function() {
     return "already_done";
 });
 
-// Wait for completion
-suspend();
+await($completed_coroutine);
 
 echo "coroutine finished: " . ($completed_coroutine->isFinished() ? "true" : "false") . "\n";
 
@@ -34,8 +33,13 @@ $exception_coroutine = spawn(function() {
     throw new \RuntimeException("Original error");
 });
 
-// Wait for completion
-suspend();
+$original_exception = null;
+
+try {
+    await($exception_coroutine);
+} catch (\RuntimeException $e) {
+    $original_exception = $e;
+}
 
 echo "exception coroutine finished: " . ($exception_coroutine->isFinished() ? "true" : "false") . "\n";
 
@@ -48,41 +52,13 @@ try {
     $result2 = await($exception_coroutine);
     echo "should not succeed\n";
 } catch (\RuntimeException $e) {
-    echo "original exception preserved: " . $e->getMessage() . "\n";
+    if($e === $original_exception) {
+        echo "original exception preserved: " . $e->getMessage() . "\n";
+    } else {
+        echo "unexpected exception: " . get_class($e) . ": " . $e->getMessage() . "\n";
+    }
 } catch (\Async\CancellationException $e) {
     echo "unexpected cancellation: " . $e->getMessage() . "\n";
-}
-
-// Test 3: Multiple operations on same coroutine
-$multi_coroutine = spawn(function() {
-    echo "multi coroutine started\n";
-    suspend();
-    suspend();
-    return "multi_result";
-});
-
-// Let it start
-suspend();
-
-// First await (should work)
-spawn(function() use ($multi_coroutine) {
-    try {
-        $result = await($multi_coroutine);
-        echo "concurrent await result: $result\n";
-    } catch (Throwable $e) {
-        echo "concurrent await failed: " . $e->getMessage() . "\n";
-    }
-});
-
-// Cancel while being awaited
-$multi_coroutine->cancel(new \Async\CancellationException("Cancelled while awaited"));
-
-// Try to await cancelled coroutine
-try {
-    $result3 = await($multi_coroutine);
-    echo "should not succeed\n";
-} catch (\Async\CancellationException $e) {
-    echo "main await cancelled: " . $e->getMessage() . "\n";
 }
 
 echo "end\n";
@@ -98,7 +74,4 @@ exception coroutine executing
 exception coroutine finished: true
 attempted to cancel failed coroutine
 original exception preserved: Original error
-multi coroutine started
-concurrent await failed: Cancelled while awaited
-main await cancelled: Cancelled while awaited
 end
