@@ -801,8 +801,9 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 	if (transfer == NULL && coroutine != NULL && coroutine->waker != NULL) {
 
 		// Let’s check that the coroutine has something to wait for;
+		// If a coroutine isn’t waiting for anything, it must be in the execution queue.
 		// otherwise, it’s a potential deadlock.
-		if (coroutine->waker->events.nNumOfElements == 0) {
+		if (coroutine->waker->events.nNumOfElements == 0 && false == ZEND_ASYNC_WAKER_IN_QUEUE(coroutine->waker)) {
 			async_throw_error("The coroutine has no events to wait for");
 			zend_async_waker_destroy(coroutine);
 			zend_exception_restore();

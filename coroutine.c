@@ -515,6 +515,13 @@ static zend_always_inline void coroutine_call_finally_handlers(async_coroutine_t
 
 void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t * coroutine)
 {
+	// Before finalizing the coroutine
+	// we check that we’re properly finishing the coroutine’s execution.
+	// The coroutine must not be in the queue!
+	if (UNEXPECTED(ZEND_ASYNC_WAKER_IN_QUEUE(coroutine->coroutine.waker))) {
+		zend_error(E_CORE_WARNING, "Attempt to finalize a coroutine that is still in the queue");
+	}
+
 	ZEND_COROUTINE_SET_FINISHED(&coroutine->coroutine);
 
 	/* Call switch handlers for coroutine finishing */
@@ -684,6 +691,7 @@ void async_coroutine_finalize_from_scheduler(async_coroutine_t * coroutine)
 	EG(prev_exception) = NULL;
 
 	waker->error = NULL;
+	waker->status = ZEND_ASYNC_WAKER_NO_STATUS;
 
 	bool do_bailout = false;
 

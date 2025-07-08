@@ -1046,7 +1046,9 @@ void async_await_futures(
 		}
 	}
 
-	ZEND_ASYNC_SUSPEND();
+	if (coroutine->waker->events.nNumOfElements > 0) {
+		ZEND_ASYNC_SUSPEND();
+	}
 
 	// If the await on futures has completed and
 	// the automatic cancellation mode for pending coroutines is active.
