@@ -5,13 +5,14 @@ CompositeException with multiple finally handlers
 
 use function Async\spawn;
 use function Async\suspend;
+use function Async\currentCoroutine;
 
 echo "start\n";
 
 $composite_coroutine = spawn(function() {
     echo "composite coroutine started\n";
     
-    $coroutine = \Async\Coroutine::getCurrent();
+    $coroutine = \Async\currentCoroutine();
     
     // Add multiple finally handlers that throw
     $coroutine->onFinally(function() {
