@@ -54,8 +54,8 @@ class ResourceKeyIterator implements Iterator
 try {
     $result = awaitAll(new ResourceKeyIterator());
     echo "ERROR: Should have failed with resource keys\n";
-} catch (Throwable $e) {
-    echo "Caught resource key error: " . get_class($e) . "\n";
+} catch (Async\AsyncException $e) {
+    echo "Caught resource key error: " . $e->getMessage() . "\n";
 }
 
 echo "end\n";
@@ -63,5 +63,5 @@ echo "end\n";
 ?>
 --EXPECTF--
 start
-Caught resource key error: %s
+Caught resource key error: Invalid key type: must be string, long or null
 end

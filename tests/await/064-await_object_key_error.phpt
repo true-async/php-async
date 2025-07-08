@@ -46,8 +46,8 @@ class ObjectKeyIterator implements Iterator
 try {
     $result = awaitAll(new ObjectKeyIterator());
     echo "ERROR: Should have failed with object keys\n";
-} catch (Throwable $e) {
-    echo "Caught object key error: " . get_class($e) . "\n";
+} catch (Async\AsyncException $e) {
+    echo "Caught object key error: " . $e->getMessage() . "\n";
 }
 
 echo "end\n";
@@ -55,5 +55,5 @@ echo "end\n";
 ?>
 --EXPECTF--
 start
-Caught object key error: %s
+Caught object key error: Invalid key type: must be string, long or null
 end

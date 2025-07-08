@@ -508,10 +508,17 @@ static zend_result await_iterator_handler(async_iterator_t *iterator, zval *curr
 		return SUCCESS;
 	}
 
+	if (Z_TYPE_P(key) != IS_STRING && Z_TYPE_P(key) != IS_LONG
+		&& Z_TYPE_P(key) != IS_NULL && Z_TYPE_P(key) != IS_UNDEF) {
+		async_throw_error("Invalid key type: must be string, long or null");
+		return FAILURE;
+	}
+
 	async_await_callback_t * callback = ecalloc(1, sizeof(async_await_callback_t));
 	callback->callback.base.callback = async_waiting_callback;
 	async_await_context_t * await_context = await_iterator->await_context;
 	callback->await_context = await_context;
+	await_context->ref_count++;
 
 	ZVAL_COPY(&callback->key, key);
 
@@ -557,9 +564,8 @@ static zend_result await_iterator_handler(async_iterator_t *iterator, zval *curr
 			return SUCCESS;
 		}
 
+		callback->callback.base.dispose = async_waiting_callback_dispose;
 		awaitable->replay(awaitable, &callback->callback.base, NULL, NULL);
-		callback->await_context = NULL;
-		async_waiting_callback_dispose(&callback->callback.base, NULL);
 
 		if (UNEXPECTED(EG(exception))) {
 			return FAILURE;
@@ -578,7 +584,6 @@ static zend_result await_iterator_handler(async_iterator_t *iterator, zval *curr
 	callback->prev_dispose = callback->callback.base.dispose;
 	callback->callback.base.dispose = async_waiting_callback_dispose;
 
-	await_context->ref_count++;
 	await_context->futures_count++;
 
 	return SUCCESS;
