@@ -9,7 +9,7 @@ echo "start\n";
 
 class InvalidTypeScopeProvider implements \Async\ScopeProvider
 {
-    public function provideScope(): mixed
+    public function provideScope(): ?\Async\Scope
     {
         return "invalid"; // Should return Scope or null
     }
@@ -31,5 +31,5 @@ echo "end\n";
 ?>
 --EXPECTF--
 start
-Caught expected exception: Scope provider must return an instance of Async\Scope
+Caught exception: TypeError: InvalidTypeScopeProvider::provideScope(): Return value must be of type ?Async\Scope, string returned
 end

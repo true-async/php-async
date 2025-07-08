@@ -4,6 +4,7 @@ Context inheritance through scope hierarchy
 <?php
 
 use function Async\spawn;
+use function Async\currentCoroutine;
 
 echo "start\n";
 
@@ -14,11 +15,11 @@ $parent_scope = new \Async\Scope();
 $parent_coroutine = $parent_scope->spawn(function() {
     echo "parent coroutine started\n";
     
-    $context = \Async\Coroutine::getCurrent()->getContext();
+    $context = \Async\currentCoroutine()->getContext();
     
     // Set values in parent context
-    $context['parent_key'] = 'parent_value';
-    $context['shared_key'] = 'from_parent';
+    $context->set('parent_key', 'parent_value');
+    $context->set('shared_key', 'from_parent');
     
     echo "parent context values set\n";
     return "parent_done";
@@ -33,7 +34,7 @@ $child_scope = \Async\Scope::inherit($parent_scope);
 $child_coroutine = $child_scope->spawn(function() {
     echo "child coroutine started\n";
     
-    $context = \Async\Coroutine::getCurrent()->getContext();
+    $context = \Async\currentCoroutine()->getContext();
     
     // Test find() - should find parent values
     echo "find parent_key: " . ($context->find('parent_key') ?: 'null') . "\n";
@@ -60,8 +61,8 @@ $child_coroutine = $child_scope->spawn(function() {
     echo "hasLocal shared_key: " . ($context->hasLocal('shared_key') ? 'true' : 'false') . "\n";
     
     // Set local value that overrides parent
-    $context['shared_key'] = 'from_child';
-    $context['child_key'] = 'child_value';
+    $context->set('shared_key', 'from_child');
+    $context->set('child_key', 'child_value');
     
     echo "child context values set\n";
     

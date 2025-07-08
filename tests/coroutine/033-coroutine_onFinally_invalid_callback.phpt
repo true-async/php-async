@@ -5,13 +5,14 @@ Coroutine onFinally with invalid callback parameters
 
 use function Async\spawn;
 use function Async\suspend;
+use function Async\currentCoroutine;
 
 echo "start\n";
 
 $invalid_finally_coroutine = spawn(function() {
     echo "invalid finally coroutine started\n";
     
-    $coroutine = \Async\Coroutine::getCurrent();
+    $coroutine = \Async\currentCoroutine();
     
     // Test invalid callback types
     try {
@@ -41,7 +42,6 @@ $invalid_finally_coroutine = spawn(function() {
         echo "unexpected for null: " . get_class($e) . "\n";
     }
     
-    suspend();
     return "invalid_finally_result";
 });
 
