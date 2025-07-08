@@ -39,6 +39,10 @@ zend_async_scope_t * async_provide_scope(zend_object *scope_provider)
 
 	zval_ptr_dtor(&retval);
 
+	if (UNEXPECTED(EG(exception))) {
+		return NULL;
+	}
+
 	if (Z_TYPE(retval) == IS_NULL) {
 		return NULL;
 	}

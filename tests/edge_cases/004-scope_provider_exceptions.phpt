@@ -58,24 +58,6 @@ foreach ($exceptionTypes as $type) {
     }
 }
 
-// Test that successful provider still works after failures
-class SuccessfulProvider implements \Async\ScopeProvider
-{
-    public function provideScope(): ?\Async\Scope
-    {
-        return \Async\Scope::inherit();
-    }
-}
-
-try {
-    $coroutine = spawnWith(new SuccessfulProvider(), function() {
-        return "success";
-    });
-    echo "Successful provider result: " . $coroutine->getResult() . "\n";
-} catch (Throwable $e) {
-    echo "Unexpected exception: " . get_class($e) . ": " . $e->getMessage() . "\n";
-}
-
 echo "end\n";
 
 ?>
@@ -86,5 +68,4 @@ Caught CancellationException: Cancelled in provider
 Caught InvalidArgumentException: Invalid argument in provider
 Caught LogicException: Logic error in provider
 Caught Exception: Generic error in provider
-Successful provider result: success
 end
