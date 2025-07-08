@@ -349,7 +349,7 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
         		iterator->zend_iterator->funcs->move_forward(iterator->zend_iterator);
         	} ITERATOR_SAFE_MOVING_END(iterator);
 
-        	RETURN_IF_EXCEPTION_AND(iterator, zval_ptr_dtor(&current_item));
+        	RETURN_IF_EXCEPTION_AND(iterator, zval_ptr_dtor(&current_item); zval_ptr_dtor(&key));
         }
 
 		if (iterator->fcall != NULL) {
@@ -363,6 +363,7 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 		}
 
 		zval_ptr_dtor(&current_item);
+		zval_ptr_dtor(&key);
 
 		if (result == SUCCESS) {
 

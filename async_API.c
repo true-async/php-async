@@ -309,11 +309,17 @@ static void async_waiting_callback_dispose(zend_async_event_callback_t *callback
 
 	await_callback->await_context = NULL;
 
+	zval_ptr_dtor(&await_callback->key);
+
 	if (await_context != NULL) {
 		await_context->dtor(await_context);
 	}
 
-	await_callback->prev_dispose(callback, event);
+	if (await_callback->prev_dispose != NULL) {
+		await_callback->prev_dispose(callback, event);
+	} else {
+		efree(callback);
+	}
 }
 
 /**
@@ -547,18 +553,32 @@ static zend_result await_iterator_handler(async_iterator_t *iterator, zval *curr
 		// But if it supports the replay method, we can retrieve the resulting value again.
 		//
 		if (false == awaitable->replay) {
+			async_waiting_callback_dispose(&callback->callback.base, NULL);
 			return SUCCESS;
 		}
 
 		awaitable->replay(awaitable, &callback->callback.base, NULL, NULL);
-	} else {
-		zend_async_resume_when(await_iterator->waiting_coroutine, awaitable, false, NULL, &callback->callback);
+		callback->await_context = NULL;
+		async_waiting_callback_dispose(&callback->callback.base, NULL);
+
+		if (UNEXPECTED(EG(exception))) {
+			return FAILURE;
+		}
+
+		return SUCCESS;
 	}
 
+	zend_async_resume_when(await_iterator->waiting_coroutine, awaitable, false, NULL, &callback->callback);
+
 	if (UNEXPECTED(EG(exception))) {
+		async_waiting_callback_dispose(&callback->callback.base, NULL);
 		return FAILURE;
 	}
 
+	callback->prev_dispose = callback->callback.base.dispose;
+	callback->callback.base.dispose = async_waiting_callback_dispose;
+
+	await_context->ref_count++;
 	await_context->futures_count++;
 
 	return SUCCESS;
