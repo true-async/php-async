@@ -658,7 +658,7 @@ PHP_FUNCTION(Async_currentContext)
 		async_context_t *context = async_context_new();
 		context->scope = scope;
 		scope->context = &context->base;
-		RETURN_OBJ(&context->std);
+		RETURN_OBJ_COPY(&context->std);
 	}
 
 	// Return the existing context from scope

@@ -5,6 +5,7 @@ Context inheritance through scope hierarchy
 
 use function Async\spawn;
 use function Async\currentContext;
+use function Async\await;
 
 echo "start\n";
 
@@ -78,6 +79,8 @@ $child_coroutine = $child_scope->spawn(function() {
     
     return "child_done";
 });
+
+await($child_coroutine);
 
 $child_coroutine->getResult();
 

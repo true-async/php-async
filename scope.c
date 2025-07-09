@@ -1088,10 +1088,10 @@ static void scope_dispose(zend_async_event_t *scope_event)
 		zend_async_scope_remove_child(scope->scope.parent_scope, &scope->scope);
 	}
 
-	// Clear weak reference from context to scope
 	if (scope->scope.context != NULL) {
 		async_context_t *context = (async_context_t *) scope->scope.context;
 		context->scope = NULL;
+		OBJ_RELEASE(&context->std);
 	}
 
 	if (scope->scope.scope_object != NULL) {
