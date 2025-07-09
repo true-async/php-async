@@ -471,7 +471,6 @@ void start_graceful_shutdown(void)
 
 	if (UNEXPECTED(EG(exception) != NULL)) {
 		zend_exception_set_previous(EG(exception), ZEND_ASYNC_EXIT_EXCEPTION);
-		GC_DELREF(ZEND_ASYNC_EXIT_EXCEPTION);
 		ZEND_ASYNC_EXIT_EXCEPTION = EG(exception);
 		GC_ADDREF(EG(exception));
 		zend_clear_exception();
@@ -484,7 +483,6 @@ static void finally_shutdown(void)
 {
 	if (ZEND_ASYNC_EXIT_EXCEPTION != NULL && EG(exception) != NULL) {
 		zend_exception_set_previous(EG(exception), ZEND_ASYNC_EXIT_EXCEPTION);
-		GC_DELREF(ZEND_ASYNC_EXIT_EXCEPTION);
 		ZEND_ASYNC_EXIT_EXCEPTION = EG(exception);
 		GC_ADDREF(EG(exception));
 		zend_clear_exception();
@@ -498,7 +496,6 @@ static void finally_shutdown(void)
 	if (UNEXPECTED(EG(exception))) {
 		if (ZEND_ASYNC_EXIT_EXCEPTION != NULL) {
 			zend_exception_set_previous(EG(exception), ZEND_ASYNC_EXIT_EXCEPTION);
-			GC_DELREF(ZEND_ASYNC_EXIT_EXCEPTION);
 			ZEND_ASYNC_EXIT_EXCEPTION = EG(exception);
 			GC_ADDREF(EG(exception));
 		}
@@ -709,7 +706,6 @@ void async_scheduler_main_coroutine_suspend(void)
 	//
 	if (EG(exception) != NULL && exit_exception != NULL) {
 		zend_exception_set_previous(EG(exception), exit_exception);
-		GC_DELREF(exit_exception);
 	} else if (exit_exception != NULL) {
 		async_rethrow_exception(exit_exception);
 	}
@@ -855,7 +851,6 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 
 		if (ZEND_ASYNC_EXIT_EXCEPTION != NULL) {
 			zend_exception_set_previous(exception, ZEND_ASYNC_EXIT_EXCEPTION);
-			GC_DELREF(ZEND_ASYNC_EXIT_EXCEPTION);
 			ZEND_ASYNC_EXIT_EXCEPTION = exception;
 		} else {
 			ZEND_ASYNC_EXIT_EXCEPTION = exception;
@@ -982,7 +977,6 @@ void async_scheduler_main_loop(void)
 
 	if (EG(exception) != NULL && exit_exception != NULL) {
 		zend_exception_set_previous(EG(exception), exit_exception);
-		GC_DELREF(exit_exception);
 		exit_exception = EG(exception);
 		GC_ADDREF(exit_exception);
 		zend_clear_exception();

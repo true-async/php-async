@@ -379,12 +379,11 @@ static void finally_handlers_iterator_dtor(zend_async_iterator_t *zend_iterator)
 	}
 
 	finally_handlers_context_t *context = iterator->extended_data;
+	async_scope_t *scope = (async_scope_t *) context->scope;
+	context->scope = NULL;
 
 	// Throw CompositeException if any exceptions were collected
 	if (context->composite_exception != NULL) {
-
-		async_scope_t *scope = (async_scope_t *) context->scope;
-
 		if (ZEND_ASYNC_SCOPE_CATCH(
 			&scope->scope,
 			&context->coroutine->coroutine,
@@ -394,12 +393,12 @@ static void finally_handlers_iterator_dtor(zend_async_iterator_t *zend_iterator)
 			ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(&scope->scope)
 		)) {
 			OBJ_RELEASE(context->composite_exception);
-		} else {
-			async_rethrow_exception(context->composite_exception);
+			context->composite_exception = NULL;
 		}
-
-		context->composite_exception = NULL;
 	}
+
+	zend_object * composite_exception = context->composite_exception;
+	context->composite_exception = NULL;
 
 	if (context->dtor != NULL) {
 		context->dtor(context);
@@ -409,6 +408,18 @@ static void finally_handlers_iterator_dtor(zend_async_iterator_t *zend_iterator)
 	// Free the context
 	efree(context);
 	iterator->extended_data = NULL;
+
+	if (ZEND_ASYNC_EVENT_REF(&scope->scope.event) > 1) {
+		ZEND_ASYNC_EVENT_DEL_REF(&scope->scope.event);
+
+		if (ZEND_ASYNC_EVENT_REF(&scope->scope.event) == 1) {
+			scope->scope.try_to_dispose(&scope->scope);
+		}
+	}
+
+	if (composite_exception != NULL) {
+		async_rethrow_exception(composite_exception);
+	}
 
 	//
 	// If everything is correct,
@@ -453,6 +464,7 @@ bool async_call_finally_handlers(HashTable *finally_handlers, finally_handlers_c
 	iterator->extended_data = context;
 	iterator->extended_dtor = finally_handlers_iterator_dtor;
 	async_iterator_run_in_coroutine(iterator, priority);
+	ZEND_ASYNC_EVENT_ADD_REF(&child_scope->event);
 
 	if (UNEXPECTED(EG(exception))) {
 		return false;

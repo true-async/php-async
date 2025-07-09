@@ -35,14 +35,6 @@ $child_coroutine = $child_scope->spawn(function() {
 
     $coroutine = \Async\currentCoroutine();
     some_function();
-
-    $coroutine->onFinally(function() {
-        echo "child finally handler executed\n";
-    });
-
-    suspend();
-    echo "child should not complete\n";
-    return "child_result";
 });
 
 echo "coroutines with finally handlers spawned\n";

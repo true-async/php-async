@@ -990,9 +990,15 @@ static bool scope_try_to_dispose(zend_async_scope_t *scope)
 {
 	async_scope_t *async_scope = (async_scope_t *) scope;
 
+	if (ZEND_ASYNC_SCOPE_IS_DISPOSED(scope)) {
+		return true;
+	}
+
 	if (false == SCOPE_CAN_BE_DISPOSED(async_scope)) {
 		return false;
 	}
+
+	ZEND_ASYNC_SCOPE_SET_DISPOSED(scope);
 
 	// Dispose all child scopes
 	for (uint32_t i = 0; i < async_scope->scope.scopes.length; ++i) {
@@ -1111,6 +1117,7 @@ static void scope_dispose(zend_async_event_t *scope_event)
 	}
 
 	if (scope->scope.scope_object != NULL) {
+		fprintf(stderr, "unlink %p\n", scope->scope.scope_object);
 		((async_scope_object_t *) scope->scope.scope_object)->scope = NULL;
 		scope->scope.scope_object = NULL;
 	}
@@ -1154,6 +1161,7 @@ zend_async_scope_t * async_new_scope(zend_async_scope_t * parent_scope, const bo
 
 	if (with_zend_object) {
 		scope_object = ZEND_OBJECT_ALLOC_EX(sizeof(async_scope_object_t), async_ce_scope);
+		fprintf(stderr, "regular new scope_object %p\n", scope_object);
 
 		zend_object_std_init(&scope_object->std, async_ce_scope);
 		object_properties_init(&scope_object->std, async_ce_scope);
@@ -1234,6 +1242,8 @@ static void scope_destroy(zend_object *object)
 	async_scope_t *scope = scope_object->scope;
 	scope_object->scope = NULL;
 	scope->scope.scope_object = NULL;
+
+	fprintf(stderr, "scope_destroy %p\n", object);
 
 	// At this point, the user-defined Scope object is about to be destroyed.
 	// This means we are obligated to cancel the Scope and all its child Scopes along with their coroutines.
@@ -1436,6 +1446,7 @@ static zend_always_inline bool try_to_handle_exception(
 		// The PHP Scope object might already be destroyed by the time the internal Scope still exists.
 		// To normalize this situation, we’ll create a fake Scope object that will serve as a bridge.
 		scope_object = ZEND_OBJECT_ALLOC_EX(sizeof(async_scope_object_t), async_ce_scope);
+		fprintf(stderr, "new scope_object %p\n", scope_object);
 		zend_object_std_init(&scope_object->std, async_ce_scope);
 		object_properties_init(&scope_object->std, async_ce_scope);
 
