@@ -60,6 +60,7 @@ typedef struct _async_scope_object_s {
 		struct {
 			char _padding[sizeof(zend_object) - sizeof(zval)];
 			async_scope_t *scope;
+			bool is_cancelled; /* Indicates if the scope is cancelled */
 		};
 	};
 } async_scope_object_t;

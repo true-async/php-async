@@ -719,6 +719,8 @@ void async_scheduler_main_coroutine_suspend(void)
 	if (UNEXPECTED(EG(exception) != NULL)) { \
 		if(ZEND_ASYNC_GRACEFUL_SHUTDOWN) { \
 			finally_shutdown(); \
+			switch_to_scheduler(transfer); \
+			zend_exception_restore(); \
 			return; \
 		} \
 		start_graceful_shutdown(); \

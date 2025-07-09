@@ -1,5 +1,5 @@
 /* This is a generated file, edit the .stub.php file instead.
- * Stub hash: 6106b3351f8094535fee7310e1d096ed06fb813d */
+ * Stub hash: 655728a28912cc420f1fe0ae483291cff8153fdc */
 
 ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_class_Async_ScopeProvider_provideScope, 0, 0, Async\\Scope, 1)
 ZEND_END_ARG_INFO()
@@ -49,6 +49,8 @@ ZEND_END_ARG_INFO()
 
 #define arginfo_class_Async_Scope_isClosed arginfo_class_Async_Scope_isFinished
 
+#define arginfo_class_Async_Scope_isCancelled arginfo_class_Async_Scope_isFinished
+
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_Scope_setExceptionHandler, 0, 1, IS_VOID, 0)
 	ZEND_ARG_TYPE_INFO(0, exceptionHandler, IS_CALLABLE, 0)
 ZEND_END_ARG_INFO()
@@ -81,6 +83,7 @@ ZEND_METHOD(Async_Scope, awaitCompletion);
 ZEND_METHOD(Async_Scope, awaitAfterCancellation);
 ZEND_METHOD(Async_Scope, isFinished);
 ZEND_METHOD(Async_Scope, isClosed);
+ZEND_METHOD(Async_Scope, isCancelled);
 ZEND_METHOD(Async_Scope, setExceptionHandler);
 ZEND_METHOD(Async_Scope, setChildScopeExceptionHandler);
 ZEND_METHOD(Async_Scope, onFinally);
@@ -111,6 +114,7 @@ static const zend_function_entry class_Async_Scope_methods[] = {
 	ZEND_ME(Async_Scope, awaitAfterCancellation, arginfo_class_Async_Scope_awaitAfterCancellation, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_Scope, isFinished, arginfo_class_Async_Scope_isFinished, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_Scope, isClosed, arginfo_class_Async_Scope_isClosed, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_Scope, isCancelled, arginfo_class_Async_Scope_isCancelled, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_Scope, setExceptionHandler, arginfo_class_Async_Scope_setExceptionHandler, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_Scope, setChildScopeExceptionHandler, arginfo_class_Async_Scope_setChildScopeExceptionHandler, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_Scope, onFinally, arginfo_class_Async_Scope_onFinally, ZEND_ACC_PUBLIC)

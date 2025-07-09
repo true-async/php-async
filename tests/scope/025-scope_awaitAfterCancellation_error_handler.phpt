@@ -6,6 +6,7 @@ Scope: awaitAfterCancellation() - with error handler
 use function Async\spawn;
 use function Async\suspend;
 use function Async\timeout;
+use function Async\await;
 use Async\Scope;
 
 echo "start\n";
@@ -15,8 +16,14 @@ $scope = Scope::inherit();
 
 $error_coroutine = $scope->spawn(function() {
     echo "error coroutine started\n";
-    suspend();
-    throw new \RuntimeException("Coroutine error");
+
+    try {
+        suspend(); // Suspend to simulate work
+    } catch (\CancellationException $e) {
+        echo "coroutine cancelled\n";
+        suspend();
+        throw new \RuntimeException("Coroutine error after cancellation");
+    }
 });
 
 $normal_coroutine = $scope->spawn(function() {
@@ -29,34 +36,28 @@ $normal_coroutine = $scope->spawn(function() {
 
 echo "spawned coroutines\n";
 
-// Cancel the scope
-$scope->cancel();
-echo "scope cancelled\n";
-
 // Await after cancellation with error handler
 $external = spawn(function() use ($scope) {
     echo "external waiting with error handler\n";
     
-    $errors_handled = [];
-    
+    // Cancel the scope
+    $scope->cancel();
+    echo "scope cancel\n";
+    suspend(); // Let cancellation propagate
+
+    echo "awaitAfterCancellation with handler started\n";
+
     $scope->awaitAfterCancellation(
-        function($errors) use (&$errors_handled) {
-            echo "error handler called\n";
-            echo "errors count: " . count($errors) . "\n";
-            foreach ($errors as $error) {
-                echo "error: " . $error->getMessage() . "\n";
-                $errors_handled[] = $error->getMessage();
-            }
+        function($error) {
+            echo "error handler called: {$error->getMessage()}\n";
         },
-        timeout(1000)
+        timeout(10)
     );
     
     echo "awaitAfterCancellation with handler completed\n";
-    return $errors_handled;
 });
 
-$handled_errors = $external->getResult();
-echo "handled errors count: " . count($handled_errors) . "\n";
+await($external);
 
 echo "scope finished: " . ($scope->isFinished() ? "true" : "false") . "\n";
 
@@ -68,12 +69,11 @@ start
 spawned coroutines
 error coroutine started
 normal coroutine started
-scope cancelled
 external waiting with error handler
-error handler called
-errors count: %d
-error: %s
+scope cancel
+coroutine cancelled
+awaitAfterCancellation with handler started
+error handler called: Coroutine error after cancellation
 awaitAfterCancellation with handler completed
-handled errors count: %d
 scope finished: true
 end

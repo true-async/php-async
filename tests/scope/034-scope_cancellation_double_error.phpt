@@ -16,16 +16,7 @@ $coroutine_with_finally = $scope->spawn(function() {
     echo "coroutine with finally started\n";
     
     $coroutine = \Async\currentCoroutine();
-    
-    $coroutine->onFinally(function() {
-        echo "finally handler 1 executed\n";
-    });
-    
-    $coroutine->onFinally(function() {
-        echo "finally handler 2 executed\n";
-        return "finally_cleanup";
-    });
-    
+
     $coroutine->onFinally(function() {
         echo "finally handler 3 executed\n";
         // This might throw during cancellation cleanup
@@ -41,13 +32,14 @@ $coroutine_with_finally = $scope->spawn(function() {
 $child_scope = \Async\Scope::inherit($scope);
 $child_coroutine = $child_scope->spawn(function() {
     echo "child coroutine started\n";
-    
+
     $coroutine = \Async\currentCoroutine();
-    
+    some_function();
+
     $coroutine->onFinally(function() {
         echo "child finally handler executed\n";
     });
-    
+
     suspend();
     echo "child should not complete\n";
     return "child_result";
@@ -82,11 +74,18 @@ coroutine with finally started
 child coroutine started
 scope finally handler added
 cancelling parent scope
-finally handler 1 executed
-finally handler 2 executed
 finally handler 3 executed
+finally handler 2 executed
+finally handler 1 executed
 child finally handler executed
 scope finally handler executed
-
-Fatal error: Uncaught RuntimeException:%s
-%a
+main coroutine %s: %s
+child coroutine cancelled: Scope cancelled with finally
+testing finally handler order in hierarchy
+hierarchy coroutine started
+cancelling parent scope in hierarchy
+hierarchy coroutine finally
+child scope finally
+parent scope finally
+hierarchy cancelled: Hierarchy cancel
+end

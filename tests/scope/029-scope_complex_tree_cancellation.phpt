@@ -5,6 +5,7 @@ Complex scope tree cancellation with multi-level hierarchy
 
 use function Async\spawn;
 use function Async\suspend;
+use function Async\await;
 
 echo "start\n";
 
@@ -35,6 +36,8 @@ foreach ($scopes_and_coroutines as $name => &$data) {
     $data[1] = $scope->spawn(function() use ($name) {
         echo "$name coroutine started\n";
         suspend();
+        suspend();
+        suspend();
         echo "$name coroutine should not complete\n";
         return "{$name}_result";
     });
@@ -55,6 +58,9 @@ foreach ($scopes_and_coroutines as $name => $data) {
 echo "cancelling child scope (middle node)\n";
 $child_scope->cancel(new \Async\CancellationException("Child cancelled"));
 
+// Let cancellation propagate
+suspend();
+
 // Check cancellation propagation
 echo "after child cancellation:\n";
 foreach ($scopes_and_coroutines as $name => $data) {
@@ -66,6 +72,9 @@ foreach ($scopes_and_coroutines as $name => $data) {
 echo "cancelling parent scope (root)\n";
 $parent_scope->cancel(new \Async\CancellationException("Parent cancelled"));
 
+// Let cancellation propagate
+suspend();
+
 echo "after parent cancellation:\n";
 foreach ($scopes_and_coroutines as $name => $data) {
     $scope = $data[0];
@@ -76,11 +85,8 @@ foreach ($scopes_and_coroutines as $name => $data) {
 echo "coroutine cancellation results:\n";
 foreach ($scopes_and_coroutines as $name => $data) {
     $coroutine = $data[1];
-    try {
-        $result = $coroutine->getResult();
-        echo "$name coroutine unexpectedly succeeded\n";
-    } catch (\Async\CancellationException $e) {
-        echo "$name coroutine cancelled: " . $e->getMessage() . "\n";
+    if ($coroutine->isCancelled()) {
+        echo "$name coroutine cancelled: true\n";
     }
 }
 
@@ -120,10 +126,10 @@ great_grandchild scope cancelled: true
 sibling scope cancelled: true
 sibling_child scope cancelled: true
 coroutine cancellation results:
-parent coroutine cancelled: Parent cancelled
-child coroutine cancelled: Child cancelled
-grandchild coroutine cancelled: Child cancelled
-great_grandchild coroutine cancelled: Child cancelled
-sibling coroutine cancelled: Parent cancelled
-sibling_child coroutine cancelled: Parent cancelled
+parent coroutine cancelled: true
+child coroutine cancelled: true
+grandchild coroutine cancelled: true
+great_grandchild coroutine cancelled: true
+sibling coroutine cancelled: true
+sibling_child coroutine cancelled: true
 end

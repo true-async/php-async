@@ -5,6 +5,7 @@ Scope: exception handlers - actual execution and propagation
 
 use function Async\spawn;
 use function Async\suspend;
+use function Async\await;
 use Async\Scope;
 
 echo "start\n";
@@ -50,7 +51,7 @@ suspend();
 suspend();
 
 echo "waiting for completion\n";
-$normal_result = $normal_coroutine->getResult();
+$normal_result = await($normal_coroutine);
 echo "normal result: " . $normal_result . "\n";
 
 echo "exceptions handled count: " . count($exceptions_handled) . "\n";

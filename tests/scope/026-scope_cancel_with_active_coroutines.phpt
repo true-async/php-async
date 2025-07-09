@@ -46,6 +46,9 @@ suspend();
 echo "cancelling scope\n";
 $scope->cancel(new \Async\CancellationException("Custom cancellation message"));
 
+// Let cancellation propagate
+suspend();
+
 echo "verifying cancellation\n";
 echo "scope finished: " . ($scope->isFinished() ? "true" : "false") . "\n";
 echo "scope closed: " . ($scope->isClosed() ? "true" : "false") . "\n";
@@ -60,7 +63,7 @@ try {
         return "should_not_work";
     });
     echo "ERROR: Should not be able to spawn in closed scope\n";
-} catch (Error $e) {
+} catch (Async\AsyncException $e) {
     echo "caught expected error: " . $e->getMessage() . "\n";
 }
 

@@ -6,6 +6,7 @@ Scope: awaitAfterCancellation() - basic usage
 use function Async\spawn;
 use function Async\suspend;
 use function Async\timeout;
+use function Async\await;
 use Async\Scope;
 
 echo "start\n";
@@ -31,6 +32,8 @@ $coroutine2 = $scope->spawn(function() {
 
 echo "spawned coroutines\n";
 
+suspend(); // Let coroutines start
+
 // Cancel the scope
 $scope->cancel();
 echo "scope cancelled\n";
@@ -42,7 +45,7 @@ $external = spawn(function() use ($scope) {
     echo "awaitAfterCancellation completed\n";
 });
 
-$external->getResult();
+await($external);
 
 echo "scope finished: " . ($scope->isFinished() ? "true" : "false") . "\n";
 echo "scope closed: " . ($scope->isClosed() ? "true" : "false") . "\n";

@@ -6,6 +6,7 @@ Scope: awaitCompletion() - timeout handling
 use function Async\spawn;
 use function Async\suspend;
 use function Async\timeout;
+use function Async\await;
 use Async\Scope;
 
 echo "start\n";
@@ -35,7 +36,7 @@ $external = spawn(function() use ($scope) {
     }
 });
 
-$external->getResult();
+await($external);
 
 // Cancel the long running coroutine to clean up
 $long_running->cancel();
@@ -48,8 +49,9 @@ echo "end\n";
 --EXPECT--
 start
 spawned long running coroutine
-external waiting with timeout
 long running coroutine started
+external waiting with timeout
+long running coroutine finished
 caught timeout as expected
 scope finished: true
 end

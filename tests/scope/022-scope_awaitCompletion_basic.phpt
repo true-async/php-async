@@ -6,6 +6,7 @@ Scope: awaitCompletion() - basic usage
 use function Async\spawn;
 use function Async\timeout;
 use Async\Scope;
+use function Async\await;
 
 echo "start\n";
 
@@ -32,7 +33,7 @@ $external = spawn(function() use ($scope) {
 });
 
 echo "awaiting external\n";
-$external->getResult();
+await($external);
 
 echo "verifying results\n";
 echo "coroutine1 result: " . $coroutine1->getResult() . "\n";
@@ -45,10 +46,10 @@ echo "end\n";
 --EXPECT--
 start
 spawned coroutines
-external waiting for scope completion
+awaiting external
 coroutine1 running
 coroutine2 running
-awaiting external
+external waiting for scope completion
 scope completed
 verifying results
 coroutine1 result: result1
