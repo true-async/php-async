@@ -5,13 +5,14 @@ Coroutine with deep recursion and stack limits
 
 use function Async\spawn;
 use function Async\suspend;
+use function Async\await;
 
 echo "start\n";
 
 $deep_recursion_coroutine = spawn(function() {
     echo "deep recursion coroutine started\n";
     
-    function deepRecursionTest($depth, $maxDepth = 100) {
+    function deepRecursionTest($depth, $maxDepth = 1000) {
         if ($depth >= $maxDepth) {
             echo "reached max depth: $depth\n";
             return $depth;
@@ -28,7 +29,7 @@ $deep_recursion_coroutine = spawn(function() {
     return "recursion_result_$result";
 });
 
-$result = $deep_recursion_coroutine->getResult();
+$result = await($deep_recursion_coroutine);
 echo "deep recursion result: $result\n";
 
 echo "end\n";
@@ -37,6 +38,6 @@ echo "end\n";
 --EXPECTF--
 start
 deep recursion coroutine started
-reached max depth: 100
-deep recursion result: recursion_result_100
+reached max depth: 1000
+deep recursion result: recursion_result_1000
 end

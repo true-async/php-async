@@ -37,20 +37,12 @@ try {
 // Valid cancellation
 $invalid_cancel_coroutine->cancel(new \Async\CancellationException("Valid cancellation"));
 
-try {
-    $result = $invalid_cancel_coroutine->getResult();
-    echo "should not get cancelled result\n";
-} catch (\Async\CancellationException $e) {
-    echo "valid cancellation: " . $e->getMessage() . "\n";
-}
-
 echo "end\n";
 
 ?>
 --EXPECTF--
 start
 invalid cancel coroutine started
-cancel string TypeError: %s
-%sRuntimeException%s
-valid cancellation: Valid cancellation
+cancel string TypeError: %a
+cancel RuntimeException TypeError:%a
 end

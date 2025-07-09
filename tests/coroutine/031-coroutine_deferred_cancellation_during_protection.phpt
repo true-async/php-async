@@ -6,6 +6,7 @@ Cancellation of coroutine during protected operation with exception handling
 use function Async\spawn;
 use function Async\suspend;
 use function Async\protect;
+use function Async\await;
 
 echo "start\n";
 
@@ -33,12 +34,8 @@ suspend(); // Enter protection
 // Cancel while protected
 $already_protected->cancel(new \Async\CancellationException("Cancel during protection"));
 
-suspend(); // Still in protection
-suspend(); // Protection completes, cancellation should execute
-
 try {
-    $result = $already_protected->getResult();
-    echo "should not get result\n";
+    await($already_protected);
 } catch (\Async\CancellationException $e) {
     echo "protection cancellation: " . $e->getMessage() . "\n";
 }

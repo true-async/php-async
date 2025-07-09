@@ -6,10 +6,25 @@ CompositeException with multiple finally handlers
 use function Async\spawn;
 use function Async\suspend;
 use function Async\currentCoroutine;
+use function Async\await;
 
 echo "start\n";
 
-$composite_coroutine = spawn(function() {
+$scope = new \Async\Scope();
+$scope->setExceptionHandler(function($scope, $coroutine, $exception) {
+
+    if(!$exception instanceof \Async\CompositeException) {
+        echo "caught exception: {$exception->getMessage()}\n";
+        return;
+    }
+
+    foreach ($exception->getExceptions() as $i => $error) {
+        $type = get_class($error);
+        echo "error {$i}: {$type}: {$error->getMessage()}\n";
+    }
+});
+
+$composite_coroutine = $scope->spawn(function() {
     echo "composite coroutine started\n";
     
     $coroutine = \Async\currentCoroutine();
@@ -31,22 +46,13 @@ $composite_coroutine = spawn(function() {
     });
     
     suspend();
-    throw new \RuntimeException("Main coroutine error");
+    throw new \RuntimeException("coroutine error");
 });
 
-suspend(); // Let it start and suspend
-suspend(); // Let it throw
-
 try {
-    $result = $composite_coroutine->getResult();
-    echo "should not get result\n";
-} catch (\Async\CompositeException $e) {
-    echo "caught CompositeException with " . count($e->getErrors()) . " errors\n";
-    foreach ($e->getErrors() as $index => $error) {
-        echo "error $index: " . get_class($error) . ": " . $error->getMessage() . "\n";
-    }
+    await($composite_coroutine);
 } catch (Throwable $e) {
-    echo "unexpected exception: " . get_class($e) . ": " . $e->getMessage() . "\n";
+    echo "caught: {$e->getMessage()}\n";
 }
 
 echo "end\n";
@@ -55,12 +61,11 @@ echo "end\n";
 --EXPECTF--
 start
 composite coroutine started
-finally 3 executing
-finally 2 executing
 finally 1 executing
-caught CompositeException with %d errors
-error %d: %s: %s
-error %d: %s: %s
-error %d: %s: %s
-error %d: %s: %s
+finally 2 executing
+finally 3 executing
+error 0: RuntimeException: Finally 1 error
+error 1: InvalidArgumentException: Finally 2 error
+error 2: LogicException: Finally 3 error
+caught: coroutine error
 end

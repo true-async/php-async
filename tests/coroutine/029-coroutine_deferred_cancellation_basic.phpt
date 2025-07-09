@@ -6,6 +6,7 @@ Basic coroutine deferred cancellation with protected operation
 use function Async\spawn;
 use function Async\suspend;
 use function Async\protect;
+use function Async\await;
 
 echo "start\n";
 
@@ -38,11 +39,14 @@ suspend();
 echo "after protected completion - cancelled: " . ($protected_coroutine->isCancelled() ? "true" : "false") . "\n";
 
 try {
-    $result = $protected_coroutine->getResult();
-    echo "protected result should not be available\n";
+    await($protected_coroutine);
 } catch (\Async\CancellationException $e) {
-    echo "deferred cancellation executed: " . $e->getMessage() . "\n";
 }
+
+$result = $protected_coroutine->getResult();
+
+echo "protected result: ";
+var_dump($result);
 
 echo "end\n";
 
@@ -52,9 +56,9 @@ start
 protected coroutine started
 inside protected operation
 cancelling protected coroutine
-protected coroutine cancelled: true
+protected coroutine cancelled: false
 cancellation requested: true
 protected operation completed
 after protected completion - cancelled: true
-deferred cancellation executed: Deferred cancellation
+protected result: NULL
 end

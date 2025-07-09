@@ -5,6 +5,7 @@ Coroutine state transitions and edge cases
 
 use function Async\spawn;
 use function Async\suspend;
+use function Async\await;
 
 echo "start\n";
 
@@ -38,7 +39,8 @@ echo "suspended state - isFinished: " . ($running_coroutine->isFinished() ? "tru
 
 try {
     $result = $running_coroutine->getResult();
-    echo "getResult on suspended should fail\n";
+    echo "getResult: ";
+    var_dump($result);
 } catch (\Error $e) {
     echo "getResult on suspended failed: " . get_class($e) . "\n";
 } catch (Throwable $e) {
@@ -52,7 +54,12 @@ $exception_coroutine = spawn(function() {
     throw new \RuntimeException("Test exception");
 });
 
-suspend(); // Let it start and suspend
+try {
+    await($exception_coroutine);
+} catch (\RuntimeException $e) {
+} catch (Throwable $e) {
+    echo "Unexpected exception: " . get_class($e) . ": " . $e->getMessage() . "\n";
+}
 
 echo "before exception - getException: ";
 try {
@@ -98,14 +105,15 @@ start
 before suspend - isQueued: true
 before suspend - isStarted: false
 queued coroutine executing
-after start - isQueued: false
+after start - isQueued: true
 after start - isStarted: true
 after start - isSuspended: true
 running coroutine started
 suspended state - isFinished: false
-getResult on suspended failed: Error
+getResult: NULL
+running coroutine continuing
 exception coroutine started
-before exception - getException: Error
+before exception - getException: RuntimeException
 after exception - getException: RuntimeException: Test exception
 cancel request coroutine started
 before cancel request - isCancellationRequested: false

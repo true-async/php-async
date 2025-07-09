@@ -96,9 +96,8 @@ METHOD(getException)
 
 	async_coroutine_t *coroutine = THIS_COROUTINE;
 
-	if (!ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine)) {
-		async_throw_error("Cannot get exception of a running coroutine");
-		RETURN_THROWS();
+	if (false == ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine)) {
+		RETURN_NULL();
 	}
 
 	if (coroutine->coroutine.exception == NULL) {
@@ -220,7 +219,8 @@ METHOD(isCancelled)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	RETURN_BOOL(ZEND_COROUTINE_IS_CANCELLED(&THIS_COROUTINE->coroutine));
+	RETURN_BOOL(ZEND_COROUTINE_IS_CANCELLED(&THIS_COROUTINE->coroutine)
+		&& ZEND_COROUTINE_IS_FINISHED(&THIS_COROUTINE->coroutine));
 }
 
 METHOD(isCancellationRequested)
@@ -229,9 +229,9 @@ METHOD(isCancellationRequested)
 
 	async_coroutine_t *coroutine = THIS_COROUTINE;
 
-	// TODO: Implement cancellation request tracking in waker
-	// For now, return same as isCancelled
-	RETURN_BOOL(ZEND_COROUTINE_IS_CANCELLED(&coroutine->coroutine));
+	RETURN_BOOL((ZEND_COROUTINE_IS_CANCELLED(&coroutine->coroutine)
+		&& !ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine))
+		|| coroutine->deferred_cancellation != NULL);
 }
 
 METHOD(isFinished)

@@ -6,6 +6,7 @@ Multiple deferred cancellations with sequential protect blocks
 use function Async\spawn;
 use function Async\suspend;
 use function Async\protect;
+use function Async\await;
 
 echo "start\n";
 
@@ -35,13 +36,8 @@ suspend(); // Enter first protection
 $multi_protected->cancel(new \Async\CancellationException("Multi deferred"));
 echo "multi cancelled during first protection\n";
 
-suspend(); // Complete first protection
-suspend(); // Enter second protection  
-suspend(); // Complete second protection
-
 try {
-    $result = $multi_protected->getResult();
-    echo "multi result should not be available\n";
+    await($multi_protected);
 } catch (\Async\CancellationException $e) {
     echo "multi deferred cancellation: " . $e->getMessage() . "\n";
 }
@@ -55,9 +51,5 @@ multi protected started
 first protected operation
 multi cancelled during first protection
 first protected completed
-between protections
-second protected operation
-second protected completed
-all protections completed
 multi deferred cancellation: Multi deferred
 end

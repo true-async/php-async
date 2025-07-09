@@ -9,13 +9,12 @@ $coroutine = spawn(function() {
     return "test";
 });
 
-try {
-    $coroutine->getException();
-    echo "Should not reach here\n";
-} catch (Async\AsyncException $e) {
-    echo "Caught: " . $e->getMessage() . "\n";
+if($coroutine->getException() === null) {
+    echo "No exception\n";
+} else {
+    echo "Exception: " . get_class($coroutine->getException()) . "\n";
 }
 
 ?>
 --EXPECT--
-Caught: Cannot get exception of a running coroutine
+No exception
