@@ -1,11 +1,12 @@
 --TEST--
-GC 013: Circular references between coroutines and finally handlers
+Coroutine: Circular references between coroutines and finally handlers
 --FILE--
 <?php
 
 use function Async\spawn;
 use function Async\suspend;
 use function Async\currentCoroutine;
+use function Async\await;
 
 echo "start\n";
 
@@ -26,7 +27,7 @@ $circular_finally_coroutine = spawn(function() {
     return "circular_result";
 });
 
-suspend();
+await($circular_finally_coroutine);
 $result = $circular_finally_coroutine->getResult();
 echo "circular result: $result\n";
 
