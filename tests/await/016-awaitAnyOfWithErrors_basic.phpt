@@ -5,25 +5,22 @@ awaitAnyOfWithErrors() - basic usage with mixed success and error
 
 use function Async\spawn;
 use function Async\awaitAnyOfWithErrors;
-use function Async\delay;
+use function Async\suspend;
 
 echo "start\n";
 
 $coroutines = [
     spawn(function() {
-        delay(80);
         return "first";
     }),
     spawn(function() {
-        delay(20);
+        suspend();
         throw new RuntimeException("test exception");
     }),
     spawn(function() {
-        delay(20);
         return "third";
     }),
     spawn(function() {
-        delay(35);
         return "fourth";
     }),
 ];

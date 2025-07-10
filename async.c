@@ -125,7 +125,7 @@ PHP_FUNCTION(Async_spawnWith)
 
 	coroutine->coroutine.fcall = fcall;
 
-	RETURN_OBJ(&coroutine->std);
+	RETURN_OBJ_COPY(&coroutine->std);
 }
 
 PHP_FUNCTION(Async_suspend)
@@ -157,16 +157,21 @@ PHP_FUNCTION(Async_protect)
 			ZEND_COROUTINE_SET_PROTECTED(coroutine);
 		}
 
-		zval result;
-		ZVAL_UNDEF(&result);
+		ZVAL_UNDEF(return_value);
 
 		zval closure_zval;
 		ZVAL_OBJ(&closure_zval, closure);
 
-		if (UNEXPECTED(call_user_function(NULL, NULL, &closure_zval, &result, 0, NULL) == FAILURE)) {
+		if (UNEXPECTED(call_user_function(NULL, NULL, &closure_zval, return_value, 0, NULL) == FAILURE)) {
 			zend_throw_error(NULL, "Failed to call finally handler in finished coroutine");
-			zval_ptr_dtor(&result);
+			zval_ptr_dtor(return_value);
 		}
+
+		if (Z_TYPE_P(return_value) == IS_UNDEF) {
+			// If the closure did not return a value, we return NULL.
+			ZVAL_NULL(return_value);
+		}
+
 	} zend_catch {
 		do_bailout = true;
 	} zend_end_try();
@@ -177,6 +182,10 @@ PHP_FUNCTION(Async_protect)
 
 	if (UNEXPECTED(do_bailout)) {
 		zend_bailout();
+	}
+
+	if (UNEXPECTED(coroutine == NULL)) {
+		return;
 	}
 
 	async_coroutine_t *async_coroutine = (async_coroutine_t *) coroutine;
@@ -308,6 +317,7 @@ PHP_FUNCTION(Async_awaitAny)
 		results,
 		NULL,
 		false,
+		false,
 		false
 	);
 
@@ -357,6 +367,7 @@ PHP_FUNCTION(Async_awaitFirstSuccess)
 		results,
 		errors,
 		false,
+		false,
 		true
 	);
 
@@ -390,11 +401,13 @@ PHP_FUNCTION(Async_awaitAll)
 {
 	zval * futures;
 	zend_object * cancellation = NULL;
+	bool preserve_key_order = true;
 
-	ZEND_PARSE_PARAMETERS_START(1, 2)
+	ZEND_PARSE_PARAMETERS_START(1, 3)
 		Z_PARAM_ZVAL(futures);
 		Z_PARAM_OPTIONAL
 		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
+		Z_PARAM_BOOL(preserve_key_order);
 	ZEND_PARSE_PARAMETERS_END();
 
 	SCHEDULER_LAUNCH;
@@ -409,8 +422,11 @@ PHP_FUNCTION(Async_awaitAll)
 		0,
 		results,
 		NULL,
-		false,
-		false
+		// For awaitAll, it’s always necessary to fill the result with NULL,
+		// because the order of keys matters.
+		true,
+		preserve_key_order,
+		true
 		);
 
 	if (EG(exception)) {
@@ -425,11 +441,15 @@ PHP_FUNCTION(Async_awaitAllWithErrors)
 {
 	zval * futures;
 	zend_object * cancellation = NULL;
+	bool preserve_key_order = true;
+	bool fill_null = false;
 
-	ZEND_PARSE_PARAMETERS_START(1, 2)
+	ZEND_PARSE_PARAMETERS_START(1, 4)
 		Z_PARAM_ZVAL(futures);
 		Z_PARAM_OPTIONAL
 		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
+		Z_PARAM_BOOL(preserve_key_order);
+		Z_PARAM_BOOL(fill_null);
 	ZEND_PARSE_PARAMETERS_END();
 
 	SCHEDULER_LAUNCH;
@@ -445,7 +465,8 @@ PHP_FUNCTION(Async_awaitAllWithErrors)
 		0,
 		results,
 		errors,
-		false,
+		fill_null,
+		preserve_key_order,
 		true
 		);
 
@@ -472,12 +493,14 @@ PHP_FUNCTION(Async_awaitAnyOf)
 	zval * futures;
 	zend_object * cancellation = NULL;
 	zend_long count = 0;
+	bool preserve_key_order = true;
 
-	ZEND_PARSE_PARAMETERS_START(2, 3)
+	ZEND_PARSE_PARAMETERS_START(2, 4)
 		Z_PARAM_LONG(count)
 		Z_PARAM_ITERABLE(futures);
 		Z_PARAM_OPTIONAL
 		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
+		Z_PARAM_BOOL(preserve_key_order);
 	ZEND_PARSE_PARAMETERS_END();
 
 	SCHEDULER_LAUNCH;
@@ -497,6 +520,7 @@ PHP_FUNCTION(Async_awaitAnyOf)
 		results,
 		NULL,
 		false,
+		preserve_key_order,
 		false
 		);
 
@@ -513,12 +537,16 @@ PHP_FUNCTION(Async_awaitAnyOfWithErrors)
 	zval * futures;
 	zend_object * cancellation = NULL;
 	zend_long count = 0;
+	bool preserve_key_order = true;
+	bool fill_null = false;
 
-	ZEND_PARSE_PARAMETERS_START(2, 3)
+	ZEND_PARSE_PARAMETERS_START(2, 5)
 		Z_PARAM_LONG(count)
 		Z_PARAM_ZVAL(futures);
 		Z_PARAM_OPTIONAL
 		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
+		Z_PARAM_BOOL(preserve_key_order);
+		Z_PARAM_BOOL(fill_null);
 	ZEND_PARSE_PARAMETERS_END();
 
 	HashTable * results = zend_new_array(8);
@@ -534,7 +562,8 @@ PHP_FUNCTION(Async_awaitAnyOfWithErrors)
 		0,
 		results,
 		errors,
-		false,
+		fill_null,
+		preserve_key_order,
 		true
 		);
 
@@ -629,7 +658,7 @@ PHP_FUNCTION(Async_currentContext)
 		async_context_t *context = async_context_new();
 		context->scope = scope;
 		scope->context = &context->base;
-		RETURN_OBJ(&context->std);
+		RETURN_OBJ_COPY(&context->std);
 	}
 
 	// Return the existing context from scope

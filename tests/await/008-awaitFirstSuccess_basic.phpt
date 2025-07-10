@@ -5,21 +5,20 @@ awaitFirstSuccess() - basic usage with mixed success and error
 
 use function Async\spawn;
 use function Async\awaitFirstSuccess;
-use function Async\delay;
+use function Async\suspend;
 
 echo "start\n";
 
 $coroutines = [
     spawn(function() {
-        delay(10);
+        suspend();
         throw new RuntimeException("first error");
     }),
     spawn(function() {
-        delay(20);
         return "success";
     }),
     spawn(function() {
-        delay(30);
+        suspend();
         return "another success";
     }),
 ];

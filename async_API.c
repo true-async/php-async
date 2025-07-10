@@ -39,6 +39,14 @@ zend_async_scope_t * async_provide_scope(zend_object *scope_provider)
 
 	zval_ptr_dtor(&retval);
 
+	if (UNEXPECTED(EG(exception))) {
+		return NULL;
+	}
+
+	if (Z_TYPE(retval) == IS_NULL) {
+		return NULL;
+	}
+
 	zend_async_throw(
 		ZEND_ASYNC_EXCEPTION_DEFAULT,
 		"Scope provider must return an instance of Async\\Scope"
@@ -111,8 +119,11 @@ zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object * scope_provider,
 		return NULL;
 	}
 
+	const bool is_spawn_strategy = scope_provider != NULL
+								&& instanceof_function(scope_provider->ce, async_ce_spawn_strategy);
+
 	// call SpawnStrategy::beforeCoroutineEnqueue
-	if (scope_provider != NULL) {
+	if (is_spawn_strategy) {
 		zval coroutine_zval, scope_zval;
 		ZVAL_OBJ(&coroutine_zval, &coroutine->std);
 		ZVAL_OBJ(&scope_zval, scope->scope_object);
@@ -164,7 +175,7 @@ zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object * scope_provider,
 	}
 
 	// call SpawnStrategy::afterCoroutineEnqueue
-	if (scope_provider != NULL) {
+	if (is_spawn_strategy) {
 		zval coroutine_zval, scope_zval;
 		ZVAL_OBJ(&coroutine_zval, &coroutine->std);
 		ZVAL_OBJ(&scope_zval, scope->scope_object);
@@ -263,9 +274,11 @@ static zend_class_entry* async_get_class_ce(zend_async_class type)
 ////////////////////////////////////////////////////////////////////
 
 #define AWAIT_ALL(await_context) ((await_context)->waiting_count == 0 || (await_context)->waiting_count == (await_context)->total)
-#define ITERATOR_IS_FINISHED(await_context) \
-	((await_context->ignore_errors ? await_context->success_count : await_context->resolved_count) >= await_context->waiting_count || \
-		(await_context->total != 0 && await_context->resolved_count >= await_context->total) \
+#define AWAIT_ITERATOR_IS_FINISHED(await_context) \
+	((await_context->waiting_count > 0 \
+		&& (await_context->ignore_errors ? await_context->success_count : await_context->resolved_count) \
+			>= await_context->waiting_count) || \
+	(await_context->total != 0 && await_context->resolved_count >= await_context->total) \
 	)
 
 static zend_always_inline zend_async_event_t * zval_to_event(const zval * current)
@@ -287,21 +300,43 @@ static zend_always_inline zend_async_event_t * zval_to_event(const zval * curren
 	}
 }
 
-void async_waiting_callback_dispose(zend_async_event_callback_t *callback, zend_async_event_t * event)
+/**
+ * The function is called to release resources for the callback structure.
+ *
+ * @param callback
+ * @param event
+ */
+static void async_waiting_callback_dispose(zend_async_event_callback_t *callback, zend_async_event_t * event)
 {
 	async_await_callback_t * await_callback = (async_await_callback_t *) callback;
 	async_await_context_t * await_context = await_callback->await_context;
 
 	await_callback->await_context = NULL;
 
+	zval_ptr_dtor(&await_callback->key);
+
 	if (await_context != NULL) {
 		await_context->dtor(await_context);
 	}
 
-	await_callback->prev_dispose(callback, event);
+	if (await_callback->prev_dispose != NULL) {
+		await_callback->prev_dispose(callback, event);
+	} else {
+		efree(callback);
+	}
 }
 
-void async_waiting_callback(
+/**
+ * This callback is used for awaiting futures.
+ * It is called when the future is resolved or rejected.
+ * It updates the await context and resumes the coroutine if necessary.
+ *
+ * @param event
+ * @param callback
+ * @param result
+ * @param exception
+ */
+static void async_waiting_callback(
 	zend_async_event_t *event,
 	zend_async_event_callback_t *callback,
 	void *result,
@@ -388,11 +423,11 @@ void async_waiting_callback(
 		}
 	}
 
-	if (UNEXPECTED(ITERATOR_IS_FINISHED(await_context))) {
+	if (UNEXPECTED(AWAIT_ITERATOR_IS_FINISHED(await_context) && await_callback->callback.coroutine != NULL)) {
 		ZEND_ASYNC_RESUME(await_callback->callback.coroutine);
 	}
 
-	callback->dispose(callback, NULL);
+	ZEND_ASYNC_EVENT_CALLBACK_RELEASE(callback);
 }
 
 /**
@@ -405,7 +440,7 @@ void async_waiting_callback(
  * @param result
  * @param exception
  */
-void async_waiting_cancellation_callback(
+static void async_waiting_cancellation_callback(
 	zend_async_event_t *event,
 	zend_async_event_callback_t *callback,
 	void *result,
@@ -451,7 +486,15 @@ void async_waiting_cancellation_callback(
 	callback->dispose(callback, NULL);
 }
 
-zend_result await_iterator_handler(async_iterator_t *iterator, zval *current, zval *key)
+/**
+ * A function that is called to process a single iteration element.
+ *
+ * @param iterator
+ * @param current
+ * @param key
+ * @return
+ */
+static zend_result await_iterator_handler(async_iterator_t *iterator, zval *current, zval *key)
 {
 	async_await_iterator_t * await_iterator = ((async_await_iterator_iterator_t *) iterator)->await_iterator;
 
@@ -465,13 +508,21 @@ zend_result await_iterator_handler(async_iterator_t *iterator, zval *current, zv
 		return FAILURE;
 	}
 
-	if (awaitable == NULL || ZEND_ASYNC_EVENT_IS_CLOSED(awaitable)) {
+	if (awaitable == NULL || zend_async_waker_is_event_exists(await_iterator->waiting_coroutine, awaitable)) {
 		return SUCCESS;
+	}
+
+	if (Z_TYPE_P(key) != IS_STRING && Z_TYPE_P(key) != IS_LONG
+		&& Z_TYPE_P(key) != IS_NULL && Z_TYPE_P(key) != IS_UNDEF) {
+		async_throw_error("Invalid key type: must be string, long or null");
+		return FAILURE;
 	}
 
 	async_await_callback_t * callback = ecalloc(1, sizeof(async_await_callback_t));
 	callback->callback.base.callback = async_waiting_callback;
-	callback->await_context = await_iterator->await_context;
+	async_await_context_t * await_context = await_iterator->await_context;
+	callback->await_context = await_context;
+	await_context->ref_count++;
 
 	ZVAL_COPY(&callback->key, key);
 
@@ -490,26 +541,122 @@ zend_result await_iterator_handler(async_iterator_t *iterator, zval *current, zv
 	}
 
 	// Add the empty element to the results array if all elements are awaited
-	if (await_iterator->await_context->results != NULL && AWAIT_ALL(await_iterator->await_context)) {
+	if (await_context->results != NULL && await_context->fill_missing_with_null) {
 		if (Z_TYPE(callback->key) == IS_STRING) {
-			zend_hash_add_empty_element(await_iterator->await_context->results, Z_STR_P(key));
+			zend_hash_add_empty_element(await_context->results, Z_STR_P(key));
 		} else if (Z_TYPE(callback->key) == IS_LONG) {
-			zend_hash_index_add_empty_element(await_iterator->await_context->results, Z_LVAL_P(key));
+			zend_hash_index_add_empty_element(await_context->results, Z_LVAL_P(key));
 		}
-	} else if (await_iterator->await_context->results != NULL && await_iterator->await_context->fill_missing_with_null) {
+	} else if (await_context->results != NULL && await_context->preserve_key_order) {
+		zval undef_val;
+		// The PRT NULL type is used to fill the array with empty elements that will later be removed.
+		ZVAL_PTR(&undef_val, NULL);
 		if (Z_TYPE(callback->key) == IS_STRING) {
-			zend_hash_add(await_iterator->await_context->results, Z_STR_P(key), &EG(uninitialized_zval));
+			zend_hash_add(await_context->results, Z_STR_P(key), &undef_val);
 		} else if (Z_TYPE(callback->key) == IS_LONG) {
-			zend_hash_index_add(await_iterator->await_context->results, Z_LVAL_P(key), &EG(uninitialized_zval));
+			zend_hash_index_add(await_context->results, Z_LVAL_P(key), &undef_val);
 		}
+	}
+
+	if (ZEND_ASYNC_EVENT_IS_CLOSED(awaitable)) {
+		//
+		// The event is already closed.
+		// But if it supports the replay method, we can retrieve the resulting value again.
+		//
+		if (false == awaitable->replay) {
+			async_waiting_callback_dispose(&callback->callback.base, NULL);
+			return SUCCESS;
+		}
+
+		callback->callback.base.dispose = async_waiting_callback_dispose;
+		awaitable->replay(awaitable, &callback->callback.base, NULL, NULL);
+
+		if (UNEXPECTED(EG(exception))) {
+			return FAILURE;
+		}
+
+		return SUCCESS;
 	}
 
 	zend_async_resume_when(await_iterator->waiting_coroutine, awaitable, false, NULL, &callback->callback);
 
+	if (UNEXPECTED(EG(exception))) {
+		async_waiting_callback_dispose(&callback->callback.base, NULL);
+		return FAILURE;
+	}
+
+	callback->prev_dispose = callback->callback.base.dispose;
+	callback->callback.base.dispose = async_waiting_callback_dispose;
+
+	await_context->futures_count++;
+
 	return SUCCESS;
 }
 
-void iterator_coroutine_first_entry(void)
+/**
+ * This function is called when the await_iterator is disposed.
+ * It cleans up the internal state and releases resources.
+ *
+ * @param iterator
+ * @param concurrent_iterator
+ */
+static void await_iterator_dispose(async_await_iterator_t * iterator, async_iterator_t *concurrent_iterator)
+{
+	// If the iterator was completed with an exception,
+	// pass that exception to the coroutine that is waiting.
+	if (concurrent_iterator != NULL && concurrent_iterator->exception != NULL) {
+		zend_object *exception = concurrent_iterator->exception;
+		concurrent_iterator->exception = NULL;
+		ZEND_ASYNC_RESUME_WITH_ERROR(iterator->waiting_coroutine, exception, true);
+	}
+
+	if (iterator->zend_iterator != NULL) {
+		zend_object_iterator *zend_iterator = iterator->zend_iterator;
+		iterator->zend_iterator = NULL;
+
+		// When the iterator has finished, it’s now possible to specify the exact number of elements since it’s known.
+		iterator->await_context->total = iterator->await_context->futures_count;
+
+		// Scenario: the iterator has already finished, and there’s nothing left to await.
+		// In that case, the coroutine needs to be terminated.
+		if ((AWAIT_ITERATOR_IS_FINISHED(iterator->await_context) || iterator->await_context->total == 0)
+			&& iterator->waiting_coroutine != NULL
+			&& false == ZEND_ASYNC_WAKER_IN_QUEUE(iterator->waiting_coroutine->waker)) {
+			ZEND_ASYNC_RESUME(iterator->waiting_coroutine);
+		}
+
+		if (zend_iterator->funcs->invalidate_current) {
+			zend_iterator->funcs->invalidate_current(zend_iterator);
+		}
+		zend_iterator_dtor(zend_iterator);
+	}
+
+	efree(iterator);
+}
+
+/**
+ * This function is called when the internal concurrent iterator is finished.
+ * It disposes of the await_iterator and cleans up the internal state.
+ *
+ * @param internal_iterator
+ */
+static void await_iterator_finish_callback(zend_async_iterator_t *internal_iterator)
+{
+	async_await_iterator_iterator_t * iterator = (async_await_iterator_iterator_t *) internal_iterator;
+
+	async_await_iterator_t * await_iterator = iterator->await_iterator;
+	iterator->await_iterator = NULL;
+
+	await_iterator_dispose(await_iterator, &iterator->iterator);
+}
+
+/**
+ * This function is called when the iterator coroutine is first entered.
+ * It initializes the await_iterator and starts the iteration process.
+ *
+ * @return void
+ */
+static void iterator_coroutine_first_entry(void)
 {
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
@@ -519,6 +666,7 @@ void iterator_coroutine_first_entry(void)
 	}
 
 	async_await_iterator_t * await_iterator = coroutine->extended_data;
+	coroutine->extended_data = NULL;
 
 	ZEND_ASSERT(await_iterator != NULL && "The async_await_iterator_t should not be NULL");
 	if (UNEXPECTED(await_iterator == NULL)) {
@@ -529,6 +677,7 @@ void iterator_coroutine_first_entry(void)
 	async_await_context_t * await_context = await_iterator->await_context;
 
 	if (UNEXPECTED(await_context == NULL)) {
+		await_iterator_dispose(await_iterator, NULL);
 		return;
 	}
 
@@ -539,11 +688,15 @@ void iterator_coroutine_first_entry(void)
 		await_iterator_handler,
 		ZEND_ASYNC_CURRENT_SCOPE,
 		await_context->concurrency,
-		0,
+		ZEND_COROUTINE_NORMAL,
 		sizeof(async_await_iterator_iterator_t)
 	);
 
+	iterator->await_iterator = await_iterator;
+	iterator->iterator.extended_dtor = await_iterator_finish_callback;
+
 	if (UNEXPECTED(iterator == NULL)) {
+		await_iterator_dispose(await_iterator, NULL);
 		return;
 	}
 
@@ -551,15 +704,28 @@ void iterator_coroutine_first_entry(void)
 	iterator->iterator.microtask.dtor(&iterator->iterator.microtask);
 }
 
-void iterator_coroutine_finish_callback(
+/**
+ * This callback is triggered when the main iteration coroutine finishes.
+ * It’s needed in case the coroutine gets cancelled.
+ * In that scenario, extended_data will contain the async_await_iterator_t structure.
+ *
+ * @param event
+ * @param callback
+ * @param result
+ * @param exception
+ */
+static void iterator_coroutine_finish_callback(
 	zend_async_event_t *event,
 	zend_async_event_callback_t *callback,
 	void * result,
 	zend_object *exception
 )
 {
-	async_await_iterator_t * iterator = (async_await_iterator_t *)
-			((zend_coroutine_event_callback_t*) callback)->coroutine->extended_data;
+	async_await_iterator_t * iterator = (async_await_iterator_t *) ((zend_coroutine_t*) event)->extended_data;
+
+	if (iterator == NULL) {
+		return;
+	}
 
 	if (exception != NULL) {
 		// Resume the waiting coroutine with the exception
@@ -568,25 +734,25 @@ void iterator_coroutine_finish_callback(
 			exception,
 			false
 		);
-	} else if (ITERATOR_IS_FINISHED(iterator->await_context)) {
+	} else if (AWAIT_ITERATOR_IS_FINISHED(iterator->await_context)) {
 		// If iteration is finished, resume the waiting coroutine
 		ZEND_ASYNC_RESUME(iterator->waiting_coroutine);
 	}
 }
 
-void async_await_iterator_coroutine_dispose(zend_coroutine_t *coroutine)
+static void async_await_iterator_coroutine_dispose(zend_coroutine_t *coroutine)
 {
 	if (coroutine == NULL || coroutine->extended_data == NULL) {
 		return;
 	}
 
-	async_await_iterator_t * iterator = (async_await_iterator_t *) coroutine->extended_data;
+	async_await_iterator_t * await_iterator = (async_await_iterator_t *) coroutine->extended_data;
 	coroutine->extended_data = NULL;
 
-	efree(iterator);
+	await_iterator_dispose(await_iterator, NULL);
 }
 
-void await_context_dtor(async_await_context_t *context)
+static void await_context_dtor(async_await_context_t *context)
 {
 	if (context == NULL) {
 		return;
@@ -600,7 +766,7 @@ void await_context_dtor(async_await_context_t *context)
 	efree(context);
 }
 
-void async_cancel_awaited_futures(async_await_context_t * await_context, HashTable *futures)
+static void async_cancel_awaited_futures(async_await_context_t * await_context, HashTable *futures)
 {
 	zend_coroutine_t *this_coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
@@ -630,7 +796,6 @@ void async_cancel_awaited_futures(async_await_context_t * await_context, HashTab
 		zend_async_event_t* awaitable = zval_to_event(current);
 
 		if (UNEXPECTED(EG(exception))) {
-			await_context->dtor(await_context);
 			return;
 		}
 
@@ -674,6 +839,23 @@ void async_cancel_awaited_futures(async_await_context_t * await_context, HashTab
 	ZEND_ASYNC_SUSPEND();
 }
 
+/**
+ * This function is used to await multiple futures concurrently.
+ * It takes an iterable of futures, a count of futures to wait for,
+ * and various options for handling results and errors.
+ *
+ * @param iterable The iterable containing futures (array or Traversable object).
+ * @param count The number of futures to wait for (0 means all).
+ * @param ignore_errors Whether to ignore errors in the futures.
+ * @param cancellation Optional cancellation event.
+ * @param timeout Timeout for awaiting futures.
+ * @param concurrency Maximum number of concurrent futures to await.
+ * @param results HashTable to store results.
+ * @param errors HashTable to store errors.
+ * @param fill_missing_with_null Whether to fill missing results with null.
+ * @param preserve_key_order Whether to preserve the order of keys in results.
+ * @param cancel_on_exit Whether to cancel awaiting on exit.
+ */
 void async_await_futures(
 	zval *iterable,
 	int count,
@@ -684,6 +866,7 @@ void async_await_futures(
 	HashTable *results,
 	HashTable *errors,
 	bool fill_missing_with_null,
+	bool preserve_key_order,
 	bool cancel_on_exit
 )
 {
@@ -721,25 +904,33 @@ void async_await_futures(
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
 	if (UNEXPECTED(coroutine == NULL)) {
+		if (zend_iterator != NULL) {
+			zend_iterator_dtor(zend_iterator);
+		}
 		async_throw_error("Cannot await futures outside of a coroutine");
 		return;
 	}
 
 	if (UNEXPECTED(zend_async_waker_new_with_timeout(coroutine, timeout, cancellation) == NULL)) {
+		if (zend_iterator != NULL) {
+			zend_iterator_dtor(zend_iterator);
+		}
 		return;
 	}
 
 	await_context = ecalloc(1, sizeof(async_await_context_t));
 	await_context->total = futures != NULL ? (int) zend_hash_num_elements(futures) : 0;
+	await_context->futures_count = 0;
 	await_context->waiting_count = count > 0 ? count : await_context->total;
 	await_context->resolved_count = 0;
 	await_context->success_count = 0;
 	await_context->ignore_errors = ignore_errors;
 	await_context->concurrency = concurrency;
 	await_context->fill_missing_with_null = fill_missing_with_null;
+	await_context->preserve_key_order = preserve_key_order;
 	await_context->cancel_on_exit = cancel_on_exit;
 
-	if (AWAIT_ALL(await_context)) {
+	if (preserve_key_order && false == fill_missing_with_null) {
 		tmp_results = zend_new_array(await_context->total);
 		await_context->results = tmp_results;
 	} else {
@@ -752,6 +943,10 @@ void async_await_futures(
 
 	if (futures != NULL)
 	{
+		zval undef_val;
+		// The PRT NULL type is used to fill the array with empty elements that will later be removed.
+		ZVAL_PTR(&undef_val, NULL);
+
 		ZEND_HASH_FOREACH_KEY_VAL(futures, index, key, current) {
 
 			// An array element can be either an object implementing
@@ -780,19 +975,19 @@ void async_await_futures(
 				ZVAL_STR(&callback->key, key);
 				zval_add_ref(&callback->key);
 
-				if (await_context->results != NULL && AWAIT_ALL(await_context)) {
+				if (await_context->results != NULL && fill_missing_with_null) {
 					zend_hash_add_empty_element(await_context->results, key);
-				} else if (await_context->results != NULL && await_context->fill_missing_with_null) {
-					zend_hash_add(await_context->results, key, &EG(uninitialized_zval));
+				} else if (await_context->results != NULL && preserve_key_order) {
+					zend_hash_add(await_context->results, key, &undef_val);
 				}
 
 			} else {
 				ZVAL_LONG(&callback->key, index);
 
-				if (await_context->results != NULL && AWAIT_ALL(await_context)) {
+				if (await_context->results != NULL && fill_missing_with_null) {
 					zend_hash_index_add_empty_element(await_context->results, index);
-				} else if (await_context->results != NULL && await_context->fill_missing_with_null) {
-					zend_hash_index_add_new(await_context->results, index, &EG(uninitialized_zval));
+				} else if (await_context->results != NULL && preserve_key_order) {
+					zend_hash_index_add_new(await_context->results, index, &undef_val);
 				}
 			}
 
@@ -818,14 +1013,17 @@ void async_await_futures(
 		zend_async_scope_t * scope = ZEND_ASYNC_NEW_SCOPE(ZEND_ASYNC_CURRENT_SCOPE);
 
 		if (UNEXPECTED(scope == NULL || EG(exception))) {
+			zend_iterator_dtor(zend_iterator);
 			await_context->dtor(await_context);
 			return;
 		}
 
-		zend_coroutine_t * iterator_coroutine = ZEND_ASYNC_SPAWN_WITH(scope);
+		zend_coroutine_t * iterator_coroutine = ZEND_ASYNC_SPAWN_WITH_SCOPE_EX(scope, ZEND_COROUTINE_NORMAL);
 
 		if (UNEXPECTED(iterator_coroutine == NULL || EG(exception))) {
+			zend_iterator_dtor(zend_iterator);
 			await_context->dtor(await_context);
+			scope->try_to_dispose(scope);
 			return;
 		}
 
@@ -836,6 +1034,7 @@ void async_await_futures(
 		iterator->zend_iterator = zend_iterator;
 		iterator->waiting_coroutine = coroutine;
 		iterator->iterator_coroutine = iterator_coroutine;
+		iterator->await_context = await_context;
 
 		iterator_coroutine->extended_data = iterator;
 		iterator_coroutine->extended_dispose = async_await_iterator_coroutine_dispose;
@@ -843,9 +1042,17 @@ void async_await_futures(
 		zend_async_resume_when(
 			coroutine, &iterator_coroutine->event, false, iterator_coroutine_finish_callback, NULL
 		);
+
+		if (UNEXPECTED(EG(exception))) {
+			// At this point, we don’t free the iterator
+			// because it now belongs to the coroutine and must be destroyed there.
+			return;
+		}
 	}
 
-	ZEND_ASYNC_SUSPEND();
+	if (coroutine->waker->events.nNumOfElements > 0) {
+		ZEND_ASYNC_SUSPEND();
+	}
 
 	// If the await on futures has completed and
 	// the automatic cancellation mode for pending coroutines is active.
@@ -853,19 +1060,13 @@ void async_await_futures(
 		async_cancel_awaited_futures(await_context, futures);
 	}
 
-	// Free the coroutine scope if it was created for the iterator.
-	if (await_context->scope != NULL) {
-		await_context->scope->try_to_dispose(await_context->scope);
-		await_context->scope = NULL;
-	}
-
 	// Remove all undefined buckets from the results array.
 	if (tmp_results != NULL) {
 
 		// foreach results as key => value
-		// if value is UNDEFINED then continue
+		// if value is PTR then continue
 		ZEND_HASH_FOREACH_KEY_VAL(tmp_results, index, key, current) {
-			if (Z_TYPE_P(current) == IS_UNDEF) {
+			if (Z_TYPE_P(current) == IS_PTR && Z_PTR_P(current) == NULL) {
 				continue;
 			}
 

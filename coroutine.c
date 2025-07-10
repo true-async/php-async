@@ -96,9 +96,8 @@ METHOD(getException)
 
 	async_coroutine_t *coroutine = THIS_COROUTINE;
 
-	if (!ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine)) {
-		async_throw_error("Cannot get exception of a running coroutine");
-		RETURN_THROWS();
+	if (false == ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine)) {
+		RETURN_NULL();
 	}
 
 	if (coroutine->coroutine.exception == NULL) {
@@ -220,7 +219,8 @@ METHOD(isCancelled)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	RETURN_BOOL(ZEND_COROUTINE_IS_CANCELLED(&THIS_COROUTINE->coroutine));
+	RETURN_BOOL(ZEND_COROUTINE_IS_CANCELLED(&THIS_COROUTINE->coroutine)
+		&& ZEND_COROUTINE_IS_FINISHED(&THIS_COROUTINE->coroutine));
 }
 
 METHOD(isCancellationRequested)
@@ -229,9 +229,9 @@ METHOD(isCancellationRequested)
 
 	async_coroutine_t *coroutine = THIS_COROUTINE;
 
-	// TODO: Implement cancellation request tracking in waker
-	// For now, return same as isCancelled
-	RETURN_BOOL(ZEND_COROUTINE_IS_CANCELLED(&coroutine->coroutine));
+	RETURN_BOOL((ZEND_COROUTINE_IS_CANCELLED(&coroutine->coroutine)
+		&& !ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine))
+		|| coroutine->deferred_cancellation != NULL);
 }
 
 METHOD(isFinished)
@@ -379,12 +379,11 @@ static void finally_handlers_iterator_dtor(zend_async_iterator_t *zend_iterator)
 	}
 
 	finally_handlers_context_t *context = iterator->extended_data;
+	async_scope_t *scope = (async_scope_t *) context->scope;
+	context->scope = NULL;
 
 	// Throw CompositeException if any exceptions were collected
 	if (context->composite_exception != NULL) {
-
-		async_scope_t *scope = (async_scope_t *) context->scope;
-
 		if (ZEND_ASYNC_SCOPE_CATCH(
 			&scope->scope,
 			&context->coroutine->coroutine,
@@ -394,12 +393,12 @@ static void finally_handlers_iterator_dtor(zend_async_iterator_t *zend_iterator)
 			ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(&scope->scope)
 		)) {
 			OBJ_RELEASE(context->composite_exception);
-		} else {
-			async_rethrow_exception(context->composite_exception);
+			context->composite_exception = NULL;
 		}
-
-		context->composite_exception = NULL;
 	}
+
+	zend_object * composite_exception = context->composite_exception;
+	context->composite_exception = NULL;
 
 	if (context->dtor != NULL) {
 		context->dtor(context);
@@ -409,6 +408,18 @@ static void finally_handlers_iterator_dtor(zend_async_iterator_t *zend_iterator)
 	// Free the context
 	efree(context);
 	iterator->extended_data = NULL;
+
+	if (ZEND_ASYNC_EVENT_REF(&scope->scope.event) > 0) {
+		ZEND_ASYNC_EVENT_DEL_REF(&scope->scope.event);
+
+		if (ZEND_ASYNC_EVENT_REF(&scope->scope.event) <= 1) {
+			scope->scope.try_to_dispose(&scope->scope);
+		}
+	}
+
+	if (composite_exception != NULL) {
+		async_rethrow_exception(composite_exception);
+	}
 
 	//
 	// If everything is correct,
@@ -453,6 +464,14 @@ bool async_call_finally_handlers(HashTable *finally_handlers, finally_handlers_c
 	iterator->extended_data = context;
 	iterator->extended_dtor = finally_handlers_iterator_dtor;
 	async_iterator_run_in_coroutine(iterator, priority);
+
+	//
+	// We retain ownership of the Scope in order to be able to handle exceptions from the Finally handlers.
+	// example: finally_handlers_iterator_dtor
+	// If the onFinally handlers throw an exception, it will end up in the Scope,
+	// so it’s important that the Scope is not destroyed before that moment.
+	//
+	ZEND_ASYNC_EVENT_ADD_REF(&context->scope->event);
 
 	if (UNEXPECTED(EG(exception))) {
 		return false;
@@ -515,6 +534,13 @@ static zend_always_inline void coroutine_call_finally_handlers(async_coroutine_t
 
 void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t * coroutine)
 {
+	// Before finalizing the coroutine
+	// we check that we’re properly finishing the coroutine’s execution.
+	// The coroutine must not be in the queue!
+	if (UNEXPECTED(ZEND_ASYNC_WAKER_IN_QUEUE(coroutine->coroutine.waker))) {
+		zend_error(E_CORE_WARNING, "Attempt to finalize a coroutine that is still in the queue");
+	}
+
 	ZEND_COROUTINE_SET_FINISHED(&coroutine->coroutine);
 
 	/* Call switch handlers for coroutine finishing */
@@ -552,13 +578,15 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 		// Hold the exception inside coroutine if it is not NULL.
 		if (exception != NULL) {
 			if (coroutine->coroutine.exception != NULL) {
-				// If the coroutine already has an exception, we do not overwrite it.
-				// This is to prevent losing the original exception in case of multiple exceptions.
-				zend_exception_set_previous(exception, coroutine->coroutine.exception);
+				if (false == instanceof_function(exception->ce, zend_ce_cancellation_exception)) {
+					zend_exception_set_previous(exception, coroutine->coroutine.exception);
+					coroutine->coroutine.exception = exception;
+					GC_ADDREF(exception);
+				}
+			} else {
+				coroutine->coroutine.exception = exception;
+				GC_ADDREF(exception);
 			}
-
-			coroutine->coroutine.exception = exception;
-			GC_ADDREF(exception);
 		} else if (coroutine->coroutine.exception != NULL) {
 			// If the coroutine has an exception, we keep it.
 			exception = coroutine->coroutine.exception;
@@ -682,6 +710,7 @@ void async_coroutine_finalize_from_scheduler(async_coroutine_t * coroutine)
 	EG(prev_exception) = NULL;
 
 	waker->error = NULL;
+	waker->status = ZEND_ASYNC_WAKER_NO_STATUS;
 
 	bool do_bailout = false;
 
@@ -931,14 +960,25 @@ void async_coroutine_resume(zend_coroutine_t *coroutine, zend_object * error, co
 
 	if (error != NULL) {
 		if (coroutine->waker->error != NULL) {
-			zend_exception_set_previous(error, coroutine->waker->error);
-			OBJ_RELEASE(coroutine->waker->error);
-		}
 
-		coroutine->waker->error = error;
+			if (false == instanceof_function(error->ce, zend_ce_cancellation_exception)) {
+				zend_exception_set_previous(error, coroutine->waker->error);
+				coroutine->waker->error = error;
 
-		if (false == transfer_error) {
-			GC_ADDREF(error);
+				if (false == transfer_error) {
+					GC_ADDREF(error);
+				}
+			} else {
+				if (transfer_error) {
+					OBJ_RELEASE(error);
+				}
+			}
+		} else {
+			coroutine->waker->error = error;
+
+			if (false == transfer_error) {
+				GC_ADDREF(error);
+			}
 		}
 	}
 
@@ -965,8 +1005,28 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine, zend_object *error
 		return;
 	}
 
-	if (ZEND_ASYNC_SCHEDULER_CONTEXT && zend_coroutine == ZEND_ASYNC_CURRENT_COROUTINE) {
-		zend_throw_error(zend_ce_cancellation_exception, "Coroutine has been canceled");
+	// An attempt to cancel a coroutine that is currently running.
+	// In this case, nothing actually happens immediately;
+	// however, the coroutine is marked as having been cancelled,
+	// and the cancellation exception is stored as its result.
+	if (UNEXPECTED(zend_coroutine == ZEND_ASYNC_CURRENT_COROUTINE)) {
+
+		ZEND_COROUTINE_SET_CANCELLED(zend_coroutine);
+
+		if (zend_coroutine->exception == NULL) {
+			zend_coroutine->exception = error;
+
+			if (false == transfer_error) {
+				GC_ADDREF(error);
+			}
+		}
+
+		if (zend_coroutine->exception == NULL) {
+			zend_coroutine->exception = async_new_exception(
+				async_ce_cancellation_exception, "Coroutine cancelled"
+			);
+		}
+
 		return;
 	}
 
@@ -1039,7 +1099,6 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine, zend_object *error
 		// In any other case, the cancellation exception overrides the existing exception.
 		//
 		ZEND_ASYNC_WAKER_APPLY_CANCELLATION(waker, error, transfer_error);
-		ZEND_ASYNC_DECREASE_COROUTINE_COUNT;
 		async_scheduler_coroutine_enqueue(zend_coroutine);
 		return;
 	}

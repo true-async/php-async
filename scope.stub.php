@@ -35,8 +35,6 @@ interface SpawnStrategy extends ScopeProvider
  */
 final class Scope implements ScopeProvider
 {
-    //public readonly Context $context;
-
     /**
      * Creates a new Scope that inherits from the specified one. If the parameter is not provided,
      * the Scope inherits from the current one.
@@ -64,6 +62,8 @@ final class Scope implements ScopeProvider
     public function isFinished(): bool {}
 
     public function isClosed(): bool {}
+
+    public function isCancelled(): bool {}
 
     /**
      * Sets an error handler that is called when an exception is passed to the Scope from one of its child coroutines.

@@ -471,7 +471,6 @@ void start_graceful_shutdown(void)
 
 	if (UNEXPECTED(EG(exception) != NULL)) {
 		zend_exception_set_previous(EG(exception), ZEND_ASYNC_EXIT_EXCEPTION);
-		GC_DELREF(ZEND_ASYNC_EXIT_EXCEPTION);
 		ZEND_ASYNC_EXIT_EXCEPTION = EG(exception);
 		GC_ADDREF(EG(exception));
 		zend_clear_exception();
@@ -484,7 +483,6 @@ static void finally_shutdown(void)
 {
 	if (ZEND_ASYNC_EXIT_EXCEPTION != NULL && EG(exception) != NULL) {
 		zend_exception_set_previous(EG(exception), ZEND_ASYNC_EXIT_EXCEPTION);
-		GC_DELREF(ZEND_ASYNC_EXIT_EXCEPTION);
 		ZEND_ASYNC_EXIT_EXCEPTION = EG(exception);
 		GC_ADDREF(EG(exception));
 		zend_clear_exception();
@@ -498,7 +496,6 @@ static void finally_shutdown(void)
 	if (UNEXPECTED(EG(exception))) {
 		if (ZEND_ASYNC_EXIT_EXCEPTION != NULL) {
 			zend_exception_set_previous(EG(exception), ZEND_ASYNC_EXIT_EXCEPTION);
-			GC_DELREF(ZEND_ASYNC_EXIT_EXCEPTION);
 			ZEND_ASYNC_EXIT_EXCEPTION = EG(exception);
 			GC_ADDREF(EG(exception));
 		}
@@ -709,7 +706,6 @@ void async_scheduler_main_coroutine_suspend(void)
 	//
 	if (EG(exception) != NULL && exit_exception != NULL) {
 		zend_exception_set_previous(EG(exception), exit_exception);
-		GC_DELREF(exit_exception);
 	} else if (exit_exception != NULL) {
 		async_rethrow_exception(exit_exception);
 	}
@@ -719,6 +715,8 @@ void async_scheduler_main_coroutine_suspend(void)
 	if (UNEXPECTED(EG(exception) != NULL)) { \
 		if(ZEND_ASYNC_GRACEFUL_SHUTDOWN) { \
 			finally_shutdown(); \
+			switch_to_scheduler(transfer); \
+			zend_exception_restore(); \
 			return; \
 		} \
 		start_graceful_shutdown(); \
@@ -799,6 +797,17 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 	// This causes timers to start, POLL objects to begin waiting for events, and so on.
 	//
 	if (transfer == NULL && coroutine != NULL && coroutine->waker != NULL) {
+
+		// Let’s check that the coroutine has something to wait for;
+		// If a coroutine isn’t waiting for anything, it must be in the execution queue.
+		// otherwise, it’s a potential deadlock.
+		if (coroutine->waker->events.nNumOfElements == 0 && false == ZEND_ASYNC_WAKER_IN_QUEUE(coroutine->waker)) {
+			async_throw_error("The coroutine has no events to wait for");
+			zend_async_waker_destroy(coroutine);
+			zend_exception_restore();
+			return;
+		}
+
 		async_scheduler_start_waker_events(coroutine->waker);
 
 		// If an exception occurs during the startup of the Waker object,
@@ -842,7 +851,6 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 
 		if (ZEND_ASYNC_EXIT_EXCEPTION != NULL) {
 			zend_exception_set_previous(exception, ZEND_ASYNC_EXIT_EXCEPTION);
-			GC_DELREF(ZEND_ASYNC_EXIT_EXCEPTION);
 			ZEND_ASYNC_EXIT_EXCEPTION = exception;
 		} else {
 			ZEND_ASYNC_EXIT_EXCEPTION = exception;
@@ -969,7 +977,6 @@ void async_scheduler_main_loop(void)
 
 	if (EG(exception) != NULL && exit_exception != NULL) {
 		zend_exception_set_previous(EG(exception), exit_exception);
-		GC_DELREF(exit_exception);
 		exit_exception = EG(exception);
 		GC_ADDREF(exit_exception);
 		zend_clear_exception();

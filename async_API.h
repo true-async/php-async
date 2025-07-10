@@ -29,6 +29,9 @@ struct _async_await_context_t
 	unsigned int ref_count;
 	/* The total number of futures to wait for */
 	unsigned int total;
+	/* The current number of futures being awaited.
+	 * This counter is used in the case of a zend_iterator, since the total number of elements is unknown. */
+	unsigned int futures_count;
 	/* The number of futures that are currently waiting */
 	unsigned int waiting_count;
 	/* The number of futures that have been resolved */
@@ -39,6 +42,8 @@ struct _async_await_context_t
 	bool ignore_errors;
 	/* If we need to fill missing results with null */
 	bool fill_missing_with_null;
+	/* If we need to preserve key order in results */
+	bool preserve_key_order;
 	/*
 	 * The flag indicates that all pending coroutines
 	 * must be cancelled once the wait completes, regardless of the outcome.
@@ -90,6 +95,7 @@ void async_await_futures(
 	HashTable *results,
 	HashTable *errors,
 	bool fill_missing_with_null,
+	bool preserve_key_order,
 	bool cancel_on_exit
 );
 
