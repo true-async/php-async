@@ -1,5 +1,7 @@
 --TEST--
-Scope cancellation with finally handlers execution
+Scope cancellation with double-exception case in finally handlers execution
+--DESCRIPTION--
+This test triggers a double-exception case: first in the coroutine, and then in the onFinally handler.
 --FILE--
 <?php
 
@@ -64,20 +66,15 @@ start
 coroutines with finally handlers spawned
 coroutine with finally started
 child coroutine started
-scope finally handler added
-cancelling parent scope
 finally handler 3 executed
-finally handler 2 executed
-finally handler 1 executed
-child finally handler executed
-scope finally handler executed
-main coroutine %s: %s
-child coroutine cancelled: Scope cancelled with finally
-testing finally handler order in hierarchy
-hierarchy coroutine started
-cancelling parent scope in hierarchy
-hierarchy coroutine finally
-child scope finally
-parent scope finally
-hierarchy cancelled: Hierarchy cancel
-end
+
+Fatal error: Uncaught Error: Call to undefined function some_function() in %s:%d
+Stack trace:
+#0 [internal function]: {closure:%s:%d}()
+#1 {main}
+
+Next RuntimeException: Finally handler error in %s:%d
+Stack trace:
+#0 [internal function]: {closure:{closure:%s:%d}:%d}(Object(Async\Coroutine))
+#1 {main}
+  thrown in %s on line %d
