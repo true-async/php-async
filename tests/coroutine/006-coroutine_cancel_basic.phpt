@@ -14,6 +14,7 @@ $coroutine = spawn(function() {
 $cancellation = new CancellationException("test cancellation");
 $coroutine->cancel($cancellation);
 
+var_dump($coroutine->isCancellationRequested());
 var_dump($coroutine->isCancelled());
 
 try {
@@ -25,4 +26,5 @@ try {
 ?>
 --EXPECT--
 bool(true)
+bool(false)
 Caught: test cancellation

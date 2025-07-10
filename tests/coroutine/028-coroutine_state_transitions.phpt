@@ -95,6 +95,9 @@ echo "before cancel request - isCancelled: " . ($cancel_request_coroutine->isCan
 $cancel_request_coroutine->cancel(new \Async\CancellationException("Test cancellation"));
 
 echo "after cancel request - isCancellationRequested: " . ($cancel_request_coroutine->isCancellationRequested() ? "true" : "false") . "\n";
+
+suspend(); // Let cancellation propagate
+
 echo "after cancel request - isCancelled: " . ($cancel_request_coroutine->isCancelled() ? "true" : "false") . "\n";
 
 echo "end\n";
