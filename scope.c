@@ -229,7 +229,7 @@ METHOD(spawn)
 	}
 
 	if (UNEXPECTED(ZEND_ASYNC_SCOPE_IS_CLOSED(&scope_object->scope->scope))) {
-		async_throw_error("Cannot spawn coroutine in a closed scope");
+		async_throw_error("Cannot spawn a coroutine in a closed scope");
 		RETURN_THROWS();
 	}
 

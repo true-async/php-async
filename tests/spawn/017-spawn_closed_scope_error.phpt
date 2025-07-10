@@ -20,7 +20,7 @@ try {
         return "test";
     });
     echo "ERROR: Should have thrown exception\n";
-} catch (Error $e) {
+} catch (Async\AsyncException $e) {
     echo "Caught expected error: " . $e->getMessage() . "\n";
 } catch (Throwable $e) {
     echo "Caught exception: " . get_class($e) . ": " . $e->getMessage() . "\n";
@@ -40,7 +40,7 @@ try {
         return "test2";
     });
     echo "ERROR: Should have thrown exception\n";
-} catch (Error $e) {
+} catch (Async\AsyncException $e) {
     echo "Caught expected error for safely disposed: " . $e->getMessage() . "\n";
 } catch (Throwable $e) {
     echo "Caught exception: " . get_class($e) . ": " . $e->getMessage() . "\n";

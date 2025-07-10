@@ -4,6 +4,7 @@ spawnWith() - scope provider returns null (valid case)
 <?php
 
 use function Async\spawnWith;
+use function Async\await;
 
 echo "start\n";
 
@@ -19,7 +20,8 @@ try {
     $coroutine = spawnWith(new NullScopeProvider(), function() {
         return "success";
     });
-    echo "Null provider result: " . $coroutine->getResult() . "\n";
+
+    echo "Null provider result: " . await($coroutine) . "\n";
 } catch (Throwable $e) {
     echo "Unexpected exception: " . get_class($e) . ": " . $e->getMessage() . "\n";
 }
