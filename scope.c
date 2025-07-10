@@ -990,7 +990,7 @@ static bool scope_try_to_dispose(zend_async_scope_t *scope)
 {
 	async_scope_t *async_scope = (async_scope_t *) scope;
 
-	if (ZEND_ASYNC_SCOPE_IS_DISPOSED(scope)) {
+	if (ZEND_ASYNC_SCOPE_IS_DISPOSING(scope)) {
 		return true;
 	}
 
@@ -998,17 +998,20 @@ static bool scope_try_to_dispose(zend_async_scope_t *scope)
 		return false;
 	}
 
-	ZEND_ASYNC_SCOPE_SET_DISPOSED(scope);
+	ZEND_ASYNC_SCOPE_SET_DISPOSING(scope);
 
 	// Dispose all child scopes
 	for (uint32_t i = 0; i < async_scope->scope.scopes.length; ++i) {
 		async_scope_t *child_scope = (async_scope_t *) async_scope->scope.scopes.data[i];
 		child_scope->scope.event.dispose(&child_scope->scope.event);
 		if (UNEXPECTED(EG(exception))) {
+			ZEND_ASYNC_SCOPE_CLR_DISPOSING(scope);
 			// If an exception occurs during child scope disposal, we stop further processing
 			return false;
 		}
 	}
+
+	ZEND_ASYNC_SCOPE_CLR_DISPOSING(scope);
 
 	// Dispose the scope
 	async_scope->scope.event.dispose(&async_scope->scope.event);
@@ -1532,12 +1535,6 @@ static zend_always_inline bool try_to_handle_exception(
 
 static void async_scope_call_finally_handlers_dtor(finally_handlers_context_t *context)
 {
-	zend_async_scope_t *scope = context->target;
-	if (ZEND_ASYNC_EVENT_REF(&scope->event) > 0) {
-		ZEND_ASYNC_EVENT_DEL_REF(&scope->event);
-	}
-
-	scope->try_to_dispose(scope);
 	context->target = NULL;
 }
 
@@ -1566,7 +1563,6 @@ static bool async_scope_call_finally_handlers(async_scope_t *scope)
 		zend_array_destroy(finally_handlers);
 		return false;
 	} else {
-		ZEND_ASYNC_EVENT_ADD_REF(&scope->scope.event);
 		return true;
 	}
 }
