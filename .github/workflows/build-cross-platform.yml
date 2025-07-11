@@ -181,6 +181,16 @@ jobs:
             platform: macos
     
     runs-on: ${{ matrix.os }}
+    
+    env:
+      # Windows specific environment (only for windows)
+      PHP_BUILD_CACHE_BASE_DIR: ${{ matrix.os == 'windows-latest' && 'C:\build-cache' || '' }}
+      PHP_BUILD_OBJ_DIR: ${{ matrix.os == 'windows-latest' && 'C:\obj' || '' }}
+      PHP_BUILD_CACHE_SDK_DIR: ${{ matrix.os == 'windows-latest' && 'C:\build-cache\sdk' || '' }}
+      PHP_BUILD_SDK_BRANCH: ${{ matrix.os == 'windows-latest' && 'php-sdk-2.3.0' || '' }}
+      PHP_BUILD_CRT: ${{ matrix.os == 'windows-latest' && 'vs17' || '' }}
+      PLATFORM: ${{ matrix.os == 'windows-latest' && 'x64' || '' }}
+      THREAD_SAFE: ${{ matrix.os == 'windows-latest' && '1' || '' }}
 
 
     steps:
@@ -198,107 +208,172 @@ jobs:
           mkdir -p php-src/ext/async
           cp -r async/* php-src/ext/async/
 
-      # ==================== WINDOWS DEPENDENCIES ====================
-      - name: Install build dependencies (Windows)
+      # ==================== WINDOWS BUILD (Official PHP approach) ====================
+      - name: git config
         if: matrix.os == 'windows-latest'
-        run: |
-          # Install php-sdk
-          git clone https://github.com/Microsoft/php-sdk-binary-tools.git C:\php-sdk
-          
-          # Install vcpkg and LibUV >= 1.44.0
-          git clone https://github.com/Microsoft/vcpkg.git C:\vcpkg
-          C:\vcpkg\bootstrap-vcpkg.bat
-          C:\vcpkg\vcpkg.exe install libuv:x64-windows
-          
-          # Verify LibUV version
-          C:\vcpkg\vcpkg.exe list libuv
-          
-          # Create deps structure for php-sdk
-          mkdir C:\php-sdk\deps\include\libuv
-          mkdir C:\php-sdk\deps\lib
-          
-          # Copy LibUV files
-          xcopy /E /I C:\vcpkg\installed\x64-windows\include C:\php-sdk\deps\include\libuv\
-          copy C:\vcpkg\installed\x64-windows\lib\uv.lib C:\php-sdk\deps\lib\libuv.lib
-        shell: cmd
+        run: git config --global core.autocrlf false && git config --global core.eol lf
 
-      # ==================== MACOS DEPENDENCIES ====================
+      - name: Create build task (Windows)
+        if: matrix.os == 'windows-latest'
+        working-directory: php-src
+        shell: cmd
+        run: |
+          echo @echo off > buildtask.bat
+          echo echo Building PHP with async extension... >> buildtask.bat
+          echo. >> buildtask.bat
+          echo REM Update dependencies >> buildtask.bat
+          echo phpsdk_deps --update --no-backup --branch master --stability staging --deps "%PHP_BUILD_CACHE_BASE_DIR%\deps" --crt %PHP_BUILD_CRT% >> buildtask.bat
+          echo if %%errorlevel%% neq 0 exit /b 3 >> buildtask.bat
+          echo. >> buildtask.bat
+          echo REM Build configure >> buildtask.bat
+          echo buildconf.bat --force >> buildtask.bat
+          echo if %%errorlevel%% neq 0 exit /b 3 >> buildtask.bat
+          echo. >> buildtask.bat
+          echo REM Configure PHP with async >> buildtask.bat
+          echo configure.bat --enable-snapshot-build --disable-debug-pack --without-analyzer --enable-object-out-dir=%PHP_BUILD_OBJ_DIR% --with-php-build="%PHP_BUILD_CACHE_BASE_DIR%\deps" --enable-async --enable-zts >> buildtask.bat
+          echo if %%errorlevel%% neq 0 exit /b 3 >> buildtask.bat
+          echo. >> buildtask.bat
+          echo REM Build >> buildtask.bat
+          echo nmake /NOLOGO >> buildtask.bat
+          echo if %%errorlevel%% neq 0 exit /b 3 >> buildtask.bat
+
+      - name: Windows Build
+        if: matrix.os == 'windows-latest'
+        working-directory: php-src
+        shell: cmd
+        run: |
+          REM Create build directories
+          if not exist "%PHP_BUILD_CACHE_BASE_DIR%" mkdir "%PHP_BUILD_CACHE_BASE_DIR%"
+          if not exist "%PHP_BUILD_OBJ_DIR%" mkdir "%PHP_BUILD_OBJ_DIR%"
+          
+          REM Setup SDK 
+          set SDK_REMOTE=https://github.com/php/php-sdk-binary-tools.git
+          set SDK_BRANCH=%PHP_BUILD_SDK_BRANCH%
+          set SDK_RUNNER=%PHP_BUILD_CACHE_SDK_DIR%\phpsdk-%PHP_BUILD_CRT%-%PLATFORM%.bat
+          
+          REM Clone SDK if needed
+          if not exist "%PHP_BUILD_CACHE_SDK_DIR%" (
+            echo Cloning PHP SDK...
+            git clone --branch %SDK_BRANCH% %SDK_REMOTE% --depth 1 "%PHP_BUILD_CACHE_SDK_DIR%"
+          )
+          
+          REM Check SDK runner exists
+          if not exist "%SDK_RUNNER%" (
+            echo SDK runner not found: %SDK_RUNNER%
+            dir "%PHP_BUILD_CACHE_SDK_DIR%"
+            exit /b 1
+          )
+          
+          REM Run PHP SDK and build
+          echo Running SDK: %SDK_RUNNER%
+          call "%SDK_RUNNER%" -t buildtask.bat
+
+      # ==================== MACOS DEPENDENCIES (Official PHP approach) ====================
       - name: Install build dependencies (macOS)
         if: matrix.os == 'macos-latest'
         run: |
-          # Install required packages (force reinstall if needed)
-          brew install autoconf || brew reinstall autoconf
-          brew install libuv || brew reinstall libuv
-          brew install icu4c || brew reinstall icu4c
-          brew install openssl@3 || brew reinstall openssl@3
+          set -x
+          
+          # Patch brew to overwrite always (from official PHP workflow)
+          formula_installer="$(brew --repo)"/Library/Homebrew/formula_installer.rb
+          code=" keg.link\(verbose: verbose\?"
+          sudo sed -Ei '' "s/$code.*/$code, overwrite: true\)/" "$formula_installer"
+          
+          # Install core dependencies (official PHP list + libuv for async)
+          brew reinstall autoconf webp tidy-html5 libzip libsodium icu4c curl
+          brew install \
+            bison \
+            re2c \
+            libuv
+          brew install \
+            bzip2 \
+            enchant \
+            libffi \
+            intltool \
+            libiconv \
+            t1lib \
+            libxml2 \
+            libjpeg \
+            libxslt
           
           # Verify LibUV version
           pkg-config --modversion libuv || echo "LibUV not found"
-          
-          # Setup environment variables for keg-only packages  
-          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix icu4c)/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
-          echo "CPPFLAGS=-I$(brew --prefix openssl@3)/include -I$(brew --prefix icu4c)/include" >> $GITHUB_ENV
-          echo "LDFLAGS=-L$(brew --prefix openssl@3)/lib -L$(brew --prefix icu4c)/lib" >> $GITHUB_ENV
-          
-          # Debug info
-          echo "Autoconf version: $(autoconf --version | head -1)"
-          echo "LibUV version: $(pkg-config --modversion libuv || echo 'N/A')"
-
-      # ==================== WINDOWS CONFIGURE & BUILD ====================
-      - name: Configure and Build PHP (Windows)
-        if: matrix.os == 'windows-latest'
-        working-directory: php-src
-        run: |
-          REM Setup PHP SDK environment properly
-          call C:\php-sdk\phpsdk-vs17-x64.bat
-          
-          REM Set UTF-8 encoding
-          chcp 65001
-          
-          REM Clean previous build
-          nmake clean
-          
-          REM Check if async extension exists
-          dir ext\async
-          
-          REM Build configuration files
-          call buildconf.bat
-          
-          REM Configure with your working options (without debug-pack)
-          call configure.bat --enable-phpdbg --enable-async --enable-pdo --with-pdo-mysql --enable-sockets --with-sqlite3 --with-curl --enable-ftp
-          
-          REM Build
-          nmake
-        shell: cmd
 
       # ==================== MACOS CONFIGURE & BUILD ====================
       - name: Configure PHP (macOS)
         if: matrix.os == 'macos-latest'
         working-directory: php-src
         run: |
-          # Debug environment
-          echo "PATH: $PATH"
-          echo "PKG_CONFIG_PATH: $PKG_CONFIG_PATH"
-          which autoconf || echo "autoconf not found"
-          autoconf --version || echo "autoconf version failed"
+          set -x
           
-          # Check async extension
-          ls -la ext/async/ || echo "async directory not found"
+          # Setup environment (official PHP approach)
+          BREW_OPT="$(brew --prefix)"/opt
+          export PATH="$BREW_OPT/bison/bin:$PATH"
+          export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$BREW_OPT/openssl@1.1/lib/pkgconfig"
+          export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$BREW_OPT/curl/lib/pkgconfig"
+          export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$BREW_OPT/libffi/lib/pkgconfig"
+          export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$BREW_OPT/libxml2/lib/pkgconfig"
+          export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$BREW_OPT/libxslt/lib/pkgconfig"
+          export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$BREW_OPT/zlib/lib/pkgconfig"
+          export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$BREW_OPT/icu4c/lib/pkgconfig"
+          
+          # Fix curl pkg-config (official PHP approach)
+          sed -i -e 's/Requires.private:.*//g' "$BREW_OPT/curl/lib/pkgconfig/libcurl.pc"
+          
+          # Check async extension exists
+          ls -la ext/async/
           
           # Build configure
-          echo "Running buildconf..."
-          ./buildconf -f || { echo "buildconf failed"; exit 1; }
+          ./buildconf --force
           
-          # Test simple configure first
-          echo "Testing minimal configure..."
-          ./configure --help | head -20
-          
-          # Configure with absolute minimal options
-          echo "Running configure..."
+          # Configure with official PHP options + async
           ./configure \
-            --disable-all \
-            --enable-cli \
-            --enable-async || { echo "configure failed"; cat config.log | tail -50; exit 1; }
+            --enable-option-checking=fatal \
+            --prefix=/usr/local \
+            --enable-fpm \
+            --with-pdo-mysql=mysqlnd \
+            --with-mysqli=mysqlnd \
+            --with-pdo-sqlite \
+            --without-pear \
+            --enable-gd \
+            --with-jpeg \
+            --with-webp \
+            --with-freetype \
+            --enable-exif \
+            --with-zip \
+            --with-zlib \
+            --enable-soap \
+            --enable-xmlreader \
+            --with-xsl \
+            --with-tidy="$BREW_OPT"/tidy-html5 \
+            --with-libxml \
+            --enable-sysvsem \
+            --enable-sysvshm \
+            --enable-shmop \
+            --enable-pcntl \
+            --with-readline="$BREW_OPT"/readline \
+            --enable-mbstring \
+            --with-curl \
+            --with-gettext="$BREW_OPT"/gettext \
+            --enable-sockets \
+            --with-bz2="$BREW_OPT"/bzip2 \
+            --with-openssl \
+            --with-gmp="$BREW_OPT"/gmp \
+            --with-iconv="$BREW_OPT"/libiconv \
+            --enable-bcmath \
+            --enable-calendar \
+            --enable-ftp \
+            --enable-sysvmsg \
+            --with-ffi \
+            --enable-zend-test \
+            --enable-dl-test=shared \
+            --enable-intl \
+            --with-mhash \
+            --with-sodium \
+            --enable-dba \
+            --with-config-file-path=/etc \
+            --with-config-file-scan-dir=/etc/php.d \
+            --enable-async
 
       - name: Build PHP (macOS)
         if: matrix.os == 'macos-latest'
