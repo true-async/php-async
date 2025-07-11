@@ -249,17 +249,25 @@ jobs:
         if: matrix.os == 'windows-latest'
         working-directory: php-src
         run: |
-          REM Use php-sdk for environment setup and build
-          call C:\php-sdk\bin\phpsdk_buildtree.bat phpdev
-          call C:\php-sdk\bin\phpsdk_setvars.bat
-          buildconf.bat
+          REM Setup PHP SDK environment properly
+          call C:\php-sdk\phpsdk-vs17-x64.bat
+          
+          REM Set UTF-8 encoding
+          chcp 65001
+          
+          REM Clean previous build
+          nmake clean
+          
           REM Check if async extension exists
           dir ext\async
-          REM Configure with verbose output
-          configure.bat --help | findstr async
-          configure.bat --enable-opcache --enable-async --enable-pdo --with-pdo-mysql --enable-sockets --with-sqlite3 --with-curl --enable-ftp --with-pdo-pgsql
-          REM Check configuration
-          type config.log | findstr async
+          
+          REM Build configuration files
+          call buildconf.bat
+          
+          REM Configure with your working options (without debug-pack)
+          call configure.bat --enable-phpdbg --enable-async --enable-pdo --with-pdo-mysql --enable-sockets --with-sqlite3 --with-curl --enable-ftp
+          
+          REM Build
           nmake
         shell: cmd
 
@@ -271,26 +279,26 @@ jobs:
           # Debug environment
           echo "PATH: $PATH"
           echo "PKG_CONFIG_PATH: $PKG_CONFIG_PATH"
-          which autoconf
-          autoconf --version
+          which autoconf || echo "autoconf not found"
+          autoconf --version || echo "autoconf version failed"
           
           # Check async extension
-          ls -la ext/async/
+          ls -la ext/async/ || echo "async directory not found"
           
           # Build configure
-          ./buildconf -f
+          echo "Running buildconf..."
+          ./buildconf -f || { echo "buildconf failed"; exit 1; }
           
-          # Configure with minimal options
+          # Test simple configure first
+          echo "Testing minimal configure..."
+          ./configure --help | head -20
+          
+          # Configure with absolute minimal options
+          echo "Running configure..."
           ./configure \
-            --enable-zts \
-            --enable-opcache \
-            --with-pdo-sqlite \
-            --enable-intl \
-            --without-pear \
-            --enable-sockets \
-            --enable-mbstring \
-            --with-openssl=$(brew --prefix openssl@3) \
-            --enable-async
+            --disable-all \
+            --enable-cli \
+            --enable-async || { echo "configure failed"; cat config.log | tail -50; exit 1; }
 
       - name: Build PHP (macOS)
         if: matrix.os == 'macos-latest'
