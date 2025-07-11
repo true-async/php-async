@@ -523,6 +523,11 @@ void async_scheduler_launch(void)
 		return;
 	}
 
+	if (EG(active_fiber)) {
+		async_throw_error("The True Async Scheduler cannot be started from within a Fiber");
+		return;
+	}
+
 	if (false == zend_async_reactor_is_enabled()) {
 		async_throw_error("The scheduler cannot be started without the Reactor");
 		return;
