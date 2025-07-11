@@ -135,6 +135,7 @@ jobs:
             --with-config-file-path=/etc \
             --with-config-file-scan-dir=/etc/php.d \
             --with-pdo-firebird \
+            --enable-address-sanitizer \          
             --enable-async
 
       - name: Build PHP
@@ -309,6 +310,7 @@ jobs:
             --enable-inifile \
             --with-config-file-path=/usr/local/etc \
             --with-config-file-scan-dir=/usr/local/etc/php.d \
+            --enable-address-sanitizer \          
             --enable-async
 
       - name: Build PHP (macOS)

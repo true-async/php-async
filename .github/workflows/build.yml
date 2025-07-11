@@ -134,6 +134,7 @@ jobs:
             --with-config-file-path=/etc \
             --with-config-file-scan-dir=/etc/php.d \
             --with-pdo-firebird \
+            --enable-address-sanitizer \
             --enable-async
 
       - name: Build PHP
