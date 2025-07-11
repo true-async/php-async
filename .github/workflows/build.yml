@@ -165,6 +165,6 @@ jobs:
             --no-progress \
             --offline \
             --show-diff \
-            --show-slow 2000 \
+            --show-slow 4000 \
             --set-timeout 120 \
             --repeat 2
