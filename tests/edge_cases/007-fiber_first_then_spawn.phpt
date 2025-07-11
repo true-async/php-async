@@ -46,5 +46,5 @@ echo "Test completed\n";
 Test: Fiber first, then spawn
 Starting Fiber
 Inside Fiber
-Async exception caught: The True Async Scheduler cannot be started from within a Fiber
+Async exception caught: Cannot spawn a coroutine when async is disabled
 Test completed
