@@ -226,19 +226,23 @@ jobs:
       - name: Install build dependencies (macOS)
         if: matrix.os == 'macos-latest'
         run: |
-          # Use already installed packages when possible, install only missing
-          brew list autoconf || brew install autoconf
-          brew list libuv || brew install libuv
-          brew list icu4c || brew install icu4c
-          brew list openssl@3 || brew install openssl@3
+          # Install required packages (force reinstall if needed)
+          brew install autoconf || brew reinstall autoconf
+          brew install libuv || brew reinstall libuv
+          brew install icu4c || brew reinstall icu4c
+          brew install openssl@3 || brew reinstall openssl@3
           
           # Verify LibUV version
-          pkg-config --modversion libuv || true
+          pkg-config --modversion libuv || echo "LibUV not found"
           
-          # Setup environment variables for keg-only packages
+          # Setup environment variables for keg-only packages  
           echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix icu4c)/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
           echo "CPPFLAGS=-I$(brew --prefix openssl@3)/include -I$(brew --prefix icu4c)/include" >> $GITHUB_ENV
           echo "LDFLAGS=-L$(brew --prefix openssl@3)/lib -L$(brew --prefix icu4c)/lib" >> $GITHUB_ENV
+          
+          # Debug info
+          echo "Autoconf version: $(autoconf --version | head -1)"
+          echo "LibUV version: $(pkg-config --modversion libuv || echo 'N/A')"
 
       # ==================== WINDOWS CONFIGURE & BUILD ====================
       - name: Configure and Build PHP (Windows)
@@ -249,7 +253,13 @@ jobs:
           call C:\php-sdk\bin\phpsdk_buildtree.bat phpdev
           call C:\php-sdk\bin\phpsdk_setvars.bat
           buildconf.bat
+          REM Check if async extension exists
+          dir ext\async
+          REM Configure with verbose output
+          configure.bat --help | findstr async
           configure.bat --enable-opcache --enable-async --enable-pdo --with-pdo-mysql --enable-sockets --with-sqlite3 --with-curl --enable-ftp --with-pdo-pgsql
+          REM Check configuration
+          type config.log | findstr async
           nmake
         shell: cmd
 
@@ -258,7 +268,19 @@ jobs:
         if: matrix.os == 'macos-latest'
         working-directory: php-src
         run: |
+          # Debug environment
+          echo "PATH: $PATH"
+          echo "PKG_CONFIG_PATH: $PKG_CONFIG_PATH"
+          which autoconf
+          autoconf --version
+          
+          # Check async extension
+          ls -la ext/async/
+          
+          # Build configure
           ./buildconf -f
+          
+          # Configure with minimal options
           ./configure \
             --enable-zts \
             --enable-opcache \
@@ -288,8 +310,15 @@ jobs:
         if: matrix.os == 'windows-latest'
         working-directory: php-src/ext/async
         run: |
+          REM Check PHP version and modules
           php.exe -v
           php.exe -m
+          REM Check for async functions
+          php.exe -r "echo 'Async namespace: ' . (class_exists('Async\\Context') ? 'EXISTS' : 'NOT FOUND') . PHP_EOL;"
+          php.exe -r "echo 'spawn function: ' . (function_exists('Async\\spawn') ? 'EXISTS' : 'NOT FOUND') . PHP_EOL;"
+          REM Check extension files
+          dir ..\..\ | findstr async
+          REM Run actual tests
           php.exe ../../run-tests.php ^
             -P -q -x -j4 ^
             -g FAIL,BORK,LEAK,XLEAK ^
