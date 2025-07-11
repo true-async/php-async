@@ -9,7 +9,7 @@ use function Async\await;
 
 echo "start\n";
 
-$scope = new \Async\Scope();
+$scope = new \Async\Scope()->asNotSafely();
 
 // Spawn coroutine with finally handlers
 $coroutine_with_finally = $scope->spawn(function() {

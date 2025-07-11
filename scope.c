@@ -63,12 +63,10 @@ async_scope_remove_coroutine(async_scope_t *scope, async_coroutine_t *coroutine)
 	for (uint32_t i = 0; i < vector->length; ++i) {
 		if (vector->data[i] == coroutine) {
 			// Decrement active coroutines count if coroutine was active
-			if (false == ZEND_COROUTINE_IS_ZOMBIE(&coroutine->coroutine)) {
-				if (scope->active_coroutines_count > 0) {
-					scope->active_coroutines_count--;
-				} else if (scope->zombie_coroutines_count > 0) {
-					scope->zombie_coroutines_count--;
-				}
+			if (false == ZEND_COROUTINE_IS_ZOMBIE(&coroutine->coroutine) && scope->active_coroutines_count > 0) {
+				scope->active_coroutines_count--;
+			} else if (scope->zombie_coroutines_count > 0) {
+				scope->zombie_coroutines_count--;
 			}
 
 			vector->data[i] = vector->data[--vector->length];
@@ -1087,6 +1085,12 @@ static zend_string* scope_info(zend_async_event_t *event)
 
 static void scope_dispose(zend_async_event_t *scope_event)
 {
+	async_scope_t *scope = (async_scope_t *) scope_event;
+
+	if (ZEND_ASYNC_SCOPE_IS_DISPOSING(&scope->scope)) {
+		return;
+	}
+
 	if (ZEND_ASYNC_EVENT_REF(scope_event) > 1) {
 		ZEND_ASYNC_EVENT_DEL_REF(scope_event);
 		return;
@@ -1096,16 +1100,31 @@ static void scope_dispose(zend_async_event_t *scope_event)
 		ZEND_ASYNC_EVENT_DEL_REF(scope_event);
 	}
 
-	async_scope_t *scope = (async_scope_t *) scope_event;
+	ZEND_ASYNC_SCOPE_SET_DISPOSING(&scope->scope);
 
 	ZEND_ASSERT(scope->coroutines.length == 0 && scope->scope.scopes.length == 0
 		&& "Scope should be empty before disposal");
+
+	zend_object *critical_exception = NULL;
+
+	//
+	// Notifying subscribers one last time that the scope has been definitively completed.
+	//
+	ZEND_ASYNC_CALLBACKS_NOTIFY(scope_event, NULL, NULL);
+	zend_async_callbacks_free(&scope->scope.event);
+	if (UNEXPECTED(EG(exception))) {
+		critical_exception = zend_exception_merge(critical_exception, true, true);
+	}
 
 	if (scope->finally_handlers != NULL
 		&& zend_hash_num_elements(scope->finally_handlers) > 0
 		&& async_scope_call_finally_handlers(scope)) {
 		// If finally handlers were called, we don't dispose the scope yet
 		ZEND_ASYNC_EVENT_ADD_REF(&scope->scope.event);
+		if (critical_exception) {
+			async_spawn_and_throw(critical_exception, &scope->scope, 0);
+		}
+		ZEND_ASYNC_SCOPE_CLR_DISPOSING(&scope->scope);
 		return;
 	}
 
@@ -1153,6 +1172,10 @@ static void scope_dispose(zend_async_event_t *scope_event)
 	async_scope_free_coroutines(scope);
 	zend_async_scope_free_children(&scope->scope);
 	efree(scope);
+
+	if (critical_exception != NULL) {
+		async_rethrow_exception(critical_exception);
+	}
 }
 
 zend_async_scope_t * async_new_scope(zend_async_scope_t * parent_scope, const bool with_zend_object)
@@ -1180,6 +1203,11 @@ zend_async_scope_t * async_new_scope(zend_async_scope_t * parent_scope, const bo
 
 	scope->scope.parent_scope = parent_scope;
 	zend_async_event_t *event = &scope->scope.event;
+
+	// Inherit safely disposal flag from parent scope or set it to true if parent scope is NULL
+	if (parent_scope == NULL || ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(parent_scope)) {
+		ZEND_ASYNC_SCOPE_SET_DISPOSE_SAFELY(&scope->scope);
+	}
 
 	event->ref_count = 1; // Initialize reference count
 

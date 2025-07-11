@@ -10,7 +10,7 @@ use Async\Scope;
 echo "start\n";
 
 // Test comprehensive cancellation behavior
-$scope = Scope::inherit();
+$scope = Scope::inherit()->asNotSafely();
 
 $coroutine1 = $scope->spawn(function() {
     echo "coroutine1 started\n";

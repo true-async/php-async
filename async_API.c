@@ -1056,6 +1056,7 @@ void async_await_futures(
 
 	// If the await on futures has completed and
 	// the automatic cancellation mode for pending coroutines is active.
+	// !Note! that at this point we are finally awaiting the completion of all cancelled Futures.
 	if (await_context->cancel_on_exit) {
 		async_cancel_awaited_futures(await_context, futures);
 	}

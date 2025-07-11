@@ -523,6 +523,11 @@ void async_scheduler_launch(void)
 		return;
 	}
 
+	if (EG(active_fiber)) {
+		async_throw_error("The True Async Scheduler cannot be started from within a Fiber");
+		return;
+	}
+
 	if (false == zend_async_reactor_is_enabled()) {
 		async_throw_error("The scheduler cannot be started without the Reactor");
 		return;
@@ -886,7 +891,7 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 	if (UNEXPECTED(
 		false == has_handles
 		&& false == is_next_coroutine
-		&& ZEND_ASYNC_ACTIVE_COROUTINE_COUNT > 0
+		&& zend_hash_num_elements(&ASYNC_G(coroutines)) > 0
 		&& circular_buffer_is_empty(&ASYNC_G(microtasks))
 		&& resolve_deadlocks()
 		)) {
@@ -950,7 +955,7 @@ void async_scheduler_main_loop(void)
 			if (UNEXPECTED(
 				false == has_handles
 				&& false == was_executed
-				&& ZEND_ASYNC_ACTIVE_COROUTINE_COUNT > 0
+				&& zend_hash_num_elements(&ASYNC_G(coroutines)) > 0
 				&& circular_buffer_is_empty(&ASYNC_G(coroutine_queue))
 				&& circular_buffer_is_empty(&ASYNC_G(microtasks))
 				&& resolve_deadlocks()
