@@ -9,14 +9,14 @@ echo "start\n";
 
 // Test EmptyIterator
 $emptyIterator = new EmptyIterator();
-$result1 = awaitAll($emptyIterator);
-echo "EmptyIterator count: " . count($result1) . "\n";
-echo "EmptyIterator type: " . gettype($result1) . "\n";
+[$results1, $exceptions1] = awaitAll($emptyIterator);
+echo "EmptyIterator count: " . count($results1) . "\n";
+echo "EmptyIterator type: " . gettype($results1) . "\n";
 
 // Test empty SplFixedArray
 $emptyFixedArray = new SplFixedArray(0);
-$result2 = awaitAll($emptyFixedArray);
-echo "Empty SplFixedArray count: " . count($result2) . "\n";
+[$results2, $exceptions2] = awaitAll($emptyFixedArray);
+echo "Empty SplFixedArray count: " . count($results2) . "\n";
 
 // Test custom empty iterator
 class CustomEmptyIterator implements Iterator
@@ -28,8 +28,8 @@ class CustomEmptyIterator implements Iterator
     public function valid(): bool { return false; }
 }
 
-$result3 = awaitAll(new CustomEmptyIterator());
-echo "CustomEmptyIterator count: " . count($result3) . "\n";
+[$results3, $exceptions3] = awaitAll(new CustomEmptyIterator());
+echo "CustomEmptyIterator count: " . count($results3) . "\n";
 
 echo "end\n";
 

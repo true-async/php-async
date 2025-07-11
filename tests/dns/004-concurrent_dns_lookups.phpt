@@ -29,7 +29,7 @@ for ($i = 5; $i < 8; $i++) {
     });
 }
 
-$results = awaitAll($coroutines);
+[$results, $exceptions] = awaitAll($coroutines);
 echo "All DNS lookups completed\n";
 echo "Total results: " . count($results) . "\n";
 

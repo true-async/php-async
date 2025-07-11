@@ -293,7 +293,7 @@ PHP_FUNCTION(Async_await)
 	zend_async_waker_destroy(coroutine);
 }
 
-PHP_FUNCTION(Async_awaitAny)
+PHP_FUNCTION(Async_awaitAnyOrFail)
 {
 	zval * futures;
 	zend_object * cancellation = NULL;
@@ -397,7 +397,7 @@ PHP_FUNCTION(Async_awaitFirstSuccess)
 	RETURN_ARR(return_array);
 }
 
-PHP_FUNCTION(Async_awaitAll)
+PHP_FUNCTION(Async_awaitAllOrFail)
 {
 	zval * futures;
 	zend_object * cancellation = NULL;
@@ -437,7 +437,7 @@ PHP_FUNCTION(Async_awaitAll)
 	RETURN_ARR(results);
 }
 
-PHP_FUNCTION(Async_awaitAllWithErrors)
+PHP_FUNCTION(Async_awaitAll)
 {
 	zval * futures;
 	zend_object * cancellation = NULL;
@@ -488,7 +488,7 @@ PHP_FUNCTION(Async_awaitAllWithErrors)
 	RETURN_ARR(return_array);
 }
 
-PHP_FUNCTION(Async_awaitAnyOf)
+PHP_FUNCTION(Async_awaitAnyOfOrFail)
 {
 	zval * futures;
 	zend_object * cancellation = NULL;
@@ -532,7 +532,7 @@ PHP_FUNCTION(Async_awaitAnyOf)
 	RETURN_ARR(results);
 }
 
-PHP_FUNCTION(Async_awaitAnyOfWithErrors)
+PHP_FUNCTION(Async_awaitAnyOf)
 {
 	zval * futures;
 	zend_object * cancellation = NULL;

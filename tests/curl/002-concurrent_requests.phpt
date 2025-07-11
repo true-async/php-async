@@ -41,7 +41,7 @@ $coroutines = [
     spawn(fn() => make_request(3, $server)),
 ];
 
-$results = awaitAll($coroutines);
+[$results, $exceptions] = awaitAll($coroutines);
 
 // Collect and sort messages
 $start_messages = [];

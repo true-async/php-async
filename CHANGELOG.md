@@ -32,13 +32,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed the `spawnWith()` function for interaction with the `ScopeProvider` and `SpawnStrategy` interface
 
 ### Changed
+- **Breaking Change: Function Renaming** - Major API reorganization for better consistency:
+    - `awaitAllFailFirst()` → `awaitAllOrFail()`
+    - `awaitAllWithErrors()` → `awaitAll()` 
+    - `awaitAnyOfFailFirst()` → `awaitAnyOfOrFail()`
+    - `awaitAnyOfWithErrors()` → `awaitAnyOf()`
+- **Breaking Change: `awaitAll()` Return Format** - New `awaitAll()` (formerly `awaitAllWithErrors()`) now returns `[results, exceptions]` tuple:
+    - First element `[0]` contains array of successful results
+    - Second element `[1]` contains array of exceptions from failed coroutines
+    - **Migration**: Update from `$results = awaitAll($coroutines)` to `[$results, $exceptions] = awaitAll($coroutines)`
 - **LibUV requirement increased to ≥ 1.44.0** - Requires libuv version 1.44.0 or later to ensure proper UV_RUN_ONCE behavior and prevent busy loop issues that could cause high CPU usage
 - **Async Iterator API**:
     - Proper handling of `REWIND`/`NEXT` states in a concurrent environment. 
       The iterator code now stops iteration in 
       coroutines if the iterator is in the process of changing its position.
     - Added functionality for proper handling of exceptions from `Zend iterators` (`\Iterator` and `generators`).
-      An exception that occurs in the iterator can now be handled by the iterator’s owner.
+      An exception that occurs in the iterator can now be handled by the iterator's owner.
 
 
 ## [0.2.0] - 2025-07-01

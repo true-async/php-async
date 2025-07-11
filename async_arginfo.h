@@ -24,34 +24,34 @@ ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_await, 0, 1, IS_MIXED, 0)
 	ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, cancellation, Async\\Awaitable, 1, "null")
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_awaitAny, 0, 1, IS_MIXED, 0)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_awaitAnyOrFail, 0, 1, IS_MIXED, 0)
 	ZEND_ARG_OBJ_TYPE_MASK(0, triggers, Traversable, MAY_BE_ARRAY, NULL)
 	ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, cancellation, Async\\Awaitable, 1, "null")
 ZEND_END_ARG_INFO()
 
-#define arginfo_Async_awaitFirstSuccess arginfo_Async_awaitAny
+#define arginfo_Async_awaitFirstSuccess arginfo_Async_awaitAnyOrFail
 
-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_awaitAll, 0, 1, IS_ARRAY, 0)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_awaitAllOrFail, 0, 1, IS_ARRAY, 0)
 	ZEND_ARG_OBJ_TYPE_MASK(0, triggers, Traversable, MAY_BE_ARRAY, NULL)
 	ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, cancellation, Async\\Awaitable, 1, "null")
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, preserveKeyOrder, _IS_BOOL, 0, "true")
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_awaitAllWithErrors, 0, 1, IS_ARRAY, 0)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_awaitAll, 0, 1, IS_ARRAY, 0)
 	ZEND_ARG_OBJ_TYPE_MASK(0, triggers, Traversable, MAY_BE_ARRAY, NULL)
 	ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, cancellation, Async\\Awaitable, 1, "null")
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, preserveKeyOrder, _IS_BOOL, 0, "true")
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, fillNull, _IS_BOOL, 0, "false")
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_awaitAnyOf, 0, 2, IS_ARRAY, 0)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_awaitAnyOfOrFail, 0, 2, IS_ARRAY, 0)
 	ZEND_ARG_TYPE_INFO(0, count, IS_LONG, 0)
 	ZEND_ARG_OBJ_TYPE_MASK(0, triggers, Traversable, MAY_BE_ARRAY, NULL)
 	ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, cancellation, Async\\Awaitable, 1, "null")
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, preserveKeyOrder, _IS_BOOL, 0, "true")
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_awaitAnyOfWithErrors, 0, 2, IS_ARRAY, 0)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_awaitAnyOf, 0, 2, IS_ARRAY, 0)
 	ZEND_ARG_TYPE_INFO(0, count, IS_LONG, 0)
 	ZEND_ARG_OBJ_TYPE_MASK(0, triggers, Traversable, MAY_BE_ARRAY, NULL)
 	ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, cancellation, Async\\Awaitable, 1, "null")
@@ -92,12 +92,12 @@ ZEND_FUNCTION(Async_spawnWith);
 ZEND_FUNCTION(Async_suspend);
 ZEND_FUNCTION(Async_protect);
 ZEND_FUNCTION(Async_await);
-ZEND_FUNCTION(Async_awaitAny);
+ZEND_FUNCTION(Async_awaitAnyOrFail);
 ZEND_FUNCTION(Async_awaitFirstSuccess);
+ZEND_FUNCTION(Async_awaitAllOrFail);
 ZEND_FUNCTION(Async_awaitAll);
-ZEND_FUNCTION(Async_awaitAllWithErrors);
+ZEND_FUNCTION(Async_awaitAnyOfOrFail);
 ZEND_FUNCTION(Async_awaitAnyOf);
-ZEND_FUNCTION(Async_awaitAnyOfWithErrors);
 ZEND_FUNCTION(Async_delay);
 ZEND_FUNCTION(Async_timeout);
 ZEND_FUNCTION(Async_currentContext);
@@ -114,12 +114,12 @@ static const zend_function_entry ext_functions[] = {
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "suspend"), zif_Async_suspend, arginfo_Async_suspend, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "protect"), zif_Async_protect, arginfo_Async_protect, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "await"), zif_Async_await, arginfo_Async_await, 0, NULL, NULL)
-	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "awaitAny"), zif_Async_awaitAny, arginfo_Async_awaitAny, 0, NULL, NULL)
+	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "awaitAnyOrFail"), zif_Async_awaitAnyOrFail, arginfo_Async_awaitAnyOrFail, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "awaitFirstSuccess"), zif_Async_awaitFirstSuccess, arginfo_Async_awaitFirstSuccess, 0, NULL, NULL)
+	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "awaitAllOrFail"), zif_Async_awaitAllOrFail, arginfo_Async_awaitAllOrFail, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "awaitAll"), zif_Async_awaitAll, arginfo_Async_awaitAll, 0, NULL, NULL)
-	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "awaitAllWithErrors"), zif_Async_awaitAllWithErrors, arginfo_Async_awaitAllWithErrors, 0, NULL, NULL)
+	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "awaitAnyOfOrFail"), zif_Async_awaitAnyOfOrFail, arginfo_Async_awaitAnyOfOrFail, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "awaitAnyOf"), zif_Async_awaitAnyOf, arginfo_Async_awaitAnyOf, 0, NULL, NULL)
-	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "awaitAnyOfWithErrors"), zif_Async_awaitAnyOfWithErrors, arginfo_Async_awaitAnyOfWithErrors, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "delay"), zif_Async_delay, arginfo_Async_delay, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "timeout"), zif_Async_timeout, arginfo_Async_timeout, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "currentContext"), zif_Async_currentContext, arginfo_Async_currentContext, 0, NULL, NULL)

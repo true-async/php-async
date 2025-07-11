@@ -6,7 +6,7 @@ Scheduler: graceful shutdown with exception handling
 use function Async\spawn;
 use function Async\gracefulShutdown;
 use function Async\suspend;
-use function Async\awaitAllWithErrors;
+use function Async\awaitAll;
 
 echo "start\n";
 
@@ -30,7 +30,7 @@ echo "coroutines spawned\n";
 try {
     $cancellation = new \Async\CancellationException("Custom shutdown message");
     gracefulShutdown($cancellation);
-    awaitAllWithErrors([$error_coroutine, $cleanup_coroutine]);
+    awaitAll([$error_coroutine, $cleanup_coroutine]);
     echo "graceful shutdown with custom cancellation completed\n";
 } catch (\Async\CancellationException $e) {
     echo "caught shutdown cancellation: " . $e->getMessage() . "\n";
