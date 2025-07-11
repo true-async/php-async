@@ -8,7 +8,6 @@ use function Async\getCoroutines;
 use function Async\currentCoroutine;
 use function Async\suspend;
 use function Async\awaitAll;
-use function Async\awaitAllWithErrors;
 
 echo "start\n";
 
@@ -56,12 +55,12 @@ foreach ($coroutines as $index => $coroutine) {
     echo "Coroutine {$index} is isCancellationRequested: " . ($coroutine->isCancellationRequested() ? "true" : "false") . "\n";
 }
 
-$results = awaitAllWithErrors($coroutines); // Ensure we yield to allow cancellation to take effect
+[$results, $exceptions] = awaitAll($coroutines); // Ensure we yield to allow cancellation to take effect
 
 $after_partial_cancel = count(getCoroutines()) - $initial_count;
 echo "After cancelling 2: {$after_partial_cancel}\n";
 
-echo "Completed results: " . count($results[0]) . "\n";
+echo "Completed results: " . count($results) . "\n";
 
 $final_count = count(getCoroutines()) - $initial_count;
 echo "Final count: {$final_count}\n";

@@ -31,7 +31,7 @@ for ($i = 0; $i < $lookup_count; $i++) {
     });
 }
 
-$results = awaitAll($coroutines);
+[$results, $exceptions] = awaitAll($coroutines);
 
 $end_memory = memory_get_usage();
 echo "Ending memory usage: " . number_format($end_memory) . " bytes\n";

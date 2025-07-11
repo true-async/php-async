@@ -37,17 +37,17 @@ function protect(\Closure $closure): mixed {}
 
 function await(Awaitable $awaitable, ?Awaitable $cancellation = null): mixed {}
 
-function awaitAny(iterable $triggers, ?Awaitable $cancellation = null): mixed {}
+function awaitAnyOrFail(iterable $triggers, ?Awaitable $cancellation = null): mixed {}
 
 function awaitFirstSuccess(iterable $triggers, ?Awaitable $cancellation = null): mixed {}
 
-function awaitAll(iterable $triggers, ?Awaitable $cancellation = null, bool $preserveKeyOrder = true): array {}
+function awaitAllOrFail(iterable $triggers, ?Awaitable $cancellation = null, bool $preserveKeyOrder = true): array {}
 
-function awaitAllWithErrors(iterable $triggers, ?Awaitable $cancellation = null, bool $preserveKeyOrder = true, bool $fillNull = false): array {}
+function awaitAll(iterable $triggers, ?Awaitable $cancellation = null, bool $preserveKeyOrder = true, bool $fillNull = false): array {}
 
-function awaitAnyOf(int $count, iterable $triggers, ?Awaitable $cancellation = null, bool $preserveKeyOrder = true): array {}
+function awaitAnyOfOrFail(int $count, iterable $triggers, ?Awaitable $cancellation = null, bool $preserveKeyOrder = true): array {}
 
-function awaitAnyOfWithErrors(int $count, iterable $triggers, ?Awaitable $cancellation = null, bool $preserveKeyOrder= true, bool $fillNull = false): array {}
+function awaitAnyOf(int $count, iterable $triggers, ?Awaitable $cancellation = null, bool $preserveKeyOrder = true, bool $fillNull = false): array {}
 
 function delay(int $ms): void {}
 

@@ -42,7 +42,7 @@ for ($i = 1; $i <= 3; $i++) {
     });
 }
 
-$results = awaitAll($coroutines);
+[$results, $exceptions] = awaitAll($coroutines);
 foreach ($results as $i => $result) {
     echo "Result " . ($i + 1) . ": $result\n";
 }

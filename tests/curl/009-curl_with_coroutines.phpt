@@ -41,7 +41,7 @@ $coroutines = [
     spawn(fn() => make_curl_request($server, 3))
 ];
 
-$results = awaitAll($coroutines);
+[$results, $exceptions] = awaitAll($coroutines);
 
 // Collect and sort messages
 $start_messages = [];

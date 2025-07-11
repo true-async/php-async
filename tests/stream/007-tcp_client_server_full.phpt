@@ -72,7 +72,7 @@ $worker = spawn(function() {
     return "worker_done";
 });
 
-$results = awaitAll([$server, $client, $worker]);
+[$results, $exceptions] = awaitAll([$server, $client, $worker]);
 echo "Results: " . implode(", ", $results) . "\n";
 echo "End\n";
 
