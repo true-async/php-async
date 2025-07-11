@@ -135,6 +135,7 @@ jobs:
             --with-config-file-path=/etc \
             --with-config-file-scan-dir=/etc/php.d \
             --with-pdo-firebird \
+            --enable-address-sanitizer \          
             --enable-async
 
       - name: Build PHP
@@ -165,7 +166,7 @@ jobs:
             --no-progress \
             --offline \
             --show-diff \
-            --show-slow 2000 \
+            --show-slow 4000 \
             --set-timeout 120 \
             --repeat 2
 
@@ -309,6 +310,7 @@ jobs:
             --enable-inifile \
             --with-config-file-path=/usr/local/etc \
             --with-config-file-scan-dir=/usr/local/etc/php.d \
+            --enable-address-sanitizer \          
             --enable-async
 
       - name: Build PHP (macOS)
@@ -342,7 +344,7 @@ jobs:
             --no-progress ^
             --offline ^
             --show-diff ^
-            --show-slow 2000 ^
+            --show-slow 4000 ^
             --set-timeout 120 ^
             --repeat 2
         shell: cmd
@@ -364,6 +366,6 @@ jobs:
             --no-progress \
             --offline \
             --show-diff \
-            --show-slow 2000 \
+            --show-slow 4000 \
             --set-timeout 120 \
             --repeat 2
