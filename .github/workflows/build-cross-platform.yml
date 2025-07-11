@@ -126,6 +126,9 @@ jobs:
       - name: Install build dependencies (macOS)
         if: matrix.os == 'macos-latest'
         run: |
+          # Update Homebrew first
+          brew update
+          
           # Core build tools
           brew install autoconf automake libtool pkg-config bison
           
@@ -137,16 +140,14 @@ jobs:
           libuv_version=$(pkg-config --modversion libuv 2>/dev/null || echo "unknown")
           echo "Installed LibUV version: $libuv_version"
           
-          # Fixed package names
-          brew install tidy-html5 icu4c openssl@3
-          
-          # Additional dependencies
-          brew install gmp libzip bzip2 sqlite oniguruma curl
-          brew install libxml2 libxslt readline libsodium argon2
+          # Essential dependencies only (avoid conflicts)
+          brew install tidy-html5 icu4c openssl@3 libxml2 libxslt
           
           # Setup environment variables for keg-only packages
-          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix icu4c)/lib/pkgconfig:$(brew --prefix libxml2)/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix icu4c)/lib/pkgconfig:$(brew --prefix libxml2)/lib/pkgconfig:$(brew --prefix libxslt)/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
           echo "PATH=$(brew --prefix bison)/bin:$PATH" >> $GITHUB_ENV
+          echo "CPPFLAGS=-I$(brew --prefix openssl@3)/include -I$(brew --prefix icu4c)/include" >> $GITHUB_ENV
+          echo "LDFLAGS=-L$(brew --prefix openssl@3)/lib -L$(brew --prefix icu4c)/lib" >> $GITHUB_ENV
 
       # ==================== UBUNTU CONFIGURE & BUILD ====================
       - name: Configure PHP (Ubuntu)
@@ -155,7 +156,6 @@ jobs:
         run: |
           ./buildconf -f
           ./configure \
-            --host=$(./build/config.guess) \
             --enable-zts \
             --enable-fpm \
             --enable-opcache \
@@ -224,7 +224,7 @@ jobs:
         if: matrix.os == 'windows-latest'
         working-directory: php-src
         run: |
-          # Use php-sdk for environment setup and build
+          REM Use php-sdk for environment setup and build
           call C:\php-sdk\bin\phpsdk_buildtree.bat phpdev
           call C:\php-sdk\bin\phpsdk_setvars.bat
           buildconf.bat
@@ -239,48 +239,14 @@ jobs:
         run: |
           ./buildconf -f
           ./configure \
-            --host=$(./build/config.guess) \
             --enable-zts \
-            --enable-fpm \
             --enable-opcache \
             --with-pdo-sqlite \
             --enable-intl \
             --without-pear \
-            --with-zip \
-            --with-zlib \
-            --enable-soap \
-            --enable-xmlreader \
-            --with-xsl \
-            --with-tidy=$(brew --prefix tidy-html5) \
-            --enable-sysvsem \
-            --enable-sysvshm \
-            --enable-shmop \
-            --enable-pcntl \
-            --with-readline \
-            --enable-mbstring \
-            --with-curl \
-            --with-gettext \
             --enable-sockets \
-            --with-bz2 \
+            --enable-mbstring \
             --with-openssl=$(brew --prefix openssl@3) \
-            --with-gmp \
-            --enable-bcmath \
-            --enable-calendar \
-            --enable-ftp \
-            --enable-sysvmsg \
-            --with-ffi \
-            --enable-zend-test \
-            --enable-dl-test=shared \
-            --with-password-argon2 \
-            --with-mhash \
-            --with-sodium \
-            --enable-dba \
-            --with-cdb \
-            --enable-flatfile \
-            --enable-inifile \
-            --with-config-file-path=/usr/local/etc \
-            --with-config-file-scan-dir=/usr/local/etc/php.d \
-            --enable-address-sanitizer \          
             --enable-async
 
       - name: Build PHP (macOS)
