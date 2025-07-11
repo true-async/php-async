@@ -1,0 +1,173 @@
+name: True Async Windows Build
+
+on:
+  push:
+    branches: [build]
+  pull_request:
+    branches: [build]
+
+jobs:
+  build-windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - x64: true
+            zts: true
+            opcache: true
+            asan: false
+          - x64: false
+            zts: false
+            opcache: false
+            asan: false
+          # ASAN build only for x64+ZTS (most comprehensive)
+          - x64: true
+            zts: true
+            opcache: true
+            asan: true
+            timeout: 120
+
+    name: "WINDOWS_${{ matrix.x64 && 'X64' || 'X86' }}_${{ matrix.zts && 'ZTS' || 'NTS' }}${{ matrix.asan && '_ASAN' || ''}}"
+    runs-on: windows-2022
+    timeout-minutes: ${{ matrix.timeout || 90 }}
+    
+    env:
+      PHP_BUILD_CACHE_BASE_DIR: C:\build-cache
+      PHP_BUILD_OBJ_DIR: C:\obj
+      PHP_BUILD_CACHE_SDK_DIR: C:\build-cache\sdk
+      PHP_BUILD_SDK_BRANCH: php-sdk-2.3.0
+      PHP_BUILD_CRT: vs16  # Visual Studio 2019 CRT
+      PLATFORM: ${{ matrix.x64 && 'x64' || 'x86' }}
+      THREAD_SAFE: "${{ matrix.zts && '1' || '0' }}"
+      INTRINSICS: "${{ matrix.zts && 'AVX2' || '' }}"
+      PARALLEL: -j2
+      OPCACHE: "${{ matrix.opcache && '1' || '0' }}"
+      ASAN: "${{ matrix.asan && '1' || '0' }}"
+
+    steps:
+      - name: git config
+        run: git config --global core.autocrlf false && git config --global core.eol lf
+
+      - name: Checkout php-async repo
+        uses: actions/checkout@v4
+        with:
+          path: async
+
+      - name: Clone php-src (true-async-stable)
+        run: |
+          git clone --depth=1 --branch=true-async-stable https://github.com/true-async/php-src php-src
+
+      - name: Copy php-async extension into php-src
+        run: |
+          if not exist php-src\ext\async mkdir php-src\ext\async
+          xcopy /E /I /H /Y async php-src\ext\async
+
+      - name: Setup LibUV for Windows
+        shell: powershell
+        run: |
+          # Install vcpkg for LibUV
+          if (!(Test-Path "C:\vcpkg")) {
+            git clone https://github.com/Microsoft/vcpkg.git C:\vcpkg
+            C:\vcpkg\bootstrap-vcpkg.bat
+          }
+          
+          # Install LibUV via vcpkg
+          C:\vcpkg\vcpkg.exe install libuv:${{ matrix.x64 && 'x64' || 'x86' }}-windows
+
+      - name: Setup Windows build environment
+        working-directory: php-src
+        shell: cmd
+        run: |
+          set SDK_REMOTE=https://github.com/php/php-sdk-binary-tools.git
+          set SDK_BRANCH=%PHP_BUILD_SDK_BRANCH%
+          set SDK_RUNNER=%PHP_BUILD_CACHE_SDK_DIR%\phpsdk-%PHP_BUILD_CRT%-%PLATFORM%.bat
+
+          if not exist "%PHP_BUILD_CACHE_BASE_DIR%" (
+            echo Creating %PHP_BUILD_CACHE_BASE_DIR%
+            mkdir "%PHP_BUILD_CACHE_BASE_DIR%"
+          )
+
+          if not exist "%PHP_BUILD_OBJ_DIR%" (
+            echo Creating %PHP_BUILD_OBJ_DIR%
+            mkdir "%PHP_BUILD_OBJ_DIR%"
+          )
+
+          if not exist "%PHP_BUILD_CACHE_SDK_DIR%" (
+            echo Cloning remote SDK repository
+            git clone --branch %SDK_BRANCH% %SDK_REMOTE% --depth 1 "%PHP_BUILD_CACHE_SDK_DIR%"
+          )
+
+      - name: Build PHP with Async extension
+        working-directory: php-src
+        shell: cmd
+        run: |
+          set SDK_RUNNER=%PHP_BUILD_CACHE_SDK_DIR%\phpsdk-%PHP_BUILD_CRT%-%PLATFORM%.bat
+          
+          rem Set LibUV paths
+          set LIBUV_DIR=C:\vcpkg\installed\${{ matrix.x64 && 'x64' || 'x86' }}-windows
+          set INCLUDE=%INCLUDE%;%LIBUV_DIR%\include
+          set LIB=%LIB%;%LIBUV_DIR%\lib
+          
+          rem Find VS toolset
+          for /f "delims=" %%T in ('dir /b "C:\Program Files*\Microsoft Visual Studio\*\*\VC\Auxiliary\Build\vcvars*.bat" 2^>nul ^| findstr /i "%PLATFORM%"') do set "VCVARS_BAT=%%T"
+          if "%VCVARS_BAT%"=="" (
+            echo "Could not find vcvars bat file"
+            exit /b 1
+          )
+          
+          rem Build with SDK
+          call "%SDK_RUNNER%" -c "%VCVARS_BAT%" -t build_async.bat
+
+      - name: Create Windows build script
+        working-directory: php-src
+        shell: cmd
+        run: |
+          echo @echo off > build_async.bat
+          echo. >> build_async.bat
+          echo rem Update dependencies >> build_async.bat
+          echo cmd /c phpsdk_deps --update --no-backup --branch master --stability staging --deps "%PHP_BUILD_CACHE_BASE_DIR%\deps-master-%PHP_SDK_VS%-%PHP_SDK_ARCH%" --crt %PHP_BUILD_CRT% >> build_async.bat
+          echo if %%errorlevel%% neq 0 exit /b 3 >> build_async.bat
+          echo. >> build_async.bat
+          echo rem Configure build >> build_async.bat
+          echo cmd /c buildconf.bat --force >> build_async.bat
+          echo if %%errorlevel%% neq 0 exit /b 3 >> build_async.bat
+          echo. >> build_async.bat
+          echo rem Set configuration options >> build_async.bat
+          echo set ADD_CONF= >> build_async.bat
+          echo if "%THREAD_SAFE%" equ "0" set ADD_CONF=%%ADD_CONF%% --disable-zts >> build_async.bat
+          echo if "%INTRINSICS%" neq "" set ADD_CONF=%%ADD_CONF%% --enable-native-intrinsics=%INTRINSICS% >> build_async.bat
+          echo if "%ASAN%" equ "1" set ADD_CONF=%%ADD_CONF%% --enable-sanitizer --enable-debug-pack >> build_async.bat
+          echo. >> build_async.bat
+          echo rem Configure with async extension >> build_async.bat
+          echo cmd /c configure.bat ^^^ >> build_async.bat
+          echo 	--enable-snapshot-build ^^^ >> build_async.bat
+          echo 	--disable-debug-pack ^^^ >> build_async.bat
+          echo 	--without-analyzer ^^^ >> build_async.bat
+          echo 	--enable-object-out-dir=%PHP_BUILD_OBJ_DIR% ^^^ >> build_async.bat
+          echo 	--with-php-build="%PHP_BUILD_CACHE_BASE_DIR%\deps-master-%PHP_SDK_VS%-%PHP_SDK_ARCH%" ^^^ >> build_async.bat
+          echo 	--enable-async ^^^ >> build_async.bat
+          echo 	--with-libuv="%LIBUV_DIR%" ^^^ >> build_async.bat
+          echo 	%%ADD_CONF%% ^^^ >> build_async.bat
+          echo 	--disable-test-ini >> build_async.bat
+          echo if %%errorlevel%% neq 0 exit /b 3 >> build_async.bat
+          echo. >> build_async.bat
+          echo rem Build >> build_async.bat
+          echo nmake /NOLOGO >> build_async.bat
+          echo if %%errorlevel%% neq 0 exit /b 3 >> build_async.bat
+          echo. >> build_async.bat
+          echo exit /b 0 >> build_async.bat
+
+      - name: Run basic tests
+        working-directory: php-src
+        shell: cmd
+        run: |
+          rem Run basic async extension tests
+          %PHP_BUILD_OBJ_DIR%\${{ matrix.zts && 'Release_TS' || 'Release' }}\php.exe -v
+          %PHP_BUILD_OBJ_DIR%\${{ matrix.zts && 'Release_TS' || 'Release' }}\php.exe run-tests.php -q -x --no-progress ext\async
+
+      - name: Test with OpCache
+        if: matrix.opcache
+        working-directory: php-src
+        shell: cmd
+        run: |
+          %PHP_BUILD_OBJ_DIR%\${{ matrix.zts && 'Release_TS' || 'Release' }}\php.exe run-tests.php -q -x --no-progress -d zend_extension=php_opcache.dll -d opcache.enable_cli=1 ext\async
