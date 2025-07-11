@@ -7,13 +7,24 @@ on:
     branches: [build]
 
 jobs:
-  # Ubuntu build with database services (matches build.yml)
-  ubuntu-database-build:
-    runs-on: ubuntu-latest
+  cross-platform-build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            platform: ubuntu
+          - os: windows-latest  
+            platform: windows
+          - os: macos-latest
+            platform: macos
+    
+    runs-on: ${{ matrix.os }}
 
     services:
       mysql:
-        image: mysql:8.3
+        image: ${{ matrix.os == 'ubuntu-latest' && 'mysql:8.3' || '' }}
         env:
           MYSQL_ROOT_PASSWORD: ''
           MYSQL_ALLOW_EMPTY_PASSWORD: yes
@@ -26,7 +37,7 @@ jobs:
           --health-retries=5
 
       postgres:
-        image: postgres:16
+        image: ${{ matrix.os == 'ubuntu-latest' && 'postgres:16' || '' }}
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: test
@@ -36,6 +47,7 @@ jobs:
           --health-interval=10s
           --health-timeout=5s
           --health-retries=5
+
 
     steps:
       - name: Checkout php-async repo
@@ -52,7 +64,9 @@ jobs:
           mkdir -p php-src/ext/async
           cp -r async/* php-src/ext/async/
 
-      - name: Install build dependencies
+      # ==================== UBUNTU DEPENDENCIES ====================
+      - name: Install build dependencies (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -64,7 +78,8 @@ jobs:
             firebird-dev \
             valgrind cmake
 
-      - name: Install LibUV >= 1.44.0
+      - name: Install LibUV >= 1.44.0 (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
         run: |
           # Check if system libuv meets requirements
           if pkg-config --exists libuv && pkg-config --atleast-version=1.44.0 libuv; then
@@ -82,123 +97,6 @@ jobs:
             sudo ldconfig
             cd ../..
           fi
-
-      - name: Configure PHP
-        working-directory: php-src
-        run: |
-          ./buildconf -f
-          ./configure \
-            --enable-zts \
-            --enable-fpm \
-            --enable-opcache \
-            --with-pdo-mysql=mysqlnd \
-            --with-mysqli=mysqlnd \
-            --with-pgsql \
-            --with-pdo-pgsql \
-            --with-pdo-sqlite \
-            --enable-intl \
-            --without-pear \
-            --with-zip \
-            --with-zlib \
-            --enable-soap \
-            --enable-xmlreader \
-            --with-xsl \
-            --with-tidy \
-            --enable-sysvsem \
-            --enable-sysvshm \
-            --enable-shmop \
-            --enable-pcntl \
-            --with-readline \
-            --enable-mbstring \
-            --with-curl \
-            --with-gettext \
-            --enable-sockets \
-            --with-bz2 \
-            --with-openssl \
-            --with-gmp \
-            --enable-bcmath \
-            --enable-calendar \
-            --enable-ftp \
-            --enable-sysvmsg \
-            --with-ffi \
-            --enable-zend-test \
-            --enable-dl-test=shared \
-            --with-ldap \
-            --with-ldap-sasl \
-            --with-password-argon2 \
-            --with-mhash \
-            --with-sodium \
-            --enable-dba \
-            --with-cdb \
-            --enable-flatfile \
-            --enable-inifile \
-            --with-config-file-path=/etc \
-            --with-config-file-scan-dir=/etc/php.d \
-            --with-pdo-firebird \
-            --enable-address-sanitizer \          
-            --enable-async
-
-      - name: Build PHP
-        working-directory: php-src
-        run: |
-          make -j"$(nproc)"
-          sudo make install
-          sudo mkdir -p /etc/php.d
-          sudo chmod 777 /etc/php.d
-          {
-            echo "opcache.enable_cli=1"
-            echo "opcache.protect_memory=1"
-          } > /etc/php.d/opcache.ini
-
-      - name: Run tests
-        working-directory: php-src/ext/async
-        run: |
-          /usr/local/bin/php -v
-          /usr/local/bin/php ../../run-tests.php \
-            -d zend_extension=opcache.so \
-            -d opcache.enable_cli=1 \
-            -d opcache.jit_buffer_size=64M \
-            -d opcache.jit=tracing \
-            -d zend_test.observer.enabled=1 \
-            -d zend_test.observer.show_output=0 \
-            -P -q -x -j4 \
-            -g FAIL,BORK,LEAK,XLEAK \
-            --no-progress \
-            --offline \
-            --show-diff \
-            --show-slow 4000 \
-            --set-timeout 120 \
-            --repeat 2
-
-  # Cross-platform build without database services  
-  cross-platform-build:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest]
-        include:
-          - os: windows-latest  
-            platform: windows
-          - os: macos-latest
-            platform: macos
-    
-    runs-on: ${{ matrix.os }}
-
-
-    steps:
-      - name: Checkout php-async repo
-        uses: actions/checkout@v4
-        with:
-          path: async
-
-      - name: Clone php-src (true-async-stable)
-        run: |
-          git clone --depth=1 --branch=true-async-stable https://github.com/true-async/php-src php-src
-
-      - name: Copy php-async extension into php-src
-        run: |
-          mkdir -p php-src/ext/async
-          cp -r async/* php-src/ext/async/
 
       # ==================== WINDOWS DEPENDENCIES ====================
       - name: Install build dependencies (Windows)
@@ -250,6 +148,77 @@ jobs:
           echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix icu4c)/lib/pkgconfig:$(brew --prefix libxml2)/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
           echo "PATH=$(brew --prefix bison)/bin:$PATH" >> $GITHUB_ENV
 
+      # ==================== UBUNTU CONFIGURE & BUILD ====================
+      - name: Configure PHP (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: php-src
+        run: |
+          ./buildconf -f
+          ./configure \
+            --host=$(./build/config.guess) \
+            --enable-zts \
+            --enable-fpm \
+            --enable-opcache \
+            --with-pdo-mysql=mysqlnd \
+            --with-mysqli=mysqlnd \
+            --with-pgsql \
+            --with-pdo-pgsql \
+            --with-pdo-sqlite \
+            --enable-intl \
+            --without-pear \
+            --with-zip \
+            --with-zlib \
+            --enable-soap \
+            --enable-xmlreader \
+            --with-xsl \
+            --with-tidy \
+            --enable-sysvsem \
+            --enable-sysvshm \
+            --enable-shmop \
+            --enable-pcntl \
+            --with-readline \
+            --enable-mbstring \
+            --with-curl \
+            --with-gettext \
+            --enable-sockets \
+            --with-bz2 \
+            --with-openssl \
+            --with-gmp \
+            --enable-bcmath \
+            --enable-calendar \
+            --enable-ftp \
+            --enable-sysvmsg \
+            --with-ffi \
+            --enable-zend-test \
+            --enable-dl-test=shared \
+            --with-ldap \
+            --with-ldap-sasl \
+            --with-password-argon2 \
+            --with-mhash \
+            --with-sodium \
+            --enable-dba \
+            --with-cdb \
+            --enable-flatfile \
+            --enable-inifile \
+            --with-config-file-path=/etc \
+            --with-config-file-scan-dir=/etc/php.d \
+            --with-pdo-firebird \
+            --enable-address-sanitizer \          
+            --enable-async
+
+      - name: Build PHP (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: php-src
+        run: |
+          make -j"$(nproc)"
+          sudo make install
+          sudo mkdir -p /etc/php.d
+          sudo chmod 777 /etc/php.d
+          {
+            echo "opcache.enable_cli=1"
+            echo "opcache.protect_memory=1"
+          } > /etc/php.d/opcache.ini
+
       # ==================== WINDOWS CONFIGURE & BUILD ====================
       - name: Configure and Build PHP (Windows)
         if: matrix.os == 'windows-latest'
@@ -259,7 +228,7 @@ jobs:
           call C:\php-sdk\bin\phpsdk_buildtree.bat phpdev
           call C:\php-sdk\bin\phpsdk_setvars.bat
           buildconf.bat
-          configure.bat --enable-async
+          configure.bat --enable-opcache --enable-async --enable-pdo --with-pdo-mysql --enable-sockets --with-sqlite3 --with-curl --enable-ftp --with-pdo-pgsql
           nmake
         shell: cmd
 
@@ -270,6 +239,7 @@ jobs:
         run: |
           ./buildconf -f
           ./configure \
+            --host=$(./build/config.guess) \
             --enable-zts \
             --enable-fpm \
             --enable-opcache \
@@ -327,6 +297,27 @@ jobs:
           } > /usr/local/etc/php.d/opcache.ini
 
       # ==================== TESTING FOR ALL PLATFORMS ====================
+      - name: Run tests (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: php-src/ext/async
+        run: |
+          /usr/local/bin/php -v
+          /usr/local/bin/php ../../run-tests.php \
+            -d zend_extension=opcache.so \
+            -d opcache.enable_cli=1 \
+            -d opcache.jit_buffer_size=64M \
+            -d opcache.jit=tracing \
+            -d zend_test.observer.enabled=1 \
+            -d zend_test.observer.show_output=0 \
+            -P -q -x -j4 \
+            -g FAIL,BORK,LEAK,XLEAK \
+            --no-progress \
+            --offline \
+            --show-diff \
+            --show-slow 4000 \
+            --set-timeout 120 \
+            --repeat 2
+
       - name: Run tests (Windows)
         if: matrix.os == 'windows-latest'
         working-directory: php-src/ext/async
