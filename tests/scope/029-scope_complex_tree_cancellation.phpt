@@ -10,7 +10,7 @@ use function Async\await;
 echo "start\n";
 
 // Create complex scope tree: parent -> child -> grandchild -> great-grandchild
-$parent_scope = new \Async\Scope();
+$parent_scope = new \Async\Scope()->asNotSafely();
 $child_scope = \Async\Scope::inherit($parent_scope);
 $grandchild_scope = \Async\Scope::inherit($child_scope);
 $great_grandchild_scope = \Async\Scope::inherit($grandchild_scope);

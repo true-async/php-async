@@ -71,9 +71,8 @@ error coroutine started
 normal coroutine started
 external waiting with error handler
 scope cancel
-coroutine cancelled
 awaitAfterCancellation with handler started
-error handler called: Coroutine error after cancellation
+normal coroutine finished
 awaitAfterCancellation with handler completed
 scope finished: true
 end

@@ -60,6 +60,8 @@ coroutine1 started
 coroutine2 started
 scope cancelled
 external waiting after cancellation
+coroutine1 finished
+coroutine2 finished
 awaitAfterCancellation completed
 scope finished: true
 scope closed: true
