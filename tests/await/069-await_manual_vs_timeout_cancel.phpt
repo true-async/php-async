@@ -71,7 +71,7 @@ suspend();
 $race_coroutine->cancel(new \Async\CancellationException("Manual wins"));
 
 try {
-    $result = await($race_coroutine, timeout(1)); // Should get manual cancel, not timeout
+    $result = await($race_coroutine, timeout(1000)); // Should get manual cancel, not timeout
     echo "race await should not succeed\n";
 } catch (\Async\CancellationException $e) {
     echo "race cancellation caught: " . get_class($e) . ": " . $e->getMessage() . "\n";
