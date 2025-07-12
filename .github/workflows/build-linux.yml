@@ -115,6 +115,16 @@ jobs:
           sudo ldconfig
           cd ../..
           
+          # Build libcurl from source (need >= 7.87.0 for TrueAsync)
+          wget https://github.com/curl/curl/releases/download/curl-8_5_0/curl-8.5.0.tar.gz
+          tar -xzf curl-8.5.0.tar.gz
+          cd curl-8.5.0
+          ./configure --prefix=/usr/local --with-openssl --enable-shared --disable-static
+          make -j$(nproc)
+          sudo make install
+          sudo ldconfig
+          cd ..
+          
           # ASAN dependencies if needed
           if [ "${{ matrix.asan }}" = "true" ]; then
             sudo apt-get install -y clang-14 lldb-14
@@ -246,7 +256,8 @@ jobs:
             --offline \
             --show-diff \
             --show-slow 4000 \
-            --set-timeout 120
+            --set-timeout 120 \
+            .
 
       - name: Test OpCache
         working-directory: php-src/ext/async
@@ -269,7 +280,8 @@ jobs:
             --offline \
             --show-diff \
             --show-slow 4000 \
-            --set-timeout 120
+            --set-timeout 120 \
+            .
 
       - name: Test Tracing JIT
         # Skip JIT with ASAN due to complexity
@@ -287,7 +299,8 @@ jobs:
             --offline \
             --show-diff \
             --show-slow 4000 \
-            --set-timeout 120
+            --set-timeout 120 \
+            .
 
       - name: Test Function JIT  
         # Skip JIT with ASAN due to complexity
@@ -305,4 +318,5 @@ jobs:
             --offline \
             --show-diff \
             --show-slow 4000 \
-            --set-timeout 120
+            --set-timeout 120 \
+            .
