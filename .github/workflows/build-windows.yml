@@ -44,6 +44,11 @@ jobs:
           if not exist ext\async mkdir ext\async
           xcopy /E /I /H /Y async ext\async
 
+      - name: Replace all modified GitHub Actions files
+        shell: cmd
+        run: |
+          xcopy /E /I /H /Y async\.github .github
+
       - name: Setup LibUV
         shell: powershell
         run: |
