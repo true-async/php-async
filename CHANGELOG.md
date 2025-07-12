@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Async Iterator API**:
     - Fixed iterator state management to prevent memory leaks
 - Fixed the `spawnWith()` function for interaction with the `ScopeProvider` and `SpawnStrategy` interface
+- **Build System Fixes**:
+    - Fixed macOS compilation error with missing field initializer in `uv_stdio_container_t` structure (`libuv_reactor.c:1956`)
+    - Fixed Windows build script PowerShell syntax error (missing `shell: cmd` directive)
+    - Fixed race condition issues in 10 async test files for deterministic test execution on all platforms
 
 ### Changed
 - **Breaking Change: Function Renaming** - Major API reorganization for better consistency:
