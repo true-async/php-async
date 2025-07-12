@@ -35,8 +35,10 @@ set CFLAGS=/W3 /WX /wd4018 /wd4146 /wd4244 /wd4267
 
 rem Copy LibUV from vcpkg to deps directory for async extension
 if not exist "%DEPS_DIR%\include\libuv" mkdir "%DEPS_DIR%\include\libuv"
-xcopy /E /I /H /Y "C:\vcpkg\installed\x64-windows\include\*" "%DEPS_DIR%\include\libuv\"
-xcopy /E /I /H /Y "C:\vcpkg\installed\x64-windows\lib\uv.lib" "%DEPS_DIR%\lib\"
+if not exist "%DEPS_DIR%\lib" mkdir "%DEPS_DIR%\lib"
+xcopy /E /I /H /Y "C:\vcpkg\installed\x64-windows\include\uv.h" "%DEPS_DIR%\include\libuv\"
+xcopy /E /I /H /Y "C:\vcpkg\installed\x64-windows\include\uv" "%DEPS_DIR%\include\libuv\uv\"
+copy "C:\vcpkg\installed\x64-windows\lib\uv.lib" "%DEPS_DIR%\lib\"
 
 cmd /c configure.bat ^
 	--enable-snapshot-build ^
