@@ -2,9 +2,9 @@ name: True Async Windows Build
 
 on:
   push:
-    branches: [build]
+    branches: [xbuild]
   pull_request:
-    branches: [build]
+    branches: [xbuild]
 
 jobs:
   build-windows:

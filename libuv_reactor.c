@@ -1953,7 +1953,7 @@ static zend_async_exec_event_t * libuv_new_exec_event(
 #endif
 
 	options->stdio = (uv_stdio_container_t[]) {
-	        { UV_IGNORE },
+	        { .flags = UV_IGNORE, .data = { .stream = NULL } },
 			{
 				.data.stream = (uv_stream_t*) exec->stdout_pipe,
 				.flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE

@@ -2,9 +2,9 @@ name: True Async Alpine Build
 
 on:
   push:
-    branches: [build-x]
+    branches: [xbuild-x]
   pull_request:
-    branches: [build-x]
+    branches: [xbuild-x]
 
 jobs:
   build-alpine:
