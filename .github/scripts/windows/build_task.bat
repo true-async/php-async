@@ -20,26 +20,17 @@ if not exist "%DEPS_DIR%" (
 )
 if %errorlevel% neq 0 exit /b 3
 
-cmd /c buildconf.bat --force
-if %errorlevel% neq 0 exit /b 3
-
-rem Copy LibUV from vcpkg to deps directory for async extension BEFORE configure
-echo Debug: DEPS_DIR=%DEPS_DIR%
-echo Debug: Checking what's in vcpkg...
-dir "C:\vcpkg\installed\x64-windows\include\"
-dir "C:\vcpkg\installed\x64-windows\lib\"
-
+rem Copy LibUV from vcpkg to deps directory
+echo Copying LibUV to %DEPS_DIR%
 if not exist "%DEPS_DIR%\include\libuv" mkdir "%DEPS_DIR%\include\libuv"
 if not exist "%DEPS_DIR%\lib" mkdir "%DEPS_DIR%\lib"
+copy "C:\vcpkg\installed\x64-windows\include\uv.h" "%DEPS_DIR%\include\libuv\uv.h"
+if %errorlevel% neq 0 echo ERROR: Failed to copy uv.h
+copy "C:\vcpkg\installed\x64-windows\lib\uv.lib" "%DEPS_DIR%\lib\uv.lib"  
+if %errorlevel% neq 0 echo ERROR: Failed to copy uv.lib
 
-echo Debug: Copying LibUV files...
-copy "C:\vcpkg\installed\x64-windows\include\uv.h" "%DEPS_DIR%\include\libuv\"
-xcopy /E /I /H /Y "C:\vcpkg\installed\x64-windows\include\uv" "%DEPS_DIR%\include\libuv\uv\"
-copy "C:\vcpkg\installed\x64-windows\lib\uv.lib" "%DEPS_DIR%\lib\"
-
-echo Debug: Checking what we copied...
-dir "%DEPS_DIR%\include\libuv\"
-dir "%DEPS_DIR%\lib\"
+cmd /c buildconf.bat --force
+if %errorlevel% neq 0 exit /b 3
 
 if "%THREAD_SAFE%" equ "0" set ADD_CONF=%ADD_CONF% --disable-zts
 if "%INTRINSICS%" neq "" set ADD_CONF=%ADD_CONF% --enable-native-intrinsics=%INTRINSICS%
