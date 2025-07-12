@@ -30,23 +30,9 @@ echo.
 echo Testing PHP executable...
 cd /d %PHP_BUILD_DIR%
 
-echo Enabling Loader Snaps for detailed DLL loading diagnostics...
-gflags /i php.exe +sls >nul
-
-echo Running PHP under cdb with Loader Snaps...
-
-echo Checking for missing DLL errors:
-cdb -c "g;qd" php.exe --version 2^>^&1 ^
-    | findstr /i "LDR: Error .*unable to load"
-
-echo Getting full output and exit code:
-for /f "tokens=*" %%L in ('
-    cdb -c "g;qd" php.exe --version 2^>^&1
-') do (
-    echo %%L
-    if "%%L"=="Exit code" set "PHP_LINE=%%L"
-)
-for %%i in (%PHP_LINE%) do set "PHP_EXIT_CODE=%%i"
+echo Testing PHP directly...
+php.exe --version
+set PHP_EXIT_CODE=%errorlevel%
 
 echo Exit code = %PHP_EXIT_CODE%
 if not "%PHP_EXIT_CODE%"=="0" (
@@ -75,9 +61,6 @@ if exist ..\ext\async\tests (
 )
 
 set TEST_EXIT_CODE=%errorlevel%
-
-rem Disable Loader Snaps
-gflags /i php.exe -sls >nul
 
 echo.
 echo Tests completed with exit code: %TEST_EXIT_CODE%
