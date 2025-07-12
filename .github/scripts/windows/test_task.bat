@@ -27,31 +27,8 @@ set DEPS_DIR=C:\build-cache\deps-master-vs17-x64
 copy /-y %DEPS_DIR%\bin\*.dll %PHP_BUILD_DIR%\*
 
 echo.
-echo Testing PHP executable...
-cd /d %PHP_BUILD_DIR%
-
-echo Testing PHP directly...
-php.exe --version
-set PHP_EXIT_CODE=%errorlevel%
-
-echo Exit code = %PHP_EXIT_CODE%
-if not "%PHP_EXIT_CODE%"=="0" (
-    echo ERROR: PHP failed to start (exit code: %PHP_EXIT_CODE%)
-    exit /b 1
-)
-
-echo.
-echo PHP working! Checking if async extension is loaded...
-php.exe -m | findstr async
-if %errorlevel% neq 0 (
-    echo WARNING: async extension not found in module list
-) else (
-    echo SUCCESS: async extension is loaded
-)
-
-echo.
 echo Running async extension tests...
-php.exe ..\..\run-tests.php --show-diff ..\ext\async\tests
+%PHP_BUILD_DIR%\php.exe run-tests.php --show-diff ext\async\tests
 
 set TEST_EXIT_CODE=%errorlevel%
 
