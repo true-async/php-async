@@ -20,7 +20,9 @@
 #include "php_async.h"
 #include "zend_common.h"
 
-#ifndef PHP_WIN32
+#ifdef PHP_WIN32
+#include "win32/unistd.h"
+#else
 #include <sys/wait.h>
 #include <signal.h>
 #include <unistd.h>
