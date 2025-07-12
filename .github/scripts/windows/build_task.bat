@@ -23,6 +23,24 @@ if %errorlevel% neq 0 exit /b 3
 cmd /c buildconf.bat --force
 if %errorlevel% neq 0 exit /b 3
 
+rem Copy LibUV from vcpkg to deps directory for async extension BEFORE configure
+echo Debug: DEPS_DIR=%DEPS_DIR%
+echo Debug: Checking what's in vcpkg...
+dir "C:\vcpkg\installed\x64-windows\include\"
+dir "C:\vcpkg\installed\x64-windows\lib\"
+
+if not exist "%DEPS_DIR%\include\libuv" mkdir "%DEPS_DIR%\include\libuv"
+if not exist "%DEPS_DIR%\lib" mkdir "%DEPS_DIR%\lib"
+
+echo Debug: Copying LibUV files...
+copy "C:\vcpkg\installed\x64-windows\include\uv.h" "%DEPS_DIR%\include\libuv\"
+xcopy /E /I /H /Y "C:\vcpkg\installed\x64-windows\include\uv" "%DEPS_DIR%\include\libuv\uv\"
+copy "C:\vcpkg\installed\x64-windows\lib\uv.lib" "%DEPS_DIR%\lib\"
+
+echo Debug: Checking what we copied...
+dir "%DEPS_DIR%\include\libuv\"
+dir "%DEPS_DIR%\lib\"
+
 if "%THREAD_SAFE%" equ "0" set ADD_CONF=%ADD_CONF% --disable-zts
 if "%INTRINSICS%" neq "" set ADD_CONF=%ADD_CONF% --enable-native-intrinsics=%INTRINSICS%
 if "%ASAN%" equ "1" set ADD_CONF=%ADD_CONF% --enable-sanitizer --enable-debug-pack
@@ -32,13 +50,6 @@ rem C4146: unary minus operator applied to unsigned type
 rem C4244: type conversion, possible loss of data
 rem C4267: 'size_t' type conversion, possible loss of data
 set CFLAGS=/W3 /WX /wd4018 /wd4146 /wd4244 /wd4267
-
-rem Copy LibUV from vcpkg to deps directory for async extension
-if not exist "%DEPS_DIR%\include\libuv" mkdir "%DEPS_DIR%\include\libuv"
-if not exist "%DEPS_DIR%\lib" mkdir "%DEPS_DIR%\lib"
-xcopy /E /I /H /Y "C:\vcpkg\installed\x64-windows\include\uv.h" "%DEPS_DIR%\include\libuv\"
-xcopy /E /I /H /Y "C:\vcpkg\installed\x64-windows\include\uv" "%DEPS_DIR%\include\libuv\uv\"
-copy "C:\vcpkg\installed\x64-windows\lib\uv.lib" "%DEPS_DIR%\lib\"
 
 cmd /c configure.bat ^
 	--enable-snapshot-build ^
