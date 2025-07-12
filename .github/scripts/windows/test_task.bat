@@ -151,10 +151,22 @@ if "%ASAN%" equ "1" set ASAN_OPTS=--asan
 mkdir c:\tests_tmp
 
 echo Testing PHP executable...
-%PHP_BUILD_DIR%\php.exe --version
-if %errorlevel% neq 0 (
-    echo PHP executable failed to start!
-    exit /b 1
+
+echo Trying to run PHP...
+%PHP_BUILD_DIR%\php.exe --version 2>&1
+set PHP_EXIT_CODE=%errorlevel%
+echo PHP exit code: %PHP_EXIT_CODE%
+
+if %PHP_EXIT_CODE% neq 0 (
+    echo PHP failed! Checking what went wrong...
+    
+    echo Checking recent Application Event Log errors...
+    powershell -Command "Get-WinEvent -FilterHashtable @{LogName='Application'; Level=2; StartTime=(Get-Date).AddMinutes(-1)} -MaxEvents 5 -ErrorAction SilentlyContinue | Select-Object TimeCreated, Id, LevelDisplayName, Message"
+    
+    echo Checking DLL dependencies...
+    dumpbin /dependents %PHP_BUILD_DIR%\php.exe
+    
+    exit /b %PHP_EXIT_CODE%
 )
 
 echo Running async extension tests...
