@@ -23,9 +23,11 @@ if %errorlevel% neq 0 exit /b 3
 rem Copy LibUV from vcpkg to deps directory
 if not exist "%DEPS_DIR%\include\libuv" mkdir "%DEPS_DIR%\include\libuv"
 if not exist "%DEPS_DIR%\lib" mkdir "%DEPS_DIR%\lib"
+if not exist "%DEPS_DIR%\bin" mkdir "%DEPS_DIR%\bin"
 copy "C:\vcpkg\installed\x64-windows\include\uv.h" "%DEPS_DIR%\include\libuv\uv.h"
 xcopy /E /I /H /Y "C:\vcpkg\installed\x64-windows\include\uv" "%DEPS_DIR%\include\libuv\uv\"
 copy "C:\vcpkg\installed\x64-windows\lib\uv.lib" "%DEPS_DIR%\lib\libuv.lib"
+copy "C:\vcpkg\installed\x64-windows\bin\uv.dll" "%DEPS_DIR%\bin\uv.dll"
 
 cmd /c buildconf.bat --force
 if %errorlevel% neq 0 exit /b 3
