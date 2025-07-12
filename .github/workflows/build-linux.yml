@@ -22,7 +22,7 @@ jobs:
             zts: false
     
     name: "LINUX_X64_${{ matrix.debug && 'DEBUG' || 'RELEASE' }}_${{ matrix.zts && 'ZTS' || 'NTS' }}${{ matrix.asan && '_ASAN' || ''}}"
-    runs-on: ubuntu-${{ matrix.asan && '20.04' || '22.04' }}
+    runs-on: ubuntu-22.04
     timeout-minutes: ${{ matrix.asan && 360 || 60 }}
 
     services:
@@ -100,8 +100,20 @@ jobs:
             libxslt1-dev \
             libicu-dev
           
-          # LibUV
-          sudo apt-get install -y libuv1-dev cmake
+          # Build LibUV from source (need >= 1.44.0)
+          sudo apt-get install -y cmake ninja-build
+          
+          # Download and build LibUV 1.48.0
+          wget https://github.com/libuv/libuv/archive/v1.48.0.tar.gz
+          tar -xzf v1.48.0.tar.gz
+          cd libuv-1.48.0
+          mkdir build
+          cd build
+          cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+          ninja
+          sudo ninja install
+          sudo ldconfig
+          cd ../..
           
           # ASAN dependencies if needed
           if [ "${{ matrix.asan }}" = "true" ]; then

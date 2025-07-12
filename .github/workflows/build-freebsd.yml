@@ -68,16 +68,32 @@ jobs:
               webp \
               libavif \
               curl \
-              libuv \
               cmake
 
+            # Check LibUV version and build from source if needed
+            echo "=== Checking LibUV version ==="
+            LIBUV_VERSION=$(pkg search -q libuv | head -1 | cut -d- -f2)
+            echo "Available LibUV package version: $LIBUV_VERSION"
+            
+            # FreeBSD usually has newer LibUV, but let's build from source to be sure
+            echo "=== Building LibUV from source ==="
+            fetch https://github.com/libuv/libuv/archive/v1.48.0.tar.gz
+            tar -xzf v1.48.0.tar.gz
+            cd libuv-1.48.0
+            mkdir build
+            cd build
+            cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+            gmake -j2
+            gmake install
+            ldconfig
+            cd ../..
+            
             echo "=== System Info ==="
             echo "FreeBSD version:"
             freebsd-version
             echo "CPU info:"
             sysctl hw.model hw.ncpu hw.physmem
-            echo "LibUV version:"
-            pkg info libuv || echo "LibUV package info not available"
+            echo "LibUV version (built from source): 1.48.0"
 
             # Configure PHP with async extension
             ./buildconf -f
