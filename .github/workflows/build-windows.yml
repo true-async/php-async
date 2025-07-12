@@ -26,20 +26,23 @@ jobs:
       - name: git config
         run: git config --global core.autocrlf false && git config --global core.eol lf
 
-      - name: Checkout php-async repo
+      - name: Checkout php-src to root
         uses: actions/checkout@v4
         with:
+          repository: true-async/php-src
+          ref: true-async-stable
+
+      - name: Checkout async extension
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
           path: async
 
-      - name: Clone php-src (true-async-stable)
-        run: |
-          git clone --depth=1 --branch=true-async-stable https://github.com/true-async/php-src php-src
-
-      - name: Copy async extension to php-src
+      - name: Copy async extension to ext/async
         shell: cmd
         run: |
-          if not exist php-src\ext\async mkdir php-src\ext\async
-          xcopy /E /I /H /Y async php-src\ext\async
+          if not exist ext\async mkdir ext\async
+          xcopy /E /I /H /Y async ext\async
 
       - name: Setup LibUV
         shell: powershell
@@ -51,13 +54,10 @@ jobs:
           C:\vcpkg\vcpkg.exe install libuv:x64-windows
 
       - name: Setup
-        working-directory: php-src
         uses: ./.github/actions/setup-windows
 
       - name: Build
-        working-directory: php-src
         run: .github/scripts/windows/build.bat
 
       - name: Test
-        working-directory: php-src
         run: .github/scripts/windows/test.bat
