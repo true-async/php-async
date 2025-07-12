@@ -2,9 +2,9 @@ name: True Async Windows Build
 
 on:
   push:
-    branches: [xbuild]
+    branches: [build]
   pull_request:
-    branches: [xbuild]
+    branches: [build]
 
 jobs:
   build-windows:
@@ -58,6 +58,7 @@ jobs:
           git clone --depth=1 --branch=true-async-stable https://github.com/true-async/php-src php-src
 
       - name: Copy php-async extension into php-src
+        shell: cmd
         run: |
           if not exist php-src\ext\async mkdir php-src\ext\async
           xcopy /E /I /H /Y async php-src\ext\async
