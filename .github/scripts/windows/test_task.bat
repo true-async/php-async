@@ -34,7 +34,27 @@ if exist %PHP_BUILD_DIR%\php8ts.dll (
 )
 
 echo.
-echo All files found, testing PHP executable...
+echo Copying deps DLLs like official PHP does...
+set DEPS_DIR=C:\build-cache\deps-master-vs17-x64
+echo Deps directory: %DEPS_DIR%
+echo Available DLLs in deps:
+dir %DEPS_DIR%\bin\*.dll | findstr "vcruntime\|php"
+
+echo Copying all deps DLLs to build directory...
+copy /-y %DEPS_DIR%\bin\*.dll %PHP_BUILD_DIR%\
+echo Copy completed.
+
+echo.
+echo Checking if vcruntime140.dll is now present:
+if exist %PHP_BUILD_DIR%\vcruntime140.dll (
+    echo SUCCESS: vcruntime140.dll found in build directory
+) else (
+    echo WARNING: vcruntime140.dll still missing, trying system copy...
+    copy "C:\Windows\System32\vcruntime140.dll" %PHP_BUILD_DIR%\ >NUL 2>&1
+)
+
+echo.
+echo Testing PHP executable...
 cd /d %PHP_BUILD_DIR%
 php.exe --version
 set PHP_EXIT_CODE=%errorlevel%
