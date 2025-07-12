@@ -33,9 +33,10 @@ rem C4244: type conversion, possible loss of data
 rem C4267: 'size_t' type conversion, possible loss of data
 set CFLAGS=/W3 /WX /wd4018 /wd4146 /wd4244 /wd4267
 
-rem Set LibUV paths for async extension
-set LIBUV_INCLUDE=C:\vcpkg\installed\x64-windows\include
-set LIBUV_LIB=C:\vcpkg\installed\x64-windows\lib
+rem Copy LibUV from vcpkg to deps directory for async extension
+if not exist "%DEPS_DIR%\include\libuv" mkdir "%DEPS_DIR%\include\libuv"
+xcopy /E /I /H /Y "C:\vcpkg\installed\x64-windows\include\*" "%DEPS_DIR%\include\libuv\"
+xcopy /E /I /H /Y "C:\vcpkg\installed\x64-windows\lib\uv.lib" "%DEPS_DIR%\lib\"
 
 cmd /c configure.bat ^
 	--enable-snapshot-build ^
@@ -44,7 +45,6 @@ cmd /c configure.bat ^
 	--enable-object-out-dir=%PHP_BUILD_OBJ_DIR% ^
 	--with-php-build=%DEPS_DIR% ^
 	--enable-async ^
-	--with-libuv=%LIBUV_INCLUDE% ^
 	%ADD_CONF% ^
 	--disable-test-ini
 if %errorlevel% neq 0 exit /b 3
