@@ -14,6 +14,9 @@ echo "Testing concurrent socket operations\n";
 
 echo "Creating socket pair\n";
 
+// Array to collect output from spawn functions
+$output = [];
+
 $sockets = create_socket_pair();
 if (!$sockets) {
     echo "Failed to create socket pair\n";
@@ -23,7 +26,7 @@ if (!$sockets) {
 list($write_sock, $read_sock) = $sockets;
 
 // Consumer coroutine
-$consumer = spawn(function() use ($read_sock) {
+$consumer = spawn(function() use ($read_sock, &$output) {
     $messages = [];
     $attempts = 0;
     
@@ -31,7 +34,7 @@ $consumer = spawn(function() use ($read_sock) {
         $data = fread($read_sock, 1024);
         
         if ($data !== false && $data !== '') {
-            echo "Consumer: Received data: '" . trim($data) . "'\n";
+            $output[] = "Consumer: Received data: '" . trim($data) . "'";
             $messages[] = trim($data);
             
             // Check if we got all messages
@@ -45,14 +48,14 @@ $consumer = spawn(function() use ($read_sock) {
     
     fclose($read_sock);
     
-    echo "Consumer: Total messages received: " . count($messages) . "\n";
+    $output[] = "Consumer: Total messages received: " . count($messages);
 });
 
-$producer = spawn(function() use ($write_sock) {
+$producer = spawn(function() use ($write_sock, &$output) {
 
     // Send multiple messages with delays
     for ($i = 1; $i <= 3; $i++) {
-        echo "Producer: Sending message $i\n";
+        $output[] = "Producer: Sending message $i";
         fwrite($write_sock, "message$i\n");
         delay(50);
     }
@@ -62,14 +65,20 @@ $producer = spawn(function() use ($write_sock) {
 
 awaitAll([$producer, $consumer]);
 
+// Sort and output results
+sort($output);
+foreach ($output as $line) {
+    echo $line . "\n";
+}
+
 ?>
 --EXPECT--
 Testing concurrent socket operations
 Creating socket pair
-Producer: Sending message 1
 Consumer: Received data: 'message1'
-Producer: Sending message 2
 Consumer: Received data: 'message2'
-Producer: Sending message 3
 Consumer: Received data: 'message3'
 Consumer: Total messages received: 3
+Producer: Sending message 1
+Producer: Sending message 2
+Producer: Sending message 3

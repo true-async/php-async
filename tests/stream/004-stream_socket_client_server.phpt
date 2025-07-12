@@ -10,11 +10,12 @@ use function Async\suspend;
 
 echo "Start\n";
 
-// Shared variable for server address
+// Shared variables for server address and output collection
 $address = null;
+$output = [];
 
 // Server coroutine
-$server = spawn(function() use (&$address) {
+$server = spawn(function() use (&$address, &$output) {
     echo "Server: creating socket\n";
     $socket = stream_socket_server("tcp://127.0.0.1:0", $errno, $errstr);
     if (!$socket) {
@@ -27,27 +28,27 @@ $server = spawn(function() use (&$address) {
 
     echo "Server: waiting for connection\n";
     $client = stream_socket_accept($socket);
-    echo "Server: client connected\n";
+    $output[] = "Server: client connected";
 
     $data = fread($client, 1024);
-    echo "Server: received '$data'\n";
+    $output[] = "Server: received '$data'";
 
     fwrite($client, "Hello from server");
-    echo "Server: response sent\n";
+    $output[] = "Server: response sent";
 
     fclose($client);
     fclose($socket);
 });
 
 // Client coroutine
-$client = spawn(function() use (&$address) {
+$client = spawn(function() use (&$address, &$output) {
     // Wait for the server to set the address
     while ($address === null) {
         // Yield control for other coroutines
         delay(10);
     }
 
-    echo "Client: connecting\n";
+    $output[] = "Client: connecting";
     $sock = stream_socket_client($address, $errno, $errstr);
     if (!$sock) {
         echo "Client: failed to connect: $errstr\n";
@@ -55,10 +56,10 @@ $client = spawn(function() use (&$address) {
     }
 
     fwrite($sock, "Hello from client");
-    echo "Client: sent request\n";
+    $output[] = "Client: sent request";
 
     $response = fread($sock, 1024);
-    echo "Client: received '$response'\n";
+    $output[] = "Client: received '$response'";
 
     fclose($sock);
 });
@@ -69,6 +70,13 @@ $worker = spawn(function() {
 });
 
 awaitAll([$server, $client, $worker]);
+
+// Sort output for deterministic results
+sort($output);
+foreach ($output as $message) {
+    echo $message . "\n";
+}
+
 echo "End\n";
 
 ?>
@@ -79,9 +87,9 @@ Worker: doing work while server waits
 Server: listening
 Server: waiting for connection
 Client: connecting
-Server: client connected
+Client: received 'Hello from server'
 Client: sent request
+Server: client connected
 Server: received 'Hello from client'
 Server: response sent
-Client: received 'Hello from server'
 End

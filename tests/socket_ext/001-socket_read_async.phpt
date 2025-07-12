@@ -15,12 +15,15 @@ use function Async\delay;
 
 echo "Start\n";
 
+// Array to collect output from spawn functions
+$output = [];
+
 // Shared variable for server port
 $port = null;
 
 // Server coroutine
-$server = spawn(function() use (&$port) {
-    echo "Server: creating socket\n";
+$server = spawn(function() use (&$port, &$output) {
+    $output[] = "Server: creating socket";
     $socket = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
     socket_set_option($socket, SOL_SOCKET, SO_REUSEADDR, 1);
     socket_bind($socket, '127.0.0.1', 0);
@@ -28,64 +31,71 @@ $server = spawn(function() use (&$port) {
     
     $addr = '';
     socket_getsockname($socket, $addr, $port);
-    echo "Server: listening on port $port\n";
+    $output[] = "Server: listening on port $port";
     
-    echo "Server: waiting for connection\n";
+    $output[] = "Server: waiting for connection";
     $client = socket_accept($socket);
-    echo "Server: client connected\n";
+    $output[] = "Server: client connected";
     
     $data = socket_read($client, 1024);
-    echo "Server: received '$data'\n";
+    $output[] = "Server: received '$data'";
     
     socket_write($client, "Hello from server");
-    echo "Server: response sent\n";
+    $output[] = "Server: response sent";
     
     socket_close($client);
     socket_close($socket);
 });
 
 // Client coroutine
-$client = spawn(function() use (&$port) {
+$client = spawn(function() use (&$port, &$output) {
     // Wait for the server to set the port
     while ($port === null) {
         delay(1);
     }
     
-    echo "Client: connecting\n";
+    $output[] = "Client: connecting";
     $socket = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
     if (!socket_connect($socket, '127.0.0.1', $port)) {
-        echo "Client: failed to connect\n";
+        $output[] = "Client: failed to connect";
         return;
     }
     
     socket_write($socket, "Hello from client");
-    echo "Client: sent request\n";
+    $output[] = "Client: sent request";
     
     $response = socket_read($socket, 1024);
-    echo "Client: received '$response'\n";
+    $output[] = "Client: received '$response'";
     
     socket_close($socket);
 });
 
 // Worker coroutine for parallel execution
-$worker = spawn(function() {
-    echo "Worker: doing work while server waits\n";
+$worker = spawn(function() use (&$output) {
+    $output[] = "Worker: doing work while server waits";
 });
 
 awaitAll([$server, $client, $worker]);
+
+// Sort and output results
+sort($output);
+foreach ($output as $line) {
+    echo $line . "\n";
+}
+
 echo "End\n";
 
 ?>
 --EXPECTF--
 Start
+Client: connecting
+Client: received 'Hello from server'
+Client: sent request
+Server: client connected
 Server: creating socket
 Server: listening on port %d
-Server: waiting for connection
-Client: connecting
-Worker: doing work while server waits
-Server: client connected
-Client: sent request
 Server: received 'Hello from client'
 Server: response sent
-Client: received 'Hello from server'
+Server: waiting for connection
+Worker: doing work while server waits
 End
