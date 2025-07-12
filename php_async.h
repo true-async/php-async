@@ -40,6 +40,8 @@ extern zend_module_entry async_module_entry;
 
 extern zend_class_entry * async_ce_awaitable;
 extern zend_class_entry * async_ce_timeout;
+extern zend_class_entry * async_ce_future_state;
+extern zend_class_entry * async_ce_future;
 
 #define PHP_ASYNC_NAME "TrueAsync"
 #define PHP_ASYNC_VERSION "0.5.0"

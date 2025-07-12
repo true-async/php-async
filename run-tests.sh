@@ -4,6 +4,7 @@ BASE_PATH="$(cd "$(dirname "$0")/tests" && pwd)"
 RUN_TESTS_PATH="$(cd "$(dirname "$0")/../../" && pwd)/run-tests.php"
 PHP_EXECUTABLE="$(cd "$(dirname "$0")/../../" && pwd)/sapi/cli/php"
 export VALGRIND_OPTS="--leak-check=full --track-origins=yes"
+#export ASAN_OPTIONS=detect_leaks=1:abort_on_error=1:symbolize=1
 
 if [ -z "$1" ]; then
     TEST_PATH="$BASE_PATH"
