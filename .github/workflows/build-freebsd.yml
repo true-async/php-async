@@ -1,0 +1,202 @@
+name: True Async FreeBSD Build
+
+on:
+  push:
+    branches: [build]
+  pull_request:
+    branches: [build]
+
+jobs:
+  build-freebsd:
+    strategy:
+      fail-fast: false
+      matrix:
+        zts: [true, false]
+    
+    name: "FREEBSD_${{ matrix.zts && 'ZTS' || 'NTS' }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout php-async repo
+        uses: actions/checkout@v4
+        with:
+          path: async
+
+      - name: Clone php-src (true-async-stable)
+        run: |
+          git clone --depth=1 --branch=true-async-stable https://github.com/true-async/php-src php-src
+
+      - name: Copy php-async extension into php-src
+        run: |
+          mkdir -p php-src/ext/async
+          cp -r async/* php-src/ext/async/
+
+      - name: FreeBSD Build and Test
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: '13.3'
+          usesh: true
+          copyback: false
+          prepare: |
+            cd $GITHUB_WORKSPACE/php-src
+
+            # Load kernel modules
+            kldload accf_http
+
+            # Install build dependencies
+            pkg install -y \
+              autoconf \
+              bison \
+              gmake \
+              re2c \
+              icu \
+              libiconv \
+              png \
+              freetype2 \
+              enchant2 \
+              bzip2 \
+              t1lib \
+              gmp \
+              libsodium \
+              libzip \
+              libxml2 \
+              libxslt \
+              openssl \
+              oniguruma \
+              pkgconf \
+              webp \
+              libavif \
+              curl \
+              libuv \
+              cmake
+
+            echo "=== System Info ==="
+            echo "FreeBSD version:"
+            freebsd-version
+            echo "CPU info:"
+            sysctl hw.model hw.ncpu hw.physmem
+            echo "LibUV version:"
+            pkg info libuv || echo "LibUV package info not available"
+
+            # Configure PHP with async extension
+            ./buildconf -f
+            ./configure \
+              --prefix=/usr/local \
+              --enable-debug \
+              --enable-option-checking=fatal \
+              --enable-fpm \
+              --without-sqlite3 \
+              --without-pdo-sqlite \
+              --without-pear \
+              --with-bz2 \
+              --with-avif \
+              --with-jpeg \
+              --with-webp \
+              --with-freetype \
+              --enable-gd \
+              --enable-exif \
+              --with-zip \
+              --with-zlib \
+              --enable-soap \
+              --enable-xmlreader \
+              --with-xsl \
+              --with-libxml \
+              --enable-shmop \
+              --enable-pcntl \
+              --enable-mbstring \
+              --with-curl \
+              --enable-sockets \
+              --with-openssl \
+              --with-iconv=/usr/local \
+              --enable-bcmath \
+              --enable-calendar \
+              --enable-ftp \
+              --with-ffi \
+              --enable-zend-test \
+              --enable-dl-test=shared \
+              --enable-intl \
+              --with-mhash \
+              --with-sodium \
+              --enable-werror \
+              --with-config-file-path=/etc \
+              --with-config-file-scan-dir=/etc/php.d \
+              --${{ matrix.zts && 'enable' || 'disable' }}-zts \
+              --enable-async
+
+            # Build PHP
+            echo "=== Building PHP ==="
+            gmake -j2
+
+            # Install PHP
+            echo "=== Installing PHP ==="
+            mkdir -p /etc/php.d
+            gmake install > /dev/null
+            echo "opcache.enable_cli=1" > /etc/php.d/opcache.ini
+            echo "opcache.protect_memory=1" >> /etc/php.d/opcache.ini
+            echo "opcache.preload_user=root" >> /etc/php.d/opcache.ini
+
+          run: |
+            cd $GITHUB_WORKSPACE/php-src
+
+            # Test environment setup
+            export SKIP_IO_CAPTURE_TESTS=1
+            export CI_NO_IPV6=1
+            export STACK_LIMIT_DEFAULTS_CHECK=1
+
+            echo "=== PHP Version ==="
+            /usr/local/bin/php -v
+
+            echo "=== Running Basic Async Tests ==="
+            /usr/local/bin/php run-tests.php \
+              -P -q -j2 \
+              -g FAIL,BORK,LEAK,XLEAK \
+              --no-progress \
+              --offline \
+              --show-diff \
+              --show-slow 4000 \
+              --set-timeout 120 \
+              ext/async/tests
+
+            echo "=== Running Async Tests with OpCache ==="
+            /usr/local/bin/php run-tests.php \
+              -P -q -j2 \
+              -g FAIL,BORK,LEAK,XLEAK \
+              --no-progress \
+              --offline \
+              --show-diff \
+              --show-slow 4000 \
+              --set-timeout 120 \
+              -d zend_extension=opcache.so \
+              -d opcache.enable_cli=1 \
+              ext/async/tests
+
+            echo "=== Running Async Tests with JIT Tracing ==="
+            /usr/local/bin/php run-tests.php \
+              -P -q -j2 \
+              -g FAIL,BORK,LEAK,XLEAK \
+              --no-progress \
+              --offline \
+              --show-diff \
+              --show-slow 4000 \
+              --set-timeout 120 \
+              -d zend_extension=opcache.so \
+              -d opcache.enable_cli=1 \
+              -d opcache.jit_buffer_size=64M \
+              -d opcache.jit=tracing \
+              ext/async/tests
+
+            echo "=== Running Async Tests with JIT Function ==="
+            /usr/local/bin/php run-tests.php \
+              -P -q -j2 \
+              -g FAIL,BORK,LEAK,XLEAK \
+              --no-progress \
+              --offline \
+              --show-diff \
+              --show-slow 4000 \
+              --set-timeout 120 \
+              -d zend_extension=opcache.so \
+              -d opcache.enable_cli=1 \
+              -d opcache.jit_buffer_size=64M \
+              -d opcache.jit=function \
+              ext/async/tests
