@@ -51,12 +51,22 @@ if %errorlevel% neq 0 (
 
 echo.
 echo Running async extension tests...
+echo Current directory: %CD%
+echo Checking for test directories:
 if exist ..\ext\async\tests (
+    echo FOUND: ..\ext\async\tests
+    echo Running tests from ..\ext\async\tests
     php.exe run-tests.php --no-progress --show-diff ..\ext\async\tests
 ) else if exist ext\async\tests (
+    echo FOUND: ext\async\tests  
+    echo Running tests from ext\async\tests
     php.exe run-tests.php --no-progress --show-diff ext\async\tests
 ) else (
     echo ERROR: Cannot find async tests directory
+    echo Looking for test directories:
+    dir ..\ext\async\ 2>NUL
+    dir ext\async\ 2>NUL
+    dir .\ext\async\ 2>NUL
     exit /b 1
 )
 

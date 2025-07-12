@@ -49,29 +49,6 @@ jobs:
         run: |
           xcopy /E /I /H /Y async\.github .github
 
-      - name: Install Windows Debugging Tools
-        shell: pwsh
-        run: |
-          $url = "https://download.microsoft.com/download/4/2/2/42245968-6A79-4DA7-A5FB-08C0AD0AE661/windowssdk/winsdksetup.exe"
-          Invoke-WebRequest -Uri $url -OutFile "winsdksetup.exe"
-          .\winsdksetup.exe /quiet /norestart /features OptionId.WindowsDesktopDebuggers
-          
-      - name: Add Windows Debugging Tools to PATH
-        shell: pwsh
-        run: |
-          $dbgPath = "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64"
-          if (Test-Path $dbgPath) {
-            Add-Content $Env:GITHUB_PATH $dbgPath
-            Write-Host "Added $dbgPath to PATH"
-          } else {
-            Write-Host "Searching for debugging tools..."
-            Get-ChildItem "C:\Program Files*\Windows Kits" -Recurse -Name "gflags.exe" -ErrorAction SilentlyContinue | ForEach-Object { 
-              $foundPath = Split-Path (Get-ChildItem "C:\Program Files*\Windows Kits" -Recurse -Filter "gflags.exe" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
-              Add-Content $Env:GITHUB_PATH $foundPath
-              Write-Host "Found and added $foundPath to PATH"
-            }
-          }
-
       - name: Setup LibUV
         shell: powershell
         run: |
