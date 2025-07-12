@@ -55,11 +55,7 @@ void async_register_future_ce(void);
 
 /* API function implementations */
 zend_future_t *async_future_create(void);
-void async_future_complete(zend_future_t *future, zval *value);
-void async_future_error(zend_future_t *future, zend_object *exception);
-
 /* Internal helper functions */
 async_future_state_t *async_future_state_create(void);
-async_future_t *async_future_wrap_state(async_future_state_t *state);
 
 #endif /* FUTURE_H */
