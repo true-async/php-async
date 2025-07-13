@@ -2,9 +2,7 @@ name: True Async macOS Build
 
 on:
   push:
-    branches: [xbuild]
-  pull_request:
-    branches: [xbuild]
+    branches: [main]
 
 jobs:
   build-macos:

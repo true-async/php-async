@@ -1,8 +1,6 @@
 name: True Async Ubuntu Speed Test
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
 
