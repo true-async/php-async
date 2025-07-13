@@ -39,7 +39,7 @@ jobs:
           usesh: true
           copyback: false
           prepare: |
-            cd $GITHUB_WORKSPACE/php-src
+            cd $GITHUB_WORKSPACE
 
             # Load kernel modules
             kldload accf_http
@@ -70,12 +70,7 @@ jobs:
               curl \
               cmake
 
-            # Check LibUV version and build from source if needed
-            echo "=== Checking LibUV version ==="
-            LIBUV_VERSION=$(pkg search -q libuv | head -1 | cut -d- -f2)
-            echo "Available LibUV package version: $LIBUV_VERSION"
-            
-            # FreeBSD usually has newer LibUV, but let's build from source to be sure
+            # Build LibUV from source (need >= 1.44.0)
             echo "=== Building LibUV from source ==="
             fetch https://github.com/libuv/libuv/archive/v1.48.0.tar.gz
             tar -xzf v1.48.0.tar.gz
@@ -95,7 +90,11 @@ jobs:
             sysctl hw.model hw.ncpu hw.physmem
             echo "LibUV version (built from source): 1.48.0"
 
+          run: |
+            cd $GITHUB_WORKSPACE
+
             # Configure PHP with async extension
+            cd php-src
             ./buildconf -f
             ./configure \
               --prefix=/usr/local \
@@ -147,13 +146,8 @@ jobs:
             # Install PHP
             echo "=== Installing PHP ==="
             mkdir -p /etc/php.d
-            gmake install > /dev/null
+            gmake install
             echo "opcache.enable_cli=1" > /etc/php.d/opcache.ini
-            echo "opcache.protect_memory=1" >> /etc/php.d/opcache.ini
-            echo "opcache.preload_user=root" >> /etc/php.d/opcache.ini
-
-          run: |
-            cd $GITHUB_WORKSPACE/php-src
 
             # Test environment setup
             export SKIP_IO_CAPTURE_TESTS=1
@@ -163,8 +157,20 @@ jobs:
             echo "=== PHP Version ==="
             /usr/local/bin/php -v
 
-            echo "=== Running Basic Async Tests ==="
-            /usr/local/bin/php run-tests.php \
+      - name: Run basic tests
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: '13.3'
+          usesh: true
+          copyback: false
+          run: |
+            cd $GITHUB_WORKSPACE/php-src/ext/async
+            
+            export SKIP_IO_CAPTURE_TESTS=1
+            export CI_NO_IPV6=1
+            export STACK_LIMIT_DEFAULTS_CHECK=1
+            
+            /usr/local/bin/php ../../run-tests.php \
               -P -q -j2 \
               -g FAIL,BORK,LEAK,XLEAK \
               --no-progress \
@@ -172,23 +178,24 @@ jobs:
               --show-diff \
               --show-slow 4000 \
               --set-timeout 120 \
-              ext/async/tests
+              .
 
-            echo "=== Running Async Tests with OpCache ==="
-            /usr/local/bin/php run-tests.php \
-              -P -q -j2 \
-              -g FAIL,BORK,LEAK,XLEAK \
-              --no-progress \
-              --offline \
-              --show-diff \
-              --show-slow 4000 \
-              --set-timeout 120 \
+      - name: Test OpCache
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: '13.3'
+          usesh: true
+          copyback: false
+          run: |
+            cd $GITHUB_WORKSPACE/php-src/ext/async
+            
+            export SKIP_IO_CAPTURE_TESTS=1
+            export CI_NO_IPV6=1
+            export STACK_LIMIT_DEFAULTS_CHECK=1
+            
+            /usr/local/bin/php ../../run-tests.php \
               -d zend_extension=opcache.so \
               -d opcache.enable_cli=1 \
-              ext/async/tests
-
-            echo "=== Running Async Tests with JIT Tracing ==="
-            /usr/local/bin/php run-tests.php \
               -P -q -j2 \
               -g FAIL,BORK,LEAK,XLEAK \
               --no-progress \
@@ -196,14 +203,26 @@ jobs:
               --show-diff \
               --show-slow 4000 \
               --set-timeout 120 \
+              .
+
+      - name: Test Tracing JIT
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: '13.3'
+          usesh: true
+          copyback: false
+          run: |
+            cd $GITHUB_WORKSPACE/php-src/ext/async
+            
+            export SKIP_IO_CAPTURE_TESTS=1
+            export CI_NO_IPV6=1
+            export STACK_LIMIT_DEFAULTS_CHECK=1
+            
+            /usr/local/bin/php ../../run-tests.php \
               -d zend_extension=opcache.so \
               -d opcache.enable_cli=1 \
               -d opcache.jit_buffer_size=64M \
               -d opcache.jit=tracing \
-              ext/async/tests
-
-            echo "=== Running Async Tests with JIT Function ==="
-            /usr/local/bin/php run-tests.php \
               -P -q -j2 \
               -g FAIL,BORK,LEAK,XLEAK \
               --no-progress \
@@ -211,8 +230,31 @@ jobs:
               --show-diff \
               --show-slow 4000 \
               --set-timeout 120 \
+              .
+
+      - name: Test Function JIT
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: '13.3'
+          usesh: true
+          copyback: false
+          run: |
+            cd $GITHUB_WORKSPACE/php-src/ext/async
+            
+            export SKIP_IO_CAPTURE_TESTS=1
+            export CI_NO_IPV6=1
+            export STACK_LIMIT_DEFAULTS_CHECK=1
+            
+            /usr/local/bin/php ../../run-tests.php \
               -d zend_extension=opcache.so \
               -d opcache.enable_cli=1 \
               -d opcache.jit_buffer_size=64M \
               -d opcache.jit=function \
-              ext/async/tests
+              -P -q -j2 \
+              -g FAIL,BORK,LEAK,XLEAK \
+              --no-progress \
+              --offline \
+              --show-diff \
+              --show-slow 4000 \
+              --set-timeout 120 \
+              .

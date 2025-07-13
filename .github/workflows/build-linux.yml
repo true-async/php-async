@@ -2,9 +2,9 @@ name: True Async Linux x64 Build
 
 on:
   push:
-    branches: [build]
+    branches: [xbuild]
   pull_request:
-    branches: [build]
+    branches: [xbuild]
 
 jobs:
   build-linux-x64:
