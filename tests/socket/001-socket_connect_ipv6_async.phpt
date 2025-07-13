@@ -2,6 +2,9 @@
 socket_connect() with IPv6 hostname resolution in async context
 --SKIPIF--
 <?php
+if (getenv("CI_NO_IPV6")) {
+    die('skip IPv6 tests disabled in CI environment');
+}
 if (!extension_loaded('sockets')) {
     die('skip sockets extension not available');
 }
