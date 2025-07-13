@@ -65,4 +65,4 @@ Background task running
 time_nanosleep(0, 100000000) result: true, elapsed: 0.1s
 time_sleep_until() result: true, elapsed: 0.2s
 usleep(200000) elapsed: 0.2s
-sleep(1) result: 0, elapsed: %ds
+sleep(1) result: 0, elapsed: %ss

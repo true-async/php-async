@@ -154,7 +154,7 @@ jobs:
               -P -v -j2 \
               -g FAIL,BORK,LEAK,XLEAK \
               --offline \
-              --no-progress \            
+              --no-progress \
               --show-diff \
               --show-slow 4000 \
               --set-timeout 120 \
@@ -165,7 +165,7 @@ jobs:
               -P -v -j2 \
               -g FAIL,BORK,LEAK,XLEAK \
               --offline \
-              --no-progress \            
+              --no-progress \
               --show-diff \
               --show-slow 4000 \
               --set-timeout 120 \
@@ -178,7 +178,7 @@ jobs:
               -P -v -j2 \
               -g FAIL,BORK,LEAK,XLEAK \
               --offline \
-              --no-progress \            
+              --no-progress \
               --show-diff \
               --show-slow 4000 \
               --set-timeout 120 \
