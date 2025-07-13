@@ -31,6 +31,8 @@ jobs:
         run: |
           mkdir -p php-src/ext/async
           cp -r async/* php-src/ext/async/
+          # Remove original async directory to avoid copying duplicate files to VM
+          rm -rf async
 
       - name: FreeBSD Build and Test
         uses: vmactions/freebsd-vm@v1
