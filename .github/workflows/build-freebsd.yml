@@ -139,7 +139,7 @@ jobs:
             echo "opcache.preload_user=root" >> /etc/php.d/opcache.ini
 
           run: |
-            cd $GITHUB_WORKSPACE
+            cd $GITHUB_WORKSPACE/php-src
 
             # Test environment setup
             export SKIP_IO_CAPTURE_TESTS=1
