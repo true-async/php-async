@@ -147,10 +147,10 @@ jobs:
             export STACK_LIMIT_DEFAULTS_CHECK=1
 
             echo "=== PHP Version ==="
-            sapi/cli/php -v
+            /usr/local/bin/php -v
 
             echo "=== Running Basic Async Tests ==="
-            sapi/cli/php run-tests.php \
+            /usr/local/bin/php run-tests.php \
               -P -q -j2 \
               -g FAIL,BORK,LEAK,XLEAK \
               --no-progress \
@@ -161,7 +161,7 @@ jobs:
               ext/async/tests
 
             echo "=== Running Async Tests with OpCache ==="
-            sapi/cli/php run-tests.php \
+            /usr/local/bin/php run-tests.php \
               -P -q -j2 \
               -g FAIL,BORK,LEAK,XLEAK \
               --no-progress \
@@ -174,7 +174,7 @@ jobs:
               ext/async/tests
 
             echo "=== Running Async Tests with JIT Tracing ==="
-            sapi/cli/php run-tests.php \
+            /usr/local/bin/php run-tests.php \
               -P -q -j2 \
               -g FAIL,BORK,LEAK,XLEAK \
               --no-progress \
@@ -189,7 +189,7 @@ jobs:
               ext/async/tests
 
             echo "=== Running Async Tests with JIT Function ==="
-            sapi/cli/php run-tests.php \
+            /usr/local/bin/php run-tests.php \
               -P -q -j2 \
               -g FAIL,BORK,LEAK,XLEAK \
               --no-progress \
