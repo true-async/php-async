@@ -3,6 +3,8 @@ name: True Async Ubuntu Speed Test
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [build]
 
 jobs:
   build:
@@ -49,6 +51,15 @@ jobs:
           mkdir -p php-src/ext/async
           cp -r async/* php-src/ext/async/
 
+      # Cache APT packages to speed up dependency installation
+      - name: Cache APT packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-apt-packages-${{ hashFiles('.github/workflows/build.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-apt-packages-
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -61,10 +72,26 @@ jobs:
             firebird-dev \
             valgrind cmake
 
+      # Cache LibUV 1.44.0 installation to avoid rebuilding
+      - name: Cache LibUV 1.44.0
+        id: cache-libuv
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/lib/libuv*
+            /usr/local/include/uv*
+            /usr/local/lib/pkgconfig/libuv.pc
+          key: ${{ runner.os }}-libuv-1.44.0-release
+
       - name: Install LibUV >= 1.44.0
         run: |
+          # Check if we have cached LibUV 1.44.0
+          if [ "${{ steps.cache-libuv.outputs.cache-hit }}" == "true" ]; then
+            echo "Using cached LibUV 1.44.0 installation"
+            sudo ldconfig
+            echo "LibUV version: $(pkg-config --modversion libuv)"
           # Check if system libuv meets requirements
-          if pkg-config --exists libuv && pkg-config --atleast-version=1.44.0 libuv; then
+          elif pkg-config --exists libuv && pkg-config --atleast-version=1.44.0 libuv; then
             echo "System libuv version: $(pkg-config --modversion libuv)"
             sudo apt-get install -y libuv1-dev
           else
@@ -78,6 +105,7 @@ jobs:
             sudo make install
             sudo ldconfig
             cd ../..
+            echo "LibUV 1.44.0 compiled and installed"
           fi
 
       - name: Configure PHP
