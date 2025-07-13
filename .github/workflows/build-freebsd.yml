@@ -151,7 +151,7 @@ jobs:
 
             echo "=== Running Basic Async Tests ==="
             /usr/local/bin/php run-tests.php \
-              -P -q -j2 \
+              -P -v -j2 \
               -g FAIL,BORK,LEAK,XLEAK \
               --offline \
               --show-diff \
@@ -161,7 +161,7 @@ jobs:
 
             echo "=== Running Async Tests with OpCache ==="
             /usr/local/bin/php run-tests.php \
-              -P -q -j2 \
+              -P -v -j2 \
               -g FAIL,BORK,LEAK,XLEAK \
               --offline \
               --show-diff \
@@ -173,7 +173,7 @@ jobs:
 
             echo "=== Running Async Tests with JIT Tracing ==="
             /usr/local/bin/php run-tests.php \
-              -P -q -j2 \
+              -P -v -j2 \
               -g FAIL,BORK,LEAK,XLEAK \
               --offline \
               --show-diff \
@@ -187,7 +187,7 @@ jobs:
 
             echo "=== Running Async Tests with JIT Function ==="
             /usr/local/bin/php run-tests.php \
-              -P -q -j2 \
+              -P -v -j2 \
               -g FAIL,BORK,LEAK,XLEAK \
               --offline \
               --show-diff \
