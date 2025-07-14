@@ -726,10 +726,12 @@ PHP_FUNCTION(Async_rootContext)
 	THROW_IF_ASYNC_OFF;
 	THROW_IF_SCHEDULER_CONTEXT;
 
-	/* TODO: Implement root context access */
-	/* For now, return a new context */
-	async_context_t *context = async_context_new();
-	RETURN_OBJ(&context->std);
+	if (ASYNC_G(root_context) == NULL) {
+		ASYNC_G(root_context) = (zend_async_context_t *)async_context_new();
+	}
+
+	async_context_t *context = (async_context_t *)ASYNC_G(root_context);
+	RETURN_OBJ_COPY(&context->std);
 }
 
 PHP_FUNCTION(Async_getCoroutines)
@@ -903,6 +905,7 @@ static PHP_GINIT_FUNCTION(async)
 	async_globals->signal_handlers = NULL;
 	async_globals->signal_events = NULL;
 	async_globals->process_events = NULL;
+	async_globals->root_context = NULL;
 	/* Maximum number of coroutines in the concurrent iterator */
 	async_globals->default_concurrency = 32;
 
