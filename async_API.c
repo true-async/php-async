@@ -1004,7 +1004,11 @@ void async_await_futures(
 			zend_async_resume_when(coroutine, awaitable, false, NULL, &callback->callback);
 
 			if (UNEXPECTED(EG(exception))) {
-				callback->callback.base.dispose(&callback->callback.base, NULL);
+				if (tmp_results != NULL) {
+					zend_array_destroy(tmp_results);
+					tmp_results = NULL;
+				}
+
 				await_context->dtor(await_context);
 				return;
 			}
