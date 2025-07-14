@@ -219,6 +219,11 @@ PHP_FUNCTION(Async_await)
 	zend_async_event_t *awaitable_event = ZEND_ASYNC_OBJECT_TO_EVENT(awaitable);
 	zend_async_event_t *cancellation_event = cancellation != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation) : NULL;
 
+	// If the awaitable is the same as the cancellation event, we can skip the cancellation check.
+	if (awaitable_event == cancellation_event) {
+		cancellation_event = NULL;
+	}
+
 	// If the awaitable is already resolved, we can return the result immediately.
 	if (ZEND_ASYNC_EVENT_IS_CLOSED(awaitable_event)) {
 
@@ -236,7 +241,7 @@ PHP_FUNCTION(Async_await)
 
 	// If the cancellation event is already resolved, we can return exception immediately.
 	if (cancellation_event != NULL && ZEND_ASYNC_EVENT_IS_CLOSED(cancellation_event)) {
-		if (ZEND_ASYNC_EVENT_EXTRACT_RESULT(awaitable_event, return_value)) {
+		if (ZEND_ASYNC_EVENT_EXTRACT_RESULT(cancellation_event, return_value)) {
 			return;
 		}
 
@@ -721,10 +726,12 @@ PHP_FUNCTION(Async_rootContext)
 	THROW_IF_ASYNC_OFF;
 	THROW_IF_SCHEDULER_CONTEXT;
 
-	/* TODO: Implement root context access */
-	/* For now, return a new context */
-	async_context_t *context = async_context_new();
-	RETURN_OBJ(&context->std);
+	if (ASYNC_G(root_context) == NULL) {
+		ASYNC_G(root_context) = (zend_async_context_t *)async_context_new();
+	}
+
+	async_context_t *context = (async_context_t *)ASYNC_G(root_context);
+	RETURN_OBJ_COPY(&context->std);
 }
 
 PHP_FUNCTION(Async_getCoroutines)
@@ -755,7 +762,7 @@ PHP_FUNCTION(Async_gracefulShutdown)
 	THROW_IF_ASYNC_OFF;
 	THROW_IF_SCHEDULER_CONTEXT;
 
-	/* TODO: Implement graceful shutdown */
+	ZEND_ASYNC_SHUTDOWN();
 }
 
 /*
@@ -898,6 +905,9 @@ static PHP_GINIT_FUNCTION(async)
 	async_globals->signal_handlers = NULL;
 	async_globals->signal_events = NULL;
 	async_globals->process_events = NULL;
+	async_globals->root_context = NULL;
+	/* Maximum number of coroutines in the concurrent iterator */
+	async_globals->default_concurrency = 32;
 
 #ifdef PHP_WIN32
 	async_globals->watcherThread = NULL;
