@@ -219,6 +219,11 @@ PHP_FUNCTION(Async_await)
 	zend_async_event_t *awaitable_event = ZEND_ASYNC_OBJECT_TO_EVENT(awaitable);
 	zend_async_event_t *cancellation_event = cancellation != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation) : NULL;
 
+	// If the awaitable is the same as the cancellation event, we can skip the cancellation check.
+	if (awaitable_event == cancellation_event) {
+		cancellation_event = NULL;
+	}
+
 	// If the awaitable is already resolved, we can return the result immediately.
 	if (ZEND_ASYNC_EVENT_IS_CLOSED(awaitable_event)) {
 
