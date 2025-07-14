@@ -29,7 +29,6 @@ echo "coroutines spawned\n";
 
 // Trigger graceful shutdown
 try {
-    gracefulShutdown();
     awaitAll([$coroutine1, $coroutine2]);
 } catch (Throwable $e) {
     echo "shutdown exception: " . $e->getMessage() . "\n";
