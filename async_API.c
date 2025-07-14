@@ -215,6 +215,12 @@ static void engine_shutdown(void)
 	circular_buffer_dtor(&ASYNC_G(coroutine_queue));
 	zend_hash_destroy(&ASYNC_G(coroutines));
 
+	if (ASYNC_G(root_context) != NULL) {
+		async_context_t * root_context = (async_context_t *) ASYNC_G(root_context);
+		ASYNC_G(root_context) = NULL;
+		OBJ_RELEASE(&root_context->std);
+	}
+
 	//async_host_name_list_dtor();
 }
 
@@ -918,6 +924,10 @@ void async_await_futures(
 		return;
 	}
 
+	if (concurrency == 0) {
+		concurrency = ASYNC_G(default_concurrency);
+	}
+
 	await_context = ecalloc(1, sizeof(async_await_context_t));
 	await_context->total = futures != NULL ? (int) zend_hash_num_elements(futures) : 0;
 	await_context->futures_count = 0;
@@ -994,6 +1004,11 @@ void async_await_futures(
 			zend_async_resume_when(coroutine, awaitable, false, NULL, &callback->callback);
 
 			if (UNEXPECTED(EG(exception))) {
+				if (tmp_results != NULL) {
+					zend_array_destroy(tmp_results);
+					tmp_results = NULL;
+				}
+
 				await_context->dtor(await_context);
 				return;
 			}

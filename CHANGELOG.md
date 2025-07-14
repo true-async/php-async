@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.3.0] - TBD
 
 ### Added
+- **Multiple Callbacks Per Event Support**: Complete redesign of waker trigger system to support multiple callbacks on a single event
+    - Modified `zend_async_waker_trigger_s` structure to use flexible array member with dynamic capacity
+    - Added `waker_trigger_create()` and `waker_trigger_add_callback()` helper functions for efficient memory management
+    - Implemented single-block memory allocation for better performance (trigger + callback array in one allocation)
+    - Default capacity starts at 1 and doubles as needed (1 → 2 → 4 → 8...)
+    - Fixed `coroutine_event_callback_dispose()` to remove only specific callbacks instead of entire events
+    - **Breaking Change**: Events now persist until all associated callbacks are removed
 - **Bailout Tests**: Added 15 tests covering memory exhaustion and stack overflow scenarios in async operations
 - **Garbage Collection Support**: Implemented comprehensive GC handlers for async objects
     - Added `async_coroutine_object_gc()` function to track all ZVALs in coroutine structures
