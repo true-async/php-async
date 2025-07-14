@@ -762,7 +762,7 @@ PHP_FUNCTION(Async_gracefulShutdown)
 	THROW_IF_ASYNC_OFF;
 	THROW_IF_SCHEDULER_CONTEXT;
 
-	/* TODO: Implement graceful shutdown */
+	ZEND_ASYNC_SHUTDOWN();
 }
 
 /*
