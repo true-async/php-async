@@ -918,6 +918,10 @@ void async_await_futures(
 		return;
 	}
 
+	if (concurrency == 0) {
+		concurrency = ASYNC_G(default_concurrency);
+	}
+
 	await_context = ecalloc(1, sizeof(async_await_context_t));
 	await_context->total = futures != NULL ? (int) zend_hash_num_elements(futures) : 0;
 	await_context->futures_count = 0;

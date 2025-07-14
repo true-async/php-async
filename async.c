@@ -903,6 +903,8 @@ static PHP_GINIT_FUNCTION(async)
 	async_globals->signal_handlers = NULL;
 	async_globals->signal_events = NULL;
 	async_globals->process_events = NULL;
+	/* Maximum number of coroutines in the concurrent iterator */
+	async_globals->default_concurrency = 32;
 
 #ifdef PHP_WIN32
 	async_globals->watcherThread = NULL;

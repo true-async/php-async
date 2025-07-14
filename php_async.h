@@ -77,6 +77,8 @@ ZEND_BEGIN_MODULE_GLOBALS(async)
 	zend_fiber_transfer *main_transfer;
 	/* The main flow stack */
 	zend_vm_stack main_vm_stack;
+	/* The default concurrency */
+	int default_concurrency;
 
 #ifdef PHP_ASYNC_LIBUV
 	/* The reactor */
