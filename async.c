@@ -236,7 +236,7 @@ PHP_FUNCTION(Async_await)
 
 	// If the cancellation event is already resolved, we can return exception immediately.
 	if (cancellation_event != NULL && ZEND_ASYNC_EVENT_IS_CLOSED(cancellation_event)) {
-		if (ZEND_ASYNC_EVENT_EXTRACT_RESULT(awaitable_event, return_value)) {
+		if (ZEND_ASYNC_EVENT_EXTRACT_RESULT(cancellation_event, return_value)) {
 			return;
 		}
 
