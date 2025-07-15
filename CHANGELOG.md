@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.3.0] - TBD
 
 ### Added
+- Docker support with multi-stage build (Ubuntu 24.04, libuv 1.49, curl 8.10)
+- PDO MySQL and MySQLi async support
 - **Multiple Callbacks Per Event Support**: Complete redesign of waker trigger system to support multiple callbacks on a single event
     - Modified `zend_async_waker_trigger_s` structure to use flexible array member with dynamic capacity
     - Added `waker_trigger_create()` and `waker_trigger_add_callback()` helper functions for efficient memory management
