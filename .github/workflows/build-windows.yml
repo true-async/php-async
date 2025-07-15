@@ -64,3 +64,17 @@ jobs:
 
       - name: Test
         run: .github/scripts/windows/test.bat
+
+      - name: Publish built PHP
+        run: .github/scripts/windows/publish.bat
+
+      - name: Archive built PHP
+        shell: powershell
+        run: |
+          Compress-Archive -Path "C:\php-release\*" -DestinationPath php-windows.zip
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: true-async-php-windows
+          path: php-windows.zip
