@@ -31,6 +31,19 @@ tightly integrated at the core level.
 PHP TRUE ASYNC is supported for PHP 8.5.0 and later.
 `LibUV` is the primary reactor implementation for this extension.
 
+### Docker (for tests)
+
+```bash
+# Build the image
+docker build -t true-async-php .
+
+# Run interactively
+docker run -it true-async-php bash
+
+# Check TrueAsync module
+docker run --rm true-async-php php -m | grep TrueAsync
+```
+
 ### Requirements
 
 - **PHP 8.5.0+**
@@ -160,6 +173,14 @@ Please see the [LibUV installation guide](https://github.com/libuv/libuv) for mo
 - `gethostbyaddr()` - resolve IP address to hostname  
 - `gethostbynamel()` - get list of IP addresses for hostname
 
+### Database Functions
+- **PDO MySQL** - async-compatible PDO operations
+  - `PDO::__construct()`, `PDO::prepare()`, `PDO::exec()` - non-blocking
+  - `PDOStatement::execute()`, `PDOStatement::fetch()` - async data access
+- **MySQLi** - async-compatible MySQLi operations  
+  - `mysqli_connect()`, `mysqli_query()`, `mysqli_prepare()` - non-blocking
+  - `mysqli_stmt_execute()`, `mysqli_fetch_*()` - async result fetching
+
 ### CURL Functions  
 - `curl_exec()` - execute cURL request
 - `curl_multi_exec()` - execute multiple cURL handles
@@ -287,6 +308,39 @@ foreach ($urls as $i => $url) {
 
 $elapsed = microtime(true) - $start;
 echo "All requests completed in: " . round($elapsed, 3) . "s\n";
+```
+
+### Async Database Operations
+
+```php
+<?php
+
+// Concurrent database queries with PDO MySQL
+Async\spawn(function() {
+    $pdo = new PDO('mysql:host=localhost;dbname=test', $user, $pass);
+    
+    // All operations are non-blocking in async context
+    $stmt = $pdo->prepare("SELECT * FROM users WHERE active = ?");
+    $stmt->execute([1]);
+    
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        echo "User: {$row['name']}\n";
+    }
+});
+
+// MySQLi concurrent operations
+Async\spawn(function() {
+    $mysqli = new mysqli('localhost', $user, $pass, 'test');
+    
+    // Non-blocking query execution
+    $result = $mysqli->query("SELECT COUNT(*) as total FROM orders");
+    $row = $result->fetch_assoc();
+    echo "Total orders: {$row['total']}\n";
+    
+    $mysqli->close();
+});
+
+echo "Database queries started\n";
 ```
 
 ### Process Execution
