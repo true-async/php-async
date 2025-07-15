@@ -5,11 +5,14 @@ async
 mysqli
 --SKIPIF--
 <?php
-if (!extension_loaded('mysqli')) die('skip mysqli not available');
-if (!getenv('MYSQL_TEST_HOST')) die('skip MYSQL_TEST_HOST not set');
+require_once __DIR__ . '/inc/async_mysqli_test.inc';
+AsyncMySQLiTest::skipIfNoAsync();
+AsyncMySQLiTest::skipIfNoMySQLi();
+AsyncMySQLiTest::skip();
 ?>
 --FILE--
 <?php
+require_once __DIR__ . '/inc/async_mysqli_test.inc';
 
 use function Async\spawn;
 use function Async\await;
@@ -19,18 +22,8 @@ echo "start\n";
 
 // Test SQL syntax error
 $error_test1 = spawn(function() {
-    $host = getenv("MYSQL_TEST_HOST") ?: "127.0.0.1";
-    $port = getenv("MYSQL_TEST_PORT") ?: 3306;
-    $user = getenv("MYSQL_TEST_USER") ?: "root";
-    $passwd = getenv("MYSQL_TEST_PASSWD") ?: "";
-    $db = getenv("MYSQL_TEST_DB") ?: "test";
-    
     try {
-        $mysqli = new mysqli($host, $user, $passwd, $db, $port);
-        
-        if ($mysqli->connect_error) {
-            throw new Exception("Connection failed: " . $mysqli->connect_error);
-        }
+        $mysqli = AsyncMySQLiTest::factory();
         
         // Intentional syntax error
         $result = $mysqli->query("INVALID SQL SYNTAX HERE");
@@ -49,18 +42,8 @@ $error_test1 = spawn(function() {
 
 // Test table not found error
 $error_test2 = spawn(function() {
-    $host = getenv("MYSQL_TEST_HOST") ?: "127.0.0.1";
-    $port = getenv("MYSQL_TEST_PORT") ?: 3306;
-    $user = getenv("MYSQL_TEST_USER") ?: "root";
-    $passwd = getenv("MYSQL_TEST_PASSWD") ?: "";
-    $db = getenv("MYSQL_TEST_DB") ?: "test";
-    
     try {
-        $mysqli = new mysqli($host, $user, $passwd, $db, $port);
-        
-        if ($mysqli->connect_error) {
-            throw new Exception("Connection failed: " . $mysqli->connect_error);
-        }
+        $mysqli = AsyncMySQLiTest::factory();
         
         // Query non-existent table
         $result = $mysqli->query("SELECT * FROM non_existent_table_54321");
@@ -79,18 +62,8 @@ $error_test2 = spawn(function() {
 
 // Test duplicate key error
 $error_test3 = spawn(function() {
-    $host = getenv("MYSQL_TEST_HOST") ?: "127.0.0.1";
-    $port = getenv("MYSQL_TEST_PORT") ?: 3306;
-    $user = getenv("MYSQL_TEST_USER") ?: "root";
-    $passwd = getenv("MYSQL_TEST_PASSWD") ?: "";
-    $db = getenv("MYSQL_TEST_DB") ?: "test";
-    
     try {
-        $mysqli = new mysqli($host, $user, $passwd, $db, $port);
-        
-        if ($mysqli->connect_error) {
-            throw new Exception("Connection failed: " . $mysqli->connect_error);
-        }
+        $mysqli = AsyncMySQLiTest::factory();
         
         // Create table with unique constraint
         $mysqli->query("DROP TEMPORARY TABLE IF EXISTS error_test");
@@ -120,18 +93,8 @@ $error_test3 = spawn(function() {
 
 // Test prepared statement error
 $error_test4 = spawn(function() {
-    $host = getenv("MYSQL_TEST_HOST") ?: "127.0.0.1";
-    $port = getenv("MYSQL_TEST_PORT") ?: 3306;
-    $user = getenv("MYSQL_TEST_USER") ?: "root";
-    $passwd = getenv("MYSQL_TEST_PASSWD") ?: "";
-    $db = getenv("MYSQL_TEST_DB") ?: "test";
-    
     try {
-        $mysqli = new mysqli($host, $user, $passwd, $db, $port);
-        
-        if ($mysqli->connect_error) {
-            throw new Exception("Connection failed: " . $mysqli->connect_error);
-        }
+        $mysqli = AsyncMySQLiTest::factory();
         
         // Try to prepare invalid SQL
         $stmt = $mysqli->prepare("INVALID PREPARE STATEMENT ?");

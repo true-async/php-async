@@ -5,11 +5,14 @@ async
 mysqli
 --SKIPIF--
 <?php
-if (!extension_loaded('mysqli')) die('skip mysqli not available');
-if (!getenv('MYSQL_TEST_HOST')) die('skip MYSQL_TEST_HOST not set');
+require_once __DIR__ . '/inc/async_mysqli_test.inc';
+AsyncMySQLiTest::skipIfNoAsync();
+AsyncMySQLiTest::skipIfNoMySQLi();
+AsyncMySQLiTest::skip();
 ?>
 --FILE--
 <?php
+require_once __DIR__ . '/inc/async_mysqli_test.inc';
 
 use function Async\spawn;
 use function Async\await;
@@ -19,18 +22,8 @@ echo "start\n";
 
 // Test cancellation of long-running query
 $long_query_coroutine = spawn(function() {
-    $host = getenv("MYSQL_TEST_HOST") ?: "127.0.0.1";
-    $port = getenv("MYSQL_TEST_PORT") ?: 3306;
-    $user = getenv("MYSQL_TEST_USER") ?: "root";
-    $passwd = getenv("MYSQL_TEST_PASSWD") ?: "";
-    $db = getenv("MYSQL_TEST_DB") ?: "test";
-    
     try {
-        $mysqli = new mysqli($host, $user, $passwd, $db, $port);
-        
-        if ($mysqli->connect_error) {
-            throw new Exception("Connection failed: " . $mysqli->connect_error);
-        }
+        $mysqli = AsyncMySQLiTest::factory();
         
         echo "starting long query\n";
         
@@ -67,18 +60,8 @@ $manual_cancel_test = spawn(function() use ($long_query_coroutine) {
 
 // Test timeout-based cancellation
 $timeout_test = spawn(function() {
-    $host = getenv("MYSQL_TEST_HOST") ?: "127.0.0.1";
-    $port = getenv("MYSQL_TEST_PORT") ?: 3306;
-    $user = getenv("MYSQL_TEST_USER") ?: "root";
-    $passwd = getenv("MYSQL_TEST_PASSWD") ?: "";
-    $db = getenv("MYSQL_TEST_DB") ?: "test";
-    
     try {
-        $mysqli = new mysqli($host, $user, $passwd, $db, $port);
-        
-        if ($mysqli->connect_error) {
-            throw new Exception("Connection failed: " . $mysqli->connect_error);
-        }
+        $mysqli = AsyncMySQLiTest::factory();
         
         echo "starting query with timeout\n";
         
@@ -112,18 +95,8 @@ $timeout_test = spawn(function() {
 
 // Test cancellation of prepared statement
 $prepared_cancel_test = spawn(function() {
-    $host = getenv("MYSQL_TEST_HOST") ?: "127.0.0.1";
-    $port = getenv("MYSQL_TEST_PORT") ?: 3306;
-    $user = getenv("MYSQL_TEST_USER") ?: "root";
-    $passwd = getenv("MYSQL_TEST_PASSWD") ?: "";
-    $db = getenv("MYSQL_TEST_DB") ?: "test";
-    
     try {
-        $mysqli = new mysqli($host, $user, $passwd, $db, $port);
-        
-        if ($mysqli->connect_error) {
-            throw new Exception("Connection failed: " . $mysqli->connect_error);
-        }
+        $mysqli = AsyncMySQLiTest::factory();
         
         echo "testing prepared statement cancellation\n";
         

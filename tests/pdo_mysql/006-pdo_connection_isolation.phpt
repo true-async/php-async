@@ -4,11 +4,14 @@ PDO MySQL: Connection isolation test - connections cannot be shared between coro
 pdo_mysql
 --SKIPIF--
 <?php
-if (!extension_loaded('pdo_mysql')) die('skip pdo_mysql not available');
-if (!getenv('MYSQL_TEST_HOST')) die('skip MYSQL_TEST_HOST not set');
+require_once __DIR__ . '/inc/async_pdo_mysql_test.inc';
+AsyncPDOMySQLTest::skipIfNoAsync();
+AsyncPDOMySQLTest::skipIfNoPDOMySQL();
+AsyncPDOMySQLTest::skip();
 ?>
 --FILE--
 <?php
+require_once __DIR__ . '/inc/async_pdo_mysql_test.inc';
 
 use function Async\spawn;
 use function Async\await;
@@ -17,12 +20,7 @@ use function Async\awaitAllOrFail;
 echo "start\n";
 
 // Create connection in main context
-$dsn = getenv('PDO_MYSQL_TEST_DSN') ?: 'mysql:host=localhost;dbname=test';
-$user = getenv('PDO_MYSQL_TEST_USER') ?: 'root';
-$pass = getenv('PDO_MYSQL_TEST_PASS') ?: '';
-
-$mainPdo = new PDO($dsn, $user, $pass);
-$mainPdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$mainPdo = AsyncPDOMySQLTest::factory();
 
 // Get main connection ID
 $stmt = $mainPdo->query("SELECT CONNECTION_ID() as conn_id");
@@ -33,32 +31,20 @@ echo "main connection id: $mainConnId\n";
 $coroutines = [
     spawn(function() {
         // Create new connection in coroutine
-        $dsn = getenv('PDO_MYSQL_TEST_DSN') ?: 'mysql:host=localhost;dbname=test';
-        $user = getenv('PDO_MYSQL_TEST_USER') ?: 'root';
-        $pass = getenv('PDO_MYSQL_TEST_PASS') ?: '';
-        
-        $pdo = new PDO($dsn, $user, $pass);
-        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $pdo = AsyncPDOMySQLTest::factory();
         
         $stmt = $pdo->query("SELECT CONNECTION_ID() as conn_id");
         $connId = $stmt->fetch(PDO::FETCH_ASSOC)['conn_id'];
-        echo "coroutine1 connection id: $connId\n";
-        return $connId;
+        return ['type' => 'new_connection_1', 'conn_id' => $connId];
     }),
     
     spawn(function() {
         // Create another new connection in different coroutine
-        $dsn = getenv('PDO_MYSQL_TEST_DSN') ?: 'mysql:host=localhost;dbname=test';
-        $user = getenv('PDO_MYSQL_TEST_USER') ?: 'root';
-        $pass = getenv('PDO_MYSQL_TEST_PASS') ?: '';
-        
-        $pdo = new PDO($dsn, $user, $pass);
-        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $pdo = AsyncPDOMySQLTest::factory();
         
         $stmt = $pdo->query("SELECT CONNECTION_ID() as conn_id");
         $connId = $stmt->fetch(PDO::FETCH_ASSOC)['conn_id'];
-        echo "coroutine2 connection id: $connId\n";
-        return $connId;
+        return ['type' => 'new_connection_2', 'conn_id' => $connId];
     }),
     
     spawn(function() use ($mainPdo, $mainConnId) {
@@ -66,35 +52,62 @@ $coroutines = [
         try {
             $stmt = $mainPdo->query("SELECT CONNECTION_ID() as conn_id");
             $connId = $stmt->fetch(PDO::FETCH_ASSOC)['conn_id'];
-            echo "coroutine3 using main PDO, connection id: $connId\n";
             
-            // Verify it's still the same connection
-            if ($connId == $mainConnId) {
-                echo "coroutine3: same connection as main\n";
-            } else {
-                echo "coroutine3: different connection from main\n";
-            }
-            
-            return $connId;
+            $sameAsMain = ($connId == $mainConnId);
+            return ['type' => 'shared_connection', 'conn_id' => $connId, 'same_as_main' => $sameAsMain];
         } catch (Exception $e) {
-            echo "coroutine3 error: " . $e->getMessage() . "\n";
-            return null;
+            return ['type' => 'shared_connection', 'conn_id' => null, 'error' => $e->getMessage()];
         }
     })
 ];
 
-$connectionIds = awaitAllOrFail($coroutines);
+$results = awaitAllOrFail($coroutines);
+
+// Sort results by type for deterministic output
+usort($results, function($a, $b) {
+    return strcmp($a['type'], $b['type']);
+});
+
+// Display results in deterministic order
+foreach ($results as $result) {
+    if ($result['type'] === 'new_connection_1') {
+        echo "new connection 1 id: " . $result['conn_id'] . "\n";
+    } elseif ($result['type'] === 'new_connection_2') {
+        echo "new connection 2 id: " . $result['conn_id'] . "\n";
+    } elseif ($result['type'] === 'shared_connection') {
+        if (isset($result['error'])) {
+            echo "shared connection error: " . $result['error'] . "\n";
+        } else {
+            echo "shared connection id: " . $result['conn_id'] . "\n";
+            if ($result['same_as_main']) {
+                echo "shared connection: same as main\n";
+            } else {
+                echo "shared connection: different from main\n";
+            }
+        }
+    }
+}
 
 // Analyze connection isolation
-$allIds = array_merge([$mainConnId], array_filter($connectionIds));
+$connIds = array_filter(array_map(function($r) { return $r['conn_id']; }, $results));
+$allIds = array_merge([$mainConnId], $connIds);
 $uniqueIds = array_unique($allIds);
 
 echo "total connections tested: " . count($allIds) . "\n";
 echo "unique connection ids: " . count($uniqueIds) . "\n";
 
-// For proper isolation, coroutines 1 and 2 should have different IDs
-// Coroutine 3 may share with main (depends on implementation)
-if ($connectionIds[0] != $connectionIds[1]) {
+// For proper isolation, the two new connections should have different IDs
+$newConn1 = null;
+$newConn2 = null;
+foreach ($results as $result) {
+    if ($result['type'] === 'new_connection_1') {
+        $newConn1 = $result['conn_id'];
+    } elseif ($result['type'] === 'new_connection_2') {
+        $newConn2 = $result['conn_id'];
+    }
+}
+
+if ($newConn1 && $newConn2 && $newConn1 != $newConn2) {
     echo "coroutine isolation: passed (different connections)\n";
 } else {
     echo "coroutine isolation: failed (same connection)\n";
@@ -106,10 +119,10 @@ echo "end\n";
 --EXPECTF--
 start
 main connection id: %d
-coroutine1 connection id: %d
-coroutine2 connection id: %d
-coroutine3 using main PDO, connection id: %d
-coroutine3: same connection as main
+new connection 1 id: %d
+new connection 2 id: %d
+shared connection id: %d
+shared connection: same as main
 total connections tested: 4
 unique connection ids: %d
 coroutine isolation: passed (different connections)

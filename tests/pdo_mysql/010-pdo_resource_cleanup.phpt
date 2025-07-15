@@ -4,11 +4,14 @@ PDO MySQL: Async resource cleanup test
 pdo_mysql
 --SKIPIF--
 <?php
-if (!extension_loaded('pdo_mysql')) die('skip pdo_mysql not available');
-if (!getenv('MYSQL_TEST_HOST')) die('skip MYSQL_TEST_HOST not set');
+require_once __DIR__ . '/inc/async_pdo_mysql_test.inc';
+AsyncPDOMySQLTest::skipIfNoAsync();
+AsyncPDOMySQLTest::skipIfNoPDOMySQL();
+AsyncPDOMySQLTest::skip();
 ?>
 --FILE--
 <?php
+require_once __DIR__ . '/inc/async_pdo_mysql_test.inc';
 
 use function Async\spawn;
 use function Async\await;
@@ -17,11 +20,7 @@ use function Async\awaitAllOrFail;
 echo "start\n";
 
 function getConnectionCount() {
-    $dsn = getenv('PDO_MYSQL_TEST_DSN') ?: 'mysql:host=localhost;dbname=test';
-    $user = getenv('PDO_MYSQL_TEST_USER') ?: 'root';
-    $pass = getenv('PDO_MYSQL_TEST_PASS') ?: '';
-    
-    $pdo = new PDO($dsn, $user, $pass);
+    $pdo = AsyncPDOMySQLTest::factory();
     $stmt = $pdo->query("SHOW STATUS LIKE 'Threads_connected'");
     $result = $stmt->fetch(PDO::FETCH_ASSOC);
     return (int) $result['Value'];
@@ -35,21 +34,14 @@ $coroutines = [];
 
 for ($i = 1; $i <= 5; $i++) {
     $coroutines[] = spawn(function() use ($i) {
-        $dsn = getenv('PDO_MYSQL_TEST_DSN') ?: 'mysql:host=localhost;dbname=test';
-        $user = getenv('PDO_MYSQL_TEST_USER') ?: 'root';
-        $pass = getenv('PDO_MYSQL_TEST_PASS') ?: '';
-        
         try {
             // Create connection
-            $pdo = new PDO($dsn, $user, $pass);
-            $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $pdo = AsyncPDOMySQLTest::factory();
             
             // Get connection ID
             $stmt = $pdo->query("SELECT CONNECTION_ID() as conn_id");
             $conn_info = $stmt->fetch(PDO::FETCH_ASSOC);
             $conn_id = $conn_info['conn_id'];
-            
-            echo "coroutine $i: connection $conn_id created\n";
             
             // Do some work
             $pdo->exec("DROP TEMPORARY TABLE IF EXISTS cleanup_test_$i");
@@ -63,41 +55,80 @@ for ($i = 1; $i <= 5; $i++) {
             // Query the data
             $stmt = $pdo->query("SELECT COUNT(*) as count FROM cleanup_test_$i");
             $count_result = $stmt->fetch(PDO::FETCH_ASSOC);
-            echo "coroutine $i: inserted {$count_result['count']} rows\n";
             
             // Explicitly close connection
             $pdo = null;
-            echo "coroutine $i: connection $conn_id closed\n";
             
-            return "coroutine_$i" . "_completed";
+            return [
+                'type' => 'explicit_cleanup',
+                'coroutine_id' => $i,
+                'conn_id' => $conn_id,
+                'rows_inserted' => $count_result['count'],
+                'status' => 'completed'
+            ];
         } catch (Exception $e) {
-            echo "coroutine $i error: " . $e->getMessage() . "\n";
-            return "coroutine_$i" . "_failed";
+            return [
+                'type' => 'explicit_cleanup',
+                'coroutine_id' => $i,
+                'conn_id' => null,
+                'rows_inserted' => 0,
+                'status' => 'failed',
+                'error' => $e->getMessage()
+            ];
         }
     });
 }
 
 // Test coroutine that exits without explicit cleanup
 $coroutines[] = spawn(function() {
-    $dsn = getenv('PDO_MYSQL_TEST_DSN') ?: 'mysql:host=localhost;dbname=test';
-    $user = getenv('PDO_MYSQL_TEST_USER') ?: 'root';
-    $pass = getenv('PDO_MYSQL_TEST_PASS') ?: '';
-    
-    $pdo = new PDO($dsn, $user, $pass);
+    $pdo = AsyncPDOMySQLTest::factory();
     $stmt = $pdo->query("SELECT CONNECTION_ID() as conn_id");
     $conn_info = $stmt->fetch(PDO::FETCH_ASSOC);
-    echo "coroutine 6: connection {$conn_info['conn_id']} created (no explicit cleanup)\n";
     
     // Exit without calling $pdo = null (test automatic cleanup)
-    return "coroutine_6_completed";
+    return [
+        'type' => 'auto_cleanup',
+        'coroutine_id' => 6,
+        'conn_id' => $conn_info['conn_id'],
+        'rows_inserted' => 0,
+        'status' => 'completed'
+    ];
 });
 
 echo "waiting for all coroutines to complete\n";
 $results = awaitAllOrFail($coroutines);
 
+// Sort results by coroutine_id for deterministic output
+usort($results, function($a, $b) {
+    return $a['coroutine_id'] - $b['coroutine_id'];
+});
+
 echo "all coroutines completed\n";
+
+// Display results in sorted order
+foreach ($results as $result) {
+    $id = $result['coroutine_id'];
+    $conn_id = $result['conn_id'];
+    $type = $result['type'];
+    $status = $result['status'];
+    
+    if ($type === 'explicit_cleanup') {
+        echo "coroutine $id: connection $conn_id created\n";
+        if ($status === 'completed') {
+            echo "coroutine $id: inserted {$result['rows_inserted']} rows\n";
+            echo "coroutine $id: connection $conn_id closed\n";
+        } else {
+            echo "coroutine $id error: {$result['error']}\n";
+        }
+    } elseif ($type === 'auto_cleanup') {
+        echo "coroutine $id: connection $conn_id created (no explicit cleanup)\n";
+    }
+}
+
+// Display final results summary
 foreach ($results as $i => $result) {
-    echo "result " . ($i + 1) . ": $result\n";
+    $result_str = "coroutine_{$result['coroutine_id']}_{$result['status']}";
+    echo "result " . ($i + 1) . ": $result_str\n";
 }
 
 // Force garbage collection
@@ -126,23 +157,23 @@ echo "end\n";
 start
 initial connections: %d
 waiting for all coroutines to complete
+all coroutines completed
 coroutine 1: connection %d created
-coroutine 2: connection %d created
-coroutine 3: connection %d created
-coroutine 4: connection %d created
-coroutine 5: connection %d created
-coroutine 6: connection %d created (no explicit cleanup)
 coroutine 1: inserted 3 rows
 coroutine 1: connection %d closed
+coroutine 2: connection %d created
 coroutine 2: inserted 3 rows
 coroutine 2: connection %d closed
+coroutine 3: connection %d created
 coroutine 3: inserted 3 rows
 coroutine 3: connection %d closed
+coroutine 4: connection %d created
 coroutine 4: inserted 3 rows
 coroutine 4: connection %d closed
+coroutine 5: connection %d created
 coroutine 5: inserted 3 rows
 coroutine 5: connection %d closed
-all coroutines completed
+coroutine 6: connection %d created (no explicit cleanup)
 result 1: coroutine_1_completed
 result 2: coroutine_2_completed
 result 3: coroutine_3_completed

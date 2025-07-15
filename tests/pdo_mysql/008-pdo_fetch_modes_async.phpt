@@ -4,11 +4,14 @@ PDO MySQL: Async fetch modes
 pdo_mysql
 --SKIPIF--
 <?php
-if (!extension_loaded('pdo_mysql')) die('skip pdo_mysql not available');
-if (!getenv('MYSQL_TEST_HOST')) die('skip MYSQL_TEST_HOST not set');
+require_once __DIR__ . '/inc/async_pdo_mysql_test.inc';
+AsyncPDOMySQLTest::skipIfNoAsync();
+AsyncPDOMySQLTest::skipIfNoPDOMySQL();
+AsyncPDOMySQLTest::skip();
 ?>
 --FILE--
 <?php
+require_once __DIR__ . '/inc/async_pdo_mysql_test.inc';
 
 use function Async\spawn;
 use function Async\await;
@@ -16,13 +19,8 @@ use function Async\await;
 echo "start\n";
 
 $coroutine = spawn(function() {
-    $dsn = getenv('PDO_MYSQL_TEST_DSN') ?: 'mysql:host=localhost;dbname=test';
-    $user = getenv('PDO_MYSQL_TEST_USER') ?: 'root';
-    $pass = getenv('PDO_MYSQL_TEST_PASS') ?: '';
-    
     try {
-        $pdo = new PDO($dsn, $user, $pass);
-        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $pdo = AsyncPDOMySQLTest::factory();
         
         // Create test data
         $pdo->exec("DROP TEMPORARY TABLE IF EXISTS fetch_test");

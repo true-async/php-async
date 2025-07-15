@@ -4,11 +4,14 @@ PDO MySQL: Basic async connection test
 pdo_mysql
 --SKIPIF--
 <?php
-if (!extension_loaded('pdo_mysql')) die('skip pdo_mysql not available');
-if (!getenv('MYSQL_TEST_HOST')) die('skip MYSQL_TEST_HOST not set');
+require_once __DIR__ . '/inc/async_pdo_mysql_test.inc';
+AsyncPDOMySQLTest::skipIfNoAsync();
+AsyncPDOMySQLTest::skipIfNoPDOMySQL();
+AsyncPDOMySQLTest::skip();
 ?>
 --FILE--
 <?php
+require_once __DIR__ . '/inc/async_pdo_mysql_test.inc';
 
 use function Async\spawn;
 use function Async\await;
@@ -17,15 +20,9 @@ use function Async\await;
 echo "start\n";
 
 $coroutine = spawn(function() {
-    $host = getenv('MYSQL_TEST_HOST');
-    $db = getenv('MYSQL_TEST_DB') ?: 'test';
-    $user = getenv('MYSQL_TEST_USER') ?: 'root';
-    $pass = getenv('MYSQL_TEST_PASSWD') ?: '';
-    $dsn = "mysql:host=$host;dbname=$db";
-    
     try {
-        $pdo = new PDO($dsn, $user, $pass);
-        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        // Initialize database first
+        $pdo = AsyncPDOMySQLTest::initDatabase();
         echo "connected\n";
         
         // Test simple query

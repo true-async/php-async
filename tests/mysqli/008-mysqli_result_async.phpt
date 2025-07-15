@@ -5,11 +5,14 @@ async
 mysqli
 --SKIPIF--
 <?php
-if (!extension_loaded('mysqli')) die('skip mysqli not available');
-if (!getenv('MYSQL_TEST_HOST')) die('skip MYSQL_TEST_HOST not set');
+require_once __DIR__ . '/inc/async_mysqli_test.inc';
+AsyncMySQLiTest::skipIfNoAsync();
+AsyncMySQLiTest::skipIfNoMySQLi();
+AsyncMySQLiTest::skip();
 ?>
 --FILE--
 <?php
+require_once __DIR__ . '/inc/async_mysqli_test.inc';
 
 use function Async\spawn;
 use function Async\await;
@@ -17,18 +20,8 @@ use function Async\await;
 echo "start\n";
 
 $coroutine = spawn(function() {
-    $host = getenv("MYSQL_TEST_HOST") ?: "127.0.0.1";
-    $port = getenv("MYSQL_TEST_PORT") ?: 3306;
-    $user = getenv("MYSQL_TEST_USER") ?: "root";
-    $passwd = getenv("MYSQL_TEST_PASSWD") ?: "";
-    $db = getenv("MYSQL_TEST_DB") ?: "test";
-    
     try {
-        $mysqli = new mysqli($host, $user, $passwd, $db, $port);
-        
-        if ($mysqli->connect_error) {
-            throw new Exception("Connection failed: " . $mysqli->connect_error);
-        }
+        $mysqli = AsyncMySQLiTest::initDatabase();
         
         // Create test data
         $mysqli->query("DROP TEMPORARY TABLE IF EXISTS result_test");

@@ -5,11 +5,14 @@ async
 mysqli
 --SKIPIF--
 <?php
-if (!extension_loaded('mysqli')) die('skip mysqli not available');
-if (!getenv('MYSQL_TEST_HOST')) die('skip MYSQL_TEST_HOST not set');
+require_once __DIR__ . '/inc/async_mysqli_test.inc';
+AsyncMySQLiTest::skipIfNoAsync();
+AsyncMySQLiTest::skipIfNoMySQLi();
+AsyncMySQLiTest::skip();
 ?>
 --FILE--
 <?php
+require_once __DIR__ . '/inc/async_mysqli_test.inc';
 
 use function Async\spawn;
 use function Async\await;
@@ -18,26 +21,20 @@ use function Async\awaitAllOrFail;
 echo "start\n";
 
 function getConnectionCount() {
-    $host = getenv("MYSQL_TEST_HOST") ?: "127.0.0.1";
-    $port = getenv("MYSQL_TEST_PORT") ?: 3306;
-    $user = getenv("MYSQL_TEST_USER") ?: "root";
-    $passwd = getenv("MYSQL_TEST_PASSWD") ?: "";
-    $db = getenv("MYSQL_TEST_DB") ?: "test";
-    
-    $mysqli = new mysqli($host, $user, $passwd, $db, $port);
-    if ($mysqli->connect_error) {
+    try {
+        $mysqli = AsyncMySQLiTest::factory();
+        $result = $mysqli->query("SHOW STATUS LIKE 'Threads_connected'");
+        if ($result) {
+            $row = $result->fetch_assoc();
+            $result->free();
+            $mysqli->close();
+            return (int) $row['Value'];
+        }
+        $mysqli->close();
+        return -1;
+    } catch (Exception $e) {
         return -1;
     }
-    
-    $result = $mysqli->query("SHOW STATUS LIKE 'Threads_connected'");
-    if ($result) {
-        $row = $result->fetch_assoc();
-        $result->free();
-        $mysqli->close();
-        return (int) $row['Value'];
-    }
-    $mysqli->close();
-    return -1;
 }
 
 $initial_connections = getConnectionCount();
@@ -48,19 +45,9 @@ $cleanup_coroutines = [];
 
 for ($i = 1; $i <= 4; $i++) {
     $cleanup_coroutines[] = spawn(function() use ($i) {
-        $host = getenv("MYSQL_TEST_HOST") ?: "127.0.0.1";
-        $port = getenv("MYSQL_TEST_PORT") ?: 3306;
-        $user = getenv("MYSQL_TEST_USER") ?: "root";
-        $passwd = getenv("MYSQL_TEST_PASSWD") ?: "";
-        $db = getenv("MYSQL_TEST_DB") ?: "test";
-        
         try {
             // Create connection
-            $mysqli = new mysqli($host, $user, $passwd, $db, $port);
-            
-            if ($mysqli->connect_error) {
-                throw new Exception("Connection failed: " . $mysqli->connect_error);
-            }
+            $mysqli = AsyncMySQLiTest::factory();
             
             // Get connection ID
             $result = $mysqli->query("SELECT CONNECTION_ID() as conn_id");
@@ -123,15 +110,9 @@ for ($i = 1; $i <= 4; $i++) {
 
 // Test coroutine that doesn't explicitly close (tests automatic cleanup)
 $cleanup_coroutines[] = spawn(function() {
-    $host = getenv("MYSQL_TEST_HOST") ?: "127.0.0.1";
-    $port = getenv("MYSQL_TEST_PORT") ?: 3306;
-    $user = getenv("MYSQL_TEST_USER") ?: "root";
-    $passwd = getenv("MYSQL_TEST_PASSWD") ?: "";
-    $db = getenv("MYSQL_TEST_DB") ?: "test";
-    
-    $mysqli = new mysqli($host, $user, $passwd, $db, $port);
-    
-    if ($mysqli->connect_error) {
+    try {
+        $mysqli = AsyncMySQLiTest::factory();
+    } catch (Exception $e) {
         return "connection_failed";
     }
     
@@ -149,15 +130,9 @@ $cleanup_coroutines[] = spawn(function() {
 
 // Test coroutine with statement that's not explicitly closed
 $cleanup_coroutines[] = spawn(function() {
-    $host = getenv("MYSQL_TEST_HOST") ?: "127.0.0.1";
-    $port = getenv("MYSQL_TEST_PORT") ?: 3306;
-    $user = getenv("MYSQL_TEST_USER") ?: "root";
-    $passwd = getenv("MYSQL_TEST_PASSWD") ?: "";
-    $db = getenv("MYSQL_TEST_DB") ?: "test";
-    
-    $mysqli = new mysqli($host, $user, $passwd, $db, $port);
-    
-    if ($mysqli->connect_error) {
+    try {
+        $mysqli = AsyncMySQLiTest::factory();
+    } catch (Exception $e) {
         return "connection_failed";
     }
     

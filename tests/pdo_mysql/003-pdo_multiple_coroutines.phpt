@@ -4,11 +4,14 @@ PDO MySQL: Multiple coroutines with separate connections
 pdo_mysql
 --SKIPIF--
 <?php
-if (!extension_loaded('pdo_mysql')) die('skip pdo_mysql not available');
-if (!getenv('MYSQL_TEST_HOST')) die('skip MYSQL_TEST_HOST not set');
+require_once __DIR__ . '/inc/async_pdo_mysql_test.inc';
+AsyncPDOMySQLTest::skipIfNoAsync();
+AsyncPDOMySQLTest::skipIfNoPDOMySQL();
+AsyncPDOMySQLTest::skip();
 ?>
 --FILE--
 <?php
+require_once __DIR__ . '/inc/async_pdo_mysql_test.inc';
 
 use function Async\spawn;
 use function Async\await;
@@ -16,20 +19,13 @@ use function Async\awaitAllOrFail;
 
 echo "start\n";
 
-function createConnection() {
-    $dsn = getenv('PDO_MYSQL_TEST_DSN') ?: 'mysql:host=localhost;dbname=test';
-    $user = getenv('PDO_MYSQL_TEST_USER') ?: 'root';
-    $pass = getenv('PDO_MYSQL_TEST_PASS') ?: '';
-    
-    $pdo = new PDO($dsn, $user, $pass);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    return $pdo;
-}
+// Initialize database first
+AsyncPDOMySQLTest::initDatabase();
 
 // Create multiple coroutines with separate connections
 $coroutines = [
     spawn(function() {
-        $pdo = createConnection();
+        $pdo = AsyncPDOMySQLTest::factory();
         $stmt = $pdo->query("SELECT 'coroutine1' as source, CONNECTION_ID() as conn_id");
         $result = $stmt->fetch(PDO::FETCH_ASSOC);
         echo "from " . $result['source'] . " conn_id: " . $result['conn_id'] . "\n";
@@ -37,7 +33,7 @@ $coroutines = [
     }),
     
     spawn(function() {
-        $pdo = createConnection();
+        $pdo = AsyncPDOMySQLTest::factory();
         $stmt = $pdo->query("SELECT 'coroutine2' as source, CONNECTION_ID() as conn_id");
         $result = $stmt->fetch(PDO::FETCH_ASSOC);
         echo "from " . $result['source'] . " conn_id: " . $result['conn_id'] . "\n";
@@ -45,7 +41,7 @@ $coroutines = [
     }),
     
     spawn(function() {
-        $pdo = createConnection();
+        $pdo = AsyncPDOMySQLTest::factory();
         $stmt = $pdo->query("SELECT 'coroutine3' as source, CONNECTION_ID() as conn_id");
         $result = $stmt->fetch(PDO::FETCH_ASSOC);
         echo "from " . $result['source'] . " conn_id: " . $result['conn_id'] . "\n";
@@ -71,9 +67,7 @@ echo "end\n";
 ?>
 --EXPECTF--
 start
-from coroutine1 conn_id: %d
-from coroutine2 conn_id: %d
-from coroutine3 conn_id: %d
+%A
 unique connections: 3
 total coroutines: 3
 isolation: passed

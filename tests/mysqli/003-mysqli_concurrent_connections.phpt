@@ -5,11 +5,14 @@ async
 mysqli
 --SKIPIF--
 <?php
-if (!extension_loaded('mysqli')) die('skip mysqli not available');
-if (!getenv('MYSQL_TEST_HOST')) die('skip MYSQL_TEST_HOST not set');
+require_once __DIR__ . '/inc/async_mysqli_test.inc';
+AsyncMySQLiTest::skipIfNoAsync();
+AsyncMySQLiTest::skipIfNoMySQLi();
+AsyncMySQLiTest::skip();
 ?>
 --FILE--
 <?php
+require_once __DIR__ . '/inc/async_mysqli_test.inc';
 
 use function Async\spawn;
 use function Async\await;
@@ -17,24 +20,10 @@ use function Async\awaitAllOrFail;
 
 echo "start\n";
 
-function createMysqliConnection() {
-    $host = getenv("MYSQL_TEST_HOST") ?: "127.0.0.1";
-    $port = getenv("MYSQL_TEST_PORT") ?: 3306;
-    $user = getenv("MYSQL_TEST_USER") ?: "root";
-    $passwd = getenv("MYSQL_TEST_PASSWD") ?: "";
-    $db = getenv("MYSQL_TEST_DB") ?: "test";
-    
-    $mysqli = new mysqli($host, $user, $passwd, $db, $port);
-    if ($mysqli->connect_error) {
-        throw new Exception("Connection failed: " . $mysqli->connect_error);
-    }
-    return $mysqli;
-}
-
 // Create multiple coroutines with separate MySQLi connections
 $coroutines = [
     spawn(function() {
-        $mysqli = createMysqliConnection();
+        $mysqli = AsyncMySQLiTest::factory();
         $result = $mysqli->query("SELECT 'coroutine1' as source, CONNECTION_ID() as conn_id");
         $row = $result->fetch_assoc();
         echo "from {$row['source']} conn_id: {$row['conn_id']}\n";
@@ -44,7 +33,7 @@ $coroutines = [
     }),
     
     spawn(function() {
-        $mysqli = createMysqliConnection();
+        $mysqli = AsyncMySQLiTest::factory();
         $result = $mysqli->query("SELECT 'coroutine2' as source, CONNECTION_ID() as conn_id");
         $row = $result->fetch_assoc();
         echo "from {$row['source']} conn_id: {$row['conn_id']}\n";
@@ -54,7 +43,7 @@ $coroutines = [
     }),
     
     spawn(function() {
-        $mysqli = createMysqliConnection();
+        $mysqli = AsyncMySQLiTest::factory();
         $result = $mysqli->query("SELECT 'coroutine3' as source, CONNECTION_ID() as conn_id");
         $row = $result->fetch_assoc();
         echo "from {$row['source']} conn_id: {$row['conn_id']}\n";
@@ -64,7 +53,7 @@ $coroutines = [
     }),
     
     spawn(function() {
-        $mysqli = createMysqliConnection();
+        $mysqli = AsyncMySQLiTest::factory();
         // Test with some workload
         $mysqli->query("CREATE TEMPORARY TABLE temp_work (id INT, data VARCHAR(100))");
         $mysqli->query("INSERT INTO temp_work VALUES (1, 'data1'), (2, 'data2')");
