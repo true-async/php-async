@@ -133,9 +133,7 @@ class AsyncMySQLiTest {
      * Check if async extension is loaded
      */
     static function skipIfNoAsync() {
-        if (!extension_loaded('async')) {
-            die('skip async extension not loaded');
-        }
+        // No need to check for async extension - it's always available in this context
     }
     
     /**

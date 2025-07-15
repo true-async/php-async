@@ -1,7 +1,6 @@
 --TEST--
 MySQLi: Basic async connection test
 --EXTENSIONS--
-async
 mysqli
 --SKIPIF--
 <?php

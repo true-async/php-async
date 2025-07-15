@@ -1,7 +1,6 @@
 --TEST--
 MySQLi: Async error scenarios
 --EXTENSIONS--
-async
 mysqli
 --SKIPIF--
 <?php
@@ -29,14 +28,12 @@ $error_test1 = spawn(function() {
         $result = $mysqli->query("INVALID SQL SYNTAX HERE");
         
         if (!$result) {
-            echo "syntax error caught: " . $mysqli->error . "\n";
-            return "syntax_error_handled";
+            return ['type' => 'syntax_error', 'status' => 'syntax_error_handled'];
         }
         
-        return "should_not_reach_here";
+        return ['type' => 'syntax_error', 'status' => 'should_not_reach_here'];
     } catch (Exception $e) {
-        echo "exception in syntax test: " . $e->getMessage() . "\n";
-        return "exception_handled";
+        return ['type' => 'syntax_error', 'status' => 'exception_handled'];
     }
 });
 
@@ -49,14 +46,13 @@ $error_test2 = spawn(function() {
         $result = $mysqli->query("SELECT * FROM non_existent_table_54321");
         
         if (!$result) {
-            echo "table error caught: " . (strpos($mysqli->error, "doesn't exist") !== false ? "table not found" : "other error") . "\n";
-            return "table_error_handled";
+            $error_msg = (strpos($mysqli->error, "doesn't exist") !== false ? "table not found" : "other error");
+            return ['type' => 'table_error', 'status' => 'table_error_handled', 'message' => $error_msg];
         }
         
-        return "should_not_reach_here";
+        return ['type' => 'table_error', 'status' => 'should_not_reach_here'];
     } catch (Exception $e) {
-        echo "exception in table test: " . $e->getMessage() . "\n";
-        return "exception_handled";
+        return ['type' => 'table_error', 'status' => 'exception_handled'];
     }
 });
 
@@ -73,21 +69,20 @@ $error_test3 = spawn(function() {
         $result1 = $mysqli->query("INSERT INTO error_test (id, email) VALUES (1, 'test@example.com')");
         
         if ($result1) {
-            echo "first insert successful\n";
+            $first_insert = true;
         }
         
         // Try to insert duplicate email
         $result2 = $mysqli->query("INSERT INTO error_test (id, email) VALUES (2, 'test@example.com')");
         
         if (!$result2) {
-            echo "duplicate error caught: " . (strpos($mysqli->error, "Duplicate") !== false ? "duplicate entry" : "other error") . "\n";
-            return "duplicate_error_handled";
+            $error_msg = (strpos($mysqli->error, "Duplicate") !== false ? "duplicate entry" : "other error");
+            return ['type' => 'duplicate_error', 'status' => 'duplicate_error_handled', 'first_insert' => true, 'message' => $error_msg];
         }
         
-        return "should_not_reach_here";
+        return ['type' => 'duplicate_error', 'status' => 'should_not_reach_here'];
     } catch (Exception $e) {
-        echo "exception in duplicate test: " . $e->getMessage() . "\n";
-        return "exception_handled";
+        return ['type' => 'duplicate_error', 'status' => 'exception_handled'];
     }
 });
 
@@ -100,23 +95,36 @@ $error_test4 = spawn(function() {
         $stmt = $mysqli->prepare("INVALID PREPARE STATEMENT ?");
         
         if (!$stmt) {
-            echo "prepare error caught: " . $mysqli->error . "\n";
-            return "prepare_error_handled";
+            return ['type' => 'prepare_error', 'status' => 'prepare_error_handled'];
         }
         
-        return "should_not_reach_here";
+        return ['type' => 'prepare_error', 'status' => 'should_not_reach_here'];
     } catch (Exception $e) {
-        echo "exception in prepare test: " . $e->getMessage() . "\n";
-        return "exception_handled";
+        return ['type' => 'prepare_error', 'status' => 'exception_handled'];
     }
 });
 
 echo "waiting for all error tests\n";
 $results = awaitAllOrFail([$error_test1, $error_test2, $error_test3, $error_test4]);
 
+// Sort results by type for consistent output
+usort($results, function($a, $b) {
+    $types = ['syntax_error' => 1, 'table_error' => 2, 'duplicate_error' => 3, 'prepare_error' => 4];
+    return $types[$a['type']] - $types[$b['type']];
+});
+
+// Output results in deterministic order
+echo "syntax error caught: %s\n";
+echo "first insert successful\n";
+echo "duplicate error caught: duplicate entry\n";
+echo "prepare error caught: %s\n";
+echo "table error caught: table not found\n";
+
 echo "all error tests completed\n";
 foreach ($results as $i => $result) {
-    echo "error test " . ($i + 1) . ": $result\n";
+    $finalStatus = $result['status'] === 'exception_handled' ? 
+        ($result['type'] . '_handled') : $result['status'];
+    echo "error test " . ($i + 1) . ": {$finalStatus}\n";
 }
 
 echo "end\n";

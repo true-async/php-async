@@ -1,7 +1,6 @@
 --TEST--
 MySQLi: Concurrent connections in separate coroutines
 --EXTENSIONS--
-async
 mysqli
 --SKIPIF--
 <?php
@@ -26,30 +25,27 @@ $coroutines = [
         $mysqli = AsyncMySQLiTest::factory();
         $result = $mysqli->query("SELECT 'coroutine1' as source, CONNECTION_ID() as conn_id");
         $row = $result->fetch_assoc();
-        echo "from {$row['source']} conn_id: {$row['conn_id']}\n";
         $result->free();
         $mysqli->close();
-        return $row['conn_id'];
+        return ['source' => $row['source'], 'conn_id' => $row['conn_id']];
     }),
     
     spawn(function() {
         $mysqli = AsyncMySQLiTest::factory();
         $result = $mysqli->query("SELECT 'coroutine2' as source, CONNECTION_ID() as conn_id");
         $row = $result->fetch_assoc();
-        echo "from {$row['source']} conn_id: {$row['conn_id']}\n";
         $result->free();
         $mysqli->close();
-        return $row['conn_id'];
+        return ['source' => $row['source'], 'conn_id' => $row['conn_id']];
     }),
     
     spawn(function() {
         $mysqli = AsyncMySQLiTest::factory();
         $result = $mysqli->query("SELECT 'coroutine3' as source, CONNECTION_ID() as conn_id");
         $row = $result->fetch_assoc();
-        echo "from {$row['source']} conn_id: {$row['conn_id']}\n";
         $result->free();
         $mysqli->close();
-        return $row['conn_id'];
+        return ['source' => $row['source'], 'conn_id' => $row['conn_id']];
     }),
     
     spawn(function() {
@@ -59,16 +55,29 @@ $coroutines = [
         $mysqli->query("INSERT INTO temp_work VALUES (1, 'data1'), (2, 'data2')");
         $result = $mysqli->query("SELECT COUNT(*) as count, CONNECTION_ID() as conn_id FROM temp_work");
         $row = $result->fetch_assoc();
-        echo "from coroutine4 (with work) conn_id: {$row['conn_id']}, count: {$row['count']}\n";
         $result->free();
         $mysqli->close();
-        return $row['conn_id'];
+        return ['source' => 'coroutine4', 'conn_id' => $row['conn_id'], 'count' => $row['count']];
     })
 ];
 
-$connectionIds = awaitAllOrFail($coroutines);
+$results = awaitAllOrFail($coroutines);
+
+// Display results in deterministic order
+usort($results, function($a, $b) {
+    return strcmp($a['source'], $b['source']);
+});
+
+foreach ($results as $result) {
+    if (isset($result['count'])) {
+        echo "from {$result['source']} (with work) conn_id: {$result['conn_id']}, count: {$result['count']}\n";
+    } else {
+        echo "from {$result['source']} conn_id: {$result['conn_id']}\n";
+    }
+}
 
 // Verify all connections are different
+$connectionIds = array_map(function($r) { return $r['conn_id']; }, $results);
 $uniqueIds = array_unique($connectionIds);
 echo "unique connections: " . count($uniqueIds) . "\n";
 echo "total coroutines: " . count($connectionIds) . "\n";

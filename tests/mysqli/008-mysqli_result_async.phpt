@@ -1,7 +1,6 @@
 --TEST--
 MySQLi: Async result handling and fetch methods
 --EXTENSIONS--
-async
 mysqli
 --SKIPIF--
 <?php

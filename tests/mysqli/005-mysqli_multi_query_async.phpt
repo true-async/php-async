@@ -1,7 +1,6 @@
 --TEST--
 MySQLi: Async multi-query execution
 --EXTENSIONS--
-async
 mysqli
 --SKIPIF--
 <?php

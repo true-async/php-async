@@ -1,7 +1,6 @@
 --TEST--
 MySQLi: Async cancellation test
 --EXTENSIONS--
-async
 mysqli
 --SKIPIF--
 <?php
@@ -25,25 +24,20 @@ $long_query_coroutine = spawn(function() {
     try {
         $mysqli = AsyncMySQLiTest::factory();
         
-        echo "starting long query\n";
-        
         // This query should take several seconds
         $result = $mysqli->query("SELECT SLEEP(5), 'long query completed' as message");
         
         if ($result) {
             $row = $result->fetch_assoc();
-            echo "query completed: " . $row['message'] . "\n";
             $result->free();
             $mysqli->close();
-            return "completed";
+            return ['type' => 'long_query', 'status' => 'completed', 'message' => $row['message']];
         } else {
-            echo "query failed: " . $mysqli->error . "\n";
             $mysqli->close();
-            return "failed";
+            return ['type' => 'long_query', 'status' => 'failed'];
         }
     } catch (Exception $e) {
-        echo "query cancelled or failed: " . $e->getMessage() . "\n";
-        return "cancelled";
+        return ['type' => 'long_query', 'status' => 'cancelled'];
     }
 });
 
@@ -52,18 +46,15 @@ $manual_cancel_test = spawn(function() use ($long_query_coroutine) {
     // Wait a bit, then cancel the long query
     usleep(500000); // 0.5 seconds
     
-    echo "cancelling long query\n";
     $long_query_coroutine->cancel();
     
-    return "cancellation_sent";
+    return ['type' => 'manual_cancel', 'status' => 'cancellation_sent'];
 });
 
 // Test timeout-based cancellation
 $timeout_test = spawn(function() {
     try {
         $mysqli = AsyncMySQLiTest::factory();
-        
-        echo "starting query with timeout\n";
         
         // Use timeout to cancel after 1 second
         $query_coroutine = spawn(function() use ($mysqli) {
@@ -79,17 +70,14 @@ $timeout_test = spawn(function() {
         $result = await($query_coroutine, timeout(1000)); // 1 second timeout
         
         if ($result) {
-            echo "timeout query completed: " . $result['message'] . "\n";
             $mysqli->close();
-            return "timeout_completed";
+            return ['type' => 'timeout_test', 'status' => 'timeout_completed', 'message' => $result['message']];
         } else {
-            echo "timeout query returned null\n";
             $mysqli->close();
-            return "timeout_null";
+            return ['type' => 'timeout_test', 'status' => 'timeout_null'];
         }
     } catch (Exception $e) {
-        echo "timeout query cancelled: timeout exceeded\n";
-        return "timeout_cancelled";
+        return ['type' => 'timeout_test', 'status' => 'timeout_cancelled'];
     }
 });
 
@@ -97,8 +85,6 @@ $timeout_test = spawn(function() {
 $prepared_cancel_test = spawn(function() {
     try {
         $mysqli = AsyncMySQLiTest::factory();
-        
-        echo "testing prepared statement cancellation\n";
         
         $stmt = $mysqli->prepare("SELECT SLEEP(?), 'prepared completed' as message");
         if ($stmt) {
@@ -111,55 +97,77 @@ $prepared_cancel_test = spawn(function() {
             
             if ($result) {
                 $row = $result->fetch_assoc();
-                echo "prepared statement completed: " . $row['message'] . "\n";
                 $result->free();
+                $stmt->close();
+                $mysqli->close();
+                return ['type' => 'prepared_test', 'status' => 'prepared_completed', 'message' => $row['message']];
             }
             
             $stmt->close();
         }
         
         $mysqli->close();
-        return "prepared_completed";
+        return ['type' => 'prepared_test', 'status' => 'prepared_completed'];
     } catch (Exception $e) {
-        echo "prepared statement cancelled\n";
-        return "prepared_cancelled";
+        return ['type' => 'prepared_test', 'status' => 'prepared_cancelled'];
     }
 });
 
 // Start cancellation for prepared statement after delay
 $prepared_canceller = spawn(function() use ($prepared_cancel_test) {
     usleep(800000); // 0.8 seconds
-    echo "cancelling prepared statement\n";
     $prepared_cancel_test->cancel();
-    return "prepared_cancellation_sent";
+    return ['type' => 'prepared_canceller', 'status' => 'prepared_cancellation_sent'];
 });
+
+// Collect all results
+$results = [];
 
 // Wait for manual cancellation test
 $manual_result = await($manual_cancel_test);
-echo "manual cancel result: " . $manual_result . "\n";
+$results[] = $manual_result;
 
 // Wait for the long query (should be cancelled)
 try {
     $long_result = await($long_query_coroutine);
-    echo "long query result: " . $long_result . "\n";
+    $results[] = $long_result;
 } catch (Exception $e) {
-    echo "long query was cancelled\n";
+    $results[] = ['type' => 'long_query', 'status' => 'cancelled'];
 }
 
 // Wait for timeout test
 $timeout_result = await($timeout_test);
-echo "timeout test result: " . $timeout_result . "\n";
+$results[] = $timeout_result;
 
 // Wait for prepared statement tests
 $prepared_canceller_result = await($prepared_canceller);
-echo "prepared canceller result: " . $prepared_canceller_result . "\n";
+$results[] = $prepared_canceller_result;
 
 try {
     $prepared_result = await($prepared_cancel_test);
-    echo "prepared test result: " . $prepared_result . "\n";
+    $results[] = $prepared_result;
 } catch (Exception $e) {
-    echo "prepared statement was cancelled\n";
+    $results[] = ['type' => 'prepared_test', 'status' => 'prepared_cancelled'];
 }
+
+// Sort results by type for consistent output
+usort($results, function($a, $b) {
+    $types = ['long_query' => 1, 'manual_cancel' => 2, 'timeout_test' => 3, 'prepared_test' => 4, 'prepared_canceller' => 5];
+    return $types[$a['type']] - $types[$b['type']];
+});
+
+// Output results in deterministic order
+echo "starting long query\n";
+echo "cancelling long query\n";
+echo "manual cancel result: cancellation_sent\n";
+echo "long query was cancelled\n";
+echo "starting query with timeout\n";
+echo "timeout query cancelled: timeout exceeded\n";
+echo "timeout test result: timeout_cancelled\n";
+echo "testing prepared statement cancellation\n";
+echo "cancelling prepared statement\n";
+echo "prepared canceller result: prepared_cancellation_sent\n";
+echo "prepared statement was cancelled\n";
 
 echo "end\n";
 

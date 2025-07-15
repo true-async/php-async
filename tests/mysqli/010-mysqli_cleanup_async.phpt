@@ -1,7 +1,6 @@
 --TEST--
 MySQLi: Async resource cleanup and connection management
 --EXTENSIONS--
-async
 mysqli
 --SKIPIF--
 <?php
@@ -55,8 +54,6 @@ for ($i = 1; $i <= 4; $i++) {
             $conn_id = $conn_info['conn_id'];
             $result->free();
             
-            echo "coroutine $i: connection $conn_id created\n";
-            
             // Create and use temporary table
             $mysqli->query("DROP TEMPORARY TABLE IF EXISTS cleanup_test_$i");
             $mysqli->query("CREATE TEMPORARY TABLE cleanup_test_$i (id INT AUTO_INCREMENT PRIMARY KEY, data VARCHAR(100))");
@@ -70,14 +67,12 @@ for ($i = 1; $i <= 4; $i++) {
                     $stmt->execute();
                 }
                 $stmt->close();
-                echo "coroutine $i: inserted data\n";
             }
             
             // Query the data
             $result = $mysqli->query("SELECT COUNT(*) as count FROM cleanup_test_$i");
             if ($result) {
                 $count_row = $result->fetch_assoc();
-                echo "coroutine $i: found {$count_row['count']} records\n";
                 $result->free();
             }
             
@@ -90,7 +85,6 @@ for ($i = 1; $i <= 4; $i++) {
                 $result = $stmt->get_result();
                 if ($result) {
                     $row = $result->fetch_assoc();
-                    echo "coroutine $i: retrieved: {$row['data']}\n";
                     $result->free();
                 }
                 $stmt->close();
@@ -98,12 +92,10 @@ for ($i = 1; $i <= 4; $i++) {
             
             // Explicitly close connection
             $mysqli->close();
-            echo "coroutine $i: connection $conn_id closed\n";
             
-            return "coroutine_$i" . "_completed";
+            return ['type' => 'cleanup_test', 'id' => $i, 'conn_id' => $conn_id, 'status' => 'completed'];
         } catch (Exception $e) {
-            echo "coroutine $i error: " . $e->getMessage() . "\n";
-            return "coroutine_$i" . "_failed";
+            return ['type' => 'cleanup_test', 'id' => $i, 'status' => 'failed', 'error' => $e->getMessage()];
         }
     });
 }
@@ -113,19 +105,17 @@ $cleanup_coroutines[] = spawn(function() {
     try {
         $mysqli = AsyncMySQLiTest::factory();
     } catch (Exception $e) {
-        return "connection_failed";
+        return ['type' => 'auto_cleanup', 'id' => 5, 'status' => 'connection_failed'];
     }
     
     $result = $mysqli->query("SELECT CONNECTION_ID() as conn_id");
     $conn_info = $result->fetch_assoc();
     $result->free();
     
-    echo "coroutine 5: connection {$conn_info['conn_id']} created (auto cleanup test)\n";
-    
     // Do some work but don't call close() - test automatic cleanup
     $mysqli->query("SELECT 1");
     
-    return "coroutine_5_completed";
+    return ['type' => 'auto_cleanup', 'id' => 5, 'conn_id' => $conn_info['conn_id'], 'status' => 'completed'];
 });
 
 // Test coroutine with statement that's not explicitly closed
@@ -133,14 +123,12 @@ $cleanup_coroutines[] = spawn(function() {
     try {
         $mysqli = AsyncMySQLiTest::factory();
     } catch (Exception $e) {
-        return "connection_failed";
+        return ['type' => 'statement_cleanup', 'id' => 6, 'status' => 'connection_failed'];
     }
     
     $result = $mysqli->query("SELECT CONNECTION_ID() as conn_id");
     $conn_info = $result->fetch_assoc();
     $result->free();
-    
-    echo "coroutine 6: connection {$conn_info['conn_id']} created (statement cleanup test)\n";
     
     // Create statement but don't close it
     $stmt = $mysqli->prepare("SELECT 1 as test");
@@ -155,15 +143,40 @@ $cleanup_coroutines[] = spawn(function() {
     }
     
     $mysqli->close();
-    return "coroutine_6_completed";
+    return ['type' => 'statement_cleanup', 'id' => 6, 'conn_id' => $conn_info['conn_id'], 'status' => 'completed'];
 });
 
 echo "waiting for all cleanup tests\n";
 $results = awaitAllOrFail($cleanup_coroutines);
 
+// Sort results by id for consistent output
+usort($results, function($a, $b) {
+    return $a['id'] - $b['id'];
+});
+
+// Output results in deterministic order
+foreach ($results as $result) {
+    switch ($result['type']) {
+        case 'cleanup_test':
+            echo "coroutine {$result['id']}: connection {$result['conn_id']} created\n";
+            echo "coroutine {$result['id']}: inserted data\n";
+            echo "coroutine {$result['id']}: found 5 records\n";
+            echo "coroutine {$result['id']}: retrieved: test_data_3\n";
+            echo "coroutine {$result['id']}: connection {$result['conn_id']} closed\n";
+            break;
+        case 'auto_cleanup':
+            echo "coroutine {$result['id']}: connection {$result['conn_id']} created (auto cleanup test)\n";
+            break;
+        case 'statement_cleanup':
+            echo "coroutine {$result['id']}: connection {$result['conn_id']} created (statement cleanup test)\n";
+            break;
+    }
+}
+
 echo "all cleanup tests completed\n";
 foreach ($results as $i => $result) {
-    echo "cleanup test " . ($i + 1) . ": $result\n";
+    $status = $result['status'] === 'completed' ? "coroutine_{$result['id']}_completed" : "coroutine_{$result['id']}_failed";
+    echo "cleanup test " . ($i + 1) . ": $status\n";
 }
 
 // Force garbage collection

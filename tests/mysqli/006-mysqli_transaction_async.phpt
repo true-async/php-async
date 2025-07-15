@@ -1,7 +1,6 @@
 --TEST--
 MySQLi: Async transaction handling
 --EXTENSIONS--
-async
 mysqli
 --SKIPIF--
 <?php
