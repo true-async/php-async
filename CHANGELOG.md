@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Docker support with multi-stage build (Ubuntu 24.04, libuv 1.49, curl 8.10)
 - PDO MySQL and MySQLi async support
+- **TrueAsync API Extensions**: Enhanced async API with new object creation and coroutine grouping capabilities
+    - Added `ZEND_ASYNC_NEW_GROUP()` API for creating CoroutineGroup objects for managing multiple coroutines
+    - Added `ZEND_ASYNC_NEW_FUTURE_OBJ()` and `ZEND_ASYNC_NEW_CHANNEL_OBJ()` APIs for creating Zend objects from async primitives
+    - Extended `zend_async_task_t` structure with `run` method for thread pool task execution
+    - Enhanced `zend_async_scheduler_register()` function with new API function pointers
 - **Multiple Callbacks Per Event Support**: Complete redesign of waker trigger system to support multiple callbacks on a single event
     - Modified `zend_async_waker_trigger_s` structure to use flexible array member with dynamic capacity
     - Added `waker_trigger_create()` and `waker_trigger_add_callback()` helper functions for efficient memory management
