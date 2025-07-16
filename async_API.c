@@ -1104,6 +1104,31 @@ void async_await_futures(
 	await_context->dtor(await_context);
 }
 
+static zend_future_t* async_new_future_stub(bool thread_safe, size_t extra_size)
+{
+	return NULL;
+}
+
+static zend_async_channel_t* async_new_channel_stub(size_t buffer_size, bool resizable, bool thread_safe, size_t extra_size)
+{
+	return NULL;
+}
+
+static zend_object* async_new_future_obj_stub(zend_future_t *future)
+{
+	return NULL;
+}
+
+static zend_object* async_new_channel_obj_stub(zend_async_channel_t *channel)
+{
+	return NULL;
+}
+
+static zend_async_group_t* async_new_group_stub(size_t extra_size)
+{
+	return NULL;
+}
+
 void async_api_register(void)
 {
 	zend_async_scheduler_register(
@@ -1124,6 +1149,11 @@ void async_api_register(void)
 		get_awaiting_info,
 		async_get_class_ce,
 		(zend_async_new_iterator_t)async_iterator_new,
+		async_new_future_stub,
+		async_new_channel_stub,
+		async_new_future_obj_stub,
+		async_new_channel_obj_stub,
+		async_new_group_stub,
 		engine_shutdown
 	);
 }
