@@ -1,0 +1,16 @@
+---
+BasedOnStyle: WebKit
+SortIncludes: 'false'
+ColumnLimit: 100
+IndentWidth: 4
+TabWidth: 4
+ContinuationIndentWidth: 8
+UseTab: ForContinuationAndIndentation
+PointerAlignment: Right
+IndentCaseLabels: true
+AlignConsecutiveAssignments: false
+AlignEscapedNewlines: DontAlign
+AllowShortFunctionsOnASingleLine: false
+SpaceAfterCStyleCast: true
+AlignOperands: false
+...
