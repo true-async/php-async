@@ -22,6 +22,9 @@
 #include "exceptions.h"
 #include "scope.h"
 #include "zend_common.h"
+#include "zend_observer.h"
+
+static zend_function main_coroutine_root_function = { ZEND_INTERNAL_FUNCTION };
 
 void async_scheduler_startup(void)
 {
@@ -609,6 +612,19 @@ void async_scheduler_launch(void)
 	main_transfer->context = EG(main_fiber_context);
 	main_transfer->flags = 0;
 	ZVAL_NULL(&main_transfer->value);
+
+	//
+	// Because the main coroutine is created on the fly, this code is here.
+	// At the moment when PHP decides to activate the scheduler,
+	// we must normalize the observer's state and notify it that we are creating the main coroutine.
+	//
+	// This code contains a logical conflict because main_transfer is, in a way, the context of the zero coroutine.
+	// It's essentially a switch from the zero context to the coroutine context, even though,
+	// logically, both contexts belong to the main execution thread.
+	//
+	main_coroutine->context.status = ZEND_FIBER_STATUS_INIT;
+	zend_observer_fiber_switch_notify(main_transfer->context, &main_coroutine->context);
+	main_coroutine->context.status = ZEND_FIBER_STATUS_RUNNING;
 
 	ASYNC_G(main_transfer) = main_transfer;
 	ASYNC_G(main_vm_stack) = EG(vm_stack);
