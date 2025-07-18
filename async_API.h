@@ -22,7 +22,7 @@
 #include <Zend/zend_async_API.h>
 
 typedef struct _async_await_context_t async_await_context_t;
-typedef void (*async_await_context_dtor_t) (async_await_context_t *context);
+typedef void (*async_await_context_dtor_t)(async_await_context_t *context);
 
 struct _async_await_context_t
 {
@@ -54,7 +54,7 @@ struct _async_await_context_t
 	async_await_context_dtor_t dtor;
 	HashTable *futures;
 	// Scope for the new coroutines
-	zend_async_scope_t * scope;
+	zend_async_scope_t *scope;
 	HashTable *results;
 	HashTable *errors;
 };
@@ -70,33 +70,31 @@ typedef struct
 
 typedef struct
 {
-	zend_object_iterator * zend_iterator;
-	HashTable * futures;
-	zend_coroutine_t * iterator_coroutine;
-	zend_coroutine_t * waiting_coroutine;
-	async_await_context_t * await_context;
+	zend_object_iterator *zend_iterator;
+	HashTable *futures;
+	zend_coroutine_t *iterator_coroutine;
+	zend_coroutine_t *waiting_coroutine;
+	async_await_context_t *await_context;
 } async_await_iterator_t;
 
 typedef struct
 {
 	async_iterator_t iterator;
-	async_await_iterator_t * await_iterator;
+	async_await_iterator_t *await_iterator;
 } async_await_iterator_iterator_t;
 
 void async_api_register(void);
 
-void async_await_futures(
-	zval *iterable,
-	int count,
-	bool ignore_errors,
-	zend_async_event_t *cancellation,
-	zend_ulong timeout,
-	unsigned int concurrency,
-	HashTable *results,
-	HashTable *errors,
-	bool fill_missing_with_null,
-	bool preserve_key_order,
-	bool cancel_on_exit
-);
+void async_await_futures(zval *iterable,
+						 int count,
+						 bool ignore_errors,
+						 zend_async_event_t *cancellation,
+						 zend_ulong timeout,
+						 unsigned int concurrency,
+						 HashTable *results,
+						 HashTable *errors,
+						 bool fill_missing_with_null,
+						 bool preserve_key_order,
+						 bool cancel_on_exit);
 
-#endif //ASYNC_API_H
+#endif // ASYNC_API_H

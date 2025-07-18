@@ -22,7 +22,7 @@
 /// Context API Implementation
 //////////////////////////////////////////////////////////////////////
 
-bool async_context_find(async_context_t * context, zval *key, zval *result, bool include_parent)
+bool async_context_find(async_context_t *context, zval *key, zval *result, bool include_parent)
 {
 	// First try to find in current context
 	if (async_context_find_local(context, key, result)) {
@@ -67,7 +67,7 @@ bool async_context_find(async_context_t * context, zval *key, zval *result, bool
 	return false;
 }
 
-void async_context_set(async_context_t * context, zval *key, zval *value)
+void async_context_set(async_context_t *context, zval *key, zval *value)
 {
 	if (Z_TYPE_P(key) == IS_STRING) {
 		// String key
@@ -86,12 +86,12 @@ void async_context_set(async_context_t * context, zval *key, zval *value)
 	}
 }
 
-bool async_context_has(async_context_t * context, zval *key, bool include_parent)
+bool async_context_has(async_context_t *context, zval *key, bool include_parent)
 {
 	return async_context_find(context, key, NULL, include_parent);
 }
 
-bool async_context_unset(async_context_t * context, zval *key)
+bool async_context_unset(async_context_t *context, zval *key)
 {
 	bool deleted = false;
 
@@ -114,7 +114,7 @@ bool async_context_unset(async_context_t * context, zval *key)
 	return deleted;
 }
 
-bool async_context_find_local(async_context_t * context, zval *key, zval *result)
+bool async_context_find_local(async_context_t *context, zval *key, zval *result)
 {
 	zval *found = NULL;
 
@@ -147,7 +147,7 @@ bool async_context_find_local(async_context_t * context, zval *key, zval *result
 	return false;
 }
 
-bool async_context_has_local(async_context_t * context, zval *key)
+bool async_context_has_local(async_context_t *context, zval *key)
 {
 	if (Z_TYPE_P(key) == IS_STRING) {
 		// String key
@@ -164,14 +164,14 @@ bool async_context_has_local(async_context_t * context, zval *key)
 async_context_t *async_context_new(void)
 {
 	async_context_t *context = zend_object_alloc(sizeof(async_context_t), async_ce_context);
-	
+
 	// Initialize hash tables directly
 	zend_hash_init(&context->values, 8, NULL, ZVAL_PTR_DTOR, 0);
 	zend_hash_init(&context->keys, 8, NULL, ZVAL_PTR_DTOR, 0);
-	
+
 	// Initialize scope reference as NULL (weak reference)
 	context->scope = NULL;
-	
+
 	// Initialize base context function pointers
 	context->base.find = (zend_async_context_find_t) async_context_find;
 	context->base.set = (zend_async_context_set_t) async_context_set;
@@ -199,20 +199,20 @@ void async_context_dispose(async_context_t *context)
 zend_class_entry *async_ce_context = NULL;
 
 #define METHOD(name) ZEND_METHOD(Async_Context, name)
-#define ZEND_OBJECT_TO_CONTEXT(obj) ((async_context_t *)((char *)(obj) - (obj)->handlers->offset))
+#define ZEND_OBJECT_TO_CONTEXT(obj) ((async_context_t *) ((char *) (obj) - (obj)->handlers->offset))
 #define THIS_CONTEXT ZEND_OBJECT_TO_CONTEXT(Z_OBJ_P(ZEND_THIS))
 
 METHOD(find)
 {
 	zval *key;
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_ZVAL(key)
+	Z_PARAM_ZVAL(key)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (async_context_find(THIS_CONTEXT, key, return_value, true)) {
 		return;
 	}
-	
+
 	RETURN_NULL();
 }
 
@@ -220,13 +220,13 @@ METHOD(get)
 {
 	zval *key;
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_ZVAL(key)
+	Z_PARAM_ZVAL(key)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (async_context_find(THIS_CONTEXT, key, return_value, true)) {
 		return;
 	}
-	
+
 	RETURN_NULL();
 }
 
@@ -234,7 +234,7 @@ METHOD(has)
 {
 	zval *key;
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_ZVAL(key)
+	Z_PARAM_ZVAL(key)
 	ZEND_PARSE_PARAMETERS_END();
 
 	RETURN_BOOL(async_context_find(THIS_CONTEXT, key, NULL, true));
@@ -244,13 +244,13 @@ METHOD(findLocal)
 {
 	zval *key;
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_ZVAL(key)
+	Z_PARAM_ZVAL(key)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (async_context_find_local(THIS_CONTEXT, key, return_value)) {
 		return;
 	}
-	
+
 	RETURN_NULL();
 }
 
@@ -258,13 +258,13 @@ METHOD(getLocal)
 {
 	zval *key;
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_ZVAL(key)
+	Z_PARAM_ZVAL(key)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (async_context_find_local(THIS_CONTEXT, key, return_value)) {
 		return;
 	}
-	
+
 	RETURN_NULL();
 }
 
@@ -272,7 +272,7 @@ METHOD(hasLocal)
 {
 	zval *key;
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_ZVAL(key)
+	Z_PARAM_ZVAL(key)
 	ZEND_PARSE_PARAMETERS_END();
 
 	RETURN_BOOL(async_context_has_local(THIS_CONTEXT, key));
@@ -282,12 +282,12 @@ METHOD(set)
 {
 	zval *key, *value;
 	bool replace = false;
-	
+
 	ZEND_PARSE_PARAMETERS_START(2, 3)
-		Z_PARAM_ZVAL(key)
-		Z_PARAM_ZVAL(value)
-		Z_PARAM_OPTIONAL
-		Z_PARAM_BOOL(replace)
+	Z_PARAM_ZVAL(key)
+	Z_PARAM_ZVAL(value)
+	Z_PARAM_OPTIONAL
+	Z_PARAM_BOOL(replace)
 	ZEND_PARSE_PARAMETERS_END();
 
 	async_context_t *context = THIS_CONTEXT;
@@ -297,9 +297,9 @@ METHOD(set)
 		async_throw_error("Context key already exists and replace is false");
 		RETURN_THROWS();
 	}
-	
+
 	async_context_set(context, key, value);
-	
+
 	RETURN_OBJ_COPY(&context->std);
 }
 
@@ -307,13 +307,13 @@ METHOD(unset)
 {
 	zval *key;
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_ZVAL(key)
+	Z_PARAM_ZVAL(key)
 	ZEND_PARSE_PARAMETERS_END();
 
 	async_context_t *context = THIS_CONTEXT;
 
 	async_context_unset(context, key);
-	
+
 	RETURN_OBJ_COPY(&context->std);
 }
 
@@ -326,7 +326,7 @@ static zend_object *context_object_create(zend_class_entry *class_entry)
 static void context_object_destroy(zend_object *object)
 {
 	async_context_t *context = ZEND_OBJECT_TO_CONTEXT(object);
-	
+
 	// Destroy hash tables
 	zend_hash_destroy(&context->values);
 	zend_hash_destroy(&context->keys);
@@ -340,9 +340,9 @@ static void context_free(zend_object *object)
 void async_register_context_ce(void)
 {
 	async_ce_context = register_class_Async_Context();
-	
+
 	async_ce_context->create_object = context_object_create;
-	
+
 	// Set up object handlers
 	static zend_object_handlers context_handlers;
 	context_handlers = std_object_handlers;
@@ -350,6 +350,6 @@ void async_register_context_ce(void)
 	context_handlers.clone_obj = NULL;
 	context_handlers.dtor_obj = context_object_destroy;
 	context_handlers.free_obj = context_free;
-	
+
 	async_ce_context->default_object_handlers = &context_handlers;
 }

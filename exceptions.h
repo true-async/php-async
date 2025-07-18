@@ -22,29 +22,29 @@
 
 BEGIN_EXTERN_C()
 
-extern zend_class_entry * async_ce_async_exception;
-extern zend_class_entry * async_ce_cancellation_exception;
-extern zend_class_entry * async_ce_input_output_exception;
-extern zend_class_entry * async_ce_timeout_exception;
-extern zend_class_entry * async_ce_poll_exception;
-extern zend_class_entry * async_ce_dns_exception;
-extern zend_class_entry * async_ce_composite_exception;
+extern zend_class_entry *async_ce_async_exception;
+extern zend_class_entry *async_ce_cancellation_exception;
+extern zend_class_entry *async_ce_input_output_exception;
+extern zend_class_entry *async_ce_timeout_exception;
+extern zend_class_entry *async_ce_poll_exception;
+extern zend_class_entry *async_ce_dns_exception;
+extern zend_class_entry *async_ce_composite_exception;
 
 void async_register_exceptions_ce(void);
-ZEND_API ZEND_COLD zend_object * async_new_exception(zend_class_entry *exception_ce, const char *format, ...);
-ZEND_API ZEND_COLD zend_object * async_throw_error(const char *format, ...);
-ZEND_API ZEND_COLD zend_object * async_throw_cancellation(const char *format, ...);
-ZEND_API ZEND_COLD zend_object * async_throw_input_output(const char *format, ...);
-ZEND_API ZEND_COLD zend_object * async_throw_timeout(const char *format, const zend_long timeout);
-ZEND_API ZEND_COLD zend_object * async_throw_poll(const char *format, ...);
-ZEND_API ZEND_COLD zend_object * async_new_composite_exception(void);
+ZEND_API ZEND_COLD zend_object *async_new_exception(zend_class_entry *exception_ce, const char *format, ...);
+ZEND_API ZEND_COLD zend_object *async_throw_error(const char *format, ...);
+ZEND_API ZEND_COLD zend_object *async_throw_cancellation(const char *format, ...);
+ZEND_API ZEND_COLD zend_object *async_throw_input_output(const char *format, ...);
+ZEND_API ZEND_COLD zend_object *async_throw_timeout(const char *format, const zend_long timeout);
+ZEND_API ZEND_COLD zend_object *async_throw_poll(const char *format, ...);
+ZEND_API ZEND_COLD zend_object *async_new_composite_exception(void);
 ZEND_API void async_composite_exception_add_exception(zend_object *composite, zend_object *exception, bool transfer);
 bool async_spawn_and_throw(zend_object *exception, zend_async_scope_t *scope, int32_t priority);
 void async_apply_exception_to_context(zend_object *exception);
-zend_object * async_extract_exception(void);
+zend_object *async_extract_exception(void);
 void async_rethrow_exception(zend_object *exception);
 void async_apply_exception(zend_object **to_exception);
 
 END_EXTERN_C()
 
-#endif //ASYNC_EXCEPTIONS_H
+#endif // ASYNC_EXCEPTIONS_H

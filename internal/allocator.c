@@ -53,12 +53,7 @@ void zend_std_free(void *ptr)
 #endif
 }
 
-allocator_t zend_std_allocator = {
-	zend_std_alloc,
-	zend_std_calloc,
-	zend_std_realloc,
-	zend_std_free
-};
+allocator_t zend_std_allocator = { zend_std_alloc, zend_std_calloc, zend_std_realloc, zend_std_free };
 
 void *zend_std_palloc(const size_t size)
 {
@@ -96,9 +91,4 @@ void zend_std_pfree(void *ptr)
 #endif
 }
 
-allocator_t zend_std_persistent_allocator = {
-	zend_std_palloc,
-	zend_std_pcalloc,
-	zend_std_prealloc,
-	zend_std_pfree
-};
+allocator_t zend_std_persistent_allocator = { zend_std_palloc, zend_std_pcalloc, zend_std_prealloc, zend_std_pfree };

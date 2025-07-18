@@ -18,4 +18,4 @@
 
 void circular_buffer_run(void);
 
-#endif //CIRCULAR_BUFFER_TEST_H
+#endif // CIRCULAR_BUFFER_TEST_H
