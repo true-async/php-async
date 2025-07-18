@@ -33,8 +33,8 @@
 #include "libuv_reactor.h"
 #endif
 
-zend_class_entry * async_ce_awaitable = NULL;
-zend_class_entry * async_ce_timeout = NULL;
+zend_class_entry *async_ce_awaitable = NULL;
+zend_class_entry *async_ce_timeout = NULL;
 
 ///////////////////////////////////////////////////////////////
 /// Module functions
@@ -42,21 +42,24 @@ zend_class_entry * async_ce_timeout = NULL;
 
 static zend_object *async_timeout_create(zend_ulong ms, bool is_periodic);
 
-#define THROW_IF_SCHEDULER_CONTEXT if (UNEXPECTED(ZEND_ASYNC_IS_SCHEDULER_CONTEXT)) {		\
-		async_throw_error("The operation cannot be executed in the scheduler context");		\
-		RETURN_THROWS();																	\
+#define THROW_IF_SCHEDULER_CONTEXT \
+	if (UNEXPECTED(ZEND_ASYNC_IS_SCHEDULER_CONTEXT)) { \
+		async_throw_error("The operation cannot be executed in the scheduler context"); \
+		RETURN_THROWS(); \
 	}
 
-#define THROW_IF_ASYNC_OFF if (UNEXPECTED(ZEND_ASYNC_OFF)) {								\
-		async_throw_error("The operation cannot be executed while async is off");			\
-		RETURN_THROWS();																	\
+#define THROW_IF_ASYNC_OFF \
+	if (UNEXPECTED(ZEND_ASYNC_OFF)) { \
+		async_throw_error("The operation cannot be executed while async is off"); \
+		RETURN_THROWS(); \
 	}
 
-#define SCHEDULER_LAUNCH if (UNEXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == NULL)) {		\
-		async_scheduler_launch();														\
-		if (UNEXPECTED(EG(exception) != NULL)) {										\
-			RETURN_THROWS();															\
-		}																				\
+#define SCHEDULER_LAUNCH \
+	if (UNEXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == NULL)) { \
+		async_scheduler_launch(); \
+		if (UNEXPECTED(EG(exception) != NULL)) { \
+			RETURN_THROWS(); \
+		} \
 	}
 
 PHP_FUNCTION(Async_spawn)
@@ -72,11 +75,11 @@ PHP_FUNCTION(Async_spawn)
 	zend_fcall_info_cache fcc;
 
 	ZEND_PARSE_PARAMETERS_START(1, -1)
-		Z_PARAM_FUNC(fci, fcc);
-		Z_PARAM_VARIADIC_WITH_NAMED(args, args_count, named_args);
+	Z_PARAM_FUNC(fci, fcc);
+	Z_PARAM_VARIADIC_WITH_NAMED(args, args_count, named_args);
 	ZEND_PARSE_PARAMETERS_END();
 
-	async_coroutine_t * coroutine = (async_coroutine_t *) ZEND_ASYNC_SPAWN();
+	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_SPAWN();
 
 	if (UNEXPECTED(EG(exception))) {
 		return;
@@ -98,24 +101,25 @@ PHP_FUNCTION(Async_spawnWith)
 	int args_count = 0;
 	HashTable *named_args = NULL;
 
-	zend_async_scope_t * scope = NULL;
-	zend_object * scope_provider = NULL;
+	zend_async_scope_t *scope = NULL;
+	zend_object *scope_provider = NULL;
 	zend_fcall_info fci;
 	zend_fcall_info_cache fcc;
 
 	ZEND_PARSE_PARAMETERS_START(2, -1)
-		Z_PARAM_OBJ_OF_CLASS(scope_provider, async_ce_scope_provider)
-		Z_PARAM_FUNC(fci, fcc);
-		Z_PARAM_VARIADIC_WITH_NAMED(args, args_count, named_args);
+	Z_PARAM_OBJ_OF_CLASS(scope_provider, async_ce_scope_provider)
+	Z_PARAM_FUNC(fci, fcc);
+	Z_PARAM_VARIADIC_WITH_NAMED(args, args_count, named_args);
 	ZEND_PARSE_PARAMETERS_END();
 
 	// If scope_provider is an instance of async_ce_scope
 	if (instanceof_function(scope_provider->ce, async_ce_scope)) {
-		scope = &((async_scope_object_t *)scope_provider)->scope->scope;
+		scope = &((async_scope_object_t *) scope_provider)->scope->scope;
 	}
 
-	async_coroutine_t * coroutine = (async_coroutine_t *)(scope_provider ? ZEND_ASYNC_SPAWN_WITH_PROVIDER(scope_provider)
-									: ZEND_ASYNC_SPAWN_WITH(scope));
+	async_coroutine_t *coroutine =
+			(async_coroutine_t *) (scope_provider ? ZEND_ASYNC_SPAWN_WITH_PROVIDER(scope_provider)
+												  : ZEND_ASYNC_SPAWN_WITH(scope));
 
 	if (UNEXPECTED(EG(exception) != NULL)) {
 		RETURN_THROWS();
@@ -146,13 +150,14 @@ PHP_FUNCTION(Async_protect)
 	zend_object *closure;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_OBJ_OF_CLASS(closure, zend_ce_closure)
+	Z_PARAM_OBJ_OF_CLASS(closure, zend_ce_closure)
 	ZEND_PARSE_PARAMETERS_END();
 
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 	bool do_bailout = false;
 
-	zend_try {
+	zend_try
+	{
 		if (coroutine != NULL) {
 			ZEND_COROUTINE_SET_PROTECTED(coroutine);
 		}
@@ -171,10 +176,12 @@ PHP_FUNCTION(Async_protect)
 			// If the closure did not return a value, we return NULL.
 			ZVAL_NULL(return_value);
 		}
-
-	} zend_catch {
+	}
+	zend_catch
+	{
 		do_bailout = true;
-	} zend_end_try();
+	}
+	zend_end_try();
 
 	if (coroutine != NULL) {
 		ZEND_COROUTINE_CLR_PROTECTED(coroutine);
@@ -199,13 +206,13 @@ PHP_FUNCTION(Async_protect)
 
 PHP_FUNCTION(Async_await)
 {
-	zend_object * awaitable = NULL;
-	zend_object * cancellation = NULL;
+	zend_object *awaitable = NULL;
+	zend_object *cancellation = NULL;
 
 	ZEND_PARSE_PARAMETERS_START(1, 2)
-		Z_PARAM_OBJ_OF_CLASS(awaitable, async_ce_awaitable);
-		Z_PARAM_OPTIONAL
-		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
+	Z_PARAM_OBJ_OF_CLASS(awaitable, async_ce_awaitable);
+	Z_PARAM_OPTIONAL
+	Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
 	ZEND_PARSE_PARAMETERS_END();
 
 	SCHEDULER_LAUNCH;
@@ -255,26 +262,14 @@ PHP_FUNCTION(Async_await)
 		RETURN_THROWS();
 	}
 
-	zend_async_resume_when(
-		coroutine,
-		awaitable_event,
-		false,
-		zend_async_waker_callback_resolve,
-		NULL
-	);
+	zend_async_resume_when(coroutine, awaitable_event, false, zend_async_waker_callback_resolve, NULL);
 
 	if (UNEXPECTED(EG(exception) != NULL)) {
 		RETURN_THROWS();
 	}
 
 	if (cancellation_event != NULL) {
-		zend_async_resume_when(
-			coroutine,
-			cancellation_event,
-			false,
-			zend_async_waker_callback_cancel,
-			NULL
-		);
+		zend_async_resume_when(coroutine, cancellation_event, false, zend_async_waker_callback_cancel, NULL);
 
 		if (UNEXPECTED(EG(exception) != NULL)) {
 			RETURN_THROWS();
@@ -300,31 +295,30 @@ PHP_FUNCTION(Async_await)
 
 PHP_FUNCTION(Async_awaitAnyOrFail)
 {
-	zval * futures;
-	zend_object * cancellation = NULL;
+	zval *futures;
+	zend_object *cancellation = NULL;
 
 	ZEND_PARSE_PARAMETERS_START(1, 2)
-		Z_PARAM_ZVAL(futures);
-		Z_PARAM_OPTIONAL
-		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
+	Z_PARAM_ZVAL(futures);
+	Z_PARAM_OPTIONAL
+	Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
 	ZEND_PARSE_PARAMETERS_END();
 
 	SCHEDULER_LAUNCH;
 
-	HashTable * results = zend_new_array(8);
+	HashTable *results = zend_new_array(8);
 
 	async_await_futures(futures,
-		1,
-		false,
-		cancellation != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation) : NULL,
-		0,
-		0,
-		results,
-		NULL,
-		false,
-		false,
-		false
-	);
+						1,
+						false,
+						cancellation != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation) : NULL,
+						0,
+						0,
+						results,
+						NULL,
+						false,
+						false,
+						false);
 
 	if (EG(exception)) {
 		zend_array_release(results);
@@ -337,10 +331,12 @@ PHP_FUNCTION(Async_awaitAnyOrFail)
 	}
 
 	zval result;
-	ZEND_HASH_FOREACH_VAL(results, zval *item) {
+	ZEND_HASH_FOREACH_VAL(results, zval * item)
+	{
 		ZVAL_COPY(&result, item);
 		break;
-	} ZEND_HASH_FOREACH_END();
+	}
+	ZEND_HASH_FOREACH_END();
 
 	zend_array_release(results);
 
@@ -349,32 +345,31 @@ PHP_FUNCTION(Async_awaitAnyOrFail)
 
 PHP_FUNCTION(Async_awaitFirstSuccess)
 {
-	zval * futures;
-	zend_object * cancellation = NULL;
+	zval *futures;
+	zend_object *cancellation = NULL;
 
 	ZEND_PARSE_PARAMETERS_START(1, 2)
-		Z_PARAM_ZVAL(futures);
-		Z_PARAM_OPTIONAL
-		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
+	Z_PARAM_ZVAL(futures);
+	Z_PARAM_OPTIONAL
+	Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
 	ZEND_PARSE_PARAMETERS_END();
 
 	SCHEDULER_LAUNCH;
 
-	HashTable * results = zend_new_array(8);
-	HashTable * errors = zend_new_array(8);
+	HashTable *results = zend_new_array(8);
+	HashTable *errors = zend_new_array(8);
 
 	async_await_futures(futures,
-		1,
-		true,
-		cancellation != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation) : NULL,
-		0,
-		0,
-		results,
-		errors,
-		false,
-		false,
-		true
-	);
+						1,
+						true,
+						cancellation != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation) : NULL,
+						0,
+						0,
+						results,
+						errors,
+						false,
+						false,
+						true);
 
 	if (EG(exception)) {
 		zend_array_release(results);
@@ -382,15 +377,17 @@ PHP_FUNCTION(Async_awaitFirstSuccess)
 		RETURN_THROWS();
 	}
 
-	HashTable * return_array = zend_new_array(2);
+	HashTable *return_array = zend_new_array(2);
 
 	zval val;
 	ZVAL_NULL(&val);
 
-	ZEND_HASH_FOREACH_VAL(results, zval *item) {
+	ZEND_HASH_FOREACH_VAL(results, zval * item)
+	{
 		ZVAL_COPY(&val, item);
 		break;
-	} ZEND_HASH_FOREACH_END();
+	}
+	ZEND_HASH_FOREACH_END();
 
 	zend_hash_next_index_insert_new(return_array, &val);
 
@@ -404,35 +401,34 @@ PHP_FUNCTION(Async_awaitFirstSuccess)
 
 PHP_FUNCTION(Async_awaitAllOrFail)
 {
-	zval * futures;
-	zend_object * cancellation = NULL;
+	zval *futures;
+	zend_object *cancellation = NULL;
 	bool preserve_key_order = true;
 
 	ZEND_PARSE_PARAMETERS_START(1, 3)
-		Z_PARAM_ZVAL(futures);
-		Z_PARAM_OPTIONAL
-		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
-		Z_PARAM_BOOL(preserve_key_order);
+	Z_PARAM_ZVAL(futures);
+	Z_PARAM_OPTIONAL
+	Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
+	Z_PARAM_BOOL(preserve_key_order);
 	ZEND_PARSE_PARAMETERS_END();
 
 	SCHEDULER_LAUNCH;
 
-	HashTable * results = zend_new_array(8);
+	HashTable *results = zend_new_array(8);
 
 	async_await_futures(futures,
-		0,
-		false,
-		cancellation != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation) : NULL,
-		0,
-		0,
-		results,
-		NULL,
-		// For awaitAll, it’s always necessary to fill the result with NULL,
-		// because the order of keys matters.
-		true,
-		preserve_key_order,
-		true
-		);
+						0,
+						false,
+						cancellation != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation) : NULL,
+						0,
+						0,
+						results,
+						NULL,
+						// For awaitAll, it’s always necessary to fill the result with NULL,
+						// because the order of keys matters.
+						true,
+						preserve_key_order,
+						true);
 
 	if (EG(exception)) {
 		zend_array_release(results);
@@ -444,36 +440,35 @@ PHP_FUNCTION(Async_awaitAllOrFail)
 
 PHP_FUNCTION(Async_awaitAll)
 {
-	zval * futures;
-	zend_object * cancellation = NULL;
+	zval *futures;
+	zend_object *cancellation = NULL;
 	bool preserve_key_order = true;
 	bool fill_null = false;
 
 	ZEND_PARSE_PARAMETERS_START(1, 4)
-		Z_PARAM_ZVAL(futures);
-		Z_PARAM_OPTIONAL
-		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
-		Z_PARAM_BOOL(preserve_key_order);
-		Z_PARAM_BOOL(fill_null);
+	Z_PARAM_ZVAL(futures);
+	Z_PARAM_OPTIONAL
+	Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
+	Z_PARAM_BOOL(preserve_key_order);
+	Z_PARAM_BOOL(fill_null);
 	ZEND_PARSE_PARAMETERS_END();
 
 	SCHEDULER_LAUNCH;
 
-	HashTable * results = zend_new_array(8);
-	HashTable * errors = zend_new_array(8);
+	HashTable *results = zend_new_array(8);
+	HashTable *errors = zend_new_array(8);
 
 	async_await_futures(futures,
-		0,
-		true,
-		cancellation != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation) : NULL,
-		0,
-		0,
-		results,
-		errors,
-		fill_null,
-		preserve_key_order,
-		true
-		);
+						0,
+						true,
+						cancellation != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation) : NULL,
+						0,
+						0,
+						results,
+						errors,
+						fill_null,
+						preserve_key_order,
+						true);
 
 	if (EG(exception)) {
 		zend_array_release(results);
@@ -481,7 +476,7 @@ PHP_FUNCTION(Async_awaitAll)
 		RETURN_THROWS();
 	}
 
-	HashTable * return_array = zend_new_array(2);
+	HashTable *return_array = zend_new_array(2);
 
 	zval val;
 	ZVAL_ARR(&val, results);
@@ -495,39 +490,38 @@ PHP_FUNCTION(Async_awaitAll)
 
 PHP_FUNCTION(Async_awaitAnyOfOrFail)
 {
-	zval * futures;
-	zend_object * cancellation = NULL;
+	zval *futures;
+	zend_object *cancellation = NULL;
 	zend_long count = 0;
 	bool preserve_key_order = true;
 
 	ZEND_PARSE_PARAMETERS_START(2, 4)
-		Z_PARAM_LONG(count)
-		Z_PARAM_ITERABLE(futures);
-		Z_PARAM_OPTIONAL
-		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
-		Z_PARAM_BOOL(preserve_key_order);
+	Z_PARAM_LONG(count)
+	Z_PARAM_ITERABLE(futures);
+	Z_PARAM_OPTIONAL
+	Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
+	Z_PARAM_BOOL(preserve_key_order);
 	ZEND_PARSE_PARAMETERS_END();
 
 	SCHEDULER_LAUNCH;
 
-	HashTable * results = zend_new_array(8);
+	HashTable *results = zend_new_array(8);
 
 	if (count == 0) {
 		RETURN_ARR(results);
 	}
 
 	async_await_futures(futures,
-		(int)count,
-		false,
-		cancellation != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation) : NULL,
-		0,
-		0,
-		results,
-		NULL,
-		false,
-		preserve_key_order,
-		false
-		);
+						(int) count,
+						false,
+						cancellation != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation) : NULL,
+						0,
+						0,
+						results,
+						NULL,
+						false,
+						preserve_key_order,
+						false);
 
 	if (EG(exception)) {
 		zend_array_release(results);
@@ -539,38 +533,37 @@ PHP_FUNCTION(Async_awaitAnyOfOrFail)
 
 PHP_FUNCTION(Async_awaitAnyOf)
 {
-	zval * futures;
-	zend_object * cancellation = NULL;
+	zval *futures;
+	zend_object *cancellation = NULL;
 	zend_long count = 0;
 	bool preserve_key_order = true;
 	bool fill_null = false;
 
 	ZEND_PARSE_PARAMETERS_START(2, 5)
-		Z_PARAM_LONG(count)
-		Z_PARAM_ZVAL(futures);
-		Z_PARAM_OPTIONAL
-		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
-		Z_PARAM_BOOL(preserve_key_order);
-		Z_PARAM_BOOL(fill_null);
+	Z_PARAM_LONG(count)
+	Z_PARAM_ZVAL(futures);
+	Z_PARAM_OPTIONAL
+	Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
+	Z_PARAM_BOOL(preserve_key_order);
+	Z_PARAM_BOOL(fill_null);
 	ZEND_PARSE_PARAMETERS_END();
 
-	HashTable * results = zend_new_array(8);
-	HashTable * errors = zend_new_array(8);
+	HashTable *results = zend_new_array(8);
+	HashTable *errors = zend_new_array(8);
 
 	SCHEDULER_LAUNCH;
 
 	async_await_futures(futures,
-		(int)count,
-		true,
-		cancellation != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation) : NULL,
-		0,
-		0,
-		results,
-		errors,
-		fill_null,
-		preserve_key_order,
-		true
-		);
+						(int) count,
+						true,
+						cancellation != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation) : NULL,
+						0,
+						0,
+						results,
+						errors,
+						fill_null,
+						preserve_key_order,
+						true);
 
 	if (EG(exception)) {
 		zend_array_release(results);
@@ -578,7 +571,7 @@ PHP_FUNCTION(Async_awaitAnyOf)
 		RETURN_THROWS();
 	}
 
-	HashTable * return_array = zend_new_array(2);
+	HashTable *return_array = zend_new_array(2);
 
 	zval val;
 	ZVAL_ARR(&val, results);
@@ -595,7 +588,7 @@ PHP_FUNCTION(Async_delay)
 	zend_long ms = 0;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_LONG(ms)
+	Z_PARAM_LONG(ms)
 	ZEND_PARSE_PARAMETERS_END();
 
 	SCHEDULER_LAUNCH;
@@ -626,7 +619,7 @@ PHP_FUNCTION(Async_timeout)
 	zend_long ms = 0;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_LONG(ms)
+	Z_PARAM_LONG(ms)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (ms <= 0) {
@@ -634,7 +627,7 @@ PHP_FUNCTION(Async_timeout)
 		RETURN_THROWS();
 	}
 
-	zend_object * zend_object = async_timeout_create(ms, false);
+	zend_object *zend_object = async_timeout_create(ms, false);
 
 	if (UNEXPECTED(EG(exception) != NULL)) {
 		RETURN_THROWS();
@@ -708,10 +701,7 @@ PHP_FUNCTION(Async_currentCoroutine)
 	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
 
 	if (UNEXPECTED(coroutine == NULL)) {
-		zend_async_throw(
-			ZEND_ASYNC_EXCEPTION_DEFAULT,
-			"The current coroutine is not defined"
-		);
+		zend_async_throw(ZEND_ASYNC_EXCEPTION_DEFAULT, "The current coroutine is not defined");
 
 		RETURN_THROWS();
 	}
@@ -727,10 +717,10 @@ PHP_FUNCTION(Async_rootContext)
 	THROW_IF_SCHEDULER_CONTEXT;
 
 	if (ASYNC_G(root_context) == NULL) {
-		ASYNC_G(root_context) = (zend_async_context_t *)async_context_new();
+		ASYNC_G(root_context) = (zend_async_context_t *) async_context_new();
 	}
 
-	async_context_t *context = (async_context_t *)ASYNC_G(root_context);
+	async_context_t *context = (async_context_t *) ASYNC_G(root_context);
 	RETURN_OBJ_COPY(&context->std);
 }
 
@@ -744,10 +734,12 @@ PHP_FUNCTION(Async_getCoroutines)
 	array_init(return_value);
 
 	async_coroutine_t *coroutine;
-	ZEND_HASH_FOREACH_PTR(&ASYNC_G(coroutines), coroutine) {
+	ZEND_HASH_FOREACH_PTR(&ASYNC_G(coroutines), coroutine)
+	{
 		add_next_index_object(return_value, &coroutine->std);
 		GC_ADDREF(&coroutine->std);
-	} ZEND_HASH_FOREACH_END();
+	}
+	ZEND_HASH_FOREACH_END();
 }
 
 PHP_FUNCTION(Async_gracefulShutdown)
@@ -755,8 +747,8 @@ PHP_FUNCTION(Async_gracefulShutdown)
 	zend_object *cancellation = NULL;
 
 	ZEND_PARSE_PARAMETERS_START(0, 1)
-		Z_PARAM_OPTIONAL
-		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_cancellation_exception)
+	Z_PARAM_OPTIONAL
+	Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_cancellation_exception)
 	ZEND_PARSE_PARAMETERS_END();
 
 	THROW_IF_ASYNC_OFF;
@@ -792,10 +784,10 @@ static zend_object_handlers async_timeout_handlers;
 
 static void async_timeout_destroy_object(zend_object *object)
 {
-	async_timeout_object_t * timeout = ASYNC_TIMEOUT_FROM_OBJ(object);
+	async_timeout_object_t *timeout = ASYNC_TIMEOUT_FROM_OBJ(object);
 
 	if (timeout->event != NULL) {
-		zend_async_timer_event_t * timer_event = timeout->event;
+		zend_async_timer_event_t *timer_event = timeout->event;
 		async_timeout_ext_t *timeout_ext = ASYNC_TIMEOUT_FROM_EVENT(&timer_event->base);
 		timeout_ext->std = NULL;
 		timeout->event = NULL;
@@ -811,8 +803,8 @@ static void async_timeout_event_dispose(zend_async_event_t *event)
 	if (timeout->std) {
 		zend_object *object = timeout->std;
 		async_timeout_object_t *timeout_object = ASYNC_TIMEOUT_FROM_OBJ(object);
-		ZEND_ASSERT((timeout_object->event == NULL || timeout_object->event == (zend_async_timer_event_t *) event)
-			&& "Event object mismatch");
+		ZEND_ASSERT((timeout_object->event == NULL || timeout_object->event == (zend_async_timer_event_t *) event) &&
+					"Event object mismatch");
 		timeout_object->event = NULL;
 		timeout->std = NULL;
 		OBJ_RELEASE(object);
@@ -831,11 +823,9 @@ static void timeout_before_notify_handler(zend_async_event_t *event, void *resul
 	}
 
 	// Here we override the exception value with a timeout exception.
-	zend_object * timeout_exception = async_new_exception(
-		async_ce_timeout_exception,
-		"Timeout occurred after %lu milliseconds",
-		((zend_async_timer_event_t * )event)->timeout
-	);
+	zend_object *timeout_exception = async_new_exception(async_ce_timeout_exception,
+														 "Timeout occurred after %lu milliseconds",
+														 ((zend_async_timer_event_t *) event)->timeout);
 
 	ZEND_ASYNC_CALLBACKS_NOTIFY_FROM_HANDLER(event, result, timeout_exception);
 	OBJ_RELEASE(timeout_exception);
@@ -855,16 +845,15 @@ static zend_object *async_timeout_create(const zend_ulong ms, const bool is_peri
 
 	object->std.handlers = &async_timeout_handlers;
 
-	zend_async_event_t *event = (zend_async_event_t *) ZEND_ASYNC_NEW_TIMER_EVENT_EX(
-		ms, is_periodic, sizeof(async_timeout_ext_t)
-	);
+	zend_async_event_t *event =
+			(zend_async_event_t *) ZEND_ASYNC_NEW_TIMER_EVENT_EX(ms, is_periodic, sizeof(async_timeout_ext_t));
 
 	if (UNEXPECTED(event == NULL)) {
 		efree(object);
 		return NULL;
 	}
 
-	ZEND_ASYNC_EVENT_REF_SET(object, XtOffsetOf(async_timeout_object_t, std), (zend_async_timer_event_t *)event);
+	ZEND_ASYNC_EVENT_REF_SET(object, XtOffsetOf(async_timeout_object_t, std), (zend_async_timer_event_t *) event);
 	// A special flag is set to indicate that the event will contain a reference to a Zend object.
 	ZEND_ASYNC_EVENT_WITH_OBJECT_REF(event);
 
@@ -889,7 +878,7 @@ void async_register_timeout_ce(void)
 
 	async_timeout_handlers = std_object_handlers;
 
-	async_timeout_handlers.offset   = XtOffsetOf(async_timeout_object_t, std);
+	async_timeout_handlers.offset = XtOffsetOf(async_timeout_object_t, std);
 	async_timeout_handlers.dtor_obj = async_timeout_destroy_object;
 }
 
@@ -921,12 +910,10 @@ static PHP_GINIT_FUNCTION(async)
 }
 
 /* {{{ PHP_GSHUTDOWN_FUNCTION */
-static PHP_GSHUTDOWN_FUNCTION(async)
-{
+static PHP_GSHUTDOWN_FUNCTION(async){
 #ifdef PHP_WIN32
 #endif
-}
-/* }}} */
+} /* }}} */
 
 /* Module registration */
 
@@ -938,11 +925,11 @@ ZEND_MINIT_FUNCTION(async)
 	async_register_coroutine_ce();
 	async_register_context_ce();
 	async_register_exceptions_ce();
-	//async_register_notifier_ce();
-	//async_register_handlers_ce();
-	//async_register_channel_ce();
-	//async_register_iterator_ce();
-	//async_register_future_ce();
+	// async_register_notifier_ce();
+	// async_register_handlers_ce();
+	// async_register_channel_ce();
+	// async_register_iterator_ce();
+	// async_register_future_ce();
 
 	async_scheduler_startup();
 
@@ -957,16 +944,17 @@ ZEND_MINIT_FUNCTION(async)
 
 ZEND_MSHUTDOWN_FUNCTION(async)
 {
-	//async_scheduler_shutdown();
+	// async_scheduler_shutdown();
 
 #ifdef PHP_ASYNC_LIBUV
-	//async_libuv_shutdown();
+	// async_libuv_shutdown();
 #endif
 
 	return SUCCESS;
 }
 
-PHP_MINFO_FUNCTION(async) {
+PHP_MINFO_FUNCTION(async)
+{
 	php_info_print_table_start();
 	php_info_print_table_header(2, "Module", PHP_ASYNC_NAME);
 	php_info_print_table_row(2, "Version", PHP_ASYNC_VERSION);
@@ -981,7 +969,7 @@ PHP_MINFO_FUNCTION(async) {
 
 PHP_RINIT_FUNCTION(async) /* {{{ */
 {
-	//async_host_name_list_ctor();
+	// async_host_name_list_ctor();
 	ZEND_ASYNC_INITIALIZE;
 	circular_buffer_ctor(&ASYNC_G(microtasks), 64, sizeof(zend_async_microtask_t *), &zend_std_allocator);
 	circular_buffer_ctor(&ASYNC_G(coroutine_queue), 128, sizeof(zend_coroutine_t *), &zend_std_allocator);
@@ -992,22 +980,20 @@ PHP_RINIT_FUNCTION(async) /* {{{ */
 	return SUCCESS;
 } /* }}} */
 
-zend_module_entry async_module_entry = {
-	STANDARD_MODULE_HEADER,
-	PHP_ASYNC_NAME,
-	ext_functions,
-	PHP_MINIT(async),
-	PHP_MSHUTDOWN(async),
-	PHP_RINIT(async),
-	NULL,
-	PHP_MINFO(async),
-	PHP_ASYNC_VERSION,
-	PHP_MODULE_GLOBALS(async),
-	PHP_GINIT(async),
-	PHP_GSHUTDOWN(async),
-	NULL,
-	STANDARD_MODULE_PROPERTIES_EX
-};
+zend_module_entry async_module_entry = { STANDARD_MODULE_HEADER,
+										 PHP_ASYNC_NAME,
+										 ext_functions,
+										 PHP_MINIT(async),
+										 PHP_MSHUTDOWN(async),
+										 PHP_RINIT(async),
+										 NULL,
+										 PHP_MINFO(async),
+										 PHP_ASYNC_VERSION,
+										 PHP_MODULE_GLOBALS(async),
+										 PHP_GINIT(async),
+										 PHP_GSHUTDOWN(async),
+										 NULL,
+										 STANDARD_MODULE_PROPERTIES_EX };
 
 #ifdef COMPILE_DL_ASYNC
 ZEND_GET_MODULE(async)

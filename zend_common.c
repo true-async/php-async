@@ -19,10 +19,10 @@
 
 #include "exceptions.h"
 
-static zend_function* create_fn = NULL;
-static zend_function* get_fn = NULL;
+static zend_function *create_fn = NULL;
+static zend_function *get_fn = NULL;
 
-void zend_exception_to_warning(const char * format, const bool clean)
+void zend_exception_to_warning(const char *format, const bool clean)
 {
 	if (EG(exception) == NULL) {
 		return;
@@ -37,9 +37,8 @@ void zend_exception_to_warning(const char * format, const bool clean)
 	}
 
 	zval rv;
-	const zval *message = zend_read_property_ex(
-		EG(exception)->ce, EG(exception), zend_known_strings[ZEND_STR_MESSAGE], 0, &rv
-	);
+	const zval *message =
+			zend_read_property_ex(EG(exception)->ce, EG(exception), zend_known_strings[ZEND_STR_MESSAGE], 0, &rv);
 
 	if (message == NULL) {
 		async_warning(format, "No message");
@@ -52,16 +51,15 @@ void zend_exception_to_warning(const char * format, const bool clean)
 	}
 }
 
-zend_string * zend_current_exception_get_message(const bool clean)
+zend_string *zend_current_exception_get_message(const bool clean)
 {
 	if (EG(exception) == NULL) {
 		return NULL;
 	}
 
 	zval rv;
-	const zval *message = zend_read_property_ex(
-		EG(exception)->ce, EG(exception), zend_known_strings[ZEND_STR_MESSAGE], 0, &rv
-	);
+	const zval *message =
+			zend_read_property_ex(EG(exception)->ce, EG(exception), zend_known_strings[ZEND_STR_MESSAGE], 0, &rv);
 
 	if (clean) {
 		zend_clear_exception();
@@ -74,16 +72,15 @@ zend_string * zend_current_exception_get_message(const bool clean)
 	}
 }
 
-zend_string * zend_current_exception_get_file(void)
+zend_string *zend_current_exception_get_file(void)
 {
 	if (EG(exception) == NULL) {
 		return NULL;
 	}
 
 	zval rv;
-	const zval *file = zend_read_property_ex(
-		EG(exception)->ce, EG(exception), zend_known_strings[ZEND_STR_FILE], 0, &rv
-	);
+	const zval *file =
+			zend_read_property_ex(EG(exception)->ce, EG(exception), zend_known_strings[ZEND_STR_FILE], 0, &rv);
 
 	if (file != NULL && Z_TYPE_P(file) == IS_STRING) {
 		return Z_STR_P(file);
@@ -99,9 +96,8 @@ uint32_t zend_current_exception_get_line(void)
 	}
 
 	zval rv;
-	const zval *line = zend_read_property_ex(
-		EG(exception)->ce, EG(exception), zend_known_strings[ZEND_STR_LINE], 0, &rv
-	);
+	const zval *line =
+			zend_read_property_ex(EG(exception)->ce, EG(exception), zend_known_strings[ZEND_STR_LINE], 0, &rv);
 
 	if (line != NULL && Z_TYPE_P(line) == IS_LONG) {
 		return Z_LVAL_P(line);
@@ -110,7 +106,7 @@ uint32_t zend_current_exception_get_line(void)
 	}
 }
 
-zend_object* zend_exception_merge(zend_object *exception, bool to_previous, bool transfer_error)
+zend_object *zend_exception_merge(zend_object *exception, bool to_previous, bool transfer_error)
 {
 	zend_exception_save();
 	zend_exception_restore();
@@ -142,7 +138,7 @@ zend_object* zend_exception_merge(zend_object *exception, bool to_previous, bool
 	return exception;
 }
 
-void async_warning(const char * format, ...)
+void async_warning(const char *format, ...)
 {
 	va_list args;
 	va_start(args, format);
@@ -152,7 +148,7 @@ void async_warning(const char * format, ...)
 	zend_string_release(message);
 }
 
-void zend_new_weak_reference_from(const zval* referent, zval * retval)
+void zend_new_weak_reference_from(const zval *referent, zval *retval)
 {
 	if (UNEXPECTED(EG(exception))) {
 		ZVAL_UNDEF(retval);
@@ -171,7 +167,7 @@ void zend_new_weak_reference_from(const zval* referent, zval * retval)
 
 	ZVAL_UNDEF(retval);
 
-	zend_call_known_function(create_fn, NULL, zend_ce_weakref, retval, 1, (zval*) referent, NULL);
+	zend_call_known_function(create_fn, NULL, zend_ce_weakref, retval, 1, (zval *) referent, NULL);
 
 	if (UNEXPECTED(Z_TYPE_P(retval) == IS_NULL || Z_ISUNDEF_P(retval))) {
 		async_warning("Failed to invoke WeakReference::create");
@@ -186,7 +182,7 @@ void zend_new_weak_reference_from(const zval* referent, zval * retval)
  * @warning The method may return a ZVAL with the type NULL!
  * @warning You must call the dtor if the result is no longer needed!
  */
-void zend_resolve_weak_reference(zval* weak_reference, zval* retval)
+void zend_resolve_weak_reference(zval *weak_reference, zval *retval)
 {
 	if (!get_fn) {
 
@@ -214,7 +210,7 @@ zif_handler zend_hook_php_function(const char *name, const size_t len, zif_handl
 	return original_handler;
 }
 
-zif_handler zend_replace_method(zend_object * object, const char * method, const size_t len, const zif_handler handler)
+zif_handler zend_replace_method(zend_object *object, const char *method, const size_t len, const zif_handler handler)
 {
 	zif_handler original_handler = NULL;
 	zend_function *func = zend_hash_str_find_ptr(&object->ce->function_table, method, len);
@@ -229,15 +225,15 @@ zif_handler zend_replace_method(zend_object * object, const char * method, const
 	return original_handler;
 }
 
-void zend_get_function_name_by_fci(zend_fcall_info * fci, zend_fcall_info_cache *fci_cache, zend_string **name)
+void zend_get_function_name_by_fci(zend_fcall_info *fci, zend_fcall_info_cache *fci_cache, zend_string **name)
 {
 	if (fci_cache != NULL && fci_cache->function_handler != NULL) {
-        *name = fci_cache->function_handler->common.function_name;
-    } else if (fci != NULL && Z_TYPE(fci->function_name) != IS_UNDEF) {
-        *name = Z_STR(fci->function_name);
-    } else {
-        *name = NULL;
-    }
+		*name = fci_cache->function_handler->common.function_name;
+	} else if (fci != NULL && Z_TYPE(fci->function_name) != IS_UNDEF) {
+		*name = Z_STR(fci->function_name);
+	} else {
+		*name = NULL;
+	}
 }
 
 void zend_free_fci(zend_fcall_info *fci, zend_fcall_info_cache *fcc)
@@ -262,15 +258,17 @@ void zend_free_fci(zend_fcall_info *fci, zend_fcall_info_cache *fcc)
 	}
 }
 
-void zend_copy_fci(zend_fcall_info *dest_fci, zend_fcall_info_cache *dest_fcc, 
-                   zend_fcall_info *src_fci, zend_fcall_info_cache *src_fcc)
+void zend_copy_fci(zend_fcall_info *dest_fci,
+				   zend_fcall_info_cache *dest_fcc,
+				   zend_fcall_info *src_fci,
+				   zend_fcall_info_cache *src_fcc)
 {
 	// Copy FCI
 	*dest_fci = *src_fci;
-	
+
 	// Copy function name with proper refcount
 	ZVAL_COPY(&dest_fci->function_name, &src_fci->function_name);
-	
+
 	// Copy parameters if any
 	if (src_fci->param_count > 0 && src_fci->params != NULL) {
 		dest_fci->params = safe_emalloc(src_fci->param_count, sizeof(zval), 0);
@@ -280,13 +278,13 @@ void zend_copy_fci(zend_fcall_info *dest_fci, zend_fcall_info_cache *dest_fcc,
 	} else {
 		dest_fci->params = NULL;
 	}
-	
+
 	// Copy named params if any
 	if (src_fci->named_params != NULL) {
 		dest_fci->named_params = src_fci->named_params;
 		GC_ADDREF(src_fci->named_params);
 	}
-	
+
 	// Copy FCC
 	*dest_fcc = *src_fcc;
 }

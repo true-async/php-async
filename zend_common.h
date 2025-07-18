@@ -20,14 +20,22 @@
 #include "zend_exceptions.h"
 #include "zend_interfaces.h"
 
-#define IF_THROW_RETURN_VOID if(UNEXPECTED(EG(exception) != NULL)) { return; }
-#define IF_THROW_FINALLY if(UNEXPECTED(EG(exception) != NULL)) { goto finally; }
-#define IF_THROW_RETURN(value) if(UNEXPECTED(EG(exception) != NULL)) { return value; }
+#define IF_THROW_RETURN_VOID \
+	if (UNEXPECTED(EG(exception) != NULL)) { \
+		return; \
+	}
+#define IF_THROW_FINALLY \
+	if (UNEXPECTED(EG(exception) != NULL)) { \
+		goto finally; \
+	}
+#define IF_THROW_RETURN(value) \
+	if (UNEXPECTED(EG(exception) != NULL)) { \
+		return value; \
+	}
 
 #define DEFINE_VAR(type, var) type *var = (type *) emalloc(sizeof(type));
 
-
-zend_always_inline static void zval_move(zval * destination, const zval * source)
+zend_always_inline static void zval_move(zval *destination, const zval *source)
 {
 	if (Z_ISREF_P(source)) {
 		source = Z_REFVAL_P(source);
@@ -37,7 +45,7 @@ zend_always_inline static void zval_move(zval * destination, const zval * source
 	ZVAL_COPY_VALUE(destination, source);
 }
 
-zend_always_inline static void zval_copy(zval * destination, zval * source)
+zend_always_inline static void zval_copy(zval *destination, zval *source)
 {
 	if (Z_ISREF_P(source)) {
 		source = Z_REFVAL_P(source);
@@ -48,7 +56,7 @@ zend_always_inline static void zval_copy(zval * destination, zval * source)
 	Z_TRY_ADDREF_P(source);
 }
 
-zend_always_inline static void zval_assign(zval * destination, zval * source)
+zend_always_inline static void zval_assign(zval *destination, zval *source)
 {
 	if (Z_ISREF_P(source)) {
 		source = Z_REFVAL_P(source);
@@ -58,18 +66,18 @@ zend_always_inline static void zval_assign(zval * destination, zval * source)
 	ZVAL_COPY_VALUE(destination, source);
 }
 
-zend_always_inline static void zval_null(zval * destination)
+zend_always_inline static void zval_null(zval *destination)
 {
 	zval_ptr_dtor(destination);
 	ZVAL_NULL(destination);
 }
 
-zend_always_inline static void zval_property_move(zval * property, const zval * value)
+zend_always_inline static void zval_property_move(zval *property, const zval *value)
 {
 	if (EXPECTED(Z_TYPE_P(property) != IS_UNDEF)) {
 		zval_ptr_dtor(property);
 	} else {
-		Z_PROP_FLAG_P(property) &= ~(IS_PROP_UNINIT|IS_PROP_REINITABLE);
+		Z_PROP_FLAG_P(property) &= ~(IS_PROP_UNINIT | IS_PROP_REINITABLE);
 	}
 
 	if (Z_ISREF_P(value)) {
@@ -79,12 +87,12 @@ zend_always_inline static void zval_property_move(zval * property, const zval * 
 	ZVAL_COPY_VALUE(property, value);
 }
 
-zend_always_inline static void zval_property_copy(zval * property, zval * value)
+zend_always_inline static void zval_property_copy(zval *property, zval *value)
 {
 	if (EXPECTED(Z_TYPE_P(property) != IS_UNDEF)) {
 		zval_ptr_dtor(property);
 	} else {
-		Z_PROP_FLAG_P(property) &= ~(IS_PROP_UNINIT|IS_PROP_REINITABLE);
+		Z_PROP_FLAG_P(property) &= ~(IS_PROP_UNINIT | IS_PROP_REINITABLE);
 	}
 
 	if (Z_ISREF_P(value)) {
@@ -95,7 +103,7 @@ zend_always_inline static void zval_property_copy(zval * property, zval * value)
 	Z_TRY_ADDREF_P(value);
 }
 
-zend_always_inline static void zend_object_ptr_copy(zend_object * destination, zend_object * source)
+zend_always_inline static void zend_object_ptr_copy(zend_object *destination, zend_object *source)
 {
 	if (EXPECTED(destination != NULL)) {
 		OBJ_RELEASE(destination);
@@ -105,7 +113,7 @@ zend_always_inline static void zend_object_ptr_copy(zend_object * destination, z
 	GC_ADDREF(source);
 }
 
-zend_always_inline static void zend_object_ptr_reset(zend_object * destination)
+zend_always_inline static void zend_object_ptr_reset(zend_object *destination)
 {
 	if (EXPECTED(destination != NULL)) {
 		OBJ_RELEASE(destination);
@@ -116,11 +124,12 @@ zend_always_inline static void zend_object_ptr_reset(zend_object * destination)
 
 #define ZEND_OBJECT_ALLOC_EX(obj_size, ce) pecalloc(1, obj_size, 0)
 
-#define DEFINE_ZEND_RAW_OBJECT(type, var, class_entry) type *var = (type *) ZEND_OBJECT_ALLOC_EX(sizeof(type), class_entry)
+#define DEFINE_ZEND_RAW_OBJECT(type, var, class_entry) \
+	type *var = (type *) ZEND_OBJECT_ALLOC_EX(sizeof(type), class_entry)
 
-zend_always_inline zend_object* zend_object_internal_create(const size_t obj_size, zend_class_entry *class_entry)
+zend_always_inline zend_object *zend_object_internal_create(const size_t obj_size, zend_class_entry *class_entry)
 {
-	zend_object * object = ZEND_OBJECT_ALLOC_EX(obj_size, class_entry);
+	zend_object *object = ZEND_OBJECT_ALLOC_EX(obj_size, class_entry);
 
 	zend_object_std_init(object, class_entry);
 	object_properties_init(object, class_entry);
@@ -128,9 +137,11 @@ zend_always_inline zend_object* zend_object_internal_create(const size_t obj_siz
 	return object;
 }
 
-#define DEFINE_ZEND_INTERNAL_OBJECT(type, var, class_entry) type *var = (type *) zend_object_internal_create(sizeof(type), class_entry)
+#define DEFINE_ZEND_INTERNAL_OBJECT(type, var, class_entry) \
+	type *var = (type *) zend_object_internal_create(sizeof(type), class_entry)
 
-zend_always_inline static void zend_property_array_index_update(zval *property, zend_ulong h, zval *pData, const bool is_transfer_data)
+zend_always_inline static void
+zend_property_array_index_update(zval *property, zend_ulong h, zval *pData, const bool is_transfer_data)
 {
 	SEPARATE_ARRAY(property);
 
@@ -167,14 +178,14 @@ zend_always_inline static void zend_apply_current_filename_and_line(zend_string 
 	}
 }
 
-void zend_exception_to_warning(const char * format, const bool clean);
+void zend_exception_to_warning(const char *format, const bool clean);
 
-zend_string * zend_current_exception_get_message(const bool clean);
-zend_string * zend_current_exception_get_file(void);
+zend_string *zend_current_exception_get_message(const bool clean);
+zend_string *zend_current_exception_get_file(void);
 uint32_t zend_current_exception_get_line(void);
-zend_object* zend_exception_merge(zend_object * exception, bool to_previous, bool transfer_error);
+zend_object *zend_exception_merge(zend_object *exception, bool to_previous, bool transfer_error);
 
-void async_warning(const char * format, ...);
+void async_warning(const char *format, ...);
 
 /**
  * Creates a new weak reference to the given zval.
@@ -197,7 +208,7 @@ void async_warning(const char * format, ...);
  * - The caller is responsible for managing the returned zval, which must be freed using
  *   `zval_ptr_dtor()` when no longer needed.
  */
-void zend_new_weak_reference_from(const zval* referent, zval * retval);
+void zend_new_weak_reference_from(const zval *referent, zval *retval);
 
 /**
  * Resolves a weak reference to its underlying object.
@@ -220,18 +231,18 @@ void zend_new_weak_reference_from(const zval* referent, zval * retval);
  * - The `retval` must be initialized and will contain the resulting object or NULL.
  * - You must call `zval_ptr_dtor()` to decrement the reference count of the returned object.
  */
-void zend_resolve_weak_reference(zval* weak_reference, zval* retval);
+void zend_resolve_weak_reference(zval *weak_reference, zval *retval);
 
 zif_handler zend_hook_php_function(const char *name, const size_t len, zif_handler new_function);
 
-zif_handler zend_replace_method(zend_object * object, const char * method, const size_t len, const zif_handler handler);
+zif_handler zend_replace_method(zend_object *object, const char *method, const size_t len, const zif_handler handler);
 
-zend_always_inline zif_handler zend_replace_to_string_method(zend_object * object, const zif_handler handler)
+zend_always_inline zif_handler zend_replace_to_string_method(zend_object *object, const zif_handler handler)
 {
 	return zend_replace_method(object, ZEND_STRL("__toString"), handler);
 }
 
-void zend_get_function_name_by_fci(zend_fcall_info * fci, zend_fcall_info_cache *fci_cache, zend_string **name);
+void zend_get_function_name_by_fci(zend_fcall_info *fci, zend_fcall_info_cache *fci_cache, zend_string **name);
 
 /**
  * Frees memory allocated for zend_fcall_info and zend_fcall_info_cache structures.
@@ -251,7 +262,9 @@ void zend_free_fci(zend_fcall_info *fci, zend_fcall_info_cache *fcc);
  * @param src_fci   Source fci structure to copy from
  * @param src_fcc   Source fcc structure to copy from
  */
-void zend_copy_fci(zend_fcall_info *dest_fci, zend_fcall_info_cache *dest_fcc, 
-                   zend_fcall_info *src_fci, zend_fcall_info_cache *src_fcc);
+void zend_copy_fci(zend_fcall_info *dest_fci,
+				   zend_fcall_info_cache *dest_fcc,
+				   zend_fcall_info *src_fci,
+				   zend_fcall_info_cache *src_fcc);
 
-#endif //ASYNC_ZEND_COMMON_H
+#endif // ASYNC_ZEND_COMMON_H

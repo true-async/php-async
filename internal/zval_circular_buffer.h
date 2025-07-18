@@ -21,14 +21,14 @@
 
 zend_always_inline static void zval_c_buffer_new(size_t count, const allocator_t *allocator)
 {
-	if(circular_buffer_new(count, sizeof(zval), allocator) == NULL) {
+	if (circular_buffer_new(count, sizeof(zval), allocator) == NULL) {
 		zend_throw_error(NULL, "Failed to allocate memory for zval circular buffer");
 	}
 }
 
 zend_always_inline static void zval_c_buffer_push_with_resize(circular_buffer_t *buffer, zval *value)
 {
-	if(circular_buffer_push(buffer, value, true) == FAILURE) {
+	if (circular_buffer_push(buffer, value, true) == FAILURE) {
 		zend_throw_error(NULL, "Failed to push zval into circular buffer");
 	} else {
 		Z_TRY_ADDREF_P(value);
@@ -37,12 +37,12 @@ zend_always_inline static void zval_c_buffer_push_with_resize(circular_buffer_t 
 
 zend_always_inline static void zval_c_buffer_push(circular_buffer_t *buffer, zval *value)
 {
-    if(circular_buffer_is_full(buffer)) {
-    	zend_throw_error(NULL, "Failed to push zval into circular buffer: buffer is full");
+	if (circular_buffer_is_full(buffer)) {
+		zend_throw_error(NULL, "Failed to push zval into circular buffer: buffer is full");
 		return;
 	}
 
-	if(circular_buffer_push(buffer, value, false) == FAILURE) {
+	if (circular_buffer_push(buffer, value, false) == FAILURE) {
 		zend_throw_error(NULL, "Failed to push zval into circular buffer");
 	} else {
 		Z_TRY_ADDREF_P(value);
@@ -64,4 +64,4 @@ zend_always_inline static void zval_c_buffer_cleanup(circular_buffer_t *buffer)
 	}
 }
 
-#endif //ZVAL_CIRCULAR_BUFFER_H
+#endif // ZVAL_CIRCULAR_BUFFER_H

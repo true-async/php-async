@@ -35,8 +35,8 @@ void async_scheduler_launch(void);
  */
 void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer);
 void async_scheduler_main_coroutine_suspend(void);
-void async_scheduler_coroutine_enqueue(zend_coroutine_t * coroutine);
+void async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine);
 
 END_EXTERN_C()
 
-#endif //PHP_SCHEDULER_H
+#endif // PHP_SCHEDULER_H
