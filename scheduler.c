@@ -24,8 +24,6 @@
 #include "zend_common.h"
 #include "zend_observer.h"
 
-static zend_function main_coroutine_root_function = { ZEND_INTERNAL_FUNCTION };
-
 void async_scheduler_startup(void)
 {
 }
