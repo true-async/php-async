@@ -29,9 +29,7 @@
 #include "async_API.h"
 #include "async_arginfo.h"
 #include "zend_interfaces.h"
-#ifdef PHP_ASYNC_LIBUV
 #include "libuv_reactor.h"
-#endif
 
 zend_class_entry *async_ce_awaitable = NULL;
 zend_class_entry *async_ce_timeout = NULL;
@@ -889,8 +887,6 @@ static PHP_GINIT_FUNCTION(async)
 #endif
 
 	async_globals->reactor_started = false;
-
-#ifdef PHP_ASYNC_LIBUV
 	async_globals->signal_handlers = NULL;
 	async_globals->signal_events = NULL;
 	async_globals->process_events = NULL;
@@ -905,7 +901,6 @@ static PHP_GINIT_FUNCTION(async)
 	async_globals->isRunning = false;
 	async_globals->uvloop_wakeup = NULL;
 	async_globals->pid_queue = NULL;
-#endif
 #endif
 }
 
@@ -932,12 +927,8 @@ ZEND_MINIT_FUNCTION(async)
 	// async_register_future_ce();
 
 	async_scheduler_startup();
-
 	async_api_register();
-
-#ifdef PHP_ASYNC_LIBUV
 	async_libuv_reactor_register();
-#endif
 
 	return SUCCESS;
 }
@@ -945,10 +936,7 @@ ZEND_MINIT_FUNCTION(async)
 ZEND_MSHUTDOWN_FUNCTION(async)
 {
 	// async_scheduler_shutdown();
-
-#ifdef PHP_ASYNC_LIBUV
 	// async_libuv_shutdown();
-#endif
 
 	return SUCCESS;
 }
@@ -959,11 +947,7 @@ PHP_MINFO_FUNCTION(async)
 	php_info_print_table_header(2, "Module", PHP_ASYNC_NAME);
 	php_info_print_table_row(2, "Version", PHP_ASYNC_VERSION);
 	php_info_print_table_row(2, "Support", "Enabled");
-#ifdef PHP_ASYNC_LIBUV
 	php_info_print_table_row(2, "LibUv Reactor", "Enabled");
-#else
-	php_info_print_table_row(2, "LibUv Reactor", "Disabled");
-#endif
 	php_info_print_table_end();
 }
 

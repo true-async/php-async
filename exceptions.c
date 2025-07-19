@@ -321,7 +321,7 @@ void async_apply_exception(zend_object **to_exception)
 	}
 }
 
-void async_rethrow_exception(zend_object *exception)
+PHP_ASYNC_API void async_rethrow_exception(zend_object *exception)
 {
 	if (EG(current_execute_data)) {
 		zend_throw_exception_internal(exception);

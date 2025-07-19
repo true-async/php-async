@@ -19,6 +19,7 @@
 #include <zend_portability.h>
 #include <zend_property_hooks.h>
 #include <Zend/zend_async_API.h>
+#include "php_async_api.h"
 
 BEGIN_EXTERN_C()
 
@@ -42,7 +43,7 @@ PHP_ASYNC_API void async_composite_exception_add_exception(zend_object *composit
 bool async_spawn_and_throw(zend_object *exception, zend_async_scope_t *scope, int32_t priority);
 void async_apply_exception_to_context(zend_object *exception);
 zend_object *async_extract_exception(void);
-void async_rethrow_exception(zend_object *exception);
+PHP_ASYNC_API void async_rethrow_exception(zend_object *exception);
 void async_apply_exception(zend_object **to_exception);
 
 END_EXTERN_C()

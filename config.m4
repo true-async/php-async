@@ -32,7 +32,6 @@ if test "$PHP_ASYNC" = "yes"; then
         LIBUV_LIBLINE=`$PKG_CONFIG libuv --libs`
         LIBUV_VERSION=`$PKG_CONFIG libuv --modversion`
         AC_MSG_RESULT(from pkgconfig: found version $LIBUV_VERSION)
-        AC_DEFINE(PHP_ASYNC_LIBUV,1,[ ])
       else
         AC_MSG_ERROR(system libuv must be upgraded to version >= 1.44.0 (fixes UV_RUN_ONCE busy loop issue))
       fi
@@ -57,7 +56,6 @@ if test "$PHP_ASYNC" = "yes"; then
       PHP_CHECK_LIBRARY(uv, uv_version,
       [
         PHP_ADD_LIBRARY_WITH_PATH(uv, $UV_DIR/$PHP_LIBDIR, UV_SHARED_LIBADD)
-        AC_DEFINE(PHP_ASYNC_LIBUV,1,[ ])
       ],[
         AC_MSG_ERROR([wrong uv library version or library not found])
       ],[

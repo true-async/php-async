@@ -16,7 +16,7 @@
 #ifndef COROUTINE_H
 #define COROUTINE_H
 
-#include "php_async.h"
+#include "php_async_api.h"
 #include <Zend/zend_async_API.h>
 
 ZEND_STACK_ALIGNED void async_coroutine_execute(zend_fiber_transfer *transfer);
