@@ -18,12 +18,10 @@
 
 #include <php.h>
 
-#ifdef PHP_ASYNC_LIBUV
 #ifdef PHP_WIN32
 #include "libuv/uv.h"
 #else
 #include <uv.h>
-#endif
 #endif
 
 #include "coroutine.h"
@@ -38,12 +36,14 @@
 extern zend_module_entry async_module_entry;
 #define phpext_async_ptr &async_module_entry
 
-extern zend_class_entry *async_ce_awaitable;
-extern zend_class_entry *async_ce_timeout;
+#include "php_async_api.h"
 
-#define PHP_ASYNC_NAME "TrueAsync"
-#define PHP_ASYNC_VERSION "0.5.0"
-#define PHP_ASYNC_NAME_VERSION "TrueAsync v0.5.0"
+PHP_ASYNC_API extern zend_class_entry *async_ce_awaitable;
+PHP_ASYNC_API extern zend_class_entry *async_ce_timeout;
+
+#define PHP_ASYNC_NAME "true_async"
+#define PHP_ASYNC_VERSION "0.4.0"
+#define PHP_ASYNC_NAME_VERSION "true async v0.4.0"
 
 typedef struct
 {
@@ -82,7 +82,6 @@ zend_async_context_t *root_context;
 /* The default concurrency */
 int default_concurrency;
 
-#ifdef PHP_ASYNC_LIBUV
 /* The reactor */
 uv_loop_t uvloop;
 bool reactor_started;
@@ -100,7 +99,6 @@ bool isRunning;
 uv_async_t *uvloop_wakeup;
 /* Circular buffer of libuv_process_t ptr */
 circular_buffer_t *pid_queue;
-#endif
 #endif
 
 #ifdef PHP_WIN32
