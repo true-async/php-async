@@ -13,6 +13,7 @@
   | Author: Edmond                                                       |
   +----------------------------------------------------------------------+
 */
+#include "php_async.h"
 #include "exceptions.h"
 
 #include <zend_API.h>
@@ -68,7 +69,7 @@ void async_register_exceptions_ce(void)
 	async_ce_composite_exception = register_class_Async_CompositeException(zend_ce_exception);
 }
 
-zend_object *async_new_exception(zend_class_entry *exception_ce, const char *format, ...)
+PHP_ASYNC_API zend_object *async_new_exception(zend_class_entry *exception_ce, const char *format, ...)
 {
 	zval exception, message_val;
 
@@ -95,7 +96,7 @@ zend_object *async_new_exception(zend_class_entry *exception_ce, const char *for
 	return Z_OBJ(exception);
 }
 
-ZEND_API ZEND_COLD zend_object *async_throw_error(const char *format, ...)
+PHP_ASYNC_API ZEND_COLD zend_object *async_throw_error(const char *format, ...)
 {
 	va_list args;
 	va_start(args, format);
@@ -115,7 +116,7 @@ ZEND_API ZEND_COLD zend_object *async_throw_error(const char *format, ...)
 	return obj;
 }
 
-ZEND_API ZEND_COLD zend_object *async_throw_cancellation(const char *format, ...)
+PHP_ASYNC_API ZEND_COLD zend_object *async_throw_cancellation(const char *format, ...)
 {
 	const zend_object *previous_exception = EG(exception);
 
@@ -142,7 +143,7 @@ ZEND_API ZEND_COLD zend_object *async_throw_cancellation(const char *format, ...
 	return obj;
 }
 
-ZEND_API ZEND_COLD zend_object *async_throw_input_output(const char *format, ...)
+PHP_ASYNC_API ZEND_COLD zend_object *async_throw_input_output(const char *format, ...)
 {
 	format = format ? format : "An input/output error occurred.";
 
@@ -162,7 +163,7 @@ ZEND_API ZEND_COLD zend_object *async_throw_input_output(const char *format, ...
 	return obj;
 }
 
-ZEND_API ZEND_COLD zend_object *async_throw_timeout(const char *format, const zend_long timeout)
+PHP_ASYNC_API ZEND_COLD zend_object *async_throw_timeout(const char *format, const zend_long timeout)
 {
 	format = format ? format : "A timeout of %u microseconds occurred";
 
@@ -175,7 +176,7 @@ ZEND_API ZEND_COLD zend_object *async_throw_timeout(const char *format, const ze
 	}
 }
 
-ZEND_API ZEND_COLD zend_object *async_throw_poll(const char *format, ...)
+PHP_ASYNC_API ZEND_COLD zend_object *async_throw_poll(const char *format, ...)
 {
 	va_list args;
 	va_start(args, format);
@@ -193,15 +194,14 @@ ZEND_API ZEND_COLD zend_object *async_throw_poll(const char *format, ...)
 	return obj;
 }
 
-ZEND_API ZEND_COLD zend_object *async_new_composite_exception(void)
+PHP_ASYNC_API ZEND_COLD zend_object *async_new_composite_exception(void)
 {
 	zval composite;
 	object_init_ex(&composite, async_ce_composite_exception);
 	return Z_OBJ(composite);
 }
 
-ZEND_API ZEND_COLD void
-async_composite_exception_add_exception(zend_object *composite, zend_object *exception, bool transfer)
+PHP_ASYNC_API void async_composite_exception_add_exception(zend_object *composite, zend_object *exception, bool transfer)
 {
 	if (composite == NULL || exception == NULL) {
 		return;

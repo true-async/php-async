@@ -17,6 +17,7 @@ if (PHP_ASYNC == "yes") {
     ADD_SOURCES("ext/async/internal", "allocator.c circular_buffer.c");
 
     ADD_FLAG("CFLAGS", "/D PHP_ASYNC");
+    ADD_FLAG("CFLAGS", "/D ASYNC_EXPORTS");
 
     PHP_INSTALL_HEADERS("ext/async", "php_async.h");
     PHP_INSTALL_HEADERS("ext/async", "coroutine.h");

@@ -18,9 +18,9 @@
 
 #include "php_async.h"
 
-extern zend_class_entry *async_ce_scope;
-extern zend_class_entry *async_ce_scope_provider;
-extern zend_class_entry *async_ce_spawn_strategy;
+PHP_ASYNC_API extern zend_class_entry *async_ce_scope;
+PHP_ASYNC_API extern zend_class_entry *async_ce_scope_provider;
+PHP_ASYNC_API extern zend_class_entry *async_ce_spawn_strategy;
 
 #define ASYNC_SCOPE_MAX_RECURSION_DEPTH 64
 

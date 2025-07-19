@@ -38,8 +38,22 @@
 extern zend_module_entry async_module_entry;
 #define phpext_async_ptr &async_module_entry
 
-extern zend_class_entry *async_ce_awaitable;
-extern zend_class_entry *async_ce_timeout;
+#ifdef PHP_WIN32
+# ifdef ASYNC_EXPORTS
+#  define PHP_ASYNC_API __declspec(dllexport)
+# else
+#  define PHP_ASYNC_API __declspec(dllimport)
+# endif
+#else
+# if defined(__GNUC__) && __GNUC__ >= 4
+#  define PHP_ASYNC_API __attribute__ ((visibility("default")))
+# else
+#  define PHP_ASYNC_API
+# endif
+#endif
+
+PHP_ASYNC_API extern zend_class_entry *async_ce_awaitable;
+PHP_ASYNC_API extern zend_class_entry *async_ce_timeout;
 
 #define PHP_ASYNC_NAME "TrueAsync"
 #define PHP_ASYNC_VERSION "0.5.0"

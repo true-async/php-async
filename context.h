@@ -16,6 +16,7 @@
 #ifndef CONTEXT_H
 #define CONTEXT_H
 
+#include "php_async.h"
 #include <Zend/zend_async_API.h>
 
 typedef struct _async_context_s async_context_t;
@@ -40,7 +41,7 @@ async_context_t *async_context_new(void);
 void async_context_dispose(async_context_t *context);
 
 // Class entry
-extern zend_class_entry *async_ce_context;
+PHP_ASYNC_API extern zend_class_entry *async_ce_context;
 void async_register_context_ce(void);
 
 
