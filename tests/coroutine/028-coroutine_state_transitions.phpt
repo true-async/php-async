@@ -92,7 +92,7 @@ suspend(); // Let it start
 echo "before cancel request - isCancellationRequested: " . ($cancel_request_coroutine->isCancellationRequested() ? "true" : "false") . "\n";
 echo "before cancel request - isCancelled: " . ($cancel_request_coroutine->isCancelled() ? "true" : "false") . "\n";
 
-$cancel_request_coroutine->cancel(new \Async\CancellationException("Test cancellation"));
+$cancel_request_coroutine->cancel(new \Async\CancellationError("Test cancellation"));
 
 echo "after cancel request - isCancellationRequested: " . ($cancel_request_coroutine->isCancellationRequested() ? "true" : "false") . "\n";
 

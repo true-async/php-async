@@ -15,7 +15,7 @@ This directory contains tests for the Coroutine class methods implementation.
 - `013-coroutine_running_detection.phpt` - Tests isRunning() method
 
 ### Cancellation
-- `006-coroutine_cancel_basic.phpt` - Tests cancel() method with CancellationException
+- `006-coroutine_cancel_basic.phpt` - Tests cancel() method with CancellationError
 
 ### Location Information
 - `007-coroutine_spawn_location.phpt` - Tests getSpawnFileAndLine() and getSpawnLocation()

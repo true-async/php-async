@@ -43,7 +43,7 @@ suspend();
 
 // Cancel individual coroutine first
 echo "cancelling coroutine2 individually\n";
-$coroutine2->cancel(new \Async\CancellationException("Individual cancel"));
+$coroutine2->cancel(new \Async\CancellationError("Individual cancel"));
 
 // Let cancellation propagate
 suspend();
@@ -57,7 +57,7 @@ echo "coroutine3 cancelled: " . ($coroutine3->isCancelled() ? "true" : "false") 
 
 // Now cancel the entire scope
 echo "cancelling entire scope\n";
-$scope->cancel(new \Async\CancellationException("Scope cancel"));
+$scope->cancel(new \Async\CancellationError("Scope cancel"));
 
 suspend(); // Let cancellation propagate
 

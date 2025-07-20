@@ -56,7 +56,7 @@ foreach ($scopes_and_coroutines as $name => $data) {
 
 // Cancel middle node (child_scope) - should cancel its descendants but not ancestors
 echo "cancelling child scope (middle node)\n";
-$child_scope->cancel(new \Async\CancellationException("Child cancelled"));
+$child_scope->cancel(new \Async\CancellationError("Child cancelled"));
 
 // Let cancellation propagate
 suspend();
@@ -70,7 +70,7 @@ foreach ($scopes_and_coroutines as $name => $data) {
 
 // Now cancel parent - should cancel everything remaining
 echo "cancelling parent scope (root)\n";
-$parent_scope->cancel(new \Async\CancellationException("Parent cancelled"));
+$parent_scope->cancel(new \Async\CancellationError("Parent cancelled"));
 
 // Let cancellation propagate
 suspend();

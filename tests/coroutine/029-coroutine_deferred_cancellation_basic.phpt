@@ -28,7 +28,7 @@ $protected_coroutine = spawn(function() {
 suspend();
 
 echo "cancelling protected coroutine\n";
-$protected_coroutine->cancel(new \Async\CancellationException("Deferred cancellation"));
+$protected_coroutine->cancel(new \Async\CancellationError("Deferred cancellation"));
 
 echo "protected coroutine cancelled: " . ($protected_coroutine->isCancelled() ? "true" : "false") . "\n";
 echo "cancellation requested: " . ($protected_coroutine->isCancellationRequested() ? "true" : "false") . "\n";
@@ -40,7 +40,7 @@ echo "after protected completion - cancelled: " . ($protected_coroutine->isCance
 
 try {
     await($protected_coroutine);
-} catch (\Async\CancellationException $e) {
+} catch (\Async\CancellationError $e) {
 }
 
 $result = $protected_coroutine->getResult();

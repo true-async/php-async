@@ -19,7 +19,7 @@ $coroutine2 = spawn(function() {
 try {
     $result = awaitAll([$coroutine1, $coroutine2], $coroutine2);
     var_dump($result);
-} catch (\Async\CancellationException $e) {
+} catch (\Async\CancellationError $e) {
 }
 
 echo "end\n";

@@ -31,7 +31,7 @@ $coroutine = spawn(function() {
         $result = $stmt->fetch(PDO::FETCH_ASSOC);
         
         return "completed";
-    } catch (Async\CancellationException $e) {
+    } catch (Async\CancellationError $e) {
         return "cancelled";
     }
 });
@@ -46,7 +46,7 @@ $coroutine->cancel();
 try {
     $result = await($coroutine);
     echo "original query result: " . $result . "\n";
-} catch (Async\CancellationException $e) {
+} catch (Async\CancellationError $e) {
     echo "original query was cancelled\n";
 }
 
