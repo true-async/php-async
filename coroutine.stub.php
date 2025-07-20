@@ -34,7 +34,7 @@ final class Coroutine implements Awaitable
     /**
      * Returns the Coroutine exception when finished.
      * If the Coroutine is not finished, it will return null.
-     * If the Coroutine is cancelled, it will return a CancellationException.
+     * If the Coroutine is cancelled, it will return a CancellationError.
      *
      * @throws \RuntimeException if the Coroutine is running
      */
@@ -105,7 +105,7 @@ final class Coroutine implements Awaitable
     /**
      * Cancel the coroutine.
      */
-    public function cancel(?\CancellationException $cancellationException = null): void {}
+    public function cancel(?CancellationError $CancellationError = null): void {}
 
     /**
      * Define a callback to be executed when the coroutine is finished.

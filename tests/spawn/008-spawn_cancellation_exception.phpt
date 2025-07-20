@@ -1,16 +1,16 @@
 --TEST--
-Future: spawn() - CancellationException handling (special case)
+Future: spawn() - CancellationError handling (special case)
 --FILE--
 <?php
 
 use function Async\spawn;
-use Async\CancellationException;
+use Async\CancellationError;
 
 echo "start\n";
 
 spawn(function() {
     echo "coroutine start\n";
-    throw new CancellationException("Cancelled");
+    throw new CancellationError("Cancelled");
     echo "coroutine end (should not print)\n";
 });
 

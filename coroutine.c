@@ -255,9 +255,11 @@ METHOD(cancel)
 {
 	zend_object *exception = NULL;
 
+	zend_class_entry *ce_cancellation_exception = ZEND_ASYNC_GET_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION);
+
 	ZEND_PARSE_PARAMETERS_START(0, 1)
 	Z_PARAM_OPTIONAL;
-	Z_PARAM_OBJ_OF_CLASS_OR_NULL(exception, zend_ce_cancellation_exception)
+	Z_PARAM_OBJ_OF_CLASS_OR_NULL(exception, ce_cancellation_exception)
 	ZEND_PARSE_PARAMETERS_END();
 
 	ZEND_ASYNC_CANCEL(&THIS_COROUTINE->coroutine, exception, false);
@@ -566,7 +568,7 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 		// Hold the exception inside coroutine if it is not NULL.
 		if (exception != NULL) {
 			if (coroutine->coroutine.exception != NULL) {
-				if (false == instanceof_function(exception->ce, zend_ce_cancellation_exception)) {
+				if (false == instanceof_function(exception->ce, ZEND_ASYNC_GET_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION))) {
 					zend_exception_set_previous(exception, coroutine->coroutine.exception);
 					coroutine->coroutine.exception = exception;
 					GC_ADDREF(exception);
@@ -611,7 +613,7 @@ void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *
 		// Cancellation-type exceptions are considered handled in all cases and are not propagated further.
 		if (exception != NULL &&
 			(ZEND_COROUTINE_IS_EXCEPTION_HANDLED(&coroutine->coroutine) ||
-			 instanceof_function(exception->ce, zend_ce_cancellation_exception))) {
+			 instanceof_function(exception->ce, ZEND_ASYNC_GET_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION)))) {
 			OBJ_RELEASE(exception);
 			exception = NULL;
 		}
@@ -968,7 +970,7 @@ void async_coroutine_resume(zend_coroutine_t *coroutine, zend_object *error, con
 	if (error != NULL) {
 		if (coroutine->waker->error != NULL) {
 
-			if (false == instanceof_function(error->ce, zend_ce_cancellation_exception)) {
+			if (false == instanceof_function(error->ce, ZEND_ASYNC_GET_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION))) {
 				zend_exception_set_previous(error, coroutine->waker->error);
 				coroutine->waker->error = error;
 
@@ -1123,7 +1125,7 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine,
 	}
 
 	if (was_cancelled && waker->error != NULL &&
-		instanceof_function(waker->error->ce, zend_ce_cancellation_exception)) {
+		instanceof_function(waker->error->ce, ZEND_ASYNC_GET_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION))) {
 		if (transfer_error) {
 			OBJ_RELEASE(error);
 		}

@@ -16,13 +16,13 @@ $coroutine1 = spawn(function() {
     return "result1";
 });
 
-$coroutine1->cancel(new \Async\CancellationException("Manual cancellation"));
+$coroutine1->cancel(new \Async\CancellationError("Manual cancellation"));
 echo "coroutine1 cancelled\n";
 
 try {
     $result1 = await($coroutine1);
     echo "await should not succeed\n";
-} catch (\Async\CancellationException $e) {
+} catch (\Async\CancellationError $e) {
     echo "caught cancellation: " . $e->getMessage() . "\n";
 } catch (Throwable $e) {
     echo "caught unexpected: " . get_class($e) . ": " . $e->getMessage() . "\n";
@@ -39,13 +39,13 @@ $coroutine2 = spawn(function() {
 // Let coroutine start
 suspend();
 
-$coroutine2->cancel(new \Async\CancellationException("Cancelled during execution"));
+$coroutine2->cancel(new \Async\CancellationError("Cancelled during execution"));
 echo "coroutine2 cancelled during execution\n";
 
 try {
     $result2 = await($coroutine2);
     echo "await should not succeed\n";
-} catch (\Async\CancellationException $e) {
+} catch (\Async\CancellationError $e) {
     echo "caught cancellation: " . $e->getMessage() . "\n";
 } catch (Throwable $e) {
     echo "caught unexpected: " . get_class($e) . ": " . $e->getMessage() . "\n";

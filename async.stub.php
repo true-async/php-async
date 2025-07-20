@@ -82,7 +82,7 @@ function getCoroutines(): array {}
 /**
  * Start the graceful shutdown of the Scheduler.
  */
-function gracefulShutdown(?CancellationException $cancellationException = null): void {}
+function gracefulShutdown(?CancellationError $cancellationError = null): void {}
 
 /**
  * Execute an external program.
