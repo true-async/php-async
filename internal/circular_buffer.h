@@ -69,7 +69,6 @@ void circular_buffer_destroy(circular_buffer_t *buffer);
 
 bool circular_buffer_is_full(const circular_buffer_t *buffer);
 bool circular_buffer_is_empty(const circular_buffer_t *buffer);
-bool circular_buffer_is_not_empty(const circular_buffer_t *buffer);
 zend_result circular_buffer_push(circular_buffer_t *buffer, const void *value, bool should_resize);
 zend_result circular_buffer_push_front(circular_buffer_t *buffer, const void *value, bool should_resize);
 zend_result circular_buffer_pop(circular_buffer_t *buffer, void *value);
@@ -80,5 +79,46 @@ zend_result circular_buffer_realloc(circular_buffer_t *buffer, size_t new_count)
 circular_buffer_t *zval_circular_buffer_new(const size_t count, const allocator_t *allocator);
 zend_result zval_circular_buffer_push(circular_buffer_t *buffer, zval *value, bool should_resize);
 zend_result zval_circular_buffer_pop(circular_buffer_t *buffer, zval *value);
+
+/* Inline optimized functions - placed after all declarations */
+
+/* Inline version for hot path performance */
+static zend_always_inline bool circular_buffer_is_not_empty(const circular_buffer_t *buffer) {
+    return buffer->head != buffer->tail;
+}
+
+/* Fast specialized version for pointer push (8 bytes) */
+static zend_always_inline zend_result circular_buffer_push_ptr(circular_buffer_t *buffer, void *ptr) {
+    // Check if buffer is full using bitwise AND (capacity is power of 2)
+    if (EXPECTED(((buffer->head + 1) & (buffer->capacity - 1)) != buffer->tail)) {
+        // Direct pointer assignment - no memcpy overhead
+        *(void**)((char*)buffer->data + buffer->head * sizeof(void*)) = ptr;
+        buffer->head = (buffer->head + 1) & (buffer->capacity - 1);
+        return SUCCESS;
+    }
+    return FAILURE;
+}
+
+/* Fast specialized version for pointer pop (8 bytes) */
+static zend_always_inline zend_result circular_buffer_pop_ptr(circular_buffer_t *buffer, void **ptr) {
+    // Check if buffer is empty
+    if (EXPECTED(buffer->head != buffer->tail)) {
+        // Direct pointer read - no memcpy overhead
+        *ptr = *(void**)((char*)buffer->data + buffer->tail * sizeof(void*));
+        buffer->tail = (buffer->tail + 1) & (buffer->capacity - 1);
+        return SUCCESS;
+    }
+    return FAILURE;
+}
+
+/* Smart wrapper for pointer push with resize fallback */
+static zend_always_inline zend_result circular_buffer_push_ptr_with_resize(circular_buffer_t *buffer, void *ptr) {
+    // Try fast path first (no resize)
+    if (EXPECTED(circular_buffer_push_ptr(buffer, ptr) == SUCCESS)) {
+        return SUCCESS;
+    }
+    // Fallback to slow path with resize - need address of ptr for memcpy
+    return circular_buffer_push(buffer, &ptr, true);
+}
 
 #endif // ASYNC_CIRCULAR_BUFFER_V2_H

@@ -151,7 +151,7 @@ static zend_always_inline async_coroutine_t *next_coroutine(void)
 {
 	async_coroutine_t *coroutine;
 
-	if (UNEXPECTED(circular_buffer_pop(&ASYNC_G(coroutine_queue), &coroutine) == FAILURE)) {
+	if (UNEXPECTED(circular_buffer_pop_ptr(&ASYNC_G(coroutine_queue), (void**)&coroutine) == FAILURE)) {
 		ZEND_ASSERT("Failed to pop the coroutine from the pending queue.");
 		return NULL;
 	}
@@ -777,7 +777,7 @@ void async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine)
 
 		coroutine->waker->status = ZEND_ASYNC_WAKER_QUEUED;
 
-		if (UNEXPECTED(circular_buffer_push(&ASYNC_G(coroutine_queue), &coroutine, true)) == FAILURE) {
+		if (UNEXPECTED(circular_buffer_push_ptr_with_resize(&ASYNC_G(coroutine_queue), coroutine) == FAILURE)) {
 			async_throw_error("Failed to enqueue coroutine");
 		}
 
