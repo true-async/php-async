@@ -163,6 +163,11 @@ void libuv_reactor_shutdown(void)
 /* {{{ libuv_reactor_execute */
 bool libuv_reactor_execute(bool no_wait)
 {
+	// OPTIMIZATION: Skip uv_run() if no libuv handles to avoid unnecessary clock_gettime() calls
+	if (!uv_loop_alive(UVLOOP)) {
+		return ZEND_ASYNC_ACTIVE_EVENT_COUNT > 0;
+	}
+
 	const bool has_handles = uv_run(UVLOOP, no_wait ? UV_RUN_NOWAIT : UV_RUN_ONCE);
 
 	return ZEND_ASYNC_ACTIVE_EVENT_COUNT > 0 || has_handles;
