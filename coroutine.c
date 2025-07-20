@@ -1494,3 +1494,57 @@ bool async_coroutine_context_delete(zend_coroutine_t *z_coroutine, zval *key)
 
 	return coroutine->coroutine.context->unset(coroutine->coroutine.context, key);
 }
+
+/* Fiber context pool implementation */
+
+void async_fiber_pool_init(void)
+{
+	circular_buffer_ctor(&ASYNC_G(fiber_context_pool), ASYNC_FIBER_POOL_SIZE, sizeof(async_fiber_context_t*), NULL);
+}
+
+async_fiber_context_t* async_fiber_pool_acquire(void)
+{
+	async_fiber_context_t *context;
+	
+	if (circular_buffer_pop_ptr(&ASYNC_G(fiber_context_pool), (void**)&context) == SUCCESS) {
+		return context;
+	}
+	
+	context = emalloc(sizeof(async_fiber_context_t));
+	memset(context, 0, sizeof(async_fiber_context_t));
+	
+	if (zend_fiber_init_context(&context->context, zend_async_coroutine_execute, 0) == FAILURE) {
+		efree(context);
+		return NULL;
+	}
+	
+	return context;
+}
+
+void async_fiber_pool_release(async_fiber_context_t *context)
+{
+	if (context == NULL) {
+		return;
+	}
+	
+	context->flags = 0;
+	context->execute_data = NULL;
+	context->vm_stack = NULL;
+	
+	if (circular_buffer_push_ptr(&ASYNC_G(fiber_context_pool), context) == FAILURE) {
+		zend_fiber_destroy(&context->context);
+		efree(context);
+	}
+}
+
+void async_fiber_pool_cleanup(void)
+{
+	async_fiber_context_t *context;
+	
+	while (circular_buffer_pop_ptr(&ASYNC_G(fiber_context_pool), (void**)&context) == SUCCESS) {
+		zend_fiber_destroy(&context->context);
+		efree(context);
+	}
+	
+	circular_buffer_dtor(&ASYNC_G(fiber_context_pool));
+}

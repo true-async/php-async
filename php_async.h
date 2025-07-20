@@ -82,6 +82,9 @@ zend_async_context_t *root_context;
 /* The default concurrency */
 int default_concurrency;
 
+/* Fiber context pool for performance optimization */
+circular_buffer_t fiber_context_pool;
+
 /* The reactor */
 uv_loop_t uvloop;
 bool reactor_started;

@@ -19,6 +19,27 @@
 #include "php_async_api.h"
 #include <Zend/zend_async_API.h>
 
+/* Fiber context pool configuration */
+#define ASYNC_FIBER_POOL_SIZE 512
+
+/* Fiber context structure for pooling */
+typedef struct _async_fiber_context_s async_fiber_context_t;
+
+struct _async_fiber_context_s
+{
+	/* Flags from enum zend_fiber_flag */
+	uint8_t flags;
+	
+	/* Native C fiber context (stack + registers) */
+	zend_fiber_context context;
+	
+	/* Current Zend VM execute data */
+	zend_execute_data *execute_data;
+	
+	/* Active fiber VM stack */
+	zend_vm_stack vm_stack;
+};
+
 ZEND_STACK_ALIGNED void async_coroutine_execute(zend_fiber_transfer *transfer);
 PHP_ASYNC_API extern zend_class_entry *async_ce_coroutine;
 
@@ -30,20 +51,11 @@ struct _async_coroutine_s
 	/* Basic structure for coroutine. */
 	zend_coroutine_t coroutine;
 
-	/* Flags are defined in enum zend_fiber_flag. */
-	uint8_t flags;
-
-	/* Native C fiber context. */
-	zend_fiber_context context;
-
-	/* Current Zend VM execute data being run by the coroutine. */
-	zend_execute_data *execute_data;
+	/* Reference to fiber context from pool instead of embedded */
+	async_fiber_context_t *fiber_context;
 
 	/* deferred cancellation object. */
 	zend_object *deferred_cancellation;
-
-	/* Active fiber vm stack. */
-	zend_vm_stack vm_stack;
 
 	/* Finally handlers array (zval callables) - lazy initialization */
 	HashTable *finally_handlers;
@@ -70,6 +82,12 @@ struct _finally_handlers_context_s
 	uint32_t params_count;
 	zval params[1];
 };
+
+/* Fiber context pool management */
+void async_fiber_pool_init(void);
+async_fiber_context_t* async_fiber_pool_acquire(void);
+void async_fiber_pool_release(async_fiber_context_t *context);
+void async_fiber_pool_cleanup(void);
 
 void async_register_coroutine_ce(void);
 zend_coroutine_t *async_new_coroutine(zend_async_scope_t *scope);
