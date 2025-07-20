@@ -503,7 +503,7 @@ static void finally_shutdown(void)
 	}
 }
 
-void async_scheduler_main_loop(void);
+ZEND_STACK_ALIGNED void async_scheduler_main_loop(void);
 
 #define TRY_HANDLE_EXCEPTION() \
 	if (UNEXPECTED(EG(exception) != NULL)) { \
@@ -929,7 +929,124 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 	zend_exception_restore();
 }
 
-void async_scheduler_main_loop(void)
+ZEND_STACK_ALIGNED void async_scheduler_entry(zend_fiber_transfer *transfer)
+{
+	ZEND_ASSERT(Z_TYPE(transfer->value) == IS_NULL && "Initial transfer value to coroutine context must be NULL");
+	ZEND_ASSERT(!transfer->flags && "No flags should be set on initial transfer");
+
+	/* Determine the current error_reporting ini setting. */
+	zend_long error_reporting = INI_INT("error_reporting");
+	if (!error_reporting && !INI_STR("error_reporting")) {
+		error_reporting = E_ALL;
+	}
+
+	EG(vm_stack) = NULL;
+	bool should_start_graceful_shutdown = false;
+
+	zend_first_try
+	{
+		// Allocate VM stack on C stack instead of heap
+		char vm_stack_memory[ZEND_FIBER_VM_STACK_SIZE];
+		zend_vm_stack stack = (zend_vm_stack)vm_stack_memory;
+		
+		// Initialize VM stack structure manually
+		stack->top = ZEND_VM_STACK_ELEMENTS(stack);
+		stack->end = (zval*)((char*)vm_stack_memory + ZEND_FIBER_VM_STACK_SIZE);
+		stack->prev = NULL;
+		
+		EG(vm_stack) = stack;
+		EG(vm_stack_top) = stack->top + ZEND_CALL_FRAME_SLOT;
+		EG(vm_stack_end) = stack->end;
+		EG(vm_stack_page_size) = ZEND_FIBER_VM_STACK_SIZE;
+
+		coroutine->execute_data = (zend_execute_data *) stack->top;
+
+		memset(coroutine->execute_data, 0, sizeof(zend_execute_data));
+
+		coroutine->execute_data->func = &coroutine_root_function;
+
+		EG(current_execute_data) = coroutine->execute_data;
+		EG(jit_trace_num) = 0;
+		EG(error_reporting) = (int) error_reporting;
+
+#ifdef ZEND_CHECK_STACK_LIMIT
+		EG(stack_base) = zend_fiber_stack_base(coroutine->context.stack);
+		EG(stack_limit) = zend_fiber_stack_limit(coroutine->context.stack);
+#endif
+
+		if (EXPECTED(coroutine->coroutine.internal_entry == NULL)) {
+			ZEND_ASSERT(coroutine->coroutine.fcall != NULL && "Coroutine function call is not set");
+			coroutine->coroutine.fcall->fci.retval = &coroutine->coroutine.result;
+
+			zend_call_function(&coroutine->coroutine.fcall->fci, &coroutine->coroutine.fcall->fci_cache);
+
+			zval_ptr_dtor(&coroutine->coroutine.fcall->fci.function_name);
+			ZVAL_UNDEF(&coroutine->coroutine.fcall->fci.function_name);
+		} else {
+			coroutine->coroutine.internal_entry();
+		}
+	}
+	zend_catch
+	{
+		coroutine->flags |= ZEND_FIBER_FLAG_BAILOUT;
+		transfer->flags = ZEND_FIBER_TRANSFER_FLAG_BAILOUT;
+		should_start_graceful_shutdown = true;
+	}
+	zend_end_try();
+
+	zend_first_try
+	{
+		bool has_handles = true;
+		bool has_next_coroutine = true;
+		bool was_executed = false;
+
+		do {
+
+			ZEND_ASYNC_SCHEDULER_HEARTBEAT;
+
+			ZEND_ASYNC_SCHEDULER_CONTEXT = true;
+
+			execute_microtasks();
+			TRY_HANDLE_EXCEPTION();
+
+			has_next_coroutine = circular_buffer_is_not_empty(&ASYNC_G(coroutine_queue));
+			has_handles = ZEND_ASYNC_REACTOR_EXECUTE(has_next_coroutine);
+			TRY_HANDLE_EXCEPTION();
+
+			execute_microtasks();
+			TRY_HANDLE_EXCEPTION();
+
+			ZEND_ASYNC_SCHEDULER_CONTEXT = false;
+
+			if (EXPECTED(has_next_coroutine)) {
+				const switch_status status = execute_next_coroutine(NULL);
+				was_executed = status == COROUTINE_SWITCHED || status == COROUTINE_IGNORED;
+			} else {
+				was_executed = false;
+			}
+
+			TRY_HANDLE_EXCEPTION();
+
+			if (UNEXPECTED(false == has_handles && false == was_executed &&
+						   zend_hash_num_elements(&ASYNC_G(coroutines)) > 0 &&
+						   circular_buffer_is_empty(&ASYNC_G(coroutine_queue)) &&
+						   circular_buffer_is_empty(&ASYNC_G(microtasks)) && resolve_deadlocks())) {
+				break;
+						   }
+
+		} while (zend_hash_num_elements(&ASYNC_G(coroutines)) > 0 ||
+				 circular_buffer_is_not_empty(&ASYNC_G(microtasks)) || ZEND_ASYNC_REACTOR_LOOP_ALIVE());
+	}
+	zend_catch
+	{
+		dispose_coroutines();
+		async_scheduler_dtor();
+		zend_bailout();
+	}
+	zend_end_try();
+}
+
+ZEND_STACK_ALIGNED void async_scheduler_main_loop(void)
 {
 	zend_try
 	{
@@ -996,4 +1113,18 @@ void async_scheduler_main_loop(void)
 	}
 
 	// Here we are guaranteed to exit the coroutine without exceptions.
+}
+
+async_fiber_context_t* async_fiber_context_create(void)
+{
+	async_fiber_context_t *context = ecalloc(1, sizeof(async_fiber_context_t));
+
+	if (zend_fiber_init_context(&context->context, async_ce_coroutine, async_scheduler_entry, EG(fiber_stack_size)) == FAILURE) {
+		efree(context);
+		return NULL;
+	}
+
+	context->flags = ZEND_FIBER_STATUS_INIT;
+
+	return context;
 }

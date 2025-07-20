@@ -32,12 +32,12 @@ struct _async_fiber_context_s
 	
 	/* Native C fiber context (stack + registers) */
 	zend_fiber_context context;
+
+	/* Active fiber VM stack */
+	zend_vm_stack vm_stack;
 	
 	/* Current Zend VM execute data */
 	zend_execute_data *execute_data;
-	
-	/* Active fiber VM stack */
-	zend_vm_stack vm_stack;
 };
 
 ZEND_STACK_ALIGNED void async_coroutine_execute(zend_fiber_transfer *transfer);
@@ -51,7 +51,7 @@ struct _async_coroutine_s
 	/* Basic structure for coroutine. */
 	zend_coroutine_t coroutine;
 
-	/* Reference to fiber context from pool instead of embedded */
+	/* Reference to fiber context */
 	async_fiber_context_t *fiber_context;
 
 	/* deferred cancellation object. */
