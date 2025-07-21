@@ -521,7 +521,7 @@ static zend_always_inline void coroutine_call_finally_handlers(async_coroutine_t
 	}
 }
 
-void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *coroutine)
+void async_coroutine_finalize(async_coroutine_t *coroutine, zend_fiber_transfer *transfer)
 {
 	// Before finalizing the coroutine
 	// we check that we’re properly finishing the coroutine’s execution.
@@ -734,51 +734,49 @@ void async_coroutine_finalize_from_scheduler(async_coroutine_t *coroutine)
 	}
 }
 
-ZEND_STACK_ALIGNED void async_coroutine_execute(zend_fiber_transfer *transfer)
+ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine, zend_fiber_transfer *transfer)
 {
-	ZEND_ASSERT(Z_TYPE(transfer->value) == IS_NULL && "Initial transfer value to coroutine context must be NULL");
-	ZEND_ASSERT(!transfer->flags && "No flags should be set on initial transfer");
-
-	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
-	ZEND_COROUTINE_SET_STARTED(&coroutine->coroutine);
-
-	/* Call switch handlers for coroutine entering */
-	if (UNEXPECTED(coroutine->coroutine.switch_handlers != NULL)) {
-		ZEND_COROUTINE_ENTER(&coroutine->coroutine);
-	}
-
-	/* Determine the current error_reporting ini setting. */
-	zend_long error_reporting = INI_INT("error_reporting");
-	if (!error_reporting && !INI_STR("error_reporting")) {
-		error_reporting = E_ALL;
-	}
-
-	EG(vm_stack) = NULL;
 	bool should_start_graceful_shutdown = false;
 
-	zend_first_try
+	zend_async_waker_t *waker = coroutine->coroutine.waker;
+
+	if (UNEXPECTED(waker == NULL || waker->status == ZEND_ASYNC_WAKER_IGNORED)) {
+		if (ZEND_COROUTINE_IS_CANCELLED(&coroutine->coroutine)) {
+			zend_try
+			{
+				async_coroutine_finalize(coroutine, transfer);
+			}
+			zend_catch
+			{
+				should_start_graceful_shutdown = true;
+				transfer->flags |= ZEND_FIBER_TRANSFER_FLAG_BAILOUT;
+			}
+			zend_end_try();
+		}
+
+		coroutine->coroutine.event.dispose(&coroutine->coroutine.event);
+		return;
+	}
+
+	if (UNEXPECTED(waker->status == ZEND_ASYNC_WAKER_WAITING)) {
+		zend_error(E_ERROR, "Attempt to resume a coroutine that has not been resolved");
+		coroutine->coroutine.event.dispose(&coroutine->coroutine.event);
+		return;
+	}
+
+	waker->status = ZEND_ASYNC_WAKER_RESULT;
+	zend_object *error = waker->error;
+
+	// The Waker object can be destroyed immediately if the result is an error.
+	// It will be delivered to the coroutine as an exception.
+	if (UNEXPECTED(error)) {
+		waker->error = NULL;
+		zend_async_waker_destroy(&coroutine->coroutine);
+		async_rethrow_exception(error);
+	}
+
+	zend_try
 	{
-		zend_vm_stack stack = zend_vm_stack_new_page(ZEND_FIBER_VM_STACK_SIZE, NULL);
-		EG(vm_stack) = stack;
-		EG(vm_stack_top) = stack->top + ZEND_CALL_FRAME_SLOT;
-		EG(vm_stack_end) = stack->end;
-		EG(vm_stack_page_size) = ZEND_FIBER_VM_STACK_SIZE;
-
-		coroutine->execute_data = (zend_execute_data *) stack->top;
-
-		memset(coroutine->execute_data, 0, sizeof(zend_execute_data));
-
-		coroutine->execute_data->func = &coroutine_root_function;
-
-		EG(current_execute_data) = coroutine->execute_data;
-		EG(jit_trace_num) = 0;
-		EG(error_reporting) = (int) error_reporting;
-
-#ifdef ZEND_CHECK_STACK_LIMIT
-		EG(stack_base) = zend_fiber_stack_base(coroutine->context.stack);
-		EG(stack_limit) = zend_fiber_stack_limit(coroutine->context.stack);
-#endif
-
 		if (EXPECTED(coroutine->coroutine.internal_entry == NULL)) {
 			ZEND_ASSERT(coroutine->coroutine.fcall != NULL && "Coroutine function call is not set");
 			coroutine->coroutine.fcall->fci.retval = &coroutine->coroutine.result;
@@ -793,70 +791,36 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(zend_fiber_transfer *transfer)
 	}
 	zend_catch
 	{
-		coroutine->flags |= ZEND_FIBER_FLAG_BAILOUT;
-		transfer->flags = ZEND_FIBER_TRANSFER_FLAG_BAILOUT;
 		should_start_graceful_shutdown = true;
+		transfer->flags |= ZEND_FIBER_TRANSFER_FLAG_BAILOUT;
 	}
 	zend_end_try();
 
 	zend_first_try
 	{
-		async_coroutine_finalize(transfer, coroutine);
+		async_coroutine_finalize(coroutine, transfer);
 	}
 	zend_catch
 	{
-		coroutine->flags |= ZEND_FIBER_FLAG_BAILOUT;
-		transfer->flags = ZEND_FIBER_TRANSFER_FLAG_BAILOUT;
 		should_start_graceful_shutdown = true;
+		transfer->flags |= ZEND_FIBER_TRANSFER_FLAG_BAILOUT;
 	}
 	zend_end_try();
 
-	coroutine->context.cleanup = &async_coroutine_cleanup;
-	coroutine->vm_stack = EG(vm_stack);
-
 	if (UNEXPECTED(should_start_graceful_shutdown)) {
-		zend_first_try
+		zend_try
 		{
 			ZEND_ASYNC_SHUTDOWN();
 		}
 		zend_catch
 		{
+			transfer->flags |= ZEND_FIBER_TRANSFER_FLAG_BAILOUT;
 			zend_error(E_CORE_WARNING,
 					   "A critical error was detected during the initiation of the graceful shutdown mode.");
+			zend_bailout();
 		}
 		zend_end_try();
 	}
-
-	//
-	// The scheduler coroutine always terminates into the main execution flow.
-	//
-	if (UNEXPECTED(&coroutine->coroutine == ZEND_ASYNC_SCHEDULER)) {
-
-		ZEND_ASYNC_SCHEDULER = NULL;
-
-		if (transfer != ASYNC_G(main_transfer)) {
-
-			if (UNEXPECTED(Z_TYPE(transfer->value) == IS_OBJECT)) {
-				zend_first_try
-				{
-					zval_ptr_dtor(&transfer->value);
-				}
-				zend_end_try();
-				zend_error(E_CORE_WARNING, "The transfer value must be NULL when the main coroutine is resumed");
-			}
-
-			transfer->context = ASYNC_G(main_transfer)->context;
-			transfer->flags = ASYNC_G(main_transfer)->flags;
-			ZVAL_COPY_VALUE(&transfer->value, &ASYNC_G(main_transfer)->value);
-			ZVAL_NULL(&ASYNC_G(main_transfer)->value);
-		}
-
-		return;
-	}
-
-	transfer->context = NULL;
-
-	async_scheduler_coroutine_suspend(transfer);
 }
 
 static void coroutine_event_start(zend_async_event_t *event)
