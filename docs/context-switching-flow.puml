@@ -1,0 +1,45 @@
+@startuml Fiber Workflow
+!theme bluegray
+title Fiber Workflow
+
+participant "This Fiber" as ThisFiber
+participant "Other Fiber" as WorkerF1
+participant "Fiber Pool" as Pool
+
+loop Scheduler Main Loop
+    alt Has coroutines in queue
+        note over ThisFiber : Get next coroutine from queue
+        
+        alt Coroutine already has fiber
+            ThisFiber -> WorkerF1 : fiber_switch_context()
+            activate WorkerF1
+            note right : Resume existing fiber
+            
+            WorkerF1 -> ThisFiber : return
+            deactivate WorkerF1
+            note right : Continue fiber
+
+        else Coroutine has no fiber
+            alt Aren’t we the Fiber Scheduler?
+                note over ThisFiber : Execute coroutine directly
+                
+            else We are the Fiber Scheduler, and we need a new Fiber for the coroutine.
+                ThisFiber -> Pool : Get fiber from pool
+                Pool -> ThisFiber : fiber_context (or create new)
+                
+                ThisFiber -> WorkerF1 : fiber_switch_context()
+                activate WorkerF1
+                note right : Start new coroutine in new fiber
+                
+                WorkerF1 -> ThisFiber : return when done
+                deactivate WorkerF1
+            end
+        end
+        
+    else No coroutines
+        note over ThisFiber : Wait for events/timers
+    end
+end
+
+
+@enduml

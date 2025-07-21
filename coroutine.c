@@ -734,9 +734,10 @@ void async_coroutine_finalize_from_scheduler(async_coroutine_t *coroutine)
 	}
 }
 
-ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine, zend_fiber_transfer *transfer)
+ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 {
 	bool should_start_graceful_shutdown = false;
+	bool is_bailout = false;
 
 	zend_async_waker_t *waker = coroutine->coroutine.waker;
 
@@ -744,12 +745,11 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine, ze
 		if (ZEND_COROUTINE_IS_CANCELLED(&coroutine->coroutine)) {
 			zend_try
 			{
-				async_coroutine_finalize(coroutine, transfer);
+				async_coroutine_finalize(coroutine);
 			}
 			zend_catch
 			{
 				should_start_graceful_shutdown = true;
-				transfer->flags |= ZEND_FIBER_TRANSFER_FLAG_BAILOUT;
 			}
 			zend_end_try();
 		}
@@ -792,18 +792,18 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine, ze
 	zend_catch
 	{
 		should_start_graceful_shutdown = true;
-		transfer->flags |= ZEND_FIBER_TRANSFER_FLAG_BAILOUT;
+		is_bailout = true;
 	}
 	zend_end_try();
 
 	zend_first_try
 	{
-		async_coroutine_finalize(coroutine, transfer);
+		async_coroutine_finalize(coroutine);
 	}
 	zend_catch
 	{
 		should_start_graceful_shutdown = true;
-		transfer->flags |= ZEND_FIBER_TRANSFER_FLAG_BAILOUT;
+		is_bailout = true;
 	}
 	zend_end_try();
 
@@ -814,12 +814,15 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine, ze
 		}
 		zend_catch
 		{
-			transfer->flags |= ZEND_FIBER_TRANSFER_FLAG_BAILOUT;
 			zend_error(E_CORE_WARNING,
 					   "A critical error was detected during the initiation of the graceful shutdown mode.");
 			zend_bailout();
 		}
 		zend_end_try();
+	}
+
+	if (is_bailout) {
+		zend_bailout();
 	}
 }
 
