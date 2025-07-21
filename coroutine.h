@@ -42,7 +42,7 @@ struct _async_fiber_context_s
 
 typedef struct _async_coroutine_s async_coroutine_t;
 
-ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine, zend_fiber_transfer *transfer);
+ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine);
 PHP_ASYNC_API extern zend_class_entry *async_ce_coroutine;
 
 struct _async_coroutine_s
@@ -92,7 +92,7 @@ void async_fiber_pool_cleanup(void);
 void async_register_coroutine_ce(void);
 zend_coroutine_t *async_new_coroutine(zend_async_scope_t *scope);
 void async_coroutine_cleanup(zend_fiber_context *context);
-void async_coroutine_finalize(async_coroutine_t *coroutine, zend_fiber_transfer *transfer);
+void async_coroutine_finalize(async_coroutine_t *coroutine);
 void async_coroutine_finalize_from_scheduler(async_coroutine_t *coroutine);
 void async_coroutine_suspend(const bool from_main);
 void async_coroutine_resume(zend_coroutine_t *coroutine, zend_object *error, const bool transfer_error);

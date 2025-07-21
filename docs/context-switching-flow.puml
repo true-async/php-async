@@ -1,5 +1,5 @@
 @startuml Fiber Workflow
-!theme bluegray
+!theme materia
 title Fiber Workflow
 
 participant "This Fiber" as ThisFiber
@@ -20,10 +20,10 @@ loop Scheduler Main Loop
             note right : Continue fiber
 
         else Coroutine has no fiber
-            alt Aren’t we the Fiber Scheduler?
+            alt Aren’t we the Scheduler?
                 note over ThisFiber : Execute coroutine directly
                 
-            else We are the Fiber Scheduler, and we need a new Fiber for the coroutine.
+            else We are the Scheduler, and we need a new Fiber for the coroutine.
                 ThisFiber -> Pool : Get fiber from pool
                 Pool -> ThisFiber : fiber_context (or create new)
                 

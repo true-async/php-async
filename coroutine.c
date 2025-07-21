@@ -521,7 +521,7 @@ static zend_always_inline void coroutine_call_finally_handlers(async_coroutine_t
 	}
 }
 
-void async_coroutine_finalize(async_coroutine_t *coroutine, zend_fiber_transfer *transfer)
+void async_coroutine_finalize(async_coroutine_t *coroutine)
 {
 	// Before finalizing the coroutine
 	// we check that we’re properly finishing the coroutine’s execution.
