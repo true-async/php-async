@@ -19,17 +19,11 @@
 #include "php_async_api.h"
 #include <Zend/zend_async_API.h>
 
-/* Fiber context pool configuration */
-#define ASYNC_FIBER_POOL_SIZE 512
-
 /* Fiber context structure for pooling */
 typedef struct _async_fiber_context_s async_fiber_context_t;
 
 struct _async_fiber_context_s
 {
-	/* Flags from enum zend_fiber_flag */
-	uint8_t flags;
-	
 	/* Native C fiber context (stack + registers) */
 	zend_fiber_context context;
 
@@ -38,6 +32,9 @@ struct _async_fiber_context_s
 	
 	/* Current Zend VM execute data */
 	zend_execute_data *execute_data;
+
+	/* Flags from enum zend_fiber_flag */
+	uint8_t flags;
 };
 
 typedef struct _async_coroutine_s async_coroutine_t;
@@ -82,12 +79,6 @@ struct _finally_handlers_context_s
 	uint32_t params_count;
 	zval params[1];
 };
-
-/* Fiber context pool management */
-void async_fiber_pool_init(void);
-async_fiber_context_t* async_fiber_pool_acquire(void);
-void async_fiber_pool_release(async_fiber_context_t *context);
-void async_fiber_pool_cleanup(void);
 
 void async_register_coroutine_ce(void);
 zend_coroutine_t *async_new_coroutine(zend_async_scope_t *scope);

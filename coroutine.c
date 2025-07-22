@@ -472,27 +472,6 @@ bool async_call_finally_handlers(HashTable *finally_handlers, finally_handlers_c
 ///////////////////////////////////////////////////////////
 /// internal functions
 ///////////////////////////////////////////////////////////
-
-static zend_always_inline async_coroutine_t *coroutine_from_context(zend_fiber_context *context)
-{
-	ZEND_ASSERT(context->kind == async_ce_coroutine && "Fiber context does not belong to a Coroutine fiber");
-
-	return (async_coroutine_t *) (((char *) context) - XtOffsetOf(async_coroutine_t, context));
-}
-
-void async_coroutine_cleanup(zend_fiber_context *context)
-{
-	async_coroutine_t *coroutine = coroutine_from_context(context);
-
-	zend_vm_stack current_stack = EG(vm_stack);
-	EG(vm_stack) = coroutine->vm_stack;
-	zend_vm_stack_destroy();
-	EG(vm_stack) = current_stack;
-	coroutine->execute_data = NULL;
-
-	OBJ_RELEASE(&coroutine->std);
-}
-
 static void finally_context_dtor(finally_handlers_context_t *context)
 {
 	if (context->coroutine != NULL) {
@@ -649,15 +628,7 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 	}
 	zend_end_try();
 
-	if (UNEXPECTED(EG(exception))) {
-		if (!(coroutine->flags & ZEND_FIBER_FLAG_DESTROYED) ||
-			!(zend_is_graceful_exit(EG(exception)) || zend_is_unwind_exit(EG(exception)))) {
-			coroutine->flags |= ZEND_FIBER_FLAG_THREW;
-			transfer->flags = ZEND_FIBER_TRANSFER_FLAG_ERROR;
-
-			ZVAL_OBJ_COPY(&transfer->value, EG(exception));
-		}
-
+	if (UNEXPECTED(EG(exception) && (zend_is_graceful_exit(EG(exception)) || zend_is_unwind_exit(EG(exception))))) {
 		zend_clear_exception();
 	}
 
@@ -671,62 +642,6 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 		if (false == ZEND_COROUTINE_IS_ZOMBIE(&coroutine->coroutine)) {
 			ZEND_ASYNC_DECREASE_COROUTINE_COUNT
 		}
-	}
-
-	if (UNEXPECTED(do_bailout)) {
-		zend_bailout();
-	}
-}
-
-/**
- * Finalizes the coroutine from the scheduler.
- *
- * This function is called when the coroutine is being finalized from the scheduler.
- * It ensures that the coroutine's waker is properly handled and that any exceptions
- * are propagated correctly.
- *
- * @param coroutine The coroutine to finalize.
- */
-void async_coroutine_finalize_from_scheduler(async_coroutine_t *coroutine)
-{
-	zend_async_waker_t *waker = coroutine->coroutine.waker;
-	ZEND_ASSERT(waker != NULL && "Waker must not be NULL when finalizing coroutine from scheduler");
-
-	// Save EG(exception) state
-	zend_object *prev_exception = EG(prev_exception);
-	zend_object *exception = EG(exception);
-
-	EG(exception) = waker->error;
-	EG(prev_exception) = NULL;
-
-	waker->error = NULL;
-	waker->status = ZEND_ASYNC_WAKER_NO_STATUS;
-
-	bool do_bailout = false;
-
-	zend_try
-	{
-		async_coroutine_finalize(NULL, coroutine);
-	}
-	zend_catch
-	{
-		do_bailout = true;
-	}
-	zend_end_try();
-
-	// If an exception occurs during finalization, we need to restore the previous exception state
-	zend_object *new_exception = EG(exception);
-	zend_object *new_prev_exception = EG(prev_exception);
-
-	EG(exception) = exception;
-	EG(prev_exception) = prev_exception;
-
-	if (UNEXPECTED(new_prev_exception)) {
-		async_rethrow_exception(new_prev_exception);
-	}
-
-	if (UNEXPECTED(new_exception)) {
-		async_rethrow_exception(new_exception);
 	}
 
 	if (UNEXPECTED(do_bailout)) {
@@ -1219,7 +1134,6 @@ static zend_object *coroutine_object_create(zend_class_entry *class_entry)
 	event->info = coroutine_info;
 	event->dispose = coroutine_dispose;
 
-	coroutine->flags = ZEND_FIBER_STATUS_INIT;
 	coroutine->coroutine.extended_data = NULL;
 	coroutine->finally_handlers = NULL;
 
@@ -1346,15 +1260,17 @@ static HashTable *async_coroutine_object_gc(zend_object *object, zval **table, i
 		ZEND_HASH_FOREACH_END();
 	}
 
+	async_fiber_context_t *fiber_context = coroutine->fiber_context;
+
 	/* Check if we should traverse execution stack (similar to fibers) */
-	if (coroutine->context.status != ZEND_FIBER_STATUS_SUSPENDED || !coroutine->execute_data) {
+	if (fiber_context != NULL && (fiber_context->context.status != ZEND_FIBER_STATUS_SUSPENDED || !fiber_context->execute_data)) {
 		zend_get_gc_buffer_use(buf, table, num);
 		return NULL;
 	}
 
 	/* Traverse execution stack for suspended coroutines */
 	HashTable *lastSymTable = NULL;
-	zend_execute_data *ex = coroutine->execute_data;
+	zend_execute_data *ex = fiber_context->execute_data;
 	for (; ex; ex = ex->prev_execute_data) {
 		HashTable *symTable;
 		if (ZEND_CALL_INFO(ex) & ZEND_CALL_GENERATOR) {
@@ -1460,58 +1376,4 @@ bool async_coroutine_context_delete(zend_coroutine_t *z_coroutine, zval *key)
 	}
 
 	return coroutine->coroutine.context->unset(coroutine->coroutine.context, key);
-}
-
-/* Fiber context pool implementation */
-
-void async_fiber_pool_init(void)
-{
-	circular_buffer_ctor(&ASYNC_G(fiber_context_pool), ASYNC_FIBER_POOL_SIZE, sizeof(async_fiber_context_t*), NULL);
-}
-
-async_fiber_context_t* async_fiber_pool_acquire(void)
-{
-	async_fiber_context_t *context;
-	
-	if (circular_buffer_pop_ptr(&ASYNC_G(fiber_context_pool), (void**)&context) == SUCCESS) {
-		return context;
-	}
-	
-	context = emalloc(sizeof(async_fiber_context_t));
-	memset(context, 0, sizeof(async_fiber_context_t));
-	
-	if (zend_fiber_init_context(&context->context, zend_async_coroutine_execute, 0) == FAILURE) {
-		efree(context);
-		return NULL;
-	}
-	
-	return context;
-}
-
-void async_fiber_pool_release(async_fiber_context_t *context)
-{
-	if (context == NULL) {
-		return;
-	}
-	
-	context->flags = 0;
-	context->execute_data = NULL;
-	context->vm_stack = NULL;
-	
-	if (circular_buffer_push_ptr(&ASYNC_G(fiber_context_pool), context) == FAILURE) {
-		zend_fiber_destroy(&context->context);
-		efree(context);
-	}
-}
-
-void async_fiber_pool_cleanup(void)
-{
-	async_fiber_context_t *context;
-	
-	while (circular_buffer_pop_ptr(&ASYNC_G(fiber_context_pool), (void**)&context) == SUCCESS) {
-		zend_fiber_destroy(&context->context);
-		efree(context);
-	}
-	
-	circular_buffer_dtor(&ASYNC_G(fiber_context_pool));
 }

@@ -18,10 +18,17 @@
 
 #include <Zend/zend_fibers.h>
 
+/* Fiber context pool configuration */
+#define ASYNC_FIBER_POOL_SIZE 4
+
 BEGIN_EXTERN_C()
 
 void async_scheduler_startup(void);
 void async_scheduler_shutdown(void);
+
+/* Fiber context pool management */
+void async_fiber_pool_init(void);
+void async_fiber_pool_cleanup(void);
 
 void start_graceful_shutdown(void);
 

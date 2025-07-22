@@ -42,7 +42,60 @@ void async_scheduler_shutdown(void)
 {
 }
 
+/* Fiber context pool implementation */
+void async_fiber_pool_init(void)
+{
+	circular_buffer_ctor(&ASYNC_G(fiber_context_pool), ASYNC_FIBER_POOL_SIZE, sizeof(async_fiber_context_t*), NULL);
+}
+
+void async_fiber_pool_cleanup(void)
+{
+	async_fiber_context_t *fiber_context = NULL;
+
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	ZEND_ASYNC_CURRENT_COROUTINE = NULL;
+
+	while (circular_buffer_pop_ptr(&ASYNC_G(fiber_context_pool), (void**)&fiber_context) == SUCCESS) {
+		if (fiber_context != NULL) {
+			zend_fiber_transfer transfer = {
+				.context = &fiber_context->context,
+				.flags = 0
+			};
+
+			zend_fiber_switch_context(&transfer);
+
+			// Transfer the exception to the current coroutine.
+			if (UNEXPECTED(transfer.flags & ZEND_FIBER_TRANSFER_FLAG_ERROR)) {
+				async_rethrow_exception(Z_OBJ(transfer.value));
+				ZVAL_NULL(&transfer.value);
+			}
+		}
+	}
+
+	ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
+
+	circular_buffer_dtor(&ASYNC_G(fiber_context_pool));
+}
+
 static ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer);
+
+static void fiber_context_cleanup(zend_fiber_context *context)
+{
+	async_fiber_context_t *fiber_context = (async_fiber_context_t *) context;
+
+	zend_vm_stack stack = EG(vm_stack);
+
+	// Destroy the VM stack associated with the fiber context.
+	// Except for the first segment, which is located directly in the fiber's stack.
+	while (stack != NULL && stack->prev != NULL) {
+		zend_vm_stack prev = stack->prev;
+		efree(stack);
+		stack = prev;
+	}
+
+	// There's no need to destroy execute_data
+	// because it's also located in the fiber's stack.
+}
 
 async_fiber_context_t* async_fiber_context_create(void)
 {
@@ -54,6 +107,7 @@ async_fiber_context_t* async_fiber_context_create(void)
 	}
 
 	context->flags = ZEND_FIBER_STATUS_INIT;
+	context->context.cleanup = fiber_context_cleanup;
 
 	return context;
 }
@@ -117,6 +171,15 @@ static zend_always_inline void fiber_switch_context(async_coroutine_t *coroutine
 	}
 }
 
+static zend_always_inline void fiber_context_update_before_suspend(void)
+{
+	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (coroutine != NULL && coroutine->fiber_context != NULL) {
+		coroutine->fiber_context->execute_data = EG(current_execute_data);
+	}
+}
+
 /**
  * Transfers the current exception (EG(exception)) to the transfer object.
  *
@@ -164,6 +227,8 @@ static zend_always_inline void switch_to_scheduler(zend_fiber_transfer *transfer
 		transfer->context = &async_coroutine->fiber_context->context;
 		transfer_current_exception(transfer);
 	} else {
+		fiber_context_update_before_suspend();
+		ZEND_ASYNC_CURRENT_COROUTINE = &async_coroutine->coroutine;
 		fiber_switch_context(async_coroutine);
 	}
 }
@@ -218,11 +283,12 @@ static zend_always_inline switch_status execute_next_coroutine(bool is_scheduler
 	if (UNEXPECTED(coroutine == NULL)) {
 		return COROUTINE_NOT_EXISTS;
 	} else if (async_coroutine->fiber_context != NULL) {
-		ZEND_ASYNC_CURRENT_COROUTINE = &async_coroutine->coroutine;
+		fiber_context_update_before_suspend();
+		ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
 		fiber_switch_context(async_coroutine);
 		return COROUTINE_SWITCHED;
 	} else if (is_scheduler) {
-		ZEND_ASYNC_CURRENT_COROUTINE = &async_coroutine->coroutine;
+		ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
 		async_coroutine_execute(async_coroutine);
 		return COROUTINE_FINISHED;
 	} else {
@@ -235,7 +301,8 @@ static zend_always_inline switch_status execute_next_coroutine(bool is_scheduler
 			async_coroutine->fiber_context = async_fiber_context_create();
 		}
 
-		ZEND_ASYNC_CURRENT_COROUTINE = &async_coroutine->coroutine;
+		fiber_context_update_before_suspend();
+		ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
 		fiber_switch_context(async_coroutine);
 		return COROUTINE_SWITCHED;
 	}
@@ -810,7 +877,7 @@ void static zend_always_inline scheduler_next_tick(void)
 	}
 }
 
-void async_scheduler_coroutine_suspend(void)
+void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 {
 	//
 	// Before suspending the coroutine, we save the current exception state.
@@ -861,7 +928,6 @@ void async_scheduler_coroutine_suspend(void)
 			zend_exception_save();
 			async_scheduler_stop_waker_events(coroutine->waker);
 			zend_async_waker_destroy(coroutine);
-			zend_exception_restore();
 			zend_exception_restore();
 			return;
 		}
