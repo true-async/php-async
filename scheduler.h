@@ -26,10 +26,6 @@ BEGIN_EXTERN_C()
 void async_scheduler_startup(void);
 void async_scheduler_shutdown(void);
 
-/* Fiber context pool management */
-void async_fiber_pool_init(void);
-void async_fiber_pool_cleanup(void);
-
 void start_graceful_shutdown(void);
 
 void async_scheduler_launch(void);

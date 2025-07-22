@@ -93,6 +93,7 @@ static void fiber_context_cleanup(zend_fiber_context *context)
 
 	// There's no need to destroy execute_data
 	// because it's also located in the fiber's stack.
+	efree(fiber_context);
 }
 
 async_fiber_context_t* async_fiber_context_create(void)
@@ -110,12 +111,12 @@ async_fiber_context_t* async_fiber_context_create(void)
 	return context;
 }
 
-void async_fiber_pool_init(void)
+static zend_always_inline void fiber_pool_init(void)
 {
 	circular_buffer_ctor(&ASYNC_G(fiber_context_pool), ASYNC_FIBER_POOL_SIZE, sizeof(async_fiber_context_t*), NULL);
 }
 
-void async_fiber_pool_cleanup(void)
+static void fiber_pool_cleanup(void)
 {
 	async_fiber_context_t *fiber_context = NULL;
 
@@ -640,6 +641,12 @@ void async_scheduler_launch(void)
 		return;
 	}
 
+	fiber_pool_init();
+
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		return;
+	}
+
 	//
 	// We convert the current main execution flow into the main coroutine.
 	// The main coroutine differs from others in that it is already started, and its handle is NULL.
@@ -685,11 +692,18 @@ void async_scheduler_launch(void)
 		return;
 	}
 
+	// Create a new Fiber context for the main coroutine.
+	async_fiber_context_t *fiber_context = ecalloc(1, sizeof(async_fiber_context_t));
 	// Copy the main coroutine context
-	main_coroutine->fiber_context->context = *EG(main_fiber_context);
-	zend_fiber_context *fiber_context = &main_coroutine->fiber_context->context;
+	fiber_context->context = *EG(main_fiber_context);
+	fiber_context->execute_data = EG(current_execute_data);
+
 	// Set the current fiber context to the main coroutine context
-	EG(current_fiber_context) = fiber_context;
+	EG(current_fiber_context) = &fiber_context->context;
+	zend_fiber_context *zend_fiber_context = &fiber_context->context;
+
+	// The main coroutine will always own the fiber, unlike other coroutines.
+	main_coroutine->fiber_context = fiber_context;
 
 	zend_fiber_switch_blocked();
 
@@ -721,9 +735,9 @@ void async_scheduler_launch(void)
 	// It's essentially a switch from the zero context to the coroutine context, even though,
 	// logically, both contexts belong to the main execution thread.
 	//
-	fiber_context->status = ZEND_FIBER_STATUS_INIT;
-	zend_observer_fiber_switch_notify(main_transfer->context, fiber_context);
-	fiber_context->status = ZEND_FIBER_STATUS_RUNNING;
+	zend_fiber_context->status = ZEND_FIBER_STATUS_INIT;
+	zend_observer_fiber_switch_notify(main_transfer->context, zend_fiber_context);
+	zend_fiber_context->status = ZEND_FIBER_STATUS_RUNNING;
 
 	ASYNC_G(main_transfer) = main_transfer;
 	ASYNC_G(main_vm_stack) = EG(vm_stack);
@@ -1012,7 +1026,6 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
  */
 ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 {
-	ZEND_ASSERT(Z_TYPE(transfer->value) == IS_NULL && "Initial transfer value to coroutine context must be NULL");
 	ZEND_ASSERT(!transfer->flags && "No flags should be set on initial transfer");
 
 	/* Determine the current error_reporting ini setting. */
@@ -1066,7 +1079,7 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 		EG(stack_limit) = zend_fiber_stack_limit(internal_fiber_context->stack);
 #endif
 
-		if (EXPECTED(is_scheduler)) {
+		if (EXPECTED(false == is_scheduler)) {
 			async_coroutine_execute(coroutine);
 		}
 
