@@ -47,6 +47,9 @@ struct _async_coroutine_s
 
 	/* Basic structure for coroutine. */
 	zend_coroutine_t coroutine;
+	
+	/* Embedded waker (always allocated, no malloc needed) */
+	zend_async_waker_t waker;
 
 	/* Reference to fiber context */
 	async_fiber_context_t *fiber_context;

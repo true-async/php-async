@@ -578,7 +578,7 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 			coroutine_call_finally_handlers(coroutine);
 		}
 
-		zend_async_waker_destroy(&coroutine->coroutine);
+		// Waker is embedded, no need to destroy separately
 
 		if (coroutine->coroutine.extended_dispose != NULL) {
 			const zend_async_coroutine_dispose dispose = coroutine->coroutine.extended_dispose;
@@ -686,7 +686,7 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 	// It will be delivered to the coroutine as an exception.
 	if (UNEXPECTED(error)) {
 		waker->error = NULL;
-		zend_async_waker_destroy(&coroutine->coroutine);
+		// Waker is embedded, no need to destroy separately
 		async_rethrow_exception(error);
 	}
 
@@ -922,9 +922,7 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine,
 		return;
 	}
 
-	if (zend_coroutine->waker == NULL) {
-		zend_async_waker_new(zend_coroutine);
-	}
+	// Waker is now always available (embedded)
 
 	zend_async_waker_t *waker = zend_coroutine->waker;
 
@@ -1073,7 +1071,7 @@ static void coroutine_object_destroy(zend_object *object)
 	}
 
 	if (coroutine->coroutine.waker) {
-		zend_async_waker_destroy(&coroutine->coroutine);
+		// Waker is embedded, no need to destroy separately
 		coroutine->coroutine.waker = NULL;
 	}
 
@@ -1120,6 +1118,9 @@ static zend_object *coroutine_object_create(zend_class_entry *class_entry)
 	ZEND_ASYNC_EVENT_SET_ZEND_OBJ(&coroutine->coroutine.event);
 	ZEND_ASYNC_EVENT_SET_NO_FREE_MEMORY(&coroutine->coroutine.event);
 	ZEND_ASYNC_EVENT_SET_ZEND_OBJ_OFFSET(&coroutine->coroutine.event, XtOffsetOf(async_coroutine_t, std));
+
+	/* Initialize embedded waker */
+	coroutine->coroutine.waker = &coroutine->waker;
 
 	/* Initialize switch handlers */
 	coroutine->coroutine.switch_handlers = NULL;
