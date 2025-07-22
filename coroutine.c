@@ -152,9 +152,9 @@ METHOD(getSuspendFileAndLine)
 
 	array_init(return_value);
 
-	if (coroutine->coroutine.waker && coroutine->coroutine.waker->filename) {
-		add_next_index_str(return_value, zend_string_copy(coroutine->coroutine.waker->filename));
-		add_next_index_long(return_value, coroutine->coroutine.waker->lineno);
+	if (coroutine->waker.filename) {
+		add_next_index_str(return_value, zend_string_copy(coroutine->waker.filename));
+		add_next_index_long(return_value, coroutine->waker.lineno);
 	} else {
 		add_next_index_null(return_value);
 		add_next_index_long(return_value, 0);
@@ -167,9 +167,9 @@ METHOD(getSuspendLocation)
 
 	async_coroutine_t *coroutine = THIS_COROUTINE;
 
-	if (coroutine->coroutine.waker && coroutine->coroutine.waker->filename) {
+	if (coroutine->waker.filename) {
 		RETURN_STR(zend_strpprintf(
-				0, "%s:%d", ZSTR_VAL(coroutine->coroutine.waker->filename), coroutine->coroutine.waker->lineno));
+				0, "%s:%d", ZSTR_VAL(coroutine->waker.filename), coroutine->waker.lineno));
 	} else {
 		RETURN_STRING("unknown");
 	}
@@ -191,7 +191,7 @@ METHOD(isQueued)
 		RETURN_FALSE;
 	}
 
-	RETURN_BOOL(coroutine->coroutine.waker->status == ZEND_ASYNC_WAKER_QUEUED);
+	RETURN_BOOL(coroutine->waker.status == ZEND_ASYNC_WAKER_QUEUED);
 }
 
 METHOD(isRunning)
@@ -812,9 +812,9 @@ static zend_string *coroutine_info(zend_async_event_t *event)
 							   coroutine->std.handle,
 							   coroutine->coroutine.filename ? ZSTR_VAL(coroutine->coroutine.filename) : "",
 							   coroutine->coroutine.lineno,
-							   coroutine->coroutine.waker->filename ? ZSTR_VAL(coroutine->coroutine.waker->filename)
+							   coroutine->waker.filename ? ZSTR_VAL(coroutine->waker.filename)
 																	: "",
-							   coroutine->coroutine.waker->lineno,
+							   coroutine->waker.lineno,
 							   ZSTR_VAL(zend_coroutine_name));
 	} else {
 		return zend_strpprintf(0,
@@ -1027,8 +1027,8 @@ static void coroutine_object_destroy(zend_object *object)
 	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(object);
 
 	ZEND_ASSERT((coroutine->coroutine.waker == NULL ||
-				 (coroutine->coroutine.waker->status == ZEND_ASYNC_WAKER_QUEUED ||
-				  coroutine->coroutine.waker->status == ZEND_ASYNC_WAKER_IGNORED)) &&
+				 (coroutine->waker.status == ZEND_ASYNC_WAKER_QUEUED ||
+				  coroutine->waker.status == ZEND_ASYNC_WAKER_IGNORED)) &&
 				"Coroutine waker must be dequeued before destruction");
 
 	if (coroutine->coroutine.scope != NULL) {
@@ -1209,16 +1209,16 @@ static HashTable *async_coroutine_object_gc(zend_object *object, zval **table, i
 
 	/* Add waker-related ZVALs if present */
 	if (coroutine->coroutine.waker) {
-		zend_get_gc_buffer_add_zval(buf, &coroutine->coroutine.waker->result);
+		zend_get_gc_buffer_add_zval(buf, &coroutine->waker.result);
 
-		if (coroutine->coroutine.waker->error) {
-			zend_get_gc_buffer_add_obj(buf, coroutine->coroutine.waker->error);
+		if (coroutine->waker.error) {
+			zend_get_gc_buffer_add_obj(buf, coroutine->waker.error);
 		}
 
 		/* Add events HashTable contents */
 		zval *event_val;
 		zval zval_object;
-		ZEND_HASH_FOREACH_VAL(&coroutine->coroutine.waker->events, event_val)
+		ZEND_HASH_FOREACH_VAL(&coroutine->waker.events, event_val)
 		{
 
 			zend_async_event_t *event = (zend_async_event_t *) Z_PTR_P(event_val);
@@ -1231,8 +1231,8 @@ static HashTable *async_coroutine_object_gc(zend_object *object, zval **table, i
 		ZEND_HASH_FOREACH_END();
 
 		/* Add triggered events if present */
-		if (coroutine->coroutine.waker->triggered_events) {
-			ZEND_HASH_FOREACH_VAL(coroutine->coroutine.waker->triggered_events, event_val)
+		if (coroutine->waker.triggered_events) {
+			ZEND_HASH_FOREACH_VAL(coroutine->waker.triggered_events, event_val)
 			{
 				zend_get_gc_buffer_add_zval(buf, event_val);
 			}
