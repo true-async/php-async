@@ -335,7 +335,10 @@ static zend_always_inline switch_status execute_next_coroutine(bool is_scheduler
 		ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
 		fiber_switch_context(async_coroutine);
 		return COROUTINE_SWITCHED;
-	} else if (is_scheduler) {
+	} else if (false == is_scheduler || async_coroutine->waker.status == ZEND_ASYNC_WAKER_IGNORED) {
+		// Note that async_coroutine_execute is also called in cases
+		// where the coroutine was never executed and was canceled.
+		// In this case, no context switch occurs, so this code executes regardless of which fiber it's running in.
 		ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
 		async_coroutine_execute(async_coroutine);
 		return COROUTINE_FINISHED;
@@ -585,7 +588,7 @@ static void async_scheduler_dtor(void)
 /// WAKER EVENT MANAGEMENT
 ///////////////////////////////////////////////////////////
 
-void async_scheduler_start_waker_events(zend_async_waker_t *waker)
+static zend_always_inline void start_waker_events(zend_async_waker_t *waker)
 {
 	ZEND_ASSERT(waker != NULL && "Waker is NULL in async_scheduler_start_waker_events");
 
@@ -598,7 +601,7 @@ void async_scheduler_start_waker_events(zend_async_waker_t *waker)
 	ZEND_HASH_FOREACH_END();
 }
 
-void async_scheduler_stop_waker_events(zend_async_waker_t *waker)
+static zend_always_inline void stop_waker_events(zend_async_waker_t *waker)
 {
 	ZEND_ASSERT(waker != NULL && "Waker is NULL in async_scheduler_stop_waker_events");
 
@@ -766,6 +769,9 @@ void async_scheduler_launch(void)
 /**
  * A special function that is called when the main coroutine permanently loses the execution flow.
  * Exiting this function means that the entire PHP script has finished.
+ *
+ * This function is needed because the main coroutine runs differently from the others
+ * — its logic cycle is broken.
  */
 void async_scheduler_main_coroutine_suspend(void)
 {
@@ -782,6 +788,8 @@ void async_scheduler_main_coroutine_suspend(void)
 	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
 	zend_fiber_transfer *transfer = ASYNC_G(main_transfer);
 	zend_fiber_context *fiber_context = &coroutine->fiber_context->context;
+	async_fiber_context_t *async_fiber_context = coroutine->fiber_context;
+	coroutine->fiber_context = NULL;
 
 	zend_try
 	{
@@ -801,6 +809,9 @@ void async_scheduler_main_coroutine_suspend(void)
 		// we must normalize the state of EG(current_fiber_context)
 		// so that on the next switch we return to this exact point.
 		EG(current_fiber_context) = transfer->context;
+
+		// Destroy main Fiber context.
+		efree(async_fiber_context);
 
 		switch_to_scheduler(NULL);
 	}
@@ -889,7 +900,7 @@ void async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine)
 		//
 		// We stop all events as soon as the coroutine is ready to run.
 		//
-		async_scheduler_stop_waker_events(coroutine->waker);
+		stop_waker_events(coroutine->waker);
 	}
 }
 
@@ -974,7 +985,7 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 			return;
 		}
 
-		async_scheduler_start_waker_events(coroutine->waker);
+		start_waker_events(coroutine->waker);
 
 		// If an exception occurs during the startup of the Waker object,
 		// that exception belongs to the current coroutine,
@@ -982,7 +993,7 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 		if (UNEXPECTED(EG(exception))) {
 			// Before returning, We are required to properly destroy the Waker object.
 			zend_exception_save();
-			async_scheduler_stop_waker_events(coroutine->waker);
+			stop_waker_events(coroutine->waker);
 			zend_async_waker_destroy(coroutine);
 			zend_exception_restore();
 			return;
