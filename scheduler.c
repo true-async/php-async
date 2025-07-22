@@ -299,7 +299,7 @@ static zend_always_inline async_fiber_context_t *fiber_context_allocate(void)
 {
 	async_fiber_context_t *fiber_context = NULL;
 
-	circular_buffer_pop_ptr(&ASYNC_G(coroutine_queue), (void**)&fiber_context);
+	circular_buffer_pop_ptr(&ASYNC_G(fiber_context_pool), (void**)&fiber_context);
 
 	if (fiber_context == NULL) {
 		fiber_context = async_fiber_context_create();
@@ -322,11 +322,14 @@ static zend_always_inline async_fiber_context_t *fiber_context_allocate(void)
 static zend_always_inline switch_status execute_next_coroutine(bool is_scheduler)
 {
 	async_coroutine_t *async_coroutine = next_coroutine();
+
+	if (UNEXPECTED(async_coroutine == NULL)) {
+		return COROUTINE_NOT_EXISTS;
+	}
+
 	zend_coroutine_t *coroutine = &async_coroutine->coroutine;
 
-	if (UNEXPECTED(coroutine == NULL)) {
-		return COROUTINE_NOT_EXISTS;
-	} else if (async_coroutine->fiber_context != NULL) {
+	if (async_coroutine->fiber_context != NULL) {
 		fiber_context_update_before_suspend();
 		ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
 		fiber_switch_context(async_coroutine);
@@ -354,8 +357,9 @@ static zend_always_inline switch_status execute_next_coroutine(bool is_scheduler
 
 zend_always_inline static void execute_queued_coroutines(void)
 {
+	// @todo: need to refactoring
 	while (false == circular_buffer_is_empty(&ASYNC_G(coroutine_queue))) {
-		execute_next_coroutine(NULL);
+		execute_next_coroutine(false);
 
 		if (UNEXPECTED(EG(exception))) {
 			zend_exception_save();
@@ -879,7 +883,7 @@ void async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine)
  * Implements a single tick of the Scheduler
  * and is called from the suspend operation while the context switch has not yet occurred.
  */
-void static zend_always_inline scheduler_next_tick(void)
+static zend_always_inline void scheduler_next_tick(void)
 {
 	zend_fiber_transfer *transfer = NULL;
 	ZEND_ASYNC_SCHEDULER_CONTEXT = true;
