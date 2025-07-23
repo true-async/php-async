@@ -1157,6 +1157,13 @@ void async_scheduler_coroutine_suspend(void)
 		ZEND_COROUTINE_ENTER(coroutine);
 	}
 
+	// Rethrow exception if waker has it
+	if (coroutine->waker->error != NULL) {
+		zend_object *exception = coroutine->waker->error;
+		coroutine->waker->error = NULL;
+		async_rethrow_exception(exception);
+	}
+
 	zend_exception_restore();
 }
 
