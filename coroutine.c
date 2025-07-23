@@ -402,7 +402,7 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 		async_rethrow_exception(error);
 	}
 
-	zend_async_waker_destroy(&coroutine->coroutine);
+	zend_async_waker_clean(&coroutine->coroutine);
 
 	zend_try
 	{

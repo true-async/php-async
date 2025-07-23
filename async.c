@@ -288,7 +288,7 @@ PHP_FUNCTION(Async_await)
 		ZVAL_COPY(return_value, &coroutine->waker->result);
 	}
 
-	zend_async_waker_destroy(coroutine);
+	zend_async_waker_clean(coroutine);
 }
 
 PHP_FUNCTION(Async_awaitAnyOrFail)
@@ -609,7 +609,7 @@ PHP_FUNCTION(Async_delay)
 
 	ZEND_ASYNC_SUSPEND();
 
-	zend_async_waker_destroy(coroutine);
+	zend_async_waker_clean(coroutine);
 }
 
 PHP_FUNCTION(Async_timeout)

@@ -1111,7 +1111,7 @@ void async_scheduler_coroutine_suspend(void)
 		// otherwise, it's a potential deadlock.
 		if (coroutine->waker->events.nNumOfElements == 0 && not_in_queue) {
 			async_throw_error("The coroutine has no events to wait for");
-			zend_async_waker_destroy(coroutine);
+			zend_async_waker_clean(coroutine);
 			zend_exception_restore();
 			return;
 		}
@@ -1125,7 +1125,7 @@ void async_scheduler_coroutine_suspend(void)
 			// Before returning, We are required to properly destroy the Waker object.
 			zend_exception_save();
 			stop_waker_events(coroutine->waker);
-			zend_async_waker_destroy(coroutine);
+			zend_async_waker_clean(coroutine);
 			zend_exception_restore();
 			return;
 		}

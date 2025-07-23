@@ -2085,7 +2085,7 @@ static int libuv_exec(zend_async_exec_mode exec_mode,
 	}
 
 	ZEND_ASYNC_SUSPEND();
-	zend_async_waker_destroy(coroutine);
+	zend_async_waker_clean(coroutine);
 
 	if (UNEXPECTED(EG(exception))) {
 		return -1;
