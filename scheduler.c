@@ -345,6 +345,11 @@ static zend_always_inline switch_status execute_next_coroutine(void)
 
 	zend_coroutine_t *coroutine = &async_coroutine->coroutine;
 
+	// If the current coroutine is the same as the one we are trying to execute,
+	if (UNEXPECTED(coroutine == ZEND_ASYNC_CURRENT_COROUTINE)) {
+		return COROUTINE_SWITCHED;
+	}
+
 	if (async_coroutine->waker.status == ZEND_ASYNC_WAKER_IGNORED) {
 		ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
 		async_coroutine_execute(async_coroutine);
@@ -438,6 +443,7 @@ next_coroutine:
 		// Note that async_coroutine_execute is also called in cases
 		// where the coroutine was never executed and was canceled.
 		// In this case, no context switch occurs, so this code executes regardless of which fiber it's running in.
+		async_coroutine->fiber_context = fiber_context;
 		ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
 		async_coroutine_execute(async_coroutine);
 		return COROUTINE_FINISHED;
@@ -1014,10 +1020,10 @@ void async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine)
 			coroutine->waker = waker;
 		}
 
-		coroutine->waker->status = ZEND_ASYNC_WAKER_QUEUED;
-
 		if (UNEXPECTED(circular_buffer_push_ptr_with_resize(&ASYNC_G(coroutine_queue), coroutine) == FAILURE)) {
 			async_throw_error("Failed to enqueue coroutine");
+		} else {
+			coroutine->waker->status = ZEND_ASYNC_WAKER_QUEUED;
 		}
 
 		//
@@ -1067,7 +1073,7 @@ static zend_always_inline void scheduler_next_tick(void)
 	}
 }
 
-void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
+void async_scheduler_coroutine_suspend(void)
 {
 	//
 	// Before suspending the coroutine, we save the current exception state.
@@ -1098,10 +1104,12 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 	//
 	if (coroutine != NULL && coroutine->waker != NULL) {
 
+		const bool not_in_queue = ZEND_ASYNC_WAKER_NOT_IN_QUEUE(coroutine->waker);
+
 		// Let's check that the coroutine has something to wait for;
 		// If a coroutine isn't waiting for anything, it must be in the execution queue.
 		// otherwise, it's a potential deadlock.
-		if (coroutine->waker->events.nNumOfElements == 0 && false == ZEND_ASYNC_WAKER_IN_QUEUE(coroutine->waker)) {
+		if (coroutine->waker->events.nNumOfElements == 0 && not_in_queue) {
 			async_throw_error("The coroutine has no events to wait for");
 			zend_async_waker_destroy(coroutine);
 			zend_exception_restore();
@@ -1122,7 +1130,9 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 			return;
 		}
 
-		coroutine->waker->status = ZEND_ASYNC_WAKER_WAITING;
+		if (not_in_queue) {
+			coroutine->waker->status = ZEND_ASYNC_WAKER_WAITING;
+		}
 	}
 
 	if (UNEXPECTED(coroutine->switch_handlers)) {
@@ -1131,11 +1141,17 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 	}
 
 	// Define current filename and line number for the coroutine suspend.
-	if (coroutine->waker != NULL) {
+	if (EXPECTED(coroutine->waker)) {
 		zend_apply_current_filename_and_line(&coroutine->waker->filename, &coroutine->waker->lineno);
 	}
 
 	scheduler_next_tick();
+
+	ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
+
+	if (EXPECTED(coroutine->waker->status == ZEND_ASYNC_WAKER_QUEUED)) {
+		coroutine->waker->status = ZEND_ASYNC_WAKER_RESULT;
+	}
 
 	if (UNEXPECTED(coroutine->switch_handlers)) {
 		ZEND_COROUTINE_ENTER(coroutine);
@@ -1262,13 +1278,14 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 				// and then switch to the scheduler.
 				if (return_fiber_to_pool(fiber_context)) {
 					switch_to_scheduler(NULL);
-					zend_coroutine_t * next_coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+					async_coroutine_t *next_coroutine = (async_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
 
 					if (UNEXPECTED(next_coroutine == NULL)) {
 						break;
 					}
 
-					async_coroutine_execute((async_coroutine_t *) next_coroutine);
+					next_coroutine->fiber_context = fiber_context;
+					async_coroutine_execute(next_coroutine);
 				} else {
 					break;
 				}

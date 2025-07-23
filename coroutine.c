@@ -399,9 +399,10 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 	// It will be delivered to the coroutine as an exception.
 	if (UNEXPECTED(error)) {
 		waker->error = NULL;
-		zend_async_waker_destroy(&coroutine->coroutine);
 		async_rethrow_exception(error);
 	}
+
+	zend_async_waker_destroy(&coroutine->coroutine);
 
 	zend_try
 	{
@@ -617,7 +618,7 @@ void async_coroutine_suspend(const bool from_main)
 		return;
 	}
 
-	async_scheduler_coroutine_suspend(NULL);
+	async_scheduler_coroutine_suspend();
 }
 
 void async_coroutine_resume(zend_coroutine_t *coroutine, zend_object *error, const bool transfer_error)
