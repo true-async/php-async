@@ -317,10 +317,10 @@ static zend_always_inline async_fiber_context_t *fiber_context_allocate(void)
  * During a suspend operation, when the Fiber is occupied by the current
  * coroutine but needs to switch to another Fiber with a new one.
  *
- * @param is_scheduler Indicates if the scheduler is executing the coroutine.
+ * @param can_share_fiber Allows using the current fiber to run the coroutine.
  * @return switch_status - status of the coroutine switching.
  */
-static zend_always_inline switch_status execute_next_coroutine(bool is_scheduler)
+static zend_always_inline switch_status execute_next_coroutine(bool can_share_fiber)
 {
 	async_coroutine_t *async_coroutine = next_coroutine();
 
@@ -335,7 +335,7 @@ static zend_always_inline switch_status execute_next_coroutine(bool is_scheduler
 		ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
 		fiber_switch_context(async_coroutine);
 		return COROUTINE_SWITCHED;
-	} else if (false == is_scheduler || async_coroutine->waker.status == ZEND_ASYNC_WAKER_IGNORED) {
+	} else if (can_share_fiber || async_coroutine->waker.status == ZEND_ASYNC_WAKER_IGNORED) {
 		// Note that async_coroutine_execute is also called in cases
 		// where the coroutine was never executed and was canceled.
 		// In this case, no context switch occurs, so this code executes regardless of which fiber it's running in.
@@ -755,6 +755,24 @@ void async_scheduler_launch(void)
 		return;
 	}
 
+	scope = ZEND_ASYNC_NEW_SCOPE(NULL);
+	if (UNEXPECTED(EG(exception))) {
+		return;
+	}
+
+	ZVAL_UNDEF(&options);
+	scope->before_coroutine_enqueue(scheduler_coroutine, scope, &options);
+	zval_dtor(&options);
+
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		return;
+	}
+
+	scope->after_coroutine_enqueue(scheduler_coroutine, scope);
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		return;
+	}
+
 	scheduler_coroutine->internal_entry = NULL;
 	((async_coroutine_t *) scheduler_coroutine)->fiber_context = async_fiber_context_create();
 	ZEND_ASYNC_SCHEDULER = scheduler_coroutine;
@@ -936,7 +954,7 @@ static zend_always_inline void scheduler_next_tick(void)
 		// The execute_next_coroutine() may fail to transfer control to another coroutine for various reasons.
 		// In that case, it returns false, and we are then required to yield control to the scheduler.
 		//
-		if (COROUTINE_SWITCHED != execute_next_coroutine(transfer) && EG(exception) == NULL) {
+		if (COROUTINE_SWITCHED != execute_next_coroutine(false) && EG(exception) == NULL) {
 			switch_to_scheduler(transfer);
 		}
 	} else {
@@ -998,6 +1016,8 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 			zend_exception_restore();
 			return;
 		}
+
+		coroutine->waker->status = ZEND_ASYNC_WAKER_WAITING;
 	}
 
 	if (UNEXPECTED(coroutine->switch_handlers)) {
@@ -1116,7 +1136,7 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 			ZEND_ASYNC_SCHEDULER_CONTEXT = false;
 
 			if (EXPECTED(has_next_coroutine)) {
-				const switch_status status = execute_next_coroutine(is_scheduler);
+				const switch_status status = execute_next_coroutine(false == is_scheduler);
 				was_executed = status != COROUTINE_NOT_EXISTS;
 			} else if (is_scheduler) {
 				// The scheduler continues running even if there are no coroutines in the queue to execute.

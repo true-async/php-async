@@ -102,8 +102,7 @@ static void coroutine_object_destroy(zend_object *object)
 {
 	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(object);
 
-	ZEND_ASSERT((coroutine->waker.status == ZEND_ASYNC_WAKER_QUEUED ||
-				 coroutine->waker.status == ZEND_ASYNC_WAKER_IGNORED) &&
+	ZEND_ASSERT(ZEND_ASYNC_WAKER_NOT_IN_QUEUE(&coroutine->waker) &&
 				"Coroutine waker must be dequeued before destruction");
 
 	if (coroutine->coroutine.scope != NULL) {
