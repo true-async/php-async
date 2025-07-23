@@ -288,7 +288,7 @@ static HashTable *async_coroutine_object_gc(zend_object *object, zval **table, i
 	async_fiber_context_t *fiber_context = coroutine->fiber_context;
 
 	/* Check if we should traverse execution stack (similar to fibers) */
-	if (fiber_context != NULL && (fiber_context->context.status != ZEND_FIBER_STATUS_SUSPENDED || !fiber_context->execute_data)) {
+	if (fiber_context == NULL || (fiber_context->context.status != ZEND_FIBER_STATUS_SUSPENDED || !fiber_context->execute_data)) {
 		zend_get_gc_buffer_use(buf, table, num);
 		return NULL;
 	}
