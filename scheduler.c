@@ -615,6 +615,12 @@ static void async_scheduler_dtor(void)
 		async_warning("%u deferred coroutines were not executed", circular_buffer_count(&ASYNC_G(coroutine_queue)));
 	}
 
+	// Destroy the scheduler coroutine at the end.
+	async_coroutine_t *async_coroutine = (async_coroutine_t *) ZEND_ASYNC_SCHEDULER;
+	ZEND_ASYNC_SCHEDULER = NULL;
+	async_coroutine->fiber_context = NULL;
+	OBJ_RELEASE(&async_coroutine->std);
+
 	zval_c_buffer_cleanup(&ASYNC_G(coroutine_queue));
 	zval_c_buffer_cleanup(&ASYNC_G(microtasks));
 
@@ -1259,6 +1265,8 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 
 	// It's the scheduler fiber, so we must finalize it.
 	ZEND_ASSERT(ZEND_ASYNC_REACTOR_LOOP_ALIVE() == false && "The event loop must be stopped");
+
+	fiber_pool_cleanup();
 
 	zend_object *exit_exception = ZEND_ASYNC_EXIT_EXCEPTION;
 
