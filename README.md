@@ -41,7 +41,7 @@ docker build -t true-async-php .
 docker run -it true-async-php bash
 
 # Check TrueAsync module
-docker run --rm true-async-php php -m | grep TrueAsync
+docker run --rm true-async-php php -m | grep true_async
 ```
 
 ### Requirements
