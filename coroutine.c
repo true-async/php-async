@@ -72,9 +72,7 @@ static zend_object *coroutine_object_create(zend_class_entry *class_entry)
 	coroutine->coroutine.waker = &coroutine->waker;
 	
 	/* Initialize waker contents (memory is already zeroed by zend_object_alloc) */
-	coroutine->waker.status = ZEND_ASYNC_WAKER_NO_STATUS;
-	ZVAL_UNDEF(&coroutine->waker.result);
-	zend_hash_init(&coroutine->waker.events, 2, NULL, NULL, 0);
+	zend_async_waker_init(&coroutine->waker);
 
 	/* Initialize switch handlers */
 	coroutine->coroutine.switch_handlers = NULL;
