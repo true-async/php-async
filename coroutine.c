@@ -371,6 +371,7 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 		if (ZEND_COROUTINE_IS_CANCELLED(&coroutine->coroutine)) {
 			zend_try
 			{
+				waker->status = ZEND_ASYNC_WAKER_NO_STATUS;
 				async_coroutine_finalize(coroutine);
 			}
 			zend_catch
