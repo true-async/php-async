@@ -700,8 +700,7 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine,
 		return;
 	}
 
-	zend_async_waker_new(zend_coroutine);
-	zend_async_waker_t *waker = zend_coroutine->waker;
+	zend_async_waker_t *waker = zend_async_waker_define(zend_coroutine);
 
 	const bool is_error_null = (error == NULL);
 
