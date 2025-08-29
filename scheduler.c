@@ -408,7 +408,14 @@ next_coroutine:
 		return COROUTINE_IGNORED;
 	}
 
-	if (transfer != NULL && async_coroutine->fiber_context != NULL) {
+	if (transfer != NULL && async_coroutine->fiber_context == fiber_context) {
+
+		// Case: The current coroutine is assigned to this fiber.
+		// Just execute it without switching.
+		async_coroutine_execute(async_coroutine);
+		return COROUTINE_FINISHED;
+
+	} else if (transfer != NULL && async_coroutine->fiber_context != NULL) {
 
 		// Case: the current fiber has no coroutine to execute,
 		// but the next coroutine in the queue is already in use.
