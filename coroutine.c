@@ -368,10 +368,23 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 	zend_async_waker_t *waker = coroutine->coroutine.waker;
 
 	if (UNEXPECTED(waker == NULL || waker->status == ZEND_ASYNC_WAKER_IGNORED)) {
+
+		ZEND_ASSERT(coroutine->fiber_context == NULL && "Coroutine fiber context must be NULL if waker is NULL or IGNORED");
+
 		if (ZEND_COROUTINE_IS_CANCELLED(&coroutine->coroutine)) {
 			zend_try
 			{
-				waker->status = ZEND_ASYNC_WAKER_NO_STATUS;
+				if (EXPECTED(waker != NULL)) {
+					waker->status = ZEND_ASYNC_WAKER_RESULT;
+					zend_object *error = waker->error;
+
+					// Transfer error from the Waker to current context if it exists.
+					if (UNEXPECTED(error)) {
+						waker->error = NULL;
+						async_rethrow_exception(error);
+					}
+				}
+
 				async_coroutine_finalize(coroutine);
 			}
 			zend_catch
@@ -402,6 +415,8 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 	}
 
 	zend_async_waker_clean(&coroutine->coroutine);
+
+	ZEND_COROUTINE_SET_STARTED(&coroutine->coroutine);
 
 	zend_try
 	{
