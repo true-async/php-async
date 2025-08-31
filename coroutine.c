@@ -619,6 +619,13 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 	}
 }
 
+/**
+ * The function suspends the execution of the coroutine and triggers a switch to another one.
+ * After calling this function, you must properly clean up the coroutine waker object
+ * (example zend_async_waker_clean).
+ *
+ * @param from_main For main coroutine
+ */
 void async_coroutine_suspend(const bool from_main)
 {
 	if (UNEXPECTED(from_main)) {

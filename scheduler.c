@@ -28,9 +28,9 @@
 /// STATIC DECLARATIONS AND CONSTANTS
 ///////////////////////////////////////////////////////////
 
-#define FIBER_DEBUG_LOG_ON true
-#define FIBER_DEBUG_SWITCH true
-#ifdef FIBER_DEBUG_LOG_ON
+#define FIBER_DEBUG_LOG_ON false
+#define FIBER_DEBUG_SWITCH false
+#if FIBER_DEBUG_LOG_ON
 #  define FIBER_DEBUG(...) fprintf(stdout, __VA_ARGS__)
 #else
 #  define FIBER_DEBUG(...) ((void)0)

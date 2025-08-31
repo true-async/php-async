@@ -824,6 +824,7 @@ static void async_cancel_awaited_futures(async_await_context_t *await_context, H
 	}
 
 	ZEND_ASYNC_SUSPEND();
+	zend_async_waker_clean(ZEND_ASYNC_CURRENT_COROUTINE);
 }
 
 /**
@@ -1044,6 +1045,7 @@ void async_await_futures(zval *iterable,
 
 	if (coroutine->waker->events.nNumOfElements > 0) {
 		ZEND_ASYNC_SUSPEND();
+		zend_async_waker_clean(ZEND_ASYNC_CURRENT_COROUTINE);
 	}
 
 	// If the await on futures has completed and
