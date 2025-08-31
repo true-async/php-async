@@ -244,7 +244,11 @@ static zend_always_inline void fiber_switch_context(async_coroutine_t *coroutine
 	zend_fiber_context *from = EG(current_fiber_context);
 	zend_fiber_context *to = &coroutine->fiber_context->context;
 
-	FIBER_DEBUG("Switch fiber: %p => %p for coroutine: %p\n", from, to, coroutine);
+	if (ZEND_ASYNC_SCHEDULER == &coroutine->coroutine) {
+		FIBER_DEBUG("Switch fiber: %p => %p for scheduler: %p\n", from, to, coroutine);
+	} else {
+		FIBER_DEBUG("Switch fiber: %p => %p for coroutine: %p\n", from, to, coroutine);
+	}
 #endif
 
 	zend_fiber_switch_context(&transfer);
