@@ -28,6 +28,14 @@
 /// STATIC DECLARATIONS AND CONSTANTS
 ///////////////////////////////////////////////////////////
 
+#define FIBER_DEBUG_LOG_ON true
+#define FIBER_DEBUG_SWITCH true
+#ifdef FIBER_DEBUG_LOG_ON
+#  define FIBER_DEBUG(...) fprintf(stdout, __VA_ARGS__)
+#else
+#  define FIBER_DEBUG(...) ((void)0)
+#endif
+
 static zend_function root_function = { ZEND_INTERNAL_FUNCTION };
 
 typedef enum
@@ -232,6 +240,13 @@ static zend_always_inline void fiber_switch_context(async_coroutine_t *coroutine
 		.flags = 0
 	};
 
+#if FIBER_DEBUG_SWITCH
+	zend_fiber_context *from = EG(current_fiber_context);
+	zend_fiber_context *to = &coroutine->fiber_context->context;
+
+	FIBER_DEBUG("Switch fiber: %p => %p for coroutine: %p\n", from, to, coroutine);
+#endif
+
 	zend_fiber_switch_context(&transfer);
 
 	/* Forward bailout into current coroutine. */
@@ -352,6 +367,7 @@ static zend_always_inline switch_status execute_next_coroutine(void)
 
 	if (async_coroutine->waker.status == ZEND_ASYNC_WAKER_IGNORED) {
 		ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
+		FIBER_DEBUG("Execute coroutine %p in Fiber %p\n", coroutine, EG(current_fiber_context));
 		async_coroutine_execute(async_coroutine);
 		ZEND_ASYNC_CURRENT_COROUTINE = NULL;
 		return COROUTINE_IGNORED;
@@ -389,6 +405,9 @@ static zend_always_inline switch_status execute_next_coroutine(void)
  * @param fiber_context The current Fiber context if available.
  * @return switch_status - status of the coroutine switching.
  */
+
+#define AVAILABLE_FOR_COROUTINE (transfer != NULL)
+
 static zend_always_inline switch_status execute_next_coroutine_from_fiber(zend_fiber_transfer *transfer, async_fiber_context_t *fiber_context)
 {
 	async_coroutine_t *async_coroutine = next_coroutine();
@@ -402,20 +421,25 @@ static zend_always_inline switch_status execute_next_coroutine_from_fiber(zend_f
 next_coroutine:
 
 	if (async_coroutine->waker.status == ZEND_ASYNC_WAKER_IGNORED) {
+		// Case: the coroutine in queue was cancelled.
+		// In this case, only the coroutine finalization process needs to be executed,
+		// and it can be done immediately.
 		ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
+		FIBER_DEBUG("Execute coroutine %p in Fiber %p\n", coroutine, EG(current_fiber_context));
 		async_coroutine_execute(async_coroutine);
 		ZEND_ASYNC_CURRENT_COROUTINE = NULL;
 		return COROUTINE_IGNORED;
 	}
 
-	if (transfer != NULL && async_coroutine->fiber_context == fiber_context) {
+	if (AVAILABLE_FOR_COROUTINE && async_coroutine->fiber_context == fiber_context) {
 
 		// Case: The current coroutine is assigned to this fiber.
 		// Just execute it without switching.
+		FIBER_DEBUG("Execute coroutine %p in Fiber %p\n", coroutine, EG(current_fiber_context));
 		async_coroutine_execute(async_coroutine);
 		return COROUTINE_FINISHED;
 
-	} else if (transfer != NULL && async_coroutine->fiber_context != NULL) {
+	} else if (AVAILABLE_FOR_COROUTINE && async_coroutine->fiber_context != NULL) {
 
 		// Case: the current fiber has no coroutine to execute,
 		// but the next coroutine in the queue is already in use.
@@ -446,16 +470,18 @@ next_coroutine:
 		ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
 		fiber_switch_context(async_coroutine);
 		return COROUTINE_SWITCHED;
-	} else if (transfer != NULL) {
+	} else if (AVAILABLE_FOR_COROUTINE && async_coroutine->fiber_context == NULL) {
 		// Note that async_coroutine_execute is also called in cases
 		// where the coroutine was never executed and was canceled.
 		// In this case, no context switch occurs, so this code executes regardless of which fiber it's running in.
 		async_coroutine->fiber_context = fiber_context;
 		ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
+		FIBER_DEBUG("Execute coroutine %p in Fiber %p\n", coroutine, EG(current_fiber_context));
 		async_coroutine_execute(async_coroutine);
 		return COROUTINE_FINISHED;
 	} else {
 
+		// (AVAILABLE_FOR_COROUTINE == false)
 		// The coroutine doesn't have its own Fiber,
 		// so we first need to allocate a Fiber context for it and then start it.
 		circular_buffer_pop_ptr(&ASYNC_G(fiber_context_pool), (void**)&async_coroutine->fiber_context);
@@ -1248,6 +1274,7 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 #endif
 
 		if (EXPECTED(false == is_scheduler)) {
+			FIBER_DEBUG("Execute primary coroutine %p in Fiber %p\n", coroutine, EG(current_fiber_context));
 			async_coroutine_execute(coroutine);
 		}
 
@@ -1299,6 +1326,7 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 					}
 
 					next_coroutine->fiber_context = fiber_context;
+					FIBER_DEBUG("Execute coroutine %p in Fiber %p\n", next_coroutine, EG(current_fiber_context));
 					async_coroutine_execute(next_coroutine);
 				} else {
 					break;
