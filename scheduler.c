@@ -456,7 +456,7 @@ next_coroutine:
 		// Case: the current fiber has no coroutine to execute,
 		// but the next coroutine in the queue is already in use.
 		if (return_fiber_to_pool(fiber_context)) {
-			// fiber_context_update_before_suspend();
+			fiber_context_update_before_suspend();
 			ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
 			fiber_switch_context(async_coroutine);
 

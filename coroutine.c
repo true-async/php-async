@@ -38,7 +38,13 @@
 
 zend_class_entry *async_ce_coroutine = NULL;
 
-static zend_function coroutine_root_function = { ZEND_INTERNAL_FUNCTION };
+#if defined(__GNUC__) || defined(__clang__)
+#  define UNUSED __attribute__((unused))
+#else
+#  define UNUSED
+#endif
+
+static zend_function UNUSED coroutine_root_function = { ZEND_INTERNAL_FUNCTION };
 static zend_object_handlers coroutine_handlers;
 
 // Forward declarations for internal functions
@@ -393,12 +399,22 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 		}
 
 		coroutine->coroutine.event.dispose(&coroutine->coroutine.event);
+
+		if(EXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == &coroutine->coroutine)) {
+			ZEND_ASYNC_CURRENT_COROUTINE = NULL;
+		}
+
 		return;
 	}
 
 	if (UNEXPECTED(waker->status == ZEND_ASYNC_WAKER_WAITING)) {
 		zend_error(E_ERROR, "Attempt to resume a coroutine that has not been resolved");
 		coroutine->coroutine.event.dispose(&coroutine->coroutine.event);
+
+		if(EXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == &coroutine->coroutine)) {
+			ZEND_ASYNC_CURRENT_COROUTINE = NULL;
+		}
+
 		return;
 	}
 
@@ -448,6 +464,10 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 		is_bailout = true;
 	}
 	zend_end_try();
+
+	if(EXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == &coroutine->coroutine)) {
+		ZEND_ASYNC_CURRENT_COROUTINE = NULL;
+	}
 
 	if (UNEXPECTED(should_start_graceful_shutdown)) {
 		zend_try
