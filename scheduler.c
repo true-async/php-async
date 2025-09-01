@@ -139,6 +139,9 @@ static void fiber_pool_cleanup(void)
 				.flags = 0
 			};
 
+			// If the current coroutine is NULL, this state explicitly tells the fiber to stop execution.
+			// We set this value each time, since the switch_to_scheduler function may change it.
+			ZEND_ASYNC_CURRENT_COROUTINE = NULL;
 			zend_fiber_switch_context(&transfer);
 
 			// Transfer the exception to the current coroutine.
