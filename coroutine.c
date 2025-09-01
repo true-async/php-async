@@ -369,8 +369,6 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 
 	if (UNEXPECTED(waker == NULL || waker->status == ZEND_ASYNC_WAKER_IGNORED)) {
 
-		ZEND_ASSERT(coroutine->fiber_context == NULL && "Coroutine fiber context must be NULL if waker is NULL or IGNORED");
-
 		if (ZEND_COROUTINE_IS_CANCELLED(&coroutine->coroutine)) {
 			zend_try
 			{

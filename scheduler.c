@@ -291,6 +291,7 @@ static zend_always_inline void switch_to_scheduler(zend_fiber_transfer *transfer
 		transfer->flags &= ~ZEND_FIBER_TRANSFER_FLAG_BAILOUT;
 		transfer->context = &async_coroutine->fiber_context->context;
 		transfer_current_exception(transfer);
+		ZEND_ASYNC_CURRENT_COROUTINE = &async_coroutine->coroutine;
 	} else {
 		fiber_context_update_before_suspend();
 		ZEND_ASYNC_CURRENT_COROUTINE = &async_coroutine->coroutine;
