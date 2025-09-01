@@ -582,7 +582,13 @@ static bool resolve_deadlocks(void)
 /// SHUTDOWN AND CLEANUP
 ///////////////////////////////////////////////////////////
 
-static void dispose_coroutines(void)
+#if defined(__GNUC__) || defined(__clang__)
+#  define UNUSED __attribute__((unused))
+#else
+#  define UNUSED
+#endif
+
+static void UNUSED dispose_coroutines(void)
 {
 	zval *current;
 
@@ -964,6 +970,7 @@ void async_scheduler_main_coroutine_suspend(void)
 	zend_fiber_context *fiber_context = &coroutine->fiber_context->context;
 	async_fiber_context_t *async_fiber_context = coroutine->fiber_context;
 	coroutine->fiber_context = NULL;
+	ZEND_ASYNC_CURRENT_COROUTINE = NULL;
 
 	zend_try
 	{
