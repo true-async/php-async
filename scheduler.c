@@ -285,6 +285,10 @@ static zend_always_inline void switch_to_scheduler(zend_fiber_transfer *transfer
 	ZEND_ASSERT(async_coroutine != NULL && "Scheduler coroutine is not initialized");
 
 	if (transfer != NULL) {
+		// In case the control is transferred to the Scheduler,
+		// the bailout flag must be cleared so that the Scheduler continues to operate normally.
+		// In other words, critical exceptions should not cause the Scheduler to terminate fatally.
+		transfer->flags &= ~ZEND_FIBER_TRANSFER_FLAG_BAILOUT;
 		transfer->context = &async_coroutine->fiber_context->context;
 		transfer_current_exception(transfer);
 	} else {

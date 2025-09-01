@@ -439,7 +439,7 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 	}
 	zend_end_try();
 
-	zend_first_try
+	zend_try
 	{
 		async_coroutine_finalize(coroutine);
 		OBJ_RELEASE(&coroutine->std);
