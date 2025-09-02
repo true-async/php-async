@@ -442,7 +442,6 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 
 			zval_ptr_dtor(&coroutine->coroutine.fcall->fci.function_name);
 			ZVAL_UNDEF(&coroutine->coroutine.fcall->fci.function_name);
-			Z_TRY_ADDREF(coroutine->coroutine.result);
 			coroutine->coroutine.fcall->fci.retval = NULL;
 		} else {
 			coroutine->coroutine.internal_entry();
