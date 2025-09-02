@@ -90,16 +90,6 @@ static void fiber_context_cleanup(zend_fiber_context *context)
 {
 	async_fiber_context_t *fiber_context = (async_fiber_context_t *) context;
 
-	zend_vm_stack stack = EG(vm_stack);
-
-	// Destroy the VM stack associated with the fiber context.
-	// Except for the first segment, which is located directly in the fiber's stack.
-	while (stack != NULL && stack->prev != NULL) {
-		zend_vm_stack prev = stack->prev;
-		efree(stack);
-		stack = prev;
-	}
-
 	// There's no need to destroy execute_data
 	// because it's also located in the fiber's stack.
 	efree(fiber_context);
@@ -1263,7 +1253,7 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 		// Allocate VM stack on C stack instead of heap
 		char vm_stack_memory[ZEND_FIBER_VM_STACK_SIZE];
 		zend_vm_stack stack = (zend_vm_stack)vm_stack_memory;
-		
+
 		// Initialize VM stack structure manually
 		// see zend_vm_stack_init()
 		stack->top = ZEND_VM_STACK_ELEMENTS(stack);
@@ -1405,4 +1395,17 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 
 	// Here we are guaranteed to exit the coroutine without exceptions.
 	return_to_main(transfer);
+
+	// Free VM stack
+	zend_vm_stack stack = EG(vm_stack);
+
+	// Destroy the VM stack associated with the fiber context.
+	// Except for the first segment, which is located directly in the fiber's stack.
+	while (stack != NULL && stack->prev != NULL) {
+		zend_vm_stack prev = stack->prev;
+		efree(stack);
+		stack = prev;
+	}
+
+	EG(vm_stack) = NULL;
 }
