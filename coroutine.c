@@ -157,6 +157,7 @@ static void coroutine_object_destroy(zend_object *object)
 	}
 
 	zval_ptr_dtor(&coroutine->coroutine.result);
+	ZVAL_UNDEF(&coroutine->coroutine.result);
 
 	if (coroutine->coroutine.exception != NULL) {
 		// If the coroutine has an exception, we need to release it.
@@ -985,6 +986,7 @@ static zend_result finally_handlers_iterator_handler(async_iterator_t *iterator,
 	ZVAL_UNDEF(&rv);
 	call_user_function(NULL, NULL, current, &rv, context->params_count, context->params);
 	zval_ptr_dtor(&rv);
+	ZVAL_UNDEF(&rv);
 
 	// Check for exceptions after handler execution
 	if (EG(exception)) {
@@ -1105,6 +1107,7 @@ bool async_call_finally_handlers(HashTable *finally_handlers, finally_handlers_c
 			async_iterator_new(&handlers, NULL, NULL, finally_handlers_iterator_handler, child_scope, 0, priority, 0);
 
 	zval_ptr_dtor(&handlers);
+	ZVAL_UNDEF(&handlers);
 
 	if (UNEXPECTED(EG(exception))) {
 		return false;
