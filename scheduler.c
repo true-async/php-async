@@ -1220,10 +1220,11 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 
 	const bool is_scheduler = &coroutine->coroutine == ZEND_ASYNC_SCHEDULER;
 
+	// Allocate VM stack on C stack instead of heap
+	char vm_stack_memory[ZEND_FIBER_VM_STACK_SIZE];
+
 	zend_first_try
 	{
-		// Allocate VM stack on C stack instead of heap
-		char vm_stack_memory[ZEND_FIBER_VM_STACK_SIZE];
 		zend_vm_stack stack = (zend_vm_stack)vm_stack_memory;
 
 		// Initialize VM stack structure manually
