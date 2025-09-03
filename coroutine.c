@@ -38,13 +38,6 @@
 
 zend_class_entry *async_ce_coroutine = NULL;
 
-#if defined(__GNUC__) || defined(__clang__)
-#  define UNUSED __attribute__((unused))
-#else
-#  define UNUSED
-#endif
-
-static zend_function UNUSED coroutine_root_function = { ZEND_INTERNAL_FUNCTION };
 static zend_object_handlers coroutine_handlers;
 
 // Forward declarations for internal functions

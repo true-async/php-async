@@ -571,34 +571,6 @@ static bool resolve_deadlocks(void)
 ///////////////////////////////////////////////////////////
 /// SHUTDOWN AND CLEANUP
 ///////////////////////////////////////////////////////////
-
-#if defined(__GNUC__) || defined(__clang__)
-#  define UNUSED __attribute__((unused))
-#else
-#  define UNUSED
-#endif
-
-static void UNUSED dispose_coroutines(void)
-{
-	zval *current;
-
-	ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), current)
-	{
-		zend_coroutine_t *coroutine = Z_PTR_P(current);
-
-		if (coroutine->waker != NULL) {
-			coroutine->waker->status = ZEND_ASYNC_WAKER_IGNORED;
-		}
-
-		coroutine->event.dispose(&coroutine->event);
-
-		if (EG(exception)) {
-			zend_exception_save();
-		}
-	}
-	ZEND_HASH_FOREACH_END();
-}
-
 static void cancel_queued_coroutines(void)
 {
 	zend_exception_save();
