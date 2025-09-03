@@ -76,7 +76,7 @@ static zend_object *coroutine_object_create(zend_class_entry *class_entry)
 
 	/* Initialize embedded waker */
 	coroutine->coroutine.waker = &coroutine->waker;
-	
+
 	/* Initialize waker contents (memory is already zeroed by zend_object_alloc) */
 	zend_async_waker_init(&coroutine->waker);
 
@@ -633,6 +633,8 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 			ZEND_ASYNC_DECREASE_COROUTINE_COUNT
 		}
 	}
+
+	coroutine->fiber_context = NULL;
 
 	if (UNEXPECTED(do_bailout)) {
 		zend_bailout();
