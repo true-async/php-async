@@ -1,5 +1,7 @@
 --TEST--
 Stack overflow bailout with suspend in recursion
+--INI--
+opcache.jit_hot_func=0
 --SKIPIF--
 <?php
 $zend_mm_enabled = getenv("USE_ZEND_ALLOC");
@@ -20,13 +22,9 @@ function deepRecursionWithSuspend($depth = 0) {
     return deepRecursionWithSuspend($depth + 1);
 }
 
-$function = function(bool $out = true) {
-    if($out) echo "Shutdown function called\n";
-};
-
-$function(false);
-
-register_shutdown_function($function);
+register_shutdown_function(function() {
+    echo "Shutdown function called\n";
+});
 
 echo "Before spawn\n";
 

@@ -1,5 +1,7 @@
 --TEST--
 Stack overflow bailout with onFinally handlers
+--INI--
+opcache.jit_hot_func=0
 --SKIPIF--
 <?php
 $zend_mm_enabled = getenv("USE_ZEND_ALLOC");
@@ -25,18 +27,9 @@ echo "Before scope\n";
 
 $scope = new Scope();
 
-$finally = function($x = false, $out = true) {
-    if($out) {
-        echo "Finally handler executed\n";
-    }
-};
-
-// JIT PHP in tracing mode can compile functions on demand. When memory runs out,
-// JIT crashes with an error because it tries to compile a closure.
-// This code attempts to work around the issue so that the test runs correctly.
-$finally(false, false);
-
-$scope->onFinally($finally);
+$scope->onFinally(function() {
+    echo "Finally handler executed\n";
+});
 
 $coroutine = $scope->spawn(function() {
     echo "Before stack overflow\n";

@@ -7,6 +7,8 @@ if ($zend_mm_enabled === "0") {
     die("skip Zend MM disabled");
 }
 ?>
+--INI--
+opcache.jit_hot_func=0
 --FILE--
 <?php
 
@@ -16,13 +18,9 @@ function deepRecursion($depth = 0) {
     return deepRecursion($depth + 1);
 }
 
-$function = function(bool $out = true) {
-    if($out) echo "Shutdown function called\n";
-};
-
-$function(false);
-
-register_shutdown_function($function);
+register_shutdown_function(function() {
+    echo "Shutdown function called\n";
+});
 
 echo "Before spawn\n";
 
