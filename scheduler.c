@@ -314,19 +314,6 @@ static zend_always_inline async_coroutine_t *next_coroutine(void)
 	return coroutine;
 }
 
-static zend_always_inline async_fiber_context_t *fiber_context_allocate(void)
-{
-	async_fiber_context_t *fiber_context = NULL;
-
-	circular_buffer_pop_ptr(&ASYNC_G(fiber_context_pool), (void**)&fiber_context);
-
-	if (fiber_context == NULL) {
-		fiber_context = async_fiber_context_create();
-	}
-
-	return fiber_context;
-}
-
 static zend_always_inline bool return_fiber_to_pool(async_fiber_context_t *fiber_context)
 {
 	circular_buffer_t *buffer = &ASYNC_G(fiber_context_pool);
