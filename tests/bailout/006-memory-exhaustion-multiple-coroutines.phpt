@@ -14,9 +14,13 @@ memory_limit=2M
 
 use function Async\spawn;
 
-register_shutdown_function(function() {
-    echo "Shutdown function called\n";
-});
+$function = function(bool $out = true) {
+    if($out) echo "Shutdown function called\n";
+};
+
+$function(false);
+
+register_shutdown_function($function);
 
 echo "Before spawn\n";
 

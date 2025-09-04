@@ -1,5 +1,7 @@
 --TEST--
 Stack overflow bailout with onFinally handlers
+--INI--
+opcache.jit_hot_func=0
 --SKIPIF--
 <?php
 $zend_mm_enabled = getenv("USE_ZEND_ALLOC");

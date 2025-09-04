@@ -502,10 +502,7 @@ bool circular_buffer_is_empty(const circular_buffer_t *buffer)
 	return buffer->head == buffer->tail;
 }
 
-bool circular_buffer_is_not_empty(const circular_buffer_t *buffer)
-{
-	return buffer->head != buffer->tail;
-}
+/* circular_buffer_is_not_empty is now inline in header */
 
 /**
  * Check if the circular buffer is full.

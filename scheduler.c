@@ -24,6 +24,56 @@
 #include "zend_common.h"
 #include "zend_observer.h"
 
+///////////////////////////////////////////////////////////
+/// STATIC DECLARATIONS AND CONSTANTS
+///////////////////////////////////////////////////////////
+
+#define FIBER_DEBUG_LOG_ON false
+#define FIBER_DEBUG_SWITCH false
+#if FIBER_DEBUG_LOG_ON
+#  define FIBER_DEBUG(...) fprintf(stdout, __VA_ARGS__)
+#else
+#  define FIBER_DEBUG(...) ((void)0)
+#endif
+
+static zend_function root_function = { ZEND_INTERNAL_FUNCTION };
+
+typedef enum
+{
+	COROUTINE_NOT_EXISTS,
+	COROUTINE_SWITCHED,
+	COROUTINE_IGNORED,
+	COROUTINE_FINISHED,
+	SHOULD_BE_EXIT
+} switch_status;
+
+static ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer);
+static void fiber_context_cleanup(zend_fiber_context *context);
+
+#define TRY_HANDLE_EXCEPTION() \
+	if (UNEXPECTED(EG(exception) != NULL)) { \
+		if (ZEND_ASYNC_GRACEFUL_SHUTDOWN) { \
+			finally_shutdown(); \
+			break; \
+		} \
+		start_graceful_shutdown(); \
+	}
+
+#define TRY_HANDLE_SUSPEND_EXCEPTION() \
+	if (UNEXPECTED(EG(exception) != NULL)) { \
+		if (ZEND_ASYNC_GRACEFUL_SHUTDOWN) { \
+			finally_shutdown(); \
+			switch_to_scheduler(transfer); \
+			zend_exception_restore(); \
+			return; \
+		} \
+		start_graceful_shutdown(); \
+	}
+
+///////////////////////////////////////////////////////////
+/// MODULE INIT/SHUTDOWN
+///////////////////////////////////////////////////////////
+
 void async_scheduler_startup(void)
 {
 }
@@ -31,6 +81,75 @@ void async_scheduler_startup(void)
 void async_scheduler_shutdown(void)
 {
 }
+
+///////////////////////////////////////////////////////////
+/// FIBER CONTEXT MANAGEMENT
+///////////////////////////////////////////////////////////
+
+static void fiber_context_cleanup(zend_fiber_context *context)
+{
+	async_fiber_context_t *fiber_context = (async_fiber_context_t *) context;
+
+	// There's no need to destroy execute_data
+	// because it's also located in the fiber's stack.
+	efree(fiber_context);
+}
+
+async_fiber_context_t* async_fiber_context_create(void)
+{
+	async_fiber_context_t *context = ecalloc(1, sizeof(async_fiber_context_t));
+
+	if (zend_fiber_init_context(&context->context, async_ce_coroutine, fiber_entry, EG(fiber_stack_size)) == FAILURE) {
+		efree(context);
+		return NULL;
+	}
+
+	context->flags = ZEND_FIBER_STATUS_INIT;
+	context->context.cleanup = fiber_context_cleanup;
+
+	return context;
+}
+
+static zend_always_inline void fiber_pool_init(void)
+{
+	circular_buffer_ctor(&ASYNC_G(fiber_context_pool), ASYNC_FIBER_POOL_SIZE, sizeof(async_fiber_context_t*), NULL);
+}
+
+static void fiber_pool_cleanup(void)
+{
+	async_fiber_context_t *fiber_context = NULL;
+
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	ZEND_ASYNC_CURRENT_COROUTINE = NULL;
+
+	while (circular_buffer_pop_ptr(&ASYNC_G(fiber_context_pool), (void**)&fiber_context) == SUCCESS) {
+		if (fiber_context != NULL) {
+			zend_fiber_transfer transfer = {
+				.context = &fiber_context->context,
+				.flags = 0
+			};
+
+			// If the current coroutine is NULL, this state explicitly tells the fiber to stop execution.
+			// We set this value each time, since the switch_to_scheduler function may change it.
+			ZEND_ASYNC_CURRENT_COROUTINE = NULL;
+			zend_fiber_switch_context(&transfer);
+
+			// Transfer the exception to the current coroutine.
+			if (UNEXPECTED(transfer.flags & ZEND_FIBER_TRANSFER_FLAG_ERROR)) {
+				async_rethrow_exception(Z_OBJ(transfer.value));
+				ZVAL_NULL(&transfer.value);
+			}
+		}
+	}
+
+	ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
+
+	circular_buffer_dtor(&ASYNC_G(fiber_context_pool));
+}
+
+///////////////////////////////////////////////////////////
+/// MICROTASK EXECUTION
+///////////////////////////////////////////////////////////
 
 zend_always_inline static void execute_microtasks(void)
 {
@@ -59,80 +178,73 @@ zend_always_inline static void execute_microtasks(void)
 	}
 }
 
-/**
- * Defines a transfer object for the coroutine context.
- *
- * This function is used to return control from a coroutine FOR THE LAST TIME.
- * If you only need to suspend coroutines, you should use the `switch_context()` function.
- *
- * This function initializes the coroutine context if it is not already initialized,
- * and sets the transfer value to the provided exception or NULL.
- *
- * @param coroutine The coroutine to define the transfer for.
- * @param exception The exception to pass, or NULL if no exception is to be passed.
- * @param transfer The transfer object to define.
- */
-static zend_always_inline void
-define_transfer(async_coroutine_t *coroutine, zend_object *exception, zend_fiber_transfer *transfer)
+///////////////////////////////////////////////////////////
+/// FIBER CONTEXT SWITCHING UTILITIES
+///////////////////////////////////////////////////////////
+
+static zend_always_inline void fiber_context_update_before_suspend(void)
 {
-	if (UNEXPECTED(coroutine->context.status == ZEND_FIBER_STATUS_INIT &&
-				   zend_fiber_init_context(
-						   &coroutine->context, async_ce_coroutine, async_coroutine_execute, EG(fiber_stack_size)) ==
-						   FAILURE)) {
-		zend_throw_error(NULL, "Failed to initialize coroutine context");
-		return;
+	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (coroutine != NULL && coroutine->fiber_context != NULL) {
+		coroutine->fiber_context->execute_data = EG(current_execute_data);
 	}
-
-	transfer->context = &coroutine->context;
-	transfer->flags = exception != NULL ? ZEND_FIBER_TRANSFER_FLAG_ERROR : 0;
-
-	if (exception != NULL) {
-		ZVAL_OBJ(&transfer->value, exception);
-	} else {
-		ZVAL_NULL(&transfer->value);
-	}
-
-	ZEND_ASYNC_CURRENT_COROUTINE = &coroutine->coroutine;
 }
 
 /**
- * Switches the context to the given coroutine, optionally passing an exception.
+ * Transfers the current exception (EG(exception)) to the transfer object.
  *
- * If the coroutine context is not initialized, it will be initialized first.
- * If an exception is provided, it will be set in the transfer value.
- *
- * IMPORTANT! This function must be called ONLY if the coroutine being switched from is not finishing its execution.
- * If the coroutine is yielding control for the **last time**, then you must use define_transfer().
- *
- * @param coroutine The coroutine to switch to.
- * @param exception The exception to pass, or NULL if no exception is to be passed.
+ * @param transfer Transfer object that will hold the transfer information.
  */
-static zend_always_inline void switch_context(async_coroutine_t *coroutine, zend_object *exception)
+static zend_always_inline void transfer_current_exception(zend_fiber_transfer *transfer)
 {
-	zend_fiber_transfer transfer = {
-		.context = &coroutine->context,
-		.flags = exception != NULL ? ZEND_FIBER_TRANSFER_FLAG_ERROR : 0,
-	};
-
-	if (coroutine->context.status == ZEND_FIBER_STATUS_INIT &&
-		zend_fiber_init_context(
-				&coroutine->context, async_ce_coroutine, async_coroutine_execute, EG(fiber_stack_size)) == FAILURE) {
-		zend_throw_error(NULL, "Failed to initialize coroutine context");
+	if (EXPECTED(EG(exception) == NULL)) {
+		transfer->flags &= ~ZEND_FIBER_TRANSFER_FLAG_ERROR;
 		return;
 	}
 
-	if (exception != NULL) {
-		ZVAL_OBJ(&transfer.value, exception);
-	} else {
-		ZVAL_NULL(&transfer.value);
+	if (EG(prev_exception)) {
+		zend_exception_save();
+		zend_exception_restore();
 	}
 
-	zend_coroutine_t *previous_coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
-	ZEND_ASYNC_CURRENT_COROUTINE = &coroutine->coroutine;
+	zend_object *exception = EG(exception);
+	GC_ADDREF(exception);
+	zend_clear_exception();
+
+	transfer->flags |= ZEND_FIBER_TRANSFER_FLAG_ERROR;
+	ZVAL_OBJ(&transfer->value, exception);
+}
+
+/**
+ * Switches control from the current fiber to the coroutine's fiber.
+ * The coroutine's fiber must be defined!
+ *
+ * @param coroutine The coroutine to switch to.
+ */
+static zend_always_inline void fiber_switch_context(async_coroutine_t *coroutine)
+{
+	async_fiber_context_t *fiber_context = coroutine->fiber_context;
+
+	ZEND_ASSERT(fiber_context != NULL && "Fiber context is NULL in fiber_switch_context");
+
+	zend_fiber_transfer transfer = {
+		.context = &fiber_context->context,
+		.flags = 0
+	};
+
+#if FIBER_DEBUG_SWITCH
+	zend_fiber_context *from = EG(current_fiber_context);
+	zend_fiber_context *to = &coroutine->fiber_context->context;
+
+	if (ZEND_ASYNC_SCHEDULER == &coroutine->coroutine) {
+		FIBER_DEBUG("Switch fiber: %p => %p for scheduler: %p\n", from, to, coroutine);
+	} else {
+		FIBER_DEBUG("Switch fiber: %p => %p for coroutine: %p\n", from, to, coroutine);
+	}
+#endif
 
 	zend_fiber_switch_context(&transfer);
-
-	ZEND_ASYNC_CURRENT_COROUTINE = previous_coroutine;
 
 	/* Forward bailout into current coroutine. */
 	if (UNEXPECTED(transfer.flags & ZEND_FIBER_TRANSFER_FLAG_BAILOUT)) {
@@ -145,95 +257,6 @@ static zend_always_inline void switch_context(async_coroutine_t *coroutine, zend
 		async_rethrow_exception(Z_OBJ(transfer.value));
 		ZVAL_NULL(&transfer.value);
 	}
-}
-
-static zend_always_inline async_coroutine_t *next_coroutine(void)
-{
-	async_coroutine_t *coroutine;
-
-	if (UNEXPECTED(circular_buffer_pop(&ASYNC_G(coroutine_queue), &coroutine) == FAILURE)) {
-		ZEND_ASSERT("Failed to pop the coroutine from the pending queue.");
-		return NULL;
-	}
-
-	return coroutine;
-}
-
-typedef enum
-{
-	COROUTINE_NOT_EXISTS,
-	COROUTINE_SWITCHED,
-	COROUTINE_IGNORED
-} switch_status;
-
-/**
- * Executes the next coroutine in the queue.
- *
- * If the coroutine is not ready to be executed, it will return false.
- * If the coroutine is finished, it will clean up and return true.
- *
- * @param transfer The transfer object to define the context for the coroutine.
- * @return switch_status - status of the coroutine switching.
- */
-static switch_status execute_next_coroutine(zend_fiber_transfer *transfer)
-{
-	async_coroutine_t *async_coroutine = next_coroutine();
-	zend_coroutine_t *coroutine = &async_coroutine->coroutine;
-
-	if (UNEXPECTED(coroutine == NULL)) {
-		return COROUTINE_NOT_EXISTS;
-	}
-
-	zend_async_waker_t *waker = coroutine->waker;
-
-	if (UNEXPECTED(waker == NULL || waker->status == ZEND_ASYNC_WAKER_IGNORED)) {
-
-		//
-		// This state triggers if the fiber has never been started;
-		// in this case, it is deallocated differently than usual.
-		// Finalizing handlers are called. Memory is freed in the correct order!
-		//
-		if (ZEND_COROUTINE_IS_CANCELLED(coroutine)) {
-			async_coroutine_finalize_from_scheduler(async_coroutine);
-		}
-
-		coroutine->event.dispose(&coroutine->event);
-		return COROUTINE_IGNORED;
-	}
-
-	if (UNEXPECTED(waker->status == ZEND_ASYNC_WAKER_WAITING)) {
-		zend_error(E_ERROR, "Attempt to resume a fiber that has not been resolved");
-		coroutine->event.dispose(&coroutine->event);
-		return COROUTINE_IGNORED;
-	}
-
-	waker->status = ZEND_ASYNC_WAKER_RESULT;
-	zend_object *error = waker->error;
-
-	// The Waker object can be destroyed immediately if the result is an error.
-	// It will be delivered to the coroutine as an exception.
-	if (error != NULL) {
-		waker->error = NULL;
-		zend_async_waker_destroy(coroutine);
-	}
-
-	if (transfer != NULL) {
-		define_transfer(async_coroutine, error, transfer);
-		return COROUTINE_SWITCHED;
-	} else if (ZEND_ASYNC_CURRENT_COROUTINE == coroutine) {
-		if (error != NULL) {
-			async_rethrow_exception(error);
-		}
-		return COROUTINE_SWITCHED;
-	} else {
-		switch_context(async_coroutine, error);
-	}
-
-	//
-	// At this point, the async_coroutine must already be destroyed
-	//
-
-	return COROUTINE_SWITCHED;
 }
 
 /**
@@ -255,11 +278,242 @@ static zend_always_inline void switch_to_scheduler(zend_fiber_transfer *transfer
 	ZEND_ASSERT(async_coroutine != NULL && "Scheduler coroutine is not initialized");
 
 	if (transfer != NULL) {
-		define_transfer(async_coroutine, NULL, transfer);
+		// In case the control is transferred to the Scheduler,
+		// the bailout flag must be cleared so that the Scheduler continues to operate normally.
+		// In other words, critical exceptions should not cause the Scheduler to terminate fatally.
+		transfer->flags &= ~ZEND_FIBER_TRANSFER_FLAG_BAILOUT;
+		transfer->context = &async_coroutine->fiber_context->context;
+		transfer_current_exception(transfer);
+		ZEND_ASYNC_CURRENT_COROUTINE = &async_coroutine->coroutine;
 	} else {
-		switch_context(async_coroutine, NULL);
+		fiber_context_update_before_suspend();
+		ZEND_ASYNC_CURRENT_COROUTINE = &async_coroutine->coroutine;
+		fiber_switch_context(async_coroutine);
 	}
 }
+
+static zend_always_inline void return_to_main(zend_fiber_transfer *transfer)
+{
+	transfer->context = ASYNC_G(main_transfer)->context;
+	transfer_current_exception(transfer);
+}
+
+///////////////////////////////////////////////////////////
+/// COROUTINE QUEUE MANAGEMENT
+///////////////////////////////////////////////////////////
+
+static zend_always_inline async_coroutine_t *next_coroutine(void)
+{
+	async_coroutine_t *coroutine;
+
+	if (UNEXPECTED(circular_buffer_pop_ptr(&ASYNC_G(coroutine_queue), (void**)&coroutine) == FAILURE)) {
+		ZEND_ASSERT("Failed to pop the coroutine from the pending queue.");
+		return NULL;
+	}
+
+	return coroutine;
+}
+
+static zend_always_inline async_fiber_context_t *fiber_context_allocate(void)
+{
+	async_fiber_context_t *fiber_context = NULL;
+
+	circular_buffer_pop_ptr(&ASYNC_G(fiber_context_pool), (void**)&fiber_context);
+
+	if (fiber_context == NULL) {
+		fiber_context = async_fiber_context_create();
+	}
+
+	return fiber_context;
+}
+
+static zend_always_inline bool return_fiber_to_pool(async_fiber_context_t *fiber_context)
+{
+	circular_buffer_t *buffer = &ASYNC_G(fiber_context_pool);
+
+	if (buffer->capacity > 0 && false == circular_buffer_is_full(buffer)) {
+		if (EXPECTED(circular_buffer_push_ptr(buffer, fiber_context) != FAILURE)) {
+			return true;
+		}
+
+		async_throw_error("Failed to push fiber context to the pool");
+		return false;
+	}
+
+	return false;
+}
+
+/**
+ * Executes the next coroutine in the queue.
+ *
+ * The function is used when one Fiber switches to another.
+ * The execute_next_coroutine_from_fiber function is used
+ * when a Fiber is ready to execute another coroutine within itself.
+ *
+ * @return switch_status - status of the coroutine switching.
+ */
+static zend_always_inline switch_status execute_next_coroutine(void)
+{
+	async_coroutine_t *async_coroutine = next_coroutine();
+
+	if (UNEXPECTED(async_coroutine == NULL)) {
+		return COROUTINE_NOT_EXISTS;
+	}
+
+	zend_coroutine_t *coroutine = &async_coroutine->coroutine;
+
+	// If the current coroutine is the same as the one we are trying to execute,
+	if (UNEXPECTED(coroutine == ZEND_ASYNC_CURRENT_COROUTINE)) {
+		return COROUTINE_SWITCHED;
+	}
+
+	if (async_coroutine->waker.status == ZEND_ASYNC_WAKER_IGNORED) {
+		ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
+		FIBER_DEBUG("Execute coroutine %p in Fiber %p\n", coroutine, EG(current_fiber_context));
+		async_coroutine_execute(async_coroutine);
+		ZEND_ASYNC_CURRENT_COROUTINE = NULL;
+		return COROUTINE_IGNORED;
+	} else if (async_coroutine->fiber_context != NULL) {
+		fiber_context_update_before_suspend();
+		ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
+		fiber_switch_context(async_coroutine);
+		return COROUTINE_SWITCHED;
+	} else {
+
+		// The coroutine doesn't have its own Fiber,
+		// so we first need to allocate a Fiber context for it and then start it.
+		circular_buffer_pop_ptr(&ASYNC_G(fiber_context_pool), (void**)&async_coroutine->fiber_context);
+
+		if (async_coroutine->fiber_context == NULL) {
+			async_coroutine->fiber_context = async_fiber_context_create();
+		}
+
+		fiber_context_update_before_suspend();
+		ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
+		fiber_switch_context(async_coroutine);
+		return COROUTINE_SWITCHED;
+	}
+}
+
+/**
+ * Executes the next coroutine in the queue.
+ *
+ * This function is used in two different cases:
+ * Inside a Fiber that is free to run a coroutine, in which case transfer != NULL.
+ * During a suspend operation, when the Fiber is occupied by the current
+ * coroutine but needs to switch to another Fiber with a new one.
+ *
+ * @param transfer A transfer object that is not NULL if the current Fiber has no owning coroutine.
+ * @param fiber_context The current Fiber context if available.
+ * @return switch_status - status of the coroutine switching.
+ */
+
+#define AVAILABLE_FOR_COROUTINE (transfer != NULL)
+
+static zend_always_inline switch_status execute_next_coroutine_from_fiber(zend_fiber_transfer *transfer, async_fiber_context_t *fiber_context)
+{
+	async_coroutine_t *async_coroutine = next_coroutine();
+
+	if (UNEXPECTED(async_coroutine == NULL)) {
+		return COROUTINE_NOT_EXISTS;
+	}
+
+	zend_coroutine_t *coroutine = &async_coroutine->coroutine;
+
+next_coroutine:
+
+	if (async_coroutine->waker.status == ZEND_ASYNC_WAKER_IGNORED) {
+		// Case: the coroutine in queue was cancelled.
+		// In this case, only the coroutine finalization process needs to be executed,
+		// and it can be done immediately.
+		ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
+		FIBER_DEBUG("Execute coroutine %p in Fiber %p\n", coroutine, EG(current_fiber_context));
+		async_coroutine_execute(async_coroutine);
+		ZEND_ASYNC_CURRENT_COROUTINE = NULL;
+		return COROUTINE_IGNORED;
+	}
+
+	if (AVAILABLE_FOR_COROUTINE && async_coroutine->fiber_context == fiber_context) {
+
+		// Case: The current coroutine is assigned to this fiber.
+		// Just execute it without switching.
+		FIBER_DEBUG("Execute coroutine %p in Fiber %p\n", coroutine, EG(current_fiber_context));
+		async_coroutine_execute(async_coroutine);
+		return COROUTINE_FINISHED;
+
+	} else if (AVAILABLE_FOR_COROUTINE && async_coroutine->fiber_context != NULL) {
+
+		// Case: the current fiber has no coroutine to execute,
+		// but the next coroutine in the queue is already in use.
+		if (return_fiber_to_pool(fiber_context)) {
+			fiber_context_update_before_suspend();
+			ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
+			fiber_switch_context(async_coroutine);
+
+			// When control returns to us, we try to execute the coroutine that is currently active.
+			coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+			if (UNEXPECTED(coroutine == NULL)) {
+				// There are no more coroutines to execute; we need to exit.
+				return SHOULD_BE_EXIT;
+			}
+
+			async_coroutine = (async_coroutine_t *) coroutine;
+			goto next_coroutine;
+		} else {
+			// The pool is already full, so the Fiber should be destroyed after the switch occurs.
+			transfer->context = &async_coroutine->fiber_context->context;
+			transfer_current_exception(transfer);
+			return SHOULD_BE_EXIT;
+		}
+
+	} else if (async_coroutine->fiber_context != NULL) {
+		fiber_context_update_before_suspend();
+		ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
+		fiber_switch_context(async_coroutine);
+		return COROUTINE_SWITCHED;
+	} else if (AVAILABLE_FOR_COROUTINE && async_coroutine->fiber_context == NULL) {
+		// Note that async_coroutine_execute is also called in cases
+		// where the coroutine was never executed and was canceled.
+		// In this case, no context switch occurs, so this code executes regardless of which fiber it's running in.
+		async_coroutine->fiber_context = fiber_context;
+		ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
+		FIBER_DEBUG("Execute coroutine %p in Fiber %p\n", coroutine, EG(current_fiber_context));
+		async_coroutine_execute(async_coroutine);
+		return COROUTINE_FINISHED;
+	} else {
+
+		// (AVAILABLE_FOR_COROUTINE == false)
+		// The coroutine doesn't have its own Fiber,
+		// so we first need to allocate a Fiber context for it and then start it.
+		circular_buffer_pop_ptr(&ASYNC_G(fiber_context_pool), (void**)&async_coroutine->fiber_context);
+
+		if (async_coroutine->fiber_context == NULL) {
+			async_coroutine->fiber_context = async_fiber_context_create();
+		}
+
+		fiber_context_update_before_suspend();
+		ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
+		fiber_switch_context(async_coroutine);
+		return COROUTINE_SWITCHED;
+	}
+}
+
+zend_always_inline static void execute_queued_coroutines(void)
+{
+	// @todo: need to refactoring
+	while (false == circular_buffer_is_empty(&ASYNC_G(coroutine_queue))) {
+		execute_next_coroutine();
+
+		if (UNEXPECTED(EG(exception))) {
+			zend_exception_save();
+		}
+	}
+}
+
+///////////////////////////////////////////////////////////
+/// DEADLOCK RESOLUTION AND ERROR HANDLING
+///////////////////////////////////////////////////////////
 
 static bool resolve_deadlocks(void)
 {
@@ -314,76 +568,9 @@ static bool resolve_deadlocks(void)
 	return false;
 }
 
-zend_always_inline static void execute_queued_coroutines(void)
-{
-	while (false == circular_buffer_is_empty(&ASYNC_G(coroutine_queue))) {
-		execute_next_coroutine(NULL);
-
-		if (UNEXPECTED(EG(exception))) {
-			zend_exception_save();
-		}
-	}
-}
-
-static void async_scheduler_dtor(void)
-{
-	ZEND_ASYNC_SCHEDULER_CONTEXT = true;
-
-	execute_microtasks();
-
-	ZEND_ASYNC_SCHEDULER_CONTEXT = false;
-
-	if (UNEXPECTED(false == circular_buffer_is_empty(&ASYNC_G(microtasks)))) {
-		async_warning("%u microtasks were not executed", circular_buffer_count(&ASYNC_G(microtasks)));
-	}
-
-	if (UNEXPECTED(false == circular_buffer_is_empty(&ASYNC_G(coroutine_queue)))) {
-		async_warning("%u deferred coroutines were not executed", circular_buffer_count(&ASYNC_G(coroutine_queue)));
-	}
-
-	zval_c_buffer_cleanup(&ASYNC_G(coroutine_queue));
-	zval_c_buffer_cleanup(&ASYNC_G(microtasks));
-
-	zval *current;
-	// foreach by fibers_state and release all fibers
-	ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), current)
-	{
-		async_coroutine_t *coroutine = Z_PTR_P(current);
-		OBJ_RELEASE(&coroutine->std);
-	}
-	ZEND_HASH_FOREACH_END();
-
-	zend_hash_clean(&ASYNC_G(coroutines));
-	zend_hash_destroy(&ASYNC_G(coroutines));
-	zend_hash_init(&ASYNC_G(coroutines), 0, NULL, NULL, 0);
-
-	ZEND_ASYNC_GRACEFUL_SHUTDOWN = false;
-	ZEND_ASYNC_SCHEDULER_CONTEXT = false;
-
-	zend_exception_restore();
-}
-
-static void dispose_coroutines(void)
-{
-	zval *current;
-
-	ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), current)
-	{
-		zend_coroutine_t *coroutine = Z_PTR_P(current);
-
-		if (coroutine->waker != NULL) {
-			coroutine->waker->status = ZEND_ASYNC_WAKER_IGNORED;
-		}
-
-		coroutine->event.dispose(&coroutine->event);
-
-		if (EG(exception)) {
-			zend_exception_save();
-		}
-	}
-	ZEND_HASH_FOREACH_END();
-}
-
+///////////////////////////////////////////////////////////
+/// SHUTDOWN AND CLEANUP
+///////////////////////////////////////////////////////////
 static void cancel_queued_coroutines(void)
 {
 	zend_exception_save();
@@ -397,7 +584,7 @@ static void cancel_queued_coroutines(void)
 	{
 		zend_coroutine_t *coroutine = Z_PTR_P(current);
 
-		if (((async_coroutine_t *) coroutine)->context.status == ZEND_FIBER_STATUS_INIT) {
+		if (false == ZEND_COROUTINE_IS_STARTED(coroutine)) {
 			// No need to cancel the fiber if it has not been started.
 			coroutine->waker->status = ZEND_ASYNC_WAKER_IGNORED;
 			ZEND_COROUTINE_SET_CANCELLED(coroutine);
@@ -421,32 +608,6 @@ static void cancel_queued_coroutines(void)
 	OBJ_RELEASE(cancellation_exception);
 
 	zend_exception_restore();
-}
-
-void async_scheduler_start_waker_events(zend_async_waker_t *waker)
-{
-	ZEND_ASSERT(waker != NULL && "Waker is NULL in async_scheduler_start_waker_events");
-
-	zval *current;
-	ZEND_HASH_FOREACH_VAL(&waker->events, current)
-	{
-		const zend_async_waker_trigger_t *trigger = Z_PTR_P(current);
-		trigger->event->start(trigger->event);
-	}
-	ZEND_HASH_FOREACH_END();
-}
-
-void async_scheduler_stop_waker_events(zend_async_waker_t *waker)
-{
-	ZEND_ASSERT(waker != NULL && "Waker is NULL in async_scheduler_stop_waker_events");
-
-	zval *current;
-	ZEND_HASH_FOREACH_VAL(&waker->events, current)
-	{
-		const zend_async_waker_trigger_t *trigger = Z_PTR_P(current);
-		trigger->event->stop(trigger->event);
-	}
-	ZEND_HASH_FOREACH_END();
 }
 
 void start_graceful_shutdown(void)
@@ -503,16 +664,83 @@ static void finally_shutdown(void)
 	}
 }
 
-void async_scheduler_main_loop(void);
+static void async_scheduler_dtor(void)
+{
+	ZEND_ASYNC_SCHEDULER_CONTEXT = true;
 
-#define TRY_HANDLE_EXCEPTION() \
-	if (UNEXPECTED(EG(exception) != NULL)) { \
-		if (ZEND_ASYNC_GRACEFUL_SHUTDOWN) { \
-			finally_shutdown(); \
-			break; \
-		} \
-		start_graceful_shutdown(); \
+	execute_microtasks();
+
+	ZEND_ASYNC_SCHEDULER_CONTEXT = false;
+
+	if (UNEXPECTED(false == circular_buffer_is_empty(&ASYNC_G(microtasks)))) {
+		async_warning("%u microtasks were not executed", circular_buffer_count(&ASYNC_G(microtasks)));
 	}
+
+	if (UNEXPECTED(false == circular_buffer_is_empty(&ASYNC_G(coroutine_queue)))) {
+		async_warning("%u deferred coroutines were not executed", circular_buffer_count(&ASYNC_G(coroutine_queue)));
+	}
+
+	// Destroy the scheduler coroutine at the end.
+	async_coroutine_t *async_coroutine = (async_coroutine_t *) ZEND_ASYNC_SCHEDULER;
+	ZEND_ASYNC_SCHEDULER = NULL;
+	async_coroutine->fiber_context = NULL;
+	OBJ_RELEASE(&async_coroutine->std);
+
+	zval_c_buffer_cleanup(&ASYNC_G(coroutine_queue));
+	zval_c_buffer_cleanup(&ASYNC_G(microtasks));
+
+	zval *current;
+	// foreach by fibers_state and release all fibers
+	ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), current)
+	{
+		async_coroutine_t *coroutine = Z_PTR_P(current);
+		OBJ_RELEASE(&coroutine->std);
+	}
+	ZEND_HASH_FOREACH_END();
+
+	zend_hash_clean(&ASYNC_G(coroutines));
+	zend_hash_destroy(&ASYNC_G(coroutines));
+	zend_hash_init(&ASYNC_G(coroutines), 0, NULL, NULL, 0);
+
+	ZEND_ASYNC_GRACEFUL_SHUTDOWN = false;
+	ZEND_ASYNC_SCHEDULER_CONTEXT = false;
+
+	zend_exception_restore();
+}
+
+///////////////////////////////////////////////////////////
+/// WAKER EVENT MANAGEMENT
+///////////////////////////////////////////////////////////
+
+static zend_always_inline void start_waker_events(zend_async_waker_t *waker)
+{
+	ZEND_ASSERT(waker != NULL && "Waker is NULL in async_scheduler_start_waker_events");
+
+	zval *current;
+	ZEND_HASH_FOREACH_VAL(&waker->events, current)
+	{
+		const zend_async_waker_trigger_t *trigger = Z_PTR_P(current);
+		trigger->event->start(trigger->event);
+	}
+	ZEND_HASH_FOREACH_END();
+}
+
+static zend_always_inline void stop_waker_events(zend_async_waker_t *waker)
+{
+	ZEND_ASSERT(waker != NULL && "Waker is NULL in async_scheduler_stop_waker_events");
+
+	zval *current;
+	ZEND_HASH_FOREACH_VAL(&waker->events, current)
+	{
+		const zend_async_waker_trigger_t *trigger = Z_PTR_P(current);
+		trigger->event->stop(trigger->event);
+	}
+	ZEND_HASH_FOREACH_END();
+}
+
+///////////////////////////////////////////////////////////
+/// SCHEDULER CORE
+///////////////////////////////////////////////////////////
 
 /**
  * The main loop of the scheduler.
@@ -535,6 +763,12 @@ void async_scheduler_launch(void)
 	}
 
 	ZEND_ASYNC_REACTOR_STARTUP();
+
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		return;
+	}
+
+	fiber_pool_init();
 
 	if (UNEXPECTED(EG(exception) != NULL)) {
 		return;
@@ -585,10 +819,18 @@ void async_scheduler_launch(void)
 		return;
 	}
 
+	// Create a new Fiber context for the main coroutine.
+	async_fiber_context_t *fiber_context = ecalloc(1, sizeof(async_fiber_context_t));
 	// Copy the main coroutine context
-	main_coroutine->context = *EG(main_fiber_context);
+	fiber_context->context = *EG(main_fiber_context);
+	fiber_context->execute_data = EG(current_execute_data);
+
 	// Set the current fiber context to the main coroutine context
-	EG(current_fiber_context) = &main_coroutine->context;
+	EG(current_fiber_context) = &fiber_context->context;
+	zend_fiber_context *zend_fiber_context = &fiber_context->context;
+
+	// The main coroutine will always own the fiber, unlike other coroutines.
+	main_coroutine->fiber_context = fiber_context;
 
 	zend_fiber_switch_blocked();
 
@@ -620,9 +862,9 @@ void async_scheduler_launch(void)
 	// It's essentially a switch from the zero context to the coroutine context, even though,
 	// logically, both contexts belong to the main execution thread.
 	//
-	main_coroutine->context.status = ZEND_FIBER_STATUS_INIT;
-	zend_observer_fiber_switch_notify(main_transfer->context, &main_coroutine->context);
-	main_coroutine->context.status = ZEND_FIBER_STATUS_RUNNING;
+	zend_fiber_context->status = ZEND_FIBER_STATUS_INIT;
+	zend_observer_fiber_switch_notify(main_transfer->context, zend_fiber_context);
+	zend_fiber_context->status = ZEND_FIBER_STATUS_RUNNING;
 
 	ASYNC_G(main_transfer) = main_transfer;
 	ASYNC_G(main_vm_stack) = EG(vm_stack);
@@ -637,7 +879,26 @@ void async_scheduler_launch(void)
 		return;
 	}
 
-	scheduler_coroutine->internal_entry = async_scheduler_main_loop;
+	scope = ZEND_ASYNC_NEW_SCOPE(NULL);
+	if (UNEXPECTED(EG(exception))) {
+		return;
+	}
+
+	ZVAL_UNDEF(&options);
+	scope->before_coroutine_enqueue(scheduler_coroutine, scope, &options);
+	zval_dtor(&options);
+
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		return;
+	}
+
+	scope->after_coroutine_enqueue(scheduler_coroutine, scope);
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		return;
+	}
+
+	scheduler_coroutine->internal_entry = NULL;
+	((async_coroutine_t *) scheduler_coroutine)->fiber_context = async_fiber_context_create();
 	ZEND_ASYNC_SCHEDULER = scheduler_coroutine;
 	ZEND_ASYNC_ACTIVATE;
 
@@ -650,6 +911,9 @@ void async_scheduler_launch(void)
 /**
  * A special function that is called when the main coroutine permanently loses the execution flow.
  * Exiting this function means that the entire PHP script has finished.
+ *
+ * This function is needed because the main coroutine runs differently from the others
+ * — its logic cycle is broken.
  */
 void async_scheduler_main_coroutine_suspend(void)
 {
@@ -665,13 +929,16 @@ void async_scheduler_main_coroutine_suspend(void)
 
 	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
 	zend_fiber_transfer *transfer = ASYNC_G(main_transfer);
+	zend_fiber_context *fiber_context = &coroutine->fiber_context->context;
+	async_fiber_context_t *async_fiber_context = coroutine->fiber_context;
+	coroutine->fiber_context = NULL;
+	ZEND_ASYNC_CURRENT_COROUTINE = NULL;
 
 	zend_try
 	{
 		// We reach this point when the main coroutine has completed its execution.
-		async_coroutine_finalize(transfer, coroutine);
-
-		coroutine->context.cleanup = NULL;
+		async_coroutine_finalize(coroutine);
+		fiber_context->cleanup = NULL;
 
 		OBJ_RELEASE(&coroutine->std);
 
@@ -685,6 +952,9 @@ void async_scheduler_main_coroutine_suspend(void)
 		// we must normalize the state of EG(current_fiber_context)
 		// so that on the next switch we return to this exact point.
 		EG(current_fiber_context) = transfer->context;
+
+		// Destroy main Fiber context.
+		efree(async_fiber_context);
 
 		switch_to_scheduler(NULL);
 	}
@@ -733,17 +1003,6 @@ void async_scheduler_main_coroutine_suspend(void)
 	}
 }
 
-#define TRY_HANDLE_SUSPEND_EXCEPTION() \
-	if (UNEXPECTED(EG(exception) != NULL)) { \
-		if (ZEND_ASYNC_GRACEFUL_SHUTDOWN) { \
-			finally_shutdown(); \
-			switch_to_scheduler(transfer); \
-			zend_exception_restore(); \
-			return; \
-		} \
-		start_graceful_shutdown(); \
-	}
-
 void async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine)
 {
 	/**
@@ -762,7 +1021,7 @@ void async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine)
 	}
 
 	// If the transfer is NULL, it means that the coroutine is being resumed
-	// That’s why we’re adding it to the queue.
+	// That's why we're adding it to the queue.
 	// coroutine->waker->status != ZEND_ASYNC_WAKER_QUEUED means not need to add to queue twice
 	if (coroutine != NULL && (coroutine->waker == NULL || false == ZEND_ASYNC_WAKER_IN_QUEUE(coroutine->waker))) {
 		if (coroutine->waker == NULL) {
@@ -775,20 +1034,60 @@ void async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine)
 			coroutine->waker = waker;
 		}
 
-		coroutine->waker->status = ZEND_ASYNC_WAKER_QUEUED;
-
-		if (UNEXPECTED(circular_buffer_push(&ASYNC_G(coroutine_queue), &coroutine, true)) == FAILURE) {
+		if (UNEXPECTED(circular_buffer_push_ptr_with_resize(&ASYNC_G(coroutine_queue), coroutine) == FAILURE)) {
 			async_throw_error("Failed to enqueue coroutine");
+		} else {
+			coroutine->waker->status = ZEND_ASYNC_WAKER_QUEUED;
 		}
 
 		//
 		// We stop all events as soon as the coroutine is ready to run.
 		//
-		async_scheduler_stop_waker_events(coroutine->waker);
+		stop_waker_events(coroutine->waker);
 	}
 }
 
-void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
+/**
+ * Implements a single tick of the Scheduler
+ * and is called from the suspend operation while the context switch has not yet occurred.
+ */
+static zend_always_inline void scheduler_next_tick(void)
+{
+	zend_fiber_transfer *transfer = NULL;
+	ZEND_ASYNC_SCHEDULER_CONTEXT = true;
+
+	execute_microtasks();
+	TRY_HANDLE_SUSPEND_EXCEPTION();
+
+	const bool has_handles = ZEND_ASYNC_REACTOR_EXECUTE(circular_buffer_is_not_empty(&ASYNC_G(coroutine_queue)));
+	TRY_HANDLE_SUSPEND_EXCEPTION();
+
+	ZEND_ASYNC_SCHEDULER_CONTEXT = false;
+
+	TRY_HANDLE_SUSPEND_EXCEPTION();
+
+	const bool is_next_coroutine = circular_buffer_is_not_empty(&ASYNC_G(coroutine_queue));
+
+	if (UNEXPECTED(false == has_handles && false == is_next_coroutine &&
+				   zend_hash_num_elements(&ASYNC_G(coroutines)) > 0 && circular_buffer_is_empty(&ASYNC_G(microtasks)) &&
+				   resolve_deadlocks())) {
+		switch_to_scheduler(transfer);
+				   }
+
+	if (EXPECTED(is_next_coroutine)) {
+		//
+		// The execute_next_coroutine() may fail to transfer control to another coroutine for various reasons.
+		// In that case, it returns false, and we are then required to yield control to the scheduler.
+		//
+		if (COROUTINE_SWITCHED != execute_next_coroutine() && EG(exception) == NULL) {
+			switch_to_scheduler(transfer);
+		}
+	} else {
+		switch_to_scheduler(transfer);
+	}
+}
+
+void async_scheduler_coroutine_suspend(void)
 {
 	//
 	// Before suspending the coroutine, we save the current exception state.
@@ -817,19 +1116,21 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 	// we start all its Waker-events.
 	// This causes timers to start, POLL objects to begin waiting for events, and so on.
 	//
-	if (transfer == NULL && coroutine != NULL && coroutine->waker != NULL) {
+	if (coroutine != NULL && coroutine->waker != NULL) {
 
-		// Let’s check that the coroutine has something to wait for;
-		// If a coroutine isn’t waiting for anything, it must be in the execution queue.
-		// otherwise, it’s a potential deadlock.
-		if (coroutine->waker->events.nNumOfElements == 0 && false == ZEND_ASYNC_WAKER_IN_QUEUE(coroutine->waker)) {
+		const bool not_in_queue = ZEND_ASYNC_WAKER_NOT_IN_QUEUE(coroutine->waker);
+
+		// Let's check that the coroutine has something to wait for;
+		// If a coroutine isn't waiting for anything, it must be in the execution queue.
+		// otherwise, it's a potential deadlock.
+		if (coroutine->waker->events.nNumOfElements == 0 && not_in_queue) {
 			async_throw_error("The coroutine has no events to wait for");
-			zend_async_waker_destroy(coroutine);
+			zend_async_waker_clean(coroutine);
 			zend_exception_restore();
 			return;
 		}
 
-		async_scheduler_start_waker_events(coroutine->waker);
+		start_waker_events(coroutine->waker);
 
 		// If an exception occurs during the startup of the Waker object,
 		// that exception belongs to the current coroutine,
@@ -837,11 +1138,14 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 		if (UNEXPECTED(EG(exception))) {
 			// Before returning, We are required to properly destroy the Waker object.
 			zend_exception_save();
-			async_scheduler_stop_waker_events(coroutine->waker);
-			zend_async_waker_destroy(coroutine);
-			zend_exception_restore();
+			stop_waker_events(coroutine->waker);
+			zend_async_waker_clean(coroutine);
 			zend_exception_restore();
 			return;
+		}
+
+		if (not_in_queue) {
+			coroutine->waker->status = ZEND_ASYNC_WAKER_WAITING;
 		}
 	}
 
@@ -851,93 +1155,119 @@ void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer)
 	}
 
 	// Define current filename and line number for the coroutine suspend.
-	if (coroutine->waker != NULL) {
+	if (EXPECTED(coroutine->waker)) {
 		zend_apply_current_filename_and_line(&coroutine->waker->filename, &coroutine->waker->lineno);
 	}
 
-	//
-	// The async_scheduler_coroutine_suspend function is called
-	// with the transfer parameter not null when the current coroutine finishes execution.
-	// This means that the transfer structure may contain an exception object
-	// if the coroutine ended with an error.
-	// We are required to handle this situation.
-	//
-	if (UNEXPECTED(transfer != NULL && transfer->flags & ZEND_FIBER_TRANSFER_FLAG_ERROR)) {
+	scheduler_next_tick();
 
-		zend_object *exception = Z_OBJ(transfer->value);
-		ZEND_ASSERT(Z_TYPE(transfer->value) == IS_OBJECT && "The transfer value must be an exception object");
+	ZEND_ASYNC_CURRENT_COROUTINE = coroutine;
 
-		transfer->flags = 0;         // Reset the flags to avoid reprocessing the exception
-		ZVAL_NULL(&transfer->value); // Reset the transfer value to avoid memory leaks
-
-		if (ZEND_ASYNC_EXIT_EXCEPTION != NULL) {
-			zend_exception_set_previous(exception, ZEND_ASYNC_EXIT_EXCEPTION);
-			ZEND_ASYNC_EXIT_EXCEPTION = exception;
-		} else {
-			ZEND_ASYNC_EXIT_EXCEPTION = exception;
-		}
-
-		if (ZEND_ASYNC_GRACEFUL_SHUTDOWN) {
-			finally_shutdown();
-		} else {
-			start_graceful_shutdown();
-		}
-
-		switch_to_scheduler(transfer);
-		zend_exception_restore();
-		return;
+	if (EXPECTED(coroutine->waker->status == ZEND_ASYNC_WAKER_QUEUED)) {
+		coroutine->waker->status = ZEND_ASYNC_WAKER_RESULT;
 	}
 
-	ZEND_ASYNC_SCHEDULER_CONTEXT = true;
-
-	execute_microtasks();
-	TRY_HANDLE_SUSPEND_EXCEPTION();
-
-	const bool has_handles = ZEND_ASYNC_REACTOR_EXECUTE(circular_buffer_is_not_empty(&ASYNC_G(coroutine_queue)));
-	TRY_HANDLE_SUSPEND_EXCEPTION();
-
-	execute_microtasks();
-
-	ZEND_ASYNC_SCHEDULER_CONTEXT = false;
-
-	TRY_HANDLE_SUSPEND_EXCEPTION();
-
-	const bool is_next_coroutine = circular_buffer_is_not_empty(&ASYNC_G(coroutine_queue));
-
-	if (UNEXPECTED(false == has_handles && false == is_next_coroutine &&
-				   zend_hash_num_elements(&ASYNC_G(coroutines)) > 0 && circular_buffer_is_empty(&ASYNC_G(microtasks)) &&
-				   resolve_deadlocks())) {
-		switch_to_scheduler(transfer);
-	}
-
-	if (EXPECTED(is_next_coroutine)) {
-		//
-		// The execute_next_coroutine() may fail to transfer control to another coroutine for various reasons.
-		// In that case, it returns false, and we are then required to yield control to the scheduler.
-		//
-		if (COROUTINE_SWITCHED != execute_next_coroutine(transfer) && EG(exception) == NULL) {
-			switch_to_scheduler(transfer);
-		}
-	} else {
-		switch_to_scheduler(transfer);
-	}
-
-	if (UNEXPECTED(coroutine->switch_handlers && transfer == NULL)) {
+	if (UNEXPECTED(coroutine->switch_handlers)) {
 		ZEND_COROUTINE_ENTER(coroutine);
+	}
+
+	// Rethrow exception if waker has it
+	if (coroutine->waker->error != NULL) {
+		zend_object *exception = coroutine->waker->error;
+		coroutine->waker->error = NULL;
+		async_rethrow_exception(exception);
 	}
 
 	zend_exception_restore();
 }
 
-void async_scheduler_main_loop(void)
+///////////////////////////////////////////////////////////
+/// FIBER ENTRY POINT
+///////////////////////////////////////////////////////////
+
+/**
+ * The main entry point for the Fiber.
+ *
+ * Fibers are containers for coroutine execution. A single fiber can run multiple coroutines.
+ * There are three types of fibers:
+ * Main, Scheduler, and Regular.
+ * The Main fiber is the primary execution thread that exists at startup.
+ * The Scheduler fiber is responsible solely for managing the event loop.
+ * The Regular fiber runs both scheduler tasks and coroutines.
+ *
+ * @param transfer Control transfer context
+ */
+ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 {
-	zend_try
+	ZEND_ASSERT(!transfer->flags && "No flags should be set on initial transfer");
+
+	transfer->context = NULL;
+
+	/* Determine the current error_reporting ini setting. */
+	zend_long error_reporting = INI_INT("error_reporting");
+	if (!error_reporting && !INI_STR("error_reporting")) {
+		error_reporting = E_ALL;
+	}
+
+	EG(vm_stack) = NULL;
+
+	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
+	ZEND_ASSERT(coroutine != NULL && "The current coroutine must be initialized");
+
+	async_fiber_context_t *fiber_context = coroutine->fiber_context;
+	ZEND_ASSERT(fiber_context != NULL && "The fiber context must be initialized");
+	zend_fiber_context *internal_fiber_context = &fiber_context->context;
+
+	const bool is_scheduler = &coroutine->coroutine == ZEND_ASYNC_SCHEDULER;
+
+	// Allocate VM stack on C stack instead of heap
+	char vm_stack_memory[ZEND_FIBER_VM_STACK_SIZE];
+
+	zend_first_try
 	{
+		zend_vm_stack stack = (zend_vm_stack)vm_stack_memory;
+
+		// Initialize VM stack structure manually
+		// see zend_vm_stack_init()
+		stack->top = ZEND_VM_STACK_ELEMENTS(stack);
+		stack->end = (zval*)((char*)vm_stack_memory + ZEND_FIBER_VM_STACK_SIZE);
+		stack->prev = NULL;
+
+		// we allocate space for the first call frame, thereby normalizing the stack
+		EG(vm_stack) = stack;
+		EG(vm_stack_top) = stack->top + ZEND_CALL_FRAME_SLOT;
+		EG(vm_stack_end) = stack->end;
+		EG(vm_stack_page_size) = ZEND_FIBER_VM_STACK_SIZE;
+
+		zend_execute_data *execute_data = (zend_execute_data *) stack->top;
+		memset(execute_data, 0, sizeof(zend_execute_data));
+
+		execute_data->func = &root_function;
+		// We store a reference to the first call frame for subsequent VM state switching.
+		fiber_context->execute_data = execute_data;
+
+		EG(current_execute_data) = execute_data;
+		EG(jit_trace_num) = 0;
+		EG(error_reporting) = (int) error_reporting;
+
+#ifdef ZEND_CHECK_STACK_LIMIT
+		EG(stack_base) = zend_fiber_stack_base(internal_fiber_context->stack);
+		EG(stack_limit) = zend_fiber_stack_limit(internal_fiber_context->stack);
+#endif
+
+		if (EXPECTED(false == is_scheduler)) {
+			FIBER_DEBUG("Execute primary coroutine %p in Fiber %p\n", coroutine, EG(current_fiber_context));
+			async_coroutine_execute(coroutine);
+		}
+
 		bool has_handles = true;
 		bool has_next_coroutine = true;
 		bool was_executed = false;
+		switch_status status = COROUTINE_NOT_EXISTS;
 
 		do {
+
+			TRY_HANDLE_EXCEPTION();
 
 			ZEND_ASYNC_SCHEDULER_HEARTBEAT;
 
@@ -950,16 +1280,39 @@ void async_scheduler_main_loop(void)
 			has_handles = ZEND_ASYNC_REACTOR_EXECUTE(has_next_coroutine);
 			TRY_HANDLE_EXCEPTION();
 
-			execute_microtasks();
-			TRY_HANDLE_EXCEPTION();
-
 			ZEND_ASYNC_SCHEDULER_CONTEXT = false;
 
 			if (EXPECTED(has_next_coroutine)) {
-				const switch_status status = execute_next_coroutine(NULL);
-				was_executed = status == COROUTINE_SWITCHED || status == COROUTINE_IGNORED;
-			} else {
+				status = execute_next_coroutine_from_fiber(is_scheduler ? NULL : transfer, fiber_context);
+				was_executed = status != COROUTINE_NOT_EXISTS;
+
+				if (UNEXPECTED(status == SHOULD_BE_EXIT)) {
+					break;
+				}
+
+			} else if (is_scheduler) {
+				// The scheduler continues running even if there are no coroutines in the queue to execute.
 				was_executed = false;
+			} else {
+				// There are no more coroutines in the execution queue;
+				// perhaps we should terminate this Fiber.
+
+				// If the Fiber context pool is not empty, we can return the Fiber context to the pool.
+				// and then switch to the scheduler.
+				if (return_fiber_to_pool(fiber_context)) {
+					switch_to_scheduler(NULL);
+					async_coroutine_t *next_coroutine = (async_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
+
+					if (UNEXPECTED(next_coroutine == NULL)) {
+						break;
+					}
+
+					next_coroutine->fiber_context = fiber_context;
+					FIBER_DEBUG("Execute coroutine %p in Fiber %p\n", next_coroutine, EG(current_fiber_context));
+					async_coroutine_execute(next_coroutine);
+				} else {
+					break;
+				}
 			}
 
 			TRY_HANDLE_EXCEPTION();
@@ -969,20 +1322,38 @@ void async_scheduler_main_loop(void)
 						   circular_buffer_is_empty(&ASYNC_G(coroutine_queue)) &&
 						   circular_buffer_is_empty(&ASYNC_G(microtasks)) && resolve_deadlocks())) {
 				break;
-			}
+						   }
 
 		} while (zend_hash_num_elements(&ASYNC_G(coroutines)) > 0 ||
 				 circular_buffer_is_not_empty(&ASYNC_G(microtasks)) || ZEND_ASYNC_REACTOR_LOOP_ALIVE());
+
 	}
 	zend_catch
 	{
-		dispose_coroutines();
-		async_scheduler_dtor();
-		zend_bailout();
+		fiber_context->flags |= ZEND_FIBER_FLAG_BAILOUT;
+		transfer->flags = ZEND_FIBER_TRANSFER_FLAG_BAILOUT;
 	}
 	zend_end_try();
 
+	// At this point, the fiber is finishing and should properly transfer control back.
+
+	// If the fiber's return target is already defined, do nothing.
+	if (transfer->context != NULL) {
+		return;
+	}
+
+	// If the fiber is not the scheduler, we must switch to the scheduler.
+	if (false == is_scheduler) {
+		// If the fiber is not the scheduler, we must switch to the scheduler.
+		// The transfer value must be NULL, as we are not transferring any value.
+		switch_to_scheduler(transfer);
+		return;
+	}
+
+	// It's the scheduler fiber, so we must finalize it.
 	ZEND_ASSERT(ZEND_ASYNC_REACTOR_LOOP_ALIVE() == false && "The event loop must be stopped");
+
+	fiber_pool_cleanup();
 
 	zend_object *exit_exception = ZEND_ASYNC_EXIT_EXCEPTION;
 
@@ -996,4 +1367,18 @@ void async_scheduler_main_loop(void)
 	}
 
 	// Here we are guaranteed to exit the coroutine without exceptions.
+	return_to_main(transfer);
+
+	// Free VM stack
+	zend_vm_stack stack = EG(vm_stack);
+
+	// Destroy the VM stack associated with the fiber context.
+	// Except for the first segment, which is located directly in the fiber's stack.
+	while (stack != NULL && stack->prev != NULL) {
+		zend_vm_stack prev = stack->prev;
+		efree(stack);
+		stack = prev;
+	}
+
+	EG(vm_stack) = NULL;
 }

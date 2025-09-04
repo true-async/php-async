@@ -141,6 +141,7 @@ PHP_FUNCTION(Async_suspend)
 	THROW_IF_SCHEDULER_CONTEXT;
 	ZEND_ASYNC_ENQUEUE_COROUTINE(ZEND_ASYNC_CURRENT_COROUTINE);
 	ZEND_ASYNC_SUSPEND();
+	zend_async_waker_clean(ZEND_ASYNC_CURRENT_COROUTINE);
 }
 
 PHP_FUNCTION(Async_protect)
@@ -277,6 +278,7 @@ PHP_FUNCTION(Async_await)
 	ZEND_ASYNC_SUSPEND();
 
 	if (UNEXPECTED(EG(exception) != NULL)) {
+		zend_async_waker_clean(coroutine);
 		RETURN_THROWS();
 	}
 
@@ -288,7 +290,7 @@ PHP_FUNCTION(Async_await)
 		ZVAL_COPY(return_value, &coroutine->waker->result);
 	}
 
-	zend_async_waker_destroy(coroutine);
+	zend_async_waker_clean(coroutine);
 }
 
 PHP_FUNCTION(Async_awaitAnyOrFail)
@@ -609,7 +611,7 @@ PHP_FUNCTION(Async_delay)
 
 	ZEND_ASYNC_SUSPEND();
 
-	zend_async_waker_destroy(coroutine);
+	zend_async_waker_clean(coroutine);
 }
 
 PHP_FUNCTION(Async_timeout)

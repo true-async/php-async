@@ -18,6 +18,9 @@
 
 #include <Zend/zend_fibers.h>
 
+/* Fiber context pool configuration */
+#define ASYNC_FIBER_POOL_SIZE 4
+
 BEGIN_EXTERN_C()
 
 void async_scheduler_startup(void);
@@ -30,12 +33,13 @@ void async_scheduler_launch(void);
  * A function that is called when control needs to be transferred from a coroutine to the Scheduler.
  * In reality, no context switch occurs.
  * The Scheduler's logic runs directly within the coroutine that called suspend.
- *
- * @param transfer (optional) The transfer object that contains the context of the coroutine.
  */
-void async_scheduler_coroutine_suspend(zend_fiber_transfer *transfer);
+void async_scheduler_coroutine_suspend(void);
 void async_scheduler_main_coroutine_suspend(void);
 void async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine);
+
+/* Fiber context creation */
+async_fiber_context_t* async_fiber_context_create(void);
 
 END_EXTERN_C()
 

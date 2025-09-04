@@ -19,31 +19,43 @@
 #include "php_async_api.h"
 #include <Zend/zend_async_API.h>
 
-ZEND_STACK_ALIGNED void async_coroutine_execute(zend_fiber_transfer *transfer);
-PHP_ASYNC_API extern zend_class_entry *async_ce_coroutine;
+/* Fiber context structure for pooling */
+typedef struct _async_fiber_context_s async_fiber_context_t;
+
+struct _async_fiber_context_s
+{
+	/* Native C fiber context (stack + registers) */
+	zend_fiber_context context;
+
+	/* Active fiber VM stack */
+	zend_vm_stack vm_stack;
+	
+	/* Current Zend VM execute data */
+	zend_execute_data *execute_data;
+
+	/* Flags from enum zend_fiber_flag */
+	uint8_t flags;
+};
 
 typedef struct _async_coroutine_s async_coroutine_t;
+
+ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine);
+PHP_ASYNC_API extern zend_class_entry *async_ce_coroutine;
 
 struct _async_coroutine_s
 {
 
 	/* Basic structure for coroutine. */
 	zend_coroutine_t coroutine;
+	
+	/* Embedded waker (always allocated, no malloc needed) */
+	zend_async_waker_t waker;
 
-	/* Flags are defined in enum zend_fiber_flag. */
-	uint8_t flags;
-
-	/* Native C fiber context. */
-	zend_fiber_context context;
-
-	/* Current Zend VM execute data being run by the coroutine. */
-	zend_execute_data *execute_data;
+	/* Reference to fiber context */
+	async_fiber_context_t *fiber_context;
 
 	/* deferred cancellation object. */
 	zend_object *deferred_cancellation;
-
-	/* Active fiber vm stack. */
-	zend_vm_stack vm_stack;
 
 	/* Finally handlers array (zval callables) - lazy initialization */
 	HashTable *finally_handlers;
@@ -74,7 +86,7 @@ struct _finally_handlers_context_s
 void async_register_coroutine_ce(void);
 zend_coroutine_t *async_new_coroutine(zend_async_scope_t *scope);
 void async_coroutine_cleanup(zend_fiber_context *context);
-void async_coroutine_finalize(zend_fiber_transfer *transfer, async_coroutine_t *coroutine);
+void async_coroutine_finalize(async_coroutine_t *coroutine);
 void async_coroutine_finalize_from_scheduler(async_coroutine_t *coroutine);
 void async_coroutine_suspend(const bool from_main);
 void async_coroutine_resume(zend_coroutine_t *coroutine, zend_object *error, const bool transfer_error);

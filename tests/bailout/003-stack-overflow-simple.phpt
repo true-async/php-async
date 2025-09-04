@@ -7,6 +7,8 @@ if ($zend_mm_enabled === "0") {
     die("skip Zend MM disabled");
 }
 ?>
+--INI--
+opcache.jit_hot_func=0
 --FILE--
 <?php
 

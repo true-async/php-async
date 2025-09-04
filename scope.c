@@ -314,7 +314,7 @@ METHOD(awaitCompletion)
 	zend_async_resume_when(
 			current_coroutine, &scope_object->scope->scope.event, false, zend_async_waker_callback_resolve, NULL);
 	if (UNEXPECTED(EG(exception))) {
-		zend_async_waker_destroy(current_coroutine);
+		zend_async_waker_clean(current_coroutine);
 		RETURN_THROWS();
 	}
 
@@ -324,12 +324,12 @@ METHOD(awaitCompletion)
 						   zend_async_waker_callback_cancel,
 						   NULL);
 	if (UNEXPECTED(EG(exception))) {
-		zend_async_waker_destroy(current_coroutine);
+		zend_async_waker_clean(current_coroutine);
 		RETURN_THROWS();
 	}
 
 	ZEND_ASYNC_SUSPEND();
-	zend_async_waker_destroy(current_coroutine);
+	zend_async_waker_clean(current_coroutine);
 }
 
 METHOD(awaitAfterCancellation)
@@ -382,7 +382,7 @@ METHOD(awaitAfterCancellation)
 	scope_coroutine_callback_t *scope_callback = (scope_coroutine_callback_t *) zend_async_coroutine_callback_new(
 			current_coroutine, callback_resolve_when_zombie_completed, sizeof(scope_coroutine_callback_t));
 	if (UNEXPECTED(scope_callback == NULL)) {
-		zend_async_waker_destroy(current_coroutine);
+		zend_async_waker_clean(current_coroutine);
 		RETURN_THROWS();
 	}
 
@@ -396,7 +396,7 @@ METHOD(awaitAfterCancellation)
 
 	zend_async_resume_when(current_coroutine, &scope_object->scope->scope.event, true, NULL, &scope_callback->callback);
 	if (UNEXPECTED(EG(exception))) {
-		zend_async_waker_destroy(current_coroutine);
+		zend_async_waker_clean(current_coroutine);
 		RETURN_THROWS();
 	}
 
@@ -407,13 +407,13 @@ METHOD(awaitAfterCancellation)
 							   zend_async_waker_callback_cancel,
 							   NULL);
 		if (UNEXPECTED(EG(exception))) {
-			zend_async_waker_destroy(current_coroutine);
+			zend_async_waker_clean(current_coroutine);
 			RETURN_THROWS();
 		}
 	}
 
 	ZEND_ASYNC_SUSPEND();
-	zend_async_waker_destroy(current_coroutine);
+	zend_async_waker_clean(current_coroutine);
 }
 
 METHOD(isFinished)
