@@ -25,9 +25,18 @@ echo "Before scope\n";
 
 $scope = new Scope();
 
-$scope->onFinally(function() {
-    echo "Finally handler executed\n";
-});
+$finally = function($x = false, $out = true) {
+    if($out) {
+        echo "Finally handler executed\n";
+    }
+};
+
+// JIT PHP in tracing mode can compile functions on demand. When memory runs out,
+// JIT crashes with an error because it tries to compile a closure.
+// This code attempts to work around the issue so that the test runs correctly.
+$finally(false, false);
+
+$scope->onFinally($finally);
 
 $coroutine = $scope->spawn(function() {
     echo "Before stack overflow\n";

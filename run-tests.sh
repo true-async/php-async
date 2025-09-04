@@ -16,4 +16,4 @@ else
     TEST_PATH="$BASE_PATH/$1"
 fi
 
-"$PHP_EXECUTABLE" "$RUN_TESTS_PATH" --show-diff -p "$PHP_EXECUTABLE" "$TEST_PATH"
+"$PHP_EXECUTABLE" "$RUN_TESTS_PATH" -d zend_extension=opcache.so -d opcache.enable_cli=1 --show-diff -p "$PHP_EXECUTABLE" "$TEST_PATH"

@@ -17,9 +17,13 @@ function deepRecursion($depth = 0) {
     return deepRecursion($depth + 1);
 }
 
-register_shutdown_function(function() {
-    echo "Shutdown function called\n";
-});
+$function = function(bool $out = true) {
+    if($out) echo "Shutdown function called\n";
+};
+
+$function(false);
+
+register_shutdown_function($function);
 
 echo "Before spawn\n";
 
