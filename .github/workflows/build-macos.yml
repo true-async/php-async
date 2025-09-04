@@ -44,7 +44,7 @@ jobs:
           # Ensure no conflicts with cmake from pinned/local tap
           brew uninstall --ignore-dependencies cmake || true
 
-  # Install standard PHP dependencies
+          # Install standard PHP dependencies
           brew reinstall autoconf webp tidy-html5 libzip libsodium icu4c curl
           brew install \
             bison \
