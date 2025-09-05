@@ -28,7 +28,6 @@ function test_timeout() {
     $errno = curl_errno($ch);
     $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     
-    curl_close($ch);
     
     $duration = $end_time - $start_time;
     
@@ -52,7 +51,6 @@ function test_normal_request($server) {
     $response = curl_exec($ch);
     $error = curl_error($ch);
     
-    curl_close($ch);
     
     echo "Response: $response\n";
     echo "Error: " . ($error ?: "none") . "\n";

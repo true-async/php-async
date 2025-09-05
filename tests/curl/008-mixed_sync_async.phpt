@@ -22,7 +22,6 @@ function sync_request($server) {
     $response = curl_exec($ch);
     $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     
-    curl_close($ch);
     
     echo "Sync request complete: HTTP $http_code\n";
     return $response;
@@ -39,7 +38,6 @@ function async_request($server) {
     $response = curl_exec($ch);
     $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     
-    curl_close($ch);
     
     echo "Async request complete: HTTP $http_code\n";
     return $response;

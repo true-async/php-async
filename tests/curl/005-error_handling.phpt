@@ -24,7 +24,6 @@ function test_connection_error() {
     $error = curl_error($ch);
     $errno = curl_errno($ch);
     
-    curl_close($ch);
     
     echo "Connection failed as expected\n";
     echo "Error present: " . (!empty($error) ? "yes" : "no") . "\n";
@@ -45,7 +44,6 @@ function test_server_error($server) {
     $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $error = curl_error($ch);
     
-    curl_close($ch);
     
     echo "HTTP Code: $http_code\n";
     echo "Error: " . ($error ?: "none") . "\n";
@@ -65,7 +63,6 @@ function test_not_found($server) {
     $response = curl_exec($ch);
     $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     
-    curl_close($ch);
     
     echo "HTTP Code: $http_code\n";
     echo "Response length: " . strlen($response) . "\n";
