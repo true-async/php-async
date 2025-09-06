@@ -108,64 +108,40 @@ function buildHttpResponse($responseBody, $statusCode, $keepAlive = true) {
 }
 
 /**
- * Handle persistent connection with Keep-Alive support
+ * Handle single HTTP request
  */
-function handleConnection($client, $connId) {
+function handleSingleRequest($client) {
     global $activeConnections;
     
-    $activeConnections[$connId] = $client;
-    
-    $requestCount = 0;
-    $startTime = time();
-    
-    try {
-        while (true) {
-            // Set read timeout for Keep-Alive
-            stream_set_timeout($client, 30);
-            
-            // Read HTTP request - simple 8KB block read for performance
-            $request = fread($client, 8192);
-            if ($request === false || empty(trim($request))) {
-                // Connection closed by client or timeout
-                break;
-            }
-            
-            $requestCount++;
-            $parsedRequest = parseHttpRequest($request);
-            
-            // Check if client wants to close connection
-            $shouldKeepAlive = !$parsedRequest['connection_close'];
-            
-            // Process request (now returns pre-encoded JSON body)
-            [$responseBody, $statusCode] = processHttpRequest($parsedRequest['uri']);
-            
-            // Build and send response
-            $response = buildHttpResponse($responseBody, $statusCode, $shouldKeepAlive);
-            
-            $bytesSent = fwrite($client, $response);
-            if ($bytesSent === false) {
-                throw new Exception("Failed to send response");
-            }
-            
-            // Close connection if requested by client
-            if (!$shouldKeepAlive) {
-                break;
-            }
-            
-            // Limit max requests per connection to prevent resource exhaustion
-            if ($requestCount >= 1000) {
-                break;
-            }
+    // Read HTTP request
+    $request = fread($client, 8192);
+    if ($request === false || empty(trim($request))) {
+        // Connection closed - remove from active connections
+        $key = array_search($client, $activeConnections);
+        if ($key !== false) {
+            unset($activeConnections[$key]);
         }
-        
-    } catch (Exception $e) {
-        echo "Connection error: " . $e->getMessage() . "\n";
-    } finally {
-        // Clean up connection
-        unset($activeConnections[$connId]);
-        if (is_resource($client)) {
-            fclose($client);
+        fclose($client);
+        return;
+    }
+    
+    $parsedRequest = parseHttpRequest($request);
+    $shouldKeepAlive = !$parsedRequest['connection_close'];
+    
+    // Process request
+    [$responseBody, $statusCode] = processHttpRequest($parsedRequest['uri']);
+    
+    // Send response
+    $response = buildHttpResponse($responseBody, $statusCode, $shouldKeepAlive);
+    fwrite($client, $response);
+    
+    // Close connection if requested by client
+    if (!$shouldKeepAlive) {
+        $key = array_search($client, $activeConnections);
+        if ($key !== false) {
+            unset($activeConnections[$key]);
         }
+        fclose($client);
     }
 }
 
@@ -173,10 +149,8 @@ function handleConnection($client, $connId) {
  * HTTP Server with Keep-Alive support
  */
 function startHttpServer($host, $port) {
-    global $connectionId;
-    
     return spawn(function() use ($host, $port) {
-        global $connectionId;
+        global $activeConnections;
         
         // Create server socket
         $server = stream_socket_server("tcp://$host:$port", $errno, $errstr, STREAM_SERVER_BIND | STREAM_SERVER_LISTEN);
@@ -188,15 +162,27 @@ function startHttpServer($host, $port) {
         echo "Try: curl http://$host:$port/\n";
         echo "Benchmark: wrk -t12 -c400 -d30s --http1.1 http://$host:$port/benchmark\n\n";
         
+        // Event-driven main loop
         while (true) {
-            // Accept new connections (this is async in async extension)
-            $client = stream_socket_accept($server, 0);
-
-            if ($client) {
-                $connectionId++;
-                
-                // Handle connection in separate coroutine with Keep-Alive
-                spawn(handleConnection(...), $client, $connectionId);
+            $readSockets = [$server] + $activeConnections;
+            $writeSockets = [];
+            $exceptSockets = [];
+            
+            $ready = stream_select($readSockets, $writeSockets, $exceptSockets, 1);
+            
+            if ($ready > 0) {
+                foreach ($readSockets as $socket) {
+                    if ($socket === $server) {
+                        // New connection
+                        $client = stream_socket_accept($server, 0);
+                        if ($client) {
+                            $activeConnections[] = $client;
+                        }
+                    } else {
+                        // Data from existing client
+                        spawn(handleSingleRequest(...), $socket);
+                    }
+                }
             }
         }
         
