@@ -1,0 +1,18 @@
+{
+    "name": "async-vs-amphp/benchmark",
+    "description": "Performance comparison between async extension and AmphpPHP",
+    "type": "project",
+    "require": {
+        "php": "^8.1",
+        "amphp/http-server": "^3.0",
+        "amphp/socket": "^2.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "AsyncBench\\": "src/"
+        }
+    },
+    "config": {
+        "optimize-autoloader": true
+    }
+}
