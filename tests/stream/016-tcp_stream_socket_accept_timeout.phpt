@@ -41,4 +41,6 @@ End
 Server: starting
 Server: listening on port %d
 Server: accepting connections
+
+Warning: stream_socket_accept(): Accept failed: %s
 Server end
