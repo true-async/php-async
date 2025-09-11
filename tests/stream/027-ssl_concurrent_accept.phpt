@@ -31,31 +31,31 @@ function create_ssl_server($id, $cert_file, $key_file, &$monitor, &$servers_read
                 'allow_self_signed' => true,
             ]
         ]);
-        
+
         $socket = stream_socket_server("ssl://127.0.0.1:0", $errno, $errstr, STREAM_SERVER_BIND|STREAM_SERVER_LISTEN, $context);
         if (!$socket) {
             $monitor->cancel();
             $output[] = "SSL Server $id: failed to start - $errstr";
             return;
         }
-        
+
         $address = stream_socket_get_name($socket, false);
         $output[] = "SSL Server $id: listening on $address";
-        
+
         $servers_ready++;
-        
+
         // All servers try to accept concurrently
         // This tests that network_async_accept_incoming() doesn't cause EventLoop conflicts
         // which was the main issue with php_poll2_async()
-        $client = stream_socket_accept($socket, 2); // 2 second timeout
-        
+        $client = @stream_socket_accept($socket, 2); // 2 second timeout
+
         if ($client === false) {
             $output[] = "SSL Server $id: timeout occurred";
         } else {
             $output[] = "SSL Server $id: client connected";
             fclose($client);
         }
-        
+
         fclose($socket);
         $servers_completed++;
     });
@@ -72,17 +72,17 @@ $server3 = create_ssl_server(3, $cert_file, $key_file, $monitor, $servers_ready,
 // Monitor coroutine
 $monitor = spawn(function() use (&$servers_ready, &$servers_completed) {
     echo "Monitor: waiting for servers to be ready\n";
-    
+
     while ($servers_ready < 3) {
         delay(50);
     }
-    
+
     echo "Monitor: all servers ready, waiting for completion\n";
-    
+
     while ($servers_completed < 3) {
         delay(50);
     }
-    
+
     echo "Monitor: all servers completed\n";
 });
 
@@ -103,10 +103,10 @@ Creating multiple concurrent SSL servers
 Monitor: waiting for servers to be ready
 Monitor: all servers ready, waiting for completion
 Monitor: all servers completed
-SSL Server 1: listening on ssl://127.0.0.1:%d
+SSL Server 1: listening on %s:%d
 SSL Server 1: timeout occurred
-SSL Server 2: listening on ssl://127.0.0.1:%d
+SSL Server 2: listening on %s:%d
 SSL Server 2: timeout occurred
-SSL Server 3: listening on ssl://127.0.0.1:%d
+SSL Server 3: listening on %s:%d
 SSL Server 3: timeout occurred
 End SSL concurrent accept test

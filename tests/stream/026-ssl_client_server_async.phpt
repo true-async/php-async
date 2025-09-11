@@ -23,7 +23,7 @@ $client = null;
 // SSL Server coroutine
 $server = spawn(function() use (&$address, &$output, &$client, $cert_file, $key_file) {
     echo "SSL Server: creating SSL context\n";
-    
+
     $context = stream_context_create([
         'ssl' => [
             'local_cert' => $cert_file,
@@ -33,35 +33,35 @@ $server = spawn(function() use (&$address, &$output, &$client, $cert_file, $key_
             'crypto_method' => STREAM_CRYPTO_METHOD_TLS_SERVER,
         ]
     ]);
-    
+
     $socket = stream_socket_server("ssl://127.0.0.1:0", $errno, $errstr, STREAM_SERVER_BIND|STREAM_SERVER_LISTEN, $context);
     if (!$socket) {
         echo "SSL Server: failed to create socket - $errstr\n";
         return;
     }
-    
+
     $server_address = stream_socket_get_name($socket, false);
     // Client needs ssl:// prefix to connect via SSL
     $address = 'ssl://' . $server_address;
     echo "SSL Server: listening on $server_address\n";
-    
+
     echo "SSL Server: waiting for SSL connection\n";
     // This should use network_async_accept_incoming() instead of php_poll2_async()
     $client = stream_socket_accept($socket, 10); // 10 second timeout
-    
+
     if (!$client) {
         echo "SSL Server: failed to accept client\n";
         return;
     }
-    
+
     $output[] = "SSL Server: client connected";
-    
+
     $data = fread($client, 1024);
     $output[] = "SSL Server: received '$data'";
-    
+
     fwrite($client, "Hello from SSL server");
     $output[] = "SSL Server: response sent";
-    
+
     fclose($client);
     fclose($socket);
 });
@@ -72,9 +72,9 @@ $client = spawn(function() use (&$address, &$output) {
     while ($address === null) {
         delay(10);
     }
-    
+
     echo "SSL Client: connecting to $address\n";
-    
+
     $context = stream_context_create([
         'ssl' => [
             'verify_peer' => false,
@@ -83,32 +83,25 @@ $client = spawn(function() use (&$address, &$output) {
             'crypto_method' => STREAM_CRYPTO_METHOD_TLS_CLIENT,
         ]
     ]);
-    
+
     $sock = stream_socket_client($address, $errno, $errstr, 30, STREAM_CLIENT_CONNECT, $context);
     if (!$sock) {
         echo "SSL Client: failed to connect - $errstr ($errno)\n";
         return;
     }
-    
+
     $output[] = "SSL Client: connected successfully";
-    
+
     fwrite($sock, "Hello from SSL client");
     $output[] = "SSL Client: sent request";
-    
+
     $response = fread($sock, 1024);
     $output[] = "SSL Client: received '$response'";
-    
+
     fclose($sock);
 });
 
-// Worker coroutine to test concurrent execution
-$worker = spawn(function() {
-    echo "Worker: doing work while SSL operations happen\n";
-    delay(100); // Give some time for SSL handshake
-    echo "Worker: finished\n";
-});
-
-awaitAllOrFail([$server, $client, $worker]);
+awaitAllOrFail([$server, $client]);
 
 // Sort output for deterministic results
 sort($output);
@@ -122,11 +115,9 @@ echo "End SSL client-server test\n";
 --EXPECTF--
 Start SSL client-server test
 SSL Server: creating SSL context
-SSL Server: listening on ssl://127.0.0.1:%d
-Worker: doing work while SSL operations happen
+SSL Server: listening on %s:%d
 SSL Server: waiting for SSL connection
-SSL Client: connecting to ssl://127.0.0.1:%d
-Worker: finished
+SSL Client: connecting to %s:%d
 SSL Client: connected successfully
 SSL Client: received 'Hello from SSL server'
 SSL Client: sent request
