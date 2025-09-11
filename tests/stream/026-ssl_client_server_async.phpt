@@ -6,7 +6,7 @@ SSL Stream: full SSL client-server async communication
 <?php
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\awaitAllOrFail;
 use function Async\delay;
 
 echo "Start SSL client-server test\n";
@@ -64,9 +64,10 @@ qEGp5GoqyrUfxJZ8BywxeQ==
 // Shared variables for communication
 $address = null;
 $output = [];
+$client = null;
 
 // SSL Server coroutine
-$server = spawn(function() use (&$address, &$output, $cert_data, $key_data) {
+$server = spawn(function() use (&$address, &$output, &$client, $cert_data, $key_data) {
     echo "SSL Server: creating SSL context\n";
     
     // Create temporary files for Windows compatibility
@@ -93,6 +94,7 @@ $server = spawn(function() use (&$address, &$output, $cert_data, $key_data) {
     
     $socket = stream_socket_server("ssl://127.0.0.1:0", $errno, $errstr, STREAM_SERVER_BIND|STREAM_SERVER_LISTEN, $context);
     if (!$socket) {
+        $client->cancel();
         echo "SSL Server: failed to create socket - $errstr\n";
         return;
     }
@@ -166,7 +168,7 @@ $worker = spawn(function() {
     echo "Worker: finished\n";
 });
 
-awaitAll([$server, $client, $worker]);
+awaitAllOrFail([$server, $client, $worker]);
 
 // Sort output for deterministic results
 sort($output);
