@@ -73,7 +73,7 @@ function processHttpRequest($client, $rawRequest) {
         $statusCode = 200;
     } elseif ($uri === '/benchmark') {
         // Dynamic endpoints
-        $responseBody = json_encode(['id' => uniqid(), 'time' => microtime(true)], JSON_UNESCAPED_SLASHES);
+        $responseBody = '{"status":"ok"}';
         $statusCode = 200;
     } else {
         // 404 response
