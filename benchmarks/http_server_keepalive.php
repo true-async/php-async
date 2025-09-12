@@ -26,9 +26,6 @@ echo "Starting server on http://$host:$port\n";
 echo "Keep-Alive timeout: {$keepaliveTimeout}s\n";
 echo "Press Ctrl+C to stop\n\n";
 
-// Global connection pool
-$activeConnections = [];
-$connectionId = 0;
 
 // Cached JSON responses for performance
 $cachedResponses = [
@@ -61,25 +58,37 @@ function parseHttpRequest($request) {
 }
 
 /**
- * Fast request processing with cached responses
+ * Process HTTP request and send response
  */
-function processHttpRequest($uri) {
+function processHttpRequest($client, $rawRequest) {
     global $cachedResponses;
+    
+    $parsedRequest = parseHttpRequest($rawRequest);
+    $uri = $parsedRequest['uri'];
+    $shouldKeepAlive = !$parsedRequest['connection_close'];
     
     // Use cached responses for static content
     if (isset($cachedResponses[$uri])) {
-        return [$cachedResponses[$uri], 200];
-    }
-    
-    // Dynamic endpoints
-    if ($uri === '/benchmark') {
+        $responseBody = $cachedResponses[$uri];
+        $statusCode = 200;
+    } elseif ($uri === '/benchmark') {
+        // Dynamic endpoints
         $responseBody = json_encode(['id' => uniqid(), 'time' => microtime(true)], JSON_UNESCAPED_SLASHES);
-        return [$responseBody, 200];
+        $statusCode = 200;
+    } else {
+        // 404 response
+        $responseBody = json_encode(['error' => 'Not Found', 'uri' => $uri], JSON_UNESCAPED_SLASHES);
+        $statusCode = 404;
     }
     
-    // 404 response
-    $responseBody = json_encode(['error' => 'Not Found', 'uri' => $uri], JSON_UNESCAPED_SLASHES);
-    return [$responseBody, 404];
+    $response = buildHttpResponse($responseBody, $statusCode, $shouldKeepAlive);
+    $written = fwrite($client, $response);
+    
+    if ($written === false) {
+        return false; // Write failed
+    }
+    
+    return $shouldKeepAlive;
 }
 
 /**
@@ -108,50 +117,49 @@ function buildHttpResponse($responseBody, $statusCode, $keepAlive = true) {
 }
 
 /**
- * Handle single HTTP request
+ * Handle socket connection with keep-alive support
+ * Each socket gets its own coroutine that lives for the entire connection
  */
-function handleSingleRequest($client) {
-    global $activeConnections;
-    
-    // Read HTTP request
-    $request = fread($client, 8192);
-    if ($request === false || empty(trim($request))) {
-        // Connection closed - remove from active connections
-        $key = array_search($client, $activeConnections);
-        if ($key !== false) {
-            unset($activeConnections[$key]);
+function handleSocket($client) {
+    try {
+        while (true) {
+            // Read HTTP request
+            $request = fread($client, 8192);
+            if ($request === false || $request === '') {
+                // Connection closed by client
+                return;
+            }
+            
+            if (empty(trim($request))) {
+                // Empty request, connection might be closed
+                return;
+            }
+            
+            // Process request and send response
+            $shouldKeepAlive = processHttpRequest($client, $request);
+            
+            if ($shouldKeepAlive === false) {
+                // Write failed or connection should be closed
+                return;
+            }
+            
+            // Continue to next request in keep-alive connection
         }
-        fclose($client);
-        return;
-    }
-    
-    $parsedRequest = parseHttpRequest($request);
-    $shouldKeepAlive = !$parsedRequest['connection_close'];
-    
-    // Process request
-    [$responseBody, $statusCode] = processHttpRequest($parsedRequest['uri']);
-    
-    // Send response
-    $response = buildHttpResponse($responseBody, $statusCode, $shouldKeepAlive);
-    fwrite($client, $response);
-    
-    // Close connection if requested by client
-    if (!$shouldKeepAlive) {
-        $key = array_search($client, $activeConnections);
-        if ($key !== false) {
-            unset($activeConnections[$key]);
+        
+    } finally {
+        // Always clean up the socket
+        if (is_resource($client)) {
+            fclose($client);
         }
-        fclose($client);
     }
 }
 
 /**
  * HTTP Server with Keep-Alive support
+ * Simple coroutine-based implementation without stream_select
  */
 function startHttpServer($host, $port) {
     return spawn(function() use ($host, $port) {
-        global $activeConnections;
-        
         // Create server socket
         $server = stream_socket_server("tcp://$host:$port", $errno, $errstr, STREAM_SERVER_BIND | STREAM_SERVER_LISTEN);
         if (!$server) {
@@ -162,27 +170,13 @@ function startHttpServer($host, $port) {
         echo "Try: curl http://$host:$port/\n";
         echo "Benchmark: wrk -t12 -c400 -d30s --http1.1 http://$host:$port/benchmark\n\n";
         
-        // Event-driven main loop
+        // Simple accept loop - much cleaner!
         while (true) {
-            $readSockets = [$server] + $activeConnections;
-            $writeSockets = [];
-            $exceptSockets = [];
-            
-            $ready = stream_select($readSockets, $writeSockets, $exceptSockets, 1);
-            
-            if ($ready > 0) {
-                foreach ($readSockets as $socket) {
-                    if ($socket === $server) {
-                        // New connection
-                        $client = stream_socket_accept($server, 0);
-                        if ($client) {
-                            $activeConnections[] = $client;
-                        }
-                    } else {
-                        // Data from existing client
-                        spawn(handleSingleRequest(...), $socket);
-                    }
-                }
+            // Accept new connections
+            $client = stream_socket_accept($server, 0);
+            if ($client) {
+                // Spawn a coroutine to handle this client's entire lifecycle
+                spawn(handleSocket(...), $client);
             }
         }
         
