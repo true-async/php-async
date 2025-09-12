@@ -168,7 +168,7 @@ function startHttpServer($host, $port) {
         
         echo "Server listening on $host:$port\n";
         echo "Try: curl http://$host:$port/\n";
-        echo "Benchmark: wrk -t12 -c400 -d30s --http1.1 http://$host:$port/benchmark\n\n";
+        echo "Benchmark: wrk -t12 -c400 -d30s http://$host:$port/benchmark\n\n";
         
         // Simple accept loop - much cleaner!
         while (true) {
