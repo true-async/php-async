@@ -14,7 +14,7 @@
 ini_set('memory_limit', '512M');
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await;
 
 // Configuration
 $host = $argv[1] ?? '127.0.0.1';
@@ -38,7 +38,8 @@ $cachedResponses = [
 /**
  * Fast HTTP request parsing for benchmarks - only extract URI
  */
-function parseHttpRequest($request) {
+function parseHttpRequest($request)
+{
     // Fast path: find first space and second space to extract URI
     $firstSpace = strpos($request, ' ');
     if ($firstSpace === false) return '/';
@@ -60,7 +61,8 @@ function parseHttpRequest($request) {
 /**
  * Process HTTP request and send response
  */
-function processHttpRequest($client, $rawRequest) {
+function processHttpRequest($client, $rawRequest)
+{
     global $cachedResponses;
     
     $parsedRequest = parseHttpRequest($rawRequest);
@@ -71,17 +73,31 @@ function processHttpRequest($client, $rawRequest) {
     if (isset($cachedResponses[$uri])) {
         $responseBody = $cachedResponses[$uri];
         $statusCode = 200;
-    } elseif ($uri === '/benchmark') {
-        // Dynamic endpoints
-        $responseBody = '{"status":"ok"}';
-        $statusCode = 200;
     } else {
         // 404 response
         $responseBody = json_encode(['error' => 'Not Found', 'uri' => $uri], JSON_UNESCAPED_SLASHES);
         $statusCode = 404;
     }
     
-    $response = buildHttpResponse($responseBody, $statusCode, $shouldKeepAlive);
+    // Build and send response directly
+    $contentLength = strlen($responseBody);
+    $statusText = $statusCode === 200 ? 'OK' : 'Not Found';
+    
+    if ($shouldKeepAlive) {
+        $response = 'HTTP/1.1 ' . $statusCode . ' ' . $statusText . "\r\n" .
+                   'Content-Type: application/json' . "\r\n" .
+                   'Content-Length: ' . $contentLength . "\r\n" .
+                   'Server: AsyncKeepAlive/1.0' . "\r\n" .
+                   'Connection: keep-alive' . "\r\n" .
+                   'Keep-Alive: timeout=30, max=1000' . "\r\n\r\n" . $responseBody;
+    } else {
+        $response = 'HTTP/1.1 ' . $statusCode . ' ' . $statusText . "\r\n" .
+                   'Content-Type: application/json' . "\r\n" .
+                   'Content-Length: ' . $contentLength . "\r\n" .
+                   'Server: AsyncKeepAlive/1.0' . "\r\n" .
+                   'Connection: close' . "\r\n\r\n" . $responseBody;
+    }
+    
     $written = fwrite($client, $response);
     
     if ($written === false) {
@@ -92,47 +108,44 @@ function processHttpRequest($client, $rawRequest) {
 }
 
 /**
- * Fast HTTP response building
- */
-function buildHttpResponse($responseBody, $statusCode, $keepAlive = true) {
-    $statusText = $statusCode === 200 ? 'OK' : 'Not Found';
-    $contentLength = strlen($responseBody);
-    
-    // Build response using array for better performance
-    $headers = [
-        "HTTP/1.1 $statusCode $statusText",
-        "Content-Type: application/json",
-        "Content-Length: $contentLength",
-        "Server: AsyncKeepAlive/1.0"
-    ];
-    
-    if ($keepAlive) {
-        $headers[] = "Connection: keep-alive";
-        $headers[] = "Keep-Alive: timeout=30, max=1000";
-    } else {
-        $headers[] = "Connection: close";
-    }
-    
-    return implode("\r\n", $headers) . "\r\n\r\n" . $responseBody;
-}
-
-/**
  * Handle socket connection with keep-alive support
  * Each socket gets its own coroutine that lives for the entire connection
  */
-function handleSocket($client) {
+function handleSocket($client)
+{
     try {
         while (true) {
-            // Read HTTP request
-            $request = fread($client, 8192);
-            if ($request === false || $request === '') {
-                // Connection closed by client
-                return;
+            $request = '';
+            $totalBytes = 0;
+            
+            // Read HTTP request with byte counting
+            while (true) {
+                $chunk = fread($client, 1024);
+                
+                if ($chunk === false || $chunk === '') {
+                    // Connection closed by client or read error
+                    return;
+                }
+                
+                $request .= $chunk;
+                $totalBytes += strlen($chunk);
+                
+                // Check for request size limit
+                if ($totalBytes > 8192) {
+                    // Request too large, close connection immediately
+                    fclose($client);
+                    return;
+                }
+                
+                // Check if we have complete HTTP request (ends with \r\n\r\n)
+                if (strpos($request, "\r\n\r\n") !== false) {
+                    break;
+                }
             }
             
             if (empty(trim($request))) {
-                // Empty request, connection might be closed
-                return;
+                // Empty request, skip to next iteration
+                continue;
             }
             
             // Process request and send response
@@ -168,7 +181,7 @@ function startHttpServer($host, $port) {
         
         echo "Server listening on $host:$port\n";
         echo "Try: curl http://$host:$port/\n";
-        echo "Benchmark: wrk -t12 -c400 -d30s http://$host:$port/benchmark\n\n";
+        echo "Benchmark: wrk -t12 -c400 -d30s http://$host:$port/\n\n";
         
         // Simple accept loop - much cleaner!
         while (true) {
@@ -188,9 +201,7 @@ function startHttpServer($host, $port) {
 // Start server
 try {
     $serverTask = startHttpServer($host, $port);
-    
-    // Run until interrupted
-    awaitAll([$serverTask]);
+    await($serverTask);
     
 } catch (Exception $e) {
     echo "Server error: " . $e->getMessage() . "\n";
