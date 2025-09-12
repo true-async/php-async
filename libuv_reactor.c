@@ -195,6 +195,35 @@ static void libuv_close_handle_cb(uv_handle_t *handle)
 
 /* }}} */
 
+/* {{{ libuv_close_poll_handle_cb */
+static void libuv_close_poll_handle_cb(uv_handle_t *handle)
+{
+	async_poll_event_t *poll = (async_poll_event_t *)handle->data;
+	
+	/* Check if PHP requested descriptor closure after event cleanup */
+	if (ZEND_ASYNC_EVENT_SHOULD_CLOSE_FD(&poll->event.base)) {
+		if (poll->event.is_socket && ZEND_VALID_SOCKET(poll->event.socket)) {
+			/* Socket cleanup - just close, no blocking operations in LibUV callback */
+#ifdef PHP_WIN32
+			closesocket(poll->event.socket);
+#else
+			close(poll->event.socket);
+#endif
+		} else if (!poll->event.is_socket && poll->event.file != ZEND_FD_NULL) {
+			/* File descriptor cleanup */
+#ifdef PHP_WIN32
+			CloseHandle((HANDLE)poll->event.file);
+#else
+			close(poll->event.file);
+#endif
+		}
+	}
+	
+	pefree(poll, 0);
+}
+
+/* }}} */
+
 /* {{{ libuv_add_callback */
 static void libuv_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
 {
@@ -295,7 +324,8 @@ static void libuv_poll_dispose(zend_async_event_t *event)
 
 	async_poll_event_t *poll = (async_poll_event_t *) (event);
 
-	uv_close((uv_handle_t *) &poll->uv_handle, libuv_close_handle_cb);
+	/* Use poll-specific callback for poll events that may need descriptor cleanup */
+	uv_close((uv_handle_t *) &poll->uv_handle, libuv_close_poll_handle_cb);
 }
 
 /* }}} */
