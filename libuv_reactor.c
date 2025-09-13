@@ -244,6 +244,9 @@ static void libuv_remove_callback(zend_async_event_t *event, zend_async_event_ca
 /// Poll API
 //////////////////////////////////////////////////////////////////////////////
 
+/* Forward declaration */
+static zend_always_inline void async_poll_notify_proxies(async_poll_event_t *poll, async_poll_event triggered_events, zend_object *exception);
+
 /* {{{ on_poll_event */
 static void on_poll_event(uv_poll_t *handle, int status, int events)
 {
@@ -256,7 +259,14 @@ static void on_poll_event(uv_poll_t *handle, int status, int events)
 
 	poll->event.triggered_events = events;
 
-	ZEND_ASYNC_CALLBACKS_NOTIFY(&poll->event.base, NULL, exception);
+	/* Check if there are active proxies */
+	if (poll->proxies_count > 0) {
+		/* Notify all matching proxies */
+		async_poll_notify_proxies(poll, events, exception);
+	} else {
+		/* Standard base event notification */
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&poll->event.base, NULL, exception);
+	}
 
 	if (exception != NULL) {
 		zend_object_release(exception);
@@ -336,8 +346,33 @@ static void libuv_poll_dispose(zend_async_event_t *event)
 
 /* }}} */
 
+/* {{{ async_poll_notify_proxies */
+static zend_always_inline void async_poll_notify_proxies(async_poll_event_t *poll, async_poll_event triggered_events, zend_object *exception)
+{
+	/* Process each proxy that matches triggered events */
+	for (uint32_t i = 0; i < poll->proxies_count; i++) {
+		zend_async_poll_proxy_t *proxy = poll->proxies[i];
+
+		if ((triggered_events & proxy->events) != 0) {
+			/* Increase ref count to prevent disposal during processing */
+			ZEND_ASYNC_EVENT_ADD_REF(&proxy->base);
+
+			/* Calculate events relevant to this proxy */
+			async_poll_event proxy_events = triggered_events & proxy->events;
+
+			/* Set triggered events and notify callbacks */
+			poll->event.triggered_events = proxy_events;
+			ZEND_ASYNC_CALLBACKS_NOTIFY_FROM_HANDLER(&proxy->base, &proxy_events, exception);
+
+			/* Release reference after processing */
+			ZEND_ASYNC_EVENT_RELEASE(&proxy->base);
+		}
+	}
+}
+/* }}} */
+
 /* {{{ async_poll_add_proxy */
-static void async_poll_add_proxy(async_poll_event_t *poll, zend_async_poll_proxy_t *proxy)
+static zend_always_inline void async_poll_add_proxy(async_poll_event_t *poll, zend_async_poll_proxy_t *proxy)
 {
 	if (poll->proxies == NULL) {
 		poll->proxies = (zend_async_poll_proxy_t **) pecalloc(4, sizeof(zend_async_poll_proxy_t *), 0);
@@ -355,7 +390,7 @@ static void async_poll_add_proxy(async_poll_event_t *poll, zend_async_poll_proxy
 /* }}} */
 
 /* {{{ async_poll_remove_proxy */
-static void async_poll_remove_proxy(async_poll_event_t *poll, zend_async_poll_proxy_t *proxy)
+static zend_always_inline void async_poll_remove_proxy(async_poll_event_t *poll, zend_async_poll_proxy_t *proxy)
 {
 	for (uint32_t i = 0; i < poll->proxies_count; i++) {
 		if (poll->proxies[i] == proxy) {
@@ -364,23 +399,21 @@ static void async_poll_remove_proxy(async_poll_event_t *poll, zend_async_poll_pr
 			break;
 		}
 	}
-
-	/* Free array if no proxies left */
-	if (poll->proxies_count == 0 && poll->proxies != NULL) {
-		pefree(poll->proxies, 0);
-		poll->proxies = NULL;
-		poll->proxies_capacity = 0;
-	}
 }
 /* }}} */
 
 /* {{{ async_poll_aggregate_events */
-static async_poll_event async_poll_aggregate_events(async_poll_event_t *poll)
+static zend_always_inline async_poll_event async_poll_aggregate_events(async_poll_event_t *poll)
 {
 	async_poll_event aggregated = 0;
 
 	for (uint32_t i = 0; i < poll->proxies_count; i++) {
 		aggregated |= poll->proxies[i]->events;
+
+		/* Early exit if all possible events are set */
+		if (aggregated == (ASYNC_READABLE | ASYNC_WRITABLE | ASYNC_DISCONNECT | ASYNC_PRIORITIZED)) {
+			break;
+		}
 	}
 
 	return aggregated;
