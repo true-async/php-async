@@ -330,6 +330,68 @@ static void libuv_poll_dispose(zend_async_event_t *event)
 
 /* }}} */
 
+/* {{{ libuv_poll_proxy_start */
+static void libuv_poll_proxy_start(zend_async_event_t *event)
+{
+	EVENT_START_PROLOGUE(event);
+
+	zend_async_poll_proxy_t *proxy = (zend_async_poll_proxy_t *) event;
+	async_poll_event_t *poll = (async_poll_event_t *)proxy->poll_event;
+
+	if (poll->event.events != proxy->events) {
+		const int error = uv_poll_start(&poll->uv_handle, poll->event.base, on_poll_event);
+
+		if (error < 0) {
+			async_throw_error("Failed to change poll handle: %s", uv_strerror(error));
+			return;
+		}
+	}
+
+	ZEND_ASYNC_INCREASE_EVENT_COUNT;
+	event->loop_ref_count = 1;
+}
+/* }}} */
+
+/* {{{ libuv_poll_proxy_stop */
+static void libuv_poll_proxy_stop(zend_async_event_t *event)
+{
+	EVENT_STOP_PROLOGUE(event);
+
+	zend_async_poll_proxy_t *proxy = (zend_async_poll_proxy_t *) event;
+	async_poll_event_t *poll = (async_poll_event_t *)proxy->poll_event;
+
+	/* Update base event */
+	/* Todo */
+
+	event->loop_ref_count = 0;
+	ZEND_ASYNC_DECREASE_EVENT_COUNT;
+}
+/* }}} */
+
+/* {{{ libuv_poll_proxy_dispose */
+static void libuv_poll_proxy_dispose(zend_async_event_t *event)
+{
+	if (ZEND_ASYNC_EVENT_REF(event) > 1) {
+		ZEND_ASYNC_EVENT_DEL_REF(event);
+		return;
+	}
+
+	if (event->loop_ref_count > 0) {
+		event->loop_ref_count = 1;
+		event->stop(event);
+	}
+
+	zend_async_callbacks_free(event);
+
+	zend_async_poll_proxy_t *proxy = (zend_async_poll_proxy_t *) event;
+
+	/* Release reference to base poll event */
+	ZEND_ASYNC_EVENT_RELEASE(&proxy->poll_event->base);
+
+	pefree(proxy, 0);
+}
+/* }}} */
+
 /* {{{ libuv_new_poll_event */
 zend_async_poll_event_t *
 libuv_new_poll_event(zend_file_descriptor_t fh, zend_socket_t socket, async_poll_event events, size_t extra_size)
@@ -386,6 +448,37 @@ libuv_new_poll_event(zend_file_descriptor_t fh, zend_socket_t socket, async_poll
 zend_async_poll_event_t *libuv_new_socket_event(zend_socket_t socket, async_poll_event events, size_t extra_size)
 {
 	return libuv_new_poll_event(ZEND_FD_NULL, socket, events, extra_size);
+}
+
+/* }}} */
+
+/* {{{ libuv_new_poll_proxy_event */
+zend_async_poll_proxy_t *libuv_new_poll_proxy_event(zend_async_poll_event_t *poll_event, async_poll_event events, size_t extra_size)
+{
+	START_REACTOR_OR_RETURN_NULL;
+
+	zend_async_poll_proxy_t *proxy =
+		pecalloc(1, extra_size != 0 ? sizeof(zend_async_poll_proxy_t) + extra_size : sizeof(zend_async_poll_proxy_t), 0);
+
+	/* Set up proxy */
+	proxy->poll_event = poll_event;
+	proxy->events = events;
+
+	/* Add reference to base poll event */
+	ZEND_ASYNC_EVENT_ADD_REF(poll_event);
+
+	/* Initialize base event structure */
+	proxy->base.extra_offset = sizeof(zend_async_poll_proxy_t);
+	proxy->base.ref_count = 1;
+
+	/* Initialize proxy methods */
+	proxy->base.add_callback = libuv_add_callback;
+	proxy->base.del_callback = libuv_remove_callback;
+	proxy->base.start = libuv_poll_proxy_start;
+	proxy->base.stop = libuv_poll_proxy_stop;
+	proxy->base.dispose = libuv_poll_proxy_dispose;
+
+	return proxy;
 }
 
 /* }}} */
@@ -2478,6 +2571,7 @@ void async_libuv_reactor_register(void)
 								libuv_reactor_loop_alive,
 								libuv_new_socket_event,
 								libuv_new_poll_event,
+								libuv_new_poll_proxy_event,
 								libuv_new_timer_event,
 								libuv_new_signal_event,
 								libuv_new_process_event,
