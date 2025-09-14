@@ -178,20 +178,21 @@ static zend_always_inline void stop_waker_events(zend_async_waker_t *waker)
 	ZEND_HASH_FOREACH_END();
 }
 
-static zend_always_inline void stop_waker_events_for_new_coroutines(circular_buffer_t *queue, size_t old_tail)
+static zend_always_inline void stop_waker_events_for_new_coroutines(circular_buffer_t *queue, size_t old_head)
 {
-	// Optimized circular buffer traversal
-	size_t current = old_tail;
-	const size_t capacity_mask = queue->capacity - 1; // Optimization for power of 2
+	const size_t capacity_mask = queue->capacity - 1;
+	size_t current = old_head;
 
-	while (current != queue->tail) {
+	// Calculate number of elements with ring buffer wraparound handling
+	size_t count = (queue->head - old_head) & capacity_mask;
+
+	// Process exactly count elements, automatically handling wraparound
+	for (size_t i = 0; i < count; i++) {
 		zend_coroutine_t *coroutine = *(zend_coroutine_t**)((char*)queue->data + current * sizeof(void*));
-
 		if (EXPECTED(coroutine && coroutine->waker)) {
 			stop_waker_events(coroutine->waker);
 		}
-
-		current = (current + 1) & capacity_mask; // Fast modulo for power of 2
+		current = (current + 1) & capacity_mask; // Automatic wraparound
 	}
 }
 /* }}} */
@@ -206,17 +207,17 @@ bool libuv_reactor_execute(bool no_wait)
 	}
 
 #if LIBUV_STOP_WAKER_EVENTS_AFTER_EXECUTE
-	// Remember current tail position before execution
+	// Remember current head position before execution
 	circular_buffer_t *queue = &ASYNC_G(coroutine_queue);
-	const size_t old_tail = queue->tail; // const for compiler optimization
+	const size_t old_head = queue->head; // const for compiler optimization
 #endif
 
 	const bool has_handles = uv_run(UVLOOP, no_wait ? UV_RUN_NOWAIT : UV_RUN_ONCE);
 
 #if LIBUV_STOP_WAKER_EVENTS_AFTER_EXECUTE
 	// Check if new coroutines were enqueued and stop their waker events
-	if (UNEXPECTED(queue->tail != old_tail)) {
-		stop_waker_events_for_new_coroutines(queue, old_tail);
+	if (UNEXPECTED(queue->head != old_head)) {
+		stop_waker_events_for_new_coroutines(queue, old_head);
 	}
 #endif
 
