@@ -49,8 +49,6 @@ static void libuv_cleanup_process_events(void);
 #define LIBUV_REACTOR ((zend_async_globals *) ASYNC_GLOBALS)
 #define LIBUV_REACTOR_VAR zend_async_globals *reactor = LIBUV_REACTOR;
 
-// Optimization flag for automatically stopping waker events after reactor execute
-#define LIBUV_CLEAR_WAKER_EVENTS_AFTER_EXECUTE 1
 #define LIBUV_REACTOR_VAR_FROM(var) zend_async_globals *reactor = (zend_async_globals *) var;
 #define WATCHER ASYNC_G(watcherThread)
 #define IF_EXCEPTION_STOP_REACTOR \
@@ -163,44 +161,6 @@ void libuv_reactor_shutdown(void)
 
 /* }}} */
 
-#if LIBUV_CLEAR_WAKER_EVENTS_AFTER_EXECUTE
-/* {{{ Optimized waker events management */
-static zend_always_inline void clear_waker_events(zend_async_waker_t *waker)
-{
-	ZEND_ASSERT(waker != NULL && "Waker is NULL in libuv_reactor stop_waker_events");
-
-	zval *current;
-	ZEND_HASH_FOREACH_VAL(&waker->events, current)
-	{
-		const zend_async_waker_trigger_t *trigger = Z_PTR_P(current);
-		trigger->event->dispose(trigger->event);
-	}
-	ZEND_HASH_FOREACH_END();
-}
-
-static zend_always_inline void stop_waker_events_for_new_coroutines(circular_buffer_t *queue, size_t old_head)
-{
-	const size_t mask = queue->capacity - 1;
-	int count = 0;
-
-	for (size_t i = old_head; i != queue->head; i = (i + 1) % mask) {
-
-		count++;
-
-		if (i == queue->tail) {
-			break;
-		}
-
-		zend_coroutine_t *coroutine = *(zend_coroutine_t**)((char*)queue->data + i * queue->item_size);
-
-		if (EXPECTED(coroutine && coroutine->waker)) {
-			zend_hash_clean(&coroutine->waker->events);
-		}
-	}
-}
-/* }}} */
-#endif
-
 /* {{{ libuv_reactor_execute */
 bool libuv_reactor_execute(bool no_wait)
 {
@@ -209,20 +169,7 @@ bool libuv_reactor_execute(bool no_wait)
 		return ZEND_ASYNC_ACTIVE_EVENT_COUNT > 0;
 	}
 
-#if LIBUV_CLEAR_WAKER_EVENTS_AFTER_EXECUTE
-	// Remember current head position before execution
-	circular_buffer_t *queue = &ASYNC_G(coroutine_queue);
-	const size_t old_head = queue->head; // const for compiler optimization
-#endif
-
 	const bool has_handles = uv_run(UVLOOP, no_wait ? UV_RUN_NOWAIT : UV_RUN_ONCE);
-
-#if LIBUV_CLEAR_WAKER_EVENTS_AFTER_EXECUTE
-	// Check if new coroutines were enqueued and stop their waker events
-	if (UNEXPECTED(queue->head != old_head)) {
-		stop_waker_events_for_new_coroutines(queue, old_head);
-	}
-#endif
 
 	return ZEND_ASYNC_ACTIVE_EVENT_COUNT > 0 || has_handles;
 }
