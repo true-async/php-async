@@ -1051,8 +1051,6 @@ static zend_always_inline void scheduler_next_tick(void)
 
 	ZEND_ASYNC_SCHEDULER_CONTEXT = false;
 
-	TRY_HANDLE_SUSPEND_EXCEPTION();
-
 	const bool is_next_coroutine = circular_buffer_is_not_empty(&ASYNC_G(coroutine_queue));
 
 	if (UNEXPECTED(false == has_handles && false == is_next_coroutine &&
