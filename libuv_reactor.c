@@ -578,7 +578,7 @@ zend_async_poll_proxy_t *libuv_new_poll_proxy_event(zend_async_poll_event_t *pol
 	proxy->events = events;
 
 	/* Add reference to base poll event */
-	ZEND_ASYNC_EVENT_ADD_REF(poll_event);
+	ZEND_ASYNC_EVENT_ADD_REF(&poll_event->base);
 
 	/* Initialize base event structure */
 	proxy->base.extra_offset = sizeof(zend_async_poll_proxy_t);
