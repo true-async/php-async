@@ -50,7 +50,7 @@ static void libuv_cleanup_process_events(void);
 #define LIBUV_REACTOR_VAR zend_async_globals *reactor = LIBUV_REACTOR;
 
 // Optimization flag for automatically stopping waker events after reactor execute
-#define LIBUV_STOP_WAKER_EVENTS_AFTER_EXECUTE 1
+#define LIBUV_CLEAR_WAKER_EVENTS_AFTER_EXECUTE 1
 #define LIBUV_REACTOR_VAR_FROM(var) zend_async_globals *reactor = (zend_async_globals *) var;
 #define WATCHER ASYNC_G(watcherThread)
 #define IF_EXCEPTION_STOP_REACTOR \
@@ -163,9 +163,9 @@ void libuv_reactor_shutdown(void)
 
 /* }}} */
 
-#if LIBUV_STOP_WAKER_EVENTS_AFTER_EXECUTE
+#if LIBUV_CLEAR_WAKER_EVENTS_AFTER_EXECUTE
 /* {{{ Optimized waker events management */
-static zend_always_inline void stop_waker_events(zend_async_waker_t *waker)
+static zend_always_inline void clear_waker_events(zend_async_waker_t *waker)
 {
 	ZEND_ASSERT(waker != NULL && "Waker is NULL in libuv_reactor stop_waker_events");
 
@@ -173,26 +173,29 @@ static zend_always_inline void stop_waker_events(zend_async_waker_t *waker)
 	ZEND_HASH_FOREACH_VAL(&waker->events, current)
 	{
 		const zend_async_waker_trigger_t *trigger = Z_PTR_P(current);
-		trigger->event->stop(trigger->event);
+		trigger->event->dispose(trigger->event);
 	}
 	ZEND_HASH_FOREACH_END();
 }
 
 static zend_always_inline void stop_waker_events_for_new_coroutines(circular_buffer_t *queue, size_t old_head)
 {
-	const size_t capacity_mask = queue->capacity - 1;
-	size_t current = old_head;
+	const size_t mask = queue->capacity - 1;
+	int count = 0;
 
-	// Calculate number of elements with ring buffer wraparound handling
-	size_t count = (queue->head - old_head) & capacity_mask;
+	for (size_t i = old_head; i != queue->head; i = (i + 1) % mask) {
 
-	// Process exactly count elements, automatically handling wraparound
-	for (size_t i = 0; i < count; i++) {
-		zend_coroutine_t *coroutine = *(zend_coroutine_t**)((char*)queue->data + current * sizeof(void*));
-		if (EXPECTED(coroutine && coroutine->waker)) {
-			stop_waker_events(coroutine->waker);
+		count++;
+
+		if (i == queue->tail) {
+			break;
 		}
-		current = (current + 1) & capacity_mask; // Automatic wraparound
+
+		zend_coroutine_t *coroutine = *(zend_coroutine_t**)((char*)queue->data + i * queue->item_size);
+
+		if (EXPECTED(coroutine && coroutine->waker)) {
+			zend_hash_clean(&coroutine->waker->events);
+		}
 	}
 }
 /* }}} */
@@ -206,7 +209,7 @@ bool libuv_reactor_execute(bool no_wait)
 		return ZEND_ASYNC_ACTIVE_EVENT_COUNT > 0;
 	}
 
-#if LIBUV_STOP_WAKER_EVENTS_AFTER_EXECUTE
+#if LIBUV_CLEAR_WAKER_EVENTS_AFTER_EXECUTE
 	// Remember current head position before execution
 	circular_buffer_t *queue = &ASYNC_G(coroutine_queue);
 	const size_t old_head = queue->head; // const for compiler optimization
@@ -214,7 +217,7 @@ bool libuv_reactor_execute(bool no_wait)
 
 	const bool has_handles = uv_run(UVLOOP, no_wait ? UV_RUN_NOWAIT : UV_RUN_ONCE);
 
-#if LIBUV_STOP_WAKER_EVENTS_AFTER_EXECUTE
+#if LIBUV_CLEAR_WAKER_EVENTS_AFTER_EXECUTE
 	// Check if new coroutines were enqueued and stop their waker events
 	if (UNEXPECTED(queue->head != old_head)) {
 		stop_waker_events_for_new_coroutines(queue, old_head);
