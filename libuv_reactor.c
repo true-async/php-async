@@ -199,7 +199,7 @@ static void libuv_close_handle_cb(uv_handle_t *handle)
 static void libuv_close_poll_handle_cb(uv_handle_t *handle)
 {
 	async_poll_event_t *poll = (async_poll_event_t *)handle->data;
-	
+
 	/* Check if PHP requested descriptor closure after event cleanup */
 	if (ZEND_ASYNC_EVENT_SHOULD_CLOSE_FD(&poll->event.base)) {
 		if (poll->event.is_socket && ZEND_VALID_SOCKET(poll->event.socket)) {
@@ -218,7 +218,7 @@ static void libuv_close_poll_handle_cb(uv_handle_t *handle)
 #endif
 		}
 	}
-	
+
 	pefree(poll, 0);
 }
 
@@ -253,8 +253,19 @@ static void on_poll_event(uv_poll_t *handle, int status, int events)
 	async_poll_event_t *poll = handle->data;
 	zend_object *exception = NULL;
 
-	if (status < 0) {
+	if (status < 0 && status != UV_EBADF) {
 		exception = async_new_exception(async_ce_input_output_exception, "Input output error: %s", uv_strerror(status));
+	}
+
+	// !WARNING!
+	// LibUV may return the UV_EBADF code when the remote host closes
+	// the connection while the descriptor is still present in the EventLoop.
+	// For POLL events, we handle this by ignoring the situation
+	// so that the coroutine receives the ASYNC_DISCONNECT flag.
+	// This code can be considered “incorrect”; however, this solution is acceptable.
+	//
+	if (UNEXPECTED(status == UV_EBADF)) {
+		events = ASYNC_DISCONNECT;
 	}
 
 	poll->event.triggered_events = events;
