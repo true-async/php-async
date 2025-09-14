@@ -45,6 +45,8 @@ PHP_ASYNC_API extern zend_class_entry *async_ce_timeout;
 #define PHP_ASYNC_VERSION "0.4.0"
 #define PHP_ASYNC_NAME_VERSION "true async v0.4.0"
 
+#define REACTOR_CHECK_INTERVAL 100 * 1000 // 100ms
+
 typedef struct
 {
 	// The first field must be a reference to a Zend object.
@@ -103,6 +105,9 @@ uv_async_t *uvloop_wakeup;
 /* Circular buffer of libuv_process_t ptr */
 circular_buffer_t *pid_queue;
 #endif
+
+/* Reactor execution optimization */
+uint64_t last_reactor_check_time;
 
 #ifdef PHP_WIN32
 #endif
