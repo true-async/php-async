@@ -1295,6 +1295,8 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 		bool was_executed = false;
 		switch_status status = COROUTINE_NOT_EXISTS;
 
+		const circular_buffer_t * coroutine_queue = &ASYNC_G(coroutine_queue);
+
 		do {
 
 			TRY_HANDLE_EXCEPTION();
@@ -1306,8 +1308,18 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 			execute_microtasks();
 			TRY_HANDLE_EXCEPTION();
 
-			has_next_coroutine = circular_buffer_is_not_empty(&ASYNC_G(coroutine_queue));
+			const void *previous_data = coroutine_queue->data;
+			const size_t previous_count = circular_buffer_count(coroutine_queue);
+			const size_t previous_head = coroutine_queue->head;
+
+			has_next_coroutine = previous_count > 0;
+
 			has_handles = ZEND_ASYNC_REACTOR_EXECUTE(has_next_coroutine);
+
+			if (previous_head != coroutine_queue->head) {
+				clean_events_for_resumed_coroutines(coroutine_queue, previous_data, previous_count, previous_head);
+			}
+
 			TRY_HANDLE_EXCEPTION();
 
 			ZEND_ASYNC_SCHEDULER_CONTEXT = false;
@@ -1349,7 +1361,7 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 
 			if (UNEXPECTED(false == has_handles && false == was_executed &&
 						   zend_hash_num_elements(&ASYNC_G(coroutines)) > 0 &&
-						   circular_buffer_is_empty(&ASYNC_G(coroutine_queue)) &&
+						   circular_buffer_is_empty(coroutine_queue) &&
 						   circular_buffer_is_empty(&ASYNC_G(microtasks)) && resolve_deadlocks())) {
 				break;
 						   }
