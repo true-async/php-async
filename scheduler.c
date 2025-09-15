@@ -1047,15 +1047,13 @@ static zend_always_inline void scheduler_next_tick(void)
 	TRY_HANDLE_SUSPEND_EXCEPTION();
 
 	const uint64_t current_time = zend_hrtime();
-	bool has_handles;
+	bool has_handles = true;
 
-	if (UNEXPECTED(current_time - ASYNC_G(last_reactor_check_time) >= REACTOR_CHECK_INTERVAL)) {
-		ASYNC_G(last_reactor_check_time) = current_time;
+	if (UNEXPECTED(current_time - ASYNC_G(last_reactor_tick) > REACTOR_CHECK_INTERVAL)) {
+		ASYNC_G(last_reactor_tick) = current_time;
 		has_handles = ZEND_ASYNC_REACTOR_EXECUTE(circular_buffer_is_not_empty(&ASYNC_G(coroutine_queue)));
-	} else {
-		has_handles = false;
+		TRY_HANDLE_SUSPEND_EXCEPTION();
 	}
-	TRY_HANDLE_SUSPEND_EXCEPTION();
 
 	ZEND_ASYNC_SCHEDULER_CONTEXT = false;
 

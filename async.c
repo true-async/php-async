@@ -897,7 +897,7 @@ static PHP_GINIT_FUNCTION(async)
 	async_globals->default_concurrency = 32;
 
 	/* Initialize reactor execution optimization */
-	async_globals->last_reactor_check_time = 0;
+	async_globals->last_reactor_tick = 0;
 
 #ifdef PHP_WIN32
 	async_globals->watcherThread = NULL;
