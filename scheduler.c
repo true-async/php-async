@@ -302,12 +302,22 @@ static zend_always_inline void return_to_main(zend_fiber_transfer *transfer)
 /// COROUTINE QUEUE MANAGEMENT
 ///////////////////////////////////////////////////////////
 
-static zend_always_inline void clean_events_for_resumed_coroutines(const circular_buffer_t *queue, size_t previous_head)
+static zend_always_inline void clean_events_for_resumed_coroutines(const circular_buffer_t *queue, const void *previous_data, size_t previous_count, size_t previous_head)
 {
 	const size_t new_head = queue->head;
 	const size_t mask = queue->capacity - 1;
 	const size_t item_size = queue->item_size;
-	size_t current = previous_head;
+	size_t current;
+
+	// Check if reallocation occurred
+	if (queue->data != previous_data) {
+		// After reallocation: tail should be 0, old elements at [0, previous_count)
+		ZEND_ASSERT(queue->tail == 0 && "After reallocation tail should be 0");
+		current = previous_count;
+	} else {
+		// No reallocation: use original head
+		current = previous_head;
+	}
 
 	while (current != new_head) {
 		zend_coroutine_t *coroutine = *(zend_coroutine_t**)((char*)queue->data + current * item_size);
@@ -1071,11 +1081,14 @@ static zend_always_inline void scheduler_next_tick(void)
 		ASYNC_G(last_reactor_tick) = current_time;
 		const circular_buffer_t * queue = &ASYNC_G(coroutine_queue);
 
+		const void *previous_data = queue->data;
+		const size_t previous_count = circular_buffer_count(queue);
 		const size_t previous_head = queue->head;
+
 		has_handles = ZEND_ASYNC_REACTOR_EXECUTE(circular_buffer_is_not_empty(queue));
 
 		if (previous_head != queue->head) {
-			clean_events_for_resumed_coroutines(queue, previous_head);
+			clean_events_for_resumed_coroutines(queue, previous_data, previous_count, previous_head);
 		}
 
 		TRY_HANDLE_SUSPEND_EXCEPTION();
