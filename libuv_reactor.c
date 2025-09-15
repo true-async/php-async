@@ -373,7 +373,7 @@ static zend_always_inline void async_poll_notify_proxies(async_poll_event_t *pol
 			async_poll_event proxy_events = triggered_events & proxy->events;
 
 			/* Set triggered events and notify callbacks */
-			poll->event.triggered_events = proxy_events;
+			proxy->triggered_events = proxy_events;
 			ZEND_ASYNC_CALLBACKS_NOTIFY_FROM_HANDLER(&proxy->base, &proxy_events, exception);
 
 			/* Release reference after processing */
