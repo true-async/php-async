@@ -302,6 +302,24 @@ static zend_always_inline void return_to_main(zend_fiber_transfer *transfer)
 /// COROUTINE QUEUE MANAGEMENT
 ///////////////////////////////////////////////////////////
 
+static zend_always_inline void clean_events_for_resumed_coroutines(const circular_buffer_t *queue, size_t previous_head)
+{
+	const size_t new_head = queue->head;
+	const size_t mask = queue->capacity - 1;
+	const size_t item_size = queue->item_size;
+	size_t current = previous_head;
+
+	while (current != new_head) {
+		zend_coroutine_t *coroutine = *(zend_coroutine_t**)((char*)queue->data + current * item_size);
+
+		if (coroutine != NULL && coroutine->waker != NULL) {
+			ZEND_ASYNC_WAKER_CLEAN_EVENTS(coroutine->waker);
+		}
+
+		current = (current + 1) & mask;
+	}
+}
+
 static zend_always_inline async_coroutine_t *next_coroutine(void)
 {
 	async_coroutine_t *coroutine;
@@ -1051,7 +1069,15 @@ static zend_always_inline void scheduler_next_tick(void)
 
 	if (UNEXPECTED(current_time - ASYNC_G(last_reactor_tick) > REACTOR_CHECK_INTERVAL)) {
 		ASYNC_G(last_reactor_tick) = current_time;
-		has_handles = ZEND_ASYNC_REACTOR_EXECUTE(circular_buffer_is_not_empty(&ASYNC_G(coroutine_queue)));
+		const circular_buffer_t * queue = &ASYNC_G(coroutine_queue);
+
+		const size_t previous_head = queue->head;
+		has_handles = ZEND_ASYNC_REACTOR_EXECUTE(circular_buffer_is_not_empty(queue));
+
+		if (previous_head != queue->head) {
+			clean_events_for_resumed_coroutines(queue, previous_head);
+		}
+
 		TRY_HANDLE_SUSPEND_EXCEPTION();
 	}
 
