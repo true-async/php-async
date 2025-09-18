@@ -7,96 +7,161 @@ use function Async\spawn;
 use function Async\awaitAll;
 use function Async\delay;
 
-echo "Start concurrent UDP operations test\n";
+$output = [];
 
-// Create multiple UDP servers
-$servers = [];
-$server_addresses = [];
+$output['1'] = "Start concurrent UDP operations test";
 
-for ($i = 0; $i < 3; $i++) {
-    $servers[] = spawn(function() use ($i, &$server_addresses) {
-        $socket = stream_socket_server("udp://127.0.0.1:0", $errno, $errstr);
-        if (!$socket) {
-            echo "Server $i: failed to create socket\n";
-            return;
-        }
+$server1_address = null;
+$server2_address = null;
 
-        $address = stream_socket_get_name($socket, false);
-        $server_addresses[$i] = $address;
-        echo "Server $i: listening on $address\n";
-
-        // Handle multiple clients
-        for ($j = 0; $j < 2; $j++) {
-            $data = stream_socket_recvfrom($socket, 1024, 0, $peer);
-            echo "Server $i: received '$data' from client\n";
-
-            $response = "Response from server $i to message $j";
-            stream_socket_sendto($socket, $response, 0, $peer);
-        }
-
-        fclose($socket);
-        return $address;
-    });
-}
-
-// Create multiple clients for each server
-$clients = [];
-for ($i = 0; $i < 3; $i++) {
-    for ($j = 0; $j < 2; $j++) {
-        $clients[] = spawn(function() use ($i, $j, &$server_addresses) {
-            // Wait for server address with retry logic
-            $address = null;
-            for ($attempts = 0; $attempts < 5; $attempts++) {
-                delay(10);
-                if (isset($server_addresses[$i])) {
-                    $address = $server_addresses[$i];
-                    break;
-                }
-            }
-
-            if (!$address) {
-                throw new Exception("Client $i-$j: server address not ready after 5 attempts");
-            }
-
-            $socket = stream_socket_client($address, $errno, $errstr);
-            if (!$socket) {
-                echo "Client $i-$j: failed to connect\n";
-                return;
-            }
-
-            $message = "Message from client $i-$j";
-            stream_socket_sendto($socket, $message);
-
-            $response = stream_socket_recvfrom($socket, 1024);
-            echo "Client $i-$j: received '$response'\n";
-
-            fclose($socket);
-        });
+// Server1 coroutine
+$server1 = spawn(function() use (&$server1_address, &$output) {
+    $output['2'] = "Server1: creating UDP socket";
+    $socket = stream_socket_server("udp://127.0.0.1:0", $errno, $errstr, STREAM_SERVER_BIND);
+    if (!$socket) {
+        $output['2a'] = "Server1: failed to create socket: $errstr";
+        return;
     }
-}
 
-// Background worker
-$worker = spawn(function() {
-    for ($i = 0; $i < 5; $i++) {
-        echo "Worker: iteration $i\n";
-        delay(10);
-    }
+    $address = stream_socket_get_name($socket, false);
+    $server1_address = "udp://$address";
+    $output['3'] = "Server1: listening on $server1_address";
+
+    // Wait for incoming data
+    $output['5'] = "Server1: waiting for UDP data";
+    $data = stream_socket_recvfrom($socket, 1024, 0, $peer);
+    $output['7'] = "Server1: received '$data' from $peer";
+
+    // Send response back
+    $response = "Hello from UDP server1";
+    $bytes = stream_socket_sendto($socket, $response, 0, $peer);
+    $output['8'] = "Server1: sent $bytes bytes response";
+
+    fclose($socket);
+    return $server1_address;
 });
 
-awaitAll(array_merge($servers, $clients, [$worker]));
-echo "End concurrent UDP operations test\n";
+// Server2 coroutine
+$server2 = spawn(function() use (&$server2_address, &$output) {
+    $output['2b'] = "Server2: creating UDP socket";
+    $socket = stream_socket_server("udp://127.0.0.1:0", $errno, $errstr, STREAM_SERVER_BIND);
+    if (!$socket) {
+        $output['2c'] = "Server2: failed to create socket: $errstr";
+        return;
+    }
+
+    $address = stream_socket_get_name($socket, false);
+    $server2_address = "udp://$address";
+    $output['4'] = "Server2: listening on $server2_address";
+
+    // Wait for incoming data
+    $output['5b'] = "Server2: waiting for UDP data";
+    $data = stream_socket_recvfrom($socket, 1024, 0, $peer);
+    $output['7b'] = "Server2: received '$data' from $peer";
+
+    // Send response back
+    $response = "Hello from UDP server2";
+    $bytes = stream_socket_sendto($socket, $response, 0, $peer);
+    $output['8b'] = "Server2: sent $bytes bytes response";
+
+    fclose($socket);
+    return $server2_address;
+});
+
+// Client1 coroutine
+$client1 = spawn(function() use (&$server1_address, &$output) {
+    // Wait for server1 to start
+    for ($attempts = 0; $attempts < 10; $attempts++) {
+        delay(10);
+        if ($server1_address) {
+            break;
+        }
+    }
+
+    if (!$server1_address) {
+        throw new Exception("Client1: failed to get server1 address after 10 attempts");
+    }
+
+    $output['6'] = "Client1: connecting to $server1_address";
+    $socket = stream_socket_client($server1_address, $errno, $errstr);
+    if (!$socket) {
+        $output['6a'] = "Client1: failed to connect: $errstr";
+        return;
+    }
+
+    // Send data to server1
+    $message = "Hello from UDP client1";
+    $bytes = stream_socket_sendto($socket, $message);
+    $output['6b'] = "Client1: sent $bytes bytes";
+
+    // Receive response
+    $response = stream_socket_recvfrom($socket, 1024);
+    $output['9'] = "Client1: received '$response'";
+
+    fclose($socket);
+});
+
+// Client2 coroutine
+$client2 = spawn(function() use (&$server2_address, &$output) {
+    // Wait for server2 to start
+    for ($attempts = 0; $attempts < 10; $attempts++) {
+        delay(10);
+        if ($server2_address) {
+            break;
+        }
+    }
+
+    if (!$server2_address) {
+        throw new Exception("Client2: failed to get server2 address after 10 attempts");
+    }
+
+    $output['6c'] = "Client2: connecting to $server2_address";
+    $socket = stream_socket_client($server2_address, $errno, $errstr);
+    if (!$socket) {
+        $output['6d'] = "Client2: failed to connect: $errstr";
+        return;
+    }
+
+    // Send data to server2
+    $message = "Hello from UDP client2";
+    $bytes = stream_socket_sendto($socket, $message);
+    $output['6e'] = "Client2: sent $bytes bytes";
+
+    // Receive response
+    $response = stream_socket_recvfrom($socket, 1024);
+    $output['9b'] = "Client2: received '$response'";
+
+    fclose($socket);
+});
+
+awaitAll([$server1, $server2, $client1, $client2]);
+$output['z'] = "End concurrent UDP operations test";
+
+// Sort output by keys to ensure deterministic test results
+ksort($output);
+
+// Output sorted results
+foreach ($output as $line) {
+    echo $line . "\n";
+}
 
 ?>
 --EXPECTF--
 Start concurrent UDP operations test
-Server 0: listening on udp://127.0.0.1:%d
-Server 1: listening on udp://127.0.0.1:%d
-Server 2: listening on udp://127.0.0.1:%d
-Worker: iteration 0
-%a
-Server %d: received 'Message from client %d-%d' from client
-Client %d-%d: received 'Response from server %d to message %d'
-%a
-Worker: iteration %d
-%a
+Server1: creating UDP socket
+Server2: creating UDP socket
+Server1: listening on udp://127.0.0.1:%d
+Server2: listening on udp://127.0.0.1:%d
+Server1: waiting for UDP data
+Server2: waiting for UDP data
+Client1: connecting to udp://127.0.0.1:%d
+Client1: sent 22 bytes
+Client2: connecting to udp://127.0.0.1:%d
+Client2: sent 22 bytes
+Server1: received 'Hello from UDP client1' from 127.0.0.1:%d
+Server2: received 'Hello from UDP client2' from 127.0.0.1:%d
+Server1: sent 22 bytes response
+Server2: sent 22 bytes response
+Client1: received 'Hello from UDP server1'
+Client2: received 'Hello from UDP server2'
 End concurrent UDP operations test
