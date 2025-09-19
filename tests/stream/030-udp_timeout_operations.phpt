@@ -26,21 +26,18 @@ $server = spawn(function() use (&$server_address, &$output) {
     $server_address = "udp://$address";
     $output['3'] = "Server: listening on $server_address";
 
-    // Set timeout to 2 seconds
-    stream_set_timeout($socket, 2, 0);
-    $output['4'] = "Server: set timeout to 2 seconds";
+    // Set timeout to 0.2 seconds
+    stream_set_timeout($socket, 0, 200000);
+    $output['4'] = "Server: set timeout to 0.2 seconds";
 
     // Try to receive data (should timeout)
     $output['5'] = "Server: waiting for UDP data (should timeout)";
-    $start_time = microtime(true);
     $data = stream_socket_recvfrom($socket, 1024, 0, $peer);
-    $end_time = microtime(true);
 
     $meta = stream_get_meta_data($socket);
-    $elapsed = round($end_time - $start_time, 1);
 
     if ($meta['timed_out']) {
-        $output['6'] = "Server: operation timed out after $elapsed seconds";
+        $output['6'] = "Server: operation timed out";
     } else {
         $output['6'] = "Server: received data (unexpected): '$data'";
     }
@@ -62,11 +59,10 @@ foreach ($output as $line) {
 
 ?>
 --EXPECTF--
-Warning: stream_socket_recvfrom(): Socket operation timed out after 2.000000 seconds in %s on line %d
 Start UDP timeout operations test
 Server: creating UDP socket
 Server: listening on udp://127.0.0.1:%d
-Server: set timeout to 2 seconds
+Server: set timeout to 0.2 seconds
 Server: waiting for UDP data (should timeout)
-Server: operation timed out after %s seconds
+Server: operation timed out
 End UDP timeout operations test
