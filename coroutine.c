@@ -500,6 +500,8 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 	}
 
 	bool do_bailout = false;
+	zend_object **exception_ptr = &EG(exception);
+	zend_object **prev_exception_ptr = &EG(prev_exception);
 
 	zend_try
 	{
@@ -510,13 +512,13 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 		// call coroutines handlers
 		zend_object *exception = NULL;
 
-		if (EG(exception)) {
-			if (EG(prev_exception)) {
-				zend_exception_set_previous(EG(exception), EG(prev_exception));
-				EG(prev_exception) = NULL;
+		if (UNEXPECTED(*exception_ptr)) {
+			if (*prev_exception_ptr) {
+				zend_exception_set_previous(*exception_ptr, *prev_exception_ptr);
+				*prev_exception_ptr = NULL;
 			}
 
-			exception = EG(exception);
+			exception = *exception_ptr;
 			GC_ADDREF(exception);
 
 			zend_clear_exception();
@@ -545,7 +547,7 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 			GC_ADDREF(exception);
 		}
 
-		zend_exception_save();
+		zend_exception_save_fast(exception_ptr, prev_exception_ptr);
 		// Mark second parameter of zend_async_callbacks_notify as ZVAL
 		ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&coroutine->coroutine.event);
 		ZEND_COROUTINE_CLR_EXCEPTION_HANDLED(&coroutine->coroutine);
@@ -569,7 +571,7 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 			dispose(&coroutine->coroutine);
 		}
 
-		zend_exception_restore();
+		zend_exception_restore_fast(exception_ptr, prev_exception_ptr);
 
 		// If the exception was handled by any handler, we do not propagate it further.
 		// Cancellation-type exceptions are considered handled in all cases and are not propagated further.
@@ -611,7 +613,7 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 	}
 	zend_end_try();
 
-	if (UNEXPECTED(EG(exception) && (zend_is_graceful_exit(EG(exception)) || zend_is_unwind_exit(EG(exception))))) {
+	if (UNEXPECTED(*exception_ptr && (zend_is_graceful_exit(*exception_ptr) || zend_is_unwind_exit(*exception_ptr)))) {
 		zend_clear_exception();
 	}
 
@@ -983,11 +985,14 @@ static zend_result finally_handlers_iterator_handler(async_iterator_t *iterator,
 	zval_ptr_dtor(&rv);
 	ZVAL_UNDEF(&rv);
 
+	zend_object **exception_ptr = &EG(exception);
+
 	// Check for exceptions after handler execution
-	if (EG(exception)) {
-		zend_exception_save();
-		zend_exception_restore();
-		zend_object *current_exception = EG(exception);
+	if (UNEXPECTED(*exception_ptr)) {
+		zend_object **prev_exception_ptr = &EG(prev_exception);
+		zend_exception_save_fast(exception_ptr, prev_exception_ptr);
+		zend_exception_restore_fast(exception_ptr, prev_exception_ptr);
+		zend_object *current_exception = *exception_ptr;
 		GC_ADDREF(current_exception);
 		zend_clear_exception();
 

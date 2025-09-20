@@ -64,7 +64,7 @@ static void fiber_context_cleanup(zend_fiber_context *context);
 		if (ZEND_ASYNC_GRACEFUL_SHUTDOWN) { \
 			finally_shutdown(); \
 			switch_to_scheduler(transfer); \
-			zend_exception_restore(); \
+			zend_exception_restore_fast(exception_ptr, prev_exception_ptr); \
 			return; \
 		} \
 		start_graceful_shutdown(); \
@@ -588,7 +588,10 @@ static bool resolve_deadlocks(void)
 ///////////////////////////////////////////////////////////
 static void cancel_queued_coroutines(void)
 {
-	zend_exception_save();
+	zend_object **exception = &EG(exception);
+	zend_object **prev_exception = &EG(prev_exception);
+
+	zend_exception_save_fast(exception, prev_exception);
 
 	// 1. Walk through all coroutines and cancel them if they are suspended.
 	zval *current;
@@ -614,15 +617,15 @@ static void cancel_queued_coroutines(void)
 			ZEND_ASYNC_CANCEL(coroutine, cancellation_exception, false);
 		}
 
-		if (EG(exception)) {
-			zend_exception_save();
+		if (*exception) {
+			zend_exception_save_fast(exception, prev_exception);
 		}
 	}
 	ZEND_HASH_FOREACH_END();
 
 	OBJ_RELEASE(cancellation_exception);
 
-	zend_exception_restore();
+	zend_exception_restore_fast(exception, prev_exception);
 }
 
 void start_graceful_shutdown(void)
@@ -1071,6 +1074,9 @@ static zend_always_inline void scheduler_next_tick(void)
 	zend_fiber_transfer *transfer = NULL;
 	ZEND_ASYNC_SCHEDULER_CONTEXT = true;
 
+	zend_object **exception_ptr = &EG(exception);
+	zend_object **prev_exception_ptr = &EG(prev_exception);
+
 	execute_microtasks();
 	TRY_HANDLE_SUSPEND_EXCEPTION();
 
@@ -1122,7 +1128,10 @@ void async_scheduler_coroutine_suspend(void)
 	//
 	// Before suspending the coroutine, we save the current exception state.
 	//
-	zend_exception_save();
+	zend_object **exception_ptr = &EG(exception);
+	zend_object **prev_exception_ptr = &EG(prev_exception);
+
+	zend_exception_save_fast(exception_ptr, prev_exception_ptr);
 
 	/**
 	 * Note that the Scheduler is initialized after the first use of suspend,
@@ -1131,8 +1140,8 @@ void async_scheduler_coroutine_suspend(void)
 	if (UNEXPECTED(ZEND_ASYNC_SCHEDULER == NULL)) {
 		async_scheduler_launch();
 
-		if (UNEXPECTED(EG(exception))) {
-			zend_exception_restore();
+		if (UNEXPECTED(*exception_ptr)) {
+			zend_exception_restore_fast(exception_ptr, prev_exception_ptr);
 			return;
 		}
 	}
@@ -1156,7 +1165,7 @@ void async_scheduler_coroutine_suspend(void)
 		if (coroutine->waker->events.nNumOfElements == 0 && not_in_queue) {
 			async_throw_error("The coroutine has no events to wait for");
 			zend_async_waker_clean(coroutine);
-			zend_exception_restore();
+			zend_exception_restore_fast(exception_ptr, prev_exception_ptr);
 			return;
 		}
 
@@ -1165,12 +1174,12 @@ void async_scheduler_coroutine_suspend(void)
 		// If an exception occurs during the startup of the Waker object,
 		// that exception belongs to the current coroutine,
 		// which means we have the right to immediately return to the point from which we were called.
-		if (UNEXPECTED(EG(exception))) {
+		if (UNEXPECTED(*exception_ptr)) {
 			// Before returning, We are required to properly destroy the Waker object.
-			zend_exception_save();
+			zend_exception_save_fast(exception_ptr, prev_exception_ptr);
 			stop_waker_events(coroutine->waker);
 			zend_async_waker_clean(coroutine);
-			zend_exception_restore();
+			zend_exception_restore_fast(exception_ptr, prev_exception_ptr);
 			return;
 		}
 
@@ -1208,7 +1217,7 @@ void async_scheduler_coroutine_suspend(void)
 		async_rethrow_exception(exception);
 	}
 
-	zend_exception_restore();
+	zend_exception_restore_fast(exception_ptr, prev_exception_ptr);
 }
 
 ///////////////////////////////////////////////////////////
