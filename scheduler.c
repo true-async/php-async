@@ -302,33 +302,18 @@ static zend_always_inline void return_to_main(zend_fiber_transfer *transfer)
 /// COROUTINE QUEUE MANAGEMENT
 ///////////////////////////////////////////////////////////
 
-static zend_always_inline void clean_events_for_resumed_coroutines(const circular_buffer_t *queue, const void *previous_data, size_t previous_count, size_t previous_head)
+static zend_always_inline void process_resumed_coroutines(void)
 {
-	const size_t new_head = queue->head;
-	const size_t mask = queue->capacity - 1;
-	const size_t item_size = queue->item_size;
-	size_t current;
+	circular_buffer_t *resumed_queue = &ASYNC_G(resumed_coroutines);
+	zend_coroutine_t *coroutine = NULL;
 
-	// Check if reallocation occurred
-	if (queue->data != previous_data) {
-		// After reallocation: tail should be 0, old elements at [0, previous_count)
-		ZEND_ASSERT(queue->tail == 0 && "After reallocation tail should be 0");
-		current = previous_count;
-	} else {
-		// No reallocation: use original head
-		current = previous_head;
-	}
-
-	while (current != new_head) {
-		zend_coroutine_t *coroutine = *(zend_coroutine_t**)((char*)queue->data + current * item_size);
-
-		if (coroutine != NULL && coroutine->waker != NULL) {
+	while (circular_buffer_pop_ptr(resumed_queue, (void**)&coroutine) == SUCCESS) {
+		if (EXPECTED(coroutine != NULL && coroutine->waker != NULL)) {
 			ZEND_ASYNC_WAKER_CLEAN_EVENTS(coroutine->waker);
 		}
-
-		current = (current + 1) & mask;
 	}
 }
+
 
 static zend_always_inline async_coroutine_t *next_coroutine(void)
 {
@@ -705,6 +690,7 @@ static void async_scheduler_dtor(void)
 	OBJ_RELEASE(&async_coroutine->std);
 
 	zval_c_buffer_cleanup(&ASYNC_G(coroutine_queue));
+	zval_c_buffer_cleanup(&ASYNC_G(resumed_coroutines));
 	zval_c_buffer_cleanup(&ASYNC_G(microtasks));
 
 	zval *current;
@@ -1056,6 +1042,9 @@ void async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine)
 			async_throw_error("Failed to enqueue coroutine");
 		} else {
 			coroutine->waker->status = ZEND_ASYNC_WAKER_QUEUED;
+
+			// Add to resumed_coroutines queue for event cleanup
+			circular_buffer_push_ptr_with_resize(&ASYNC_G(resumed_coroutines), coroutine);
 		}
 
 		//
@@ -1087,14 +1076,10 @@ static zend_always_inline void scheduler_next_tick(void)
 		ASYNC_G(last_reactor_tick) = current_time;
 		const circular_buffer_t * queue = &ASYNC_G(coroutine_queue);
 
-		const void *previous_data = queue->data;
-		const size_t previous_count = circular_buffer_count(queue);
-		const size_t previous_head = queue->head;
-
 		has_handles = ZEND_ASYNC_REACTOR_EXECUTE(circular_buffer_is_not_empty(queue));
 
-		if (previous_head != queue->head) {
-			clean_events_for_resumed_coroutines(queue, previous_data, previous_count, previous_head);
+		if (circular_buffer_is_not_empty(&ASYNC_G(resumed_coroutines))) {
+			process_resumed_coroutines();
 		}
 
 		TRY_HANDLE_SUSPEND_EXCEPTION();
@@ -1317,16 +1302,11 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 			execute_microtasks();
 			TRY_HANDLE_EXCEPTION();
 
-			const void *previous_data = coroutine_queue->data;
-			const size_t previous_count = circular_buffer_count(coroutine_queue);
-			const size_t previous_head = coroutine_queue->head;
-
-			has_next_coroutine = previous_count > 0;
-
+			has_next_coroutine = circular_buffer_count(coroutine_queue) > 0;
 			has_handles = ZEND_ASYNC_REACTOR_EXECUTE(has_next_coroutine);
 
-			if (previous_head != coroutine_queue->head) {
-				clean_events_for_resumed_coroutines(coroutine_queue, previous_data, previous_count, previous_head);
+			if (circular_buffer_is_not_empty(&ASYNC_G(resumed_coroutines))) {
+				process_resumed_coroutines();
 			}
 
 			TRY_HANDLE_EXCEPTION();

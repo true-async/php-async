@@ -700,6 +700,9 @@ void async_coroutine_resume(zend_coroutine_t *coroutine, zend_object *error, con
 	}
 
 	coroutine->waker->status = ZEND_ASYNC_WAKER_QUEUED;
+
+	// Add to resumed_coroutines queue for event cleanup
+	circular_buffer_push(&ASYNC_G(resumed_coroutines), &coroutine, true);
 }
 
 void async_coroutine_cancel(zend_coroutine_t *zend_coroutine,

@@ -208,6 +208,7 @@ static void engine_shutdown(void)
 
 	circular_buffer_dtor(&ASYNC_G(microtasks));
 	circular_buffer_dtor(&ASYNC_G(coroutine_queue));
+	circular_buffer_dtor(&ASYNC_G(resumed_coroutines));
 	zend_hash_destroy(&ASYNC_G(coroutines));
 
 	if (ASYNC_G(root_context) != NULL) {

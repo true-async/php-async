@@ -962,6 +962,7 @@ PHP_RINIT_FUNCTION(async) /* {{{ */
 	ZEND_ASYNC_INITIALIZE;
 	circular_buffer_ctor(&ASYNC_G(microtasks), 64, sizeof(zend_async_microtask_t *), &zend_std_allocator);
 	circular_buffer_ctor(&ASYNC_G(coroutine_queue), 128, sizeof(zend_coroutine_t *), &zend_std_allocator);
+	circular_buffer_ctor(&ASYNC_G(resumed_coroutines), 64, sizeof(zend_coroutine_t *), &zend_std_allocator);
 	zend_hash_init(&ASYNC_G(coroutines), 128, NULL, NULL, 0);
 
 	ASYNC_G(reactor_started) = false;

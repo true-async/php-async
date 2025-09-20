@@ -73,6 +73,8 @@ ZEND_BEGIN_MODULE_GLOBALS(async)
 circular_buffer_t microtasks;
 /* Queue of coroutine_queue */
 circular_buffer_t coroutine_queue;
+/* Queue of resumed coroutines for event cleanup */
+circular_buffer_t resumed_coroutines;
 /* List of coroutines  */
 HashTable coroutines;
 /* The transfer structure is used to return to the main execution context. */
