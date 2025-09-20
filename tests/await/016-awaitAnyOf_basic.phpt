@@ -14,7 +14,6 @@ $coroutines = [
         return "first";
     }),
     spawn(function() {
-        suspend();
         throw new RuntimeException("test exception");
     }),
     spawn(function() {

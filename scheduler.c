@@ -1289,7 +1289,8 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 		bool was_executed = false;
 		switch_status status = COROUTINE_NOT_EXISTS;
 
-		const circular_buffer_t * coroutine_queue = &ASYNC_G(coroutine_queue);
+		const circular_buffer_t *coroutine_queue = &ASYNC_G(coroutine_queue);
+		const circular_buffer_t *resumed_coroutines = &ASYNC_G(resumed_coroutines);
 
 		do {
 
@@ -1305,7 +1306,7 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 			has_next_coroutine = circular_buffer_count(coroutine_queue) > 0;
 			has_handles = ZEND_ASYNC_REACTOR_EXECUTE(has_next_coroutine);
 
-			if (circular_buffer_is_not_empty(&ASYNC_G(resumed_coroutines))) {
+			if (circular_buffer_is_not_empty(resumed_coroutines)) {
 				process_resumed_coroutines();
 			}
 
