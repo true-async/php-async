@@ -910,7 +910,8 @@ static PHP_GINIT_FUNCTION(async)
 }
 
 /* {{{ PHP_GSHUTDOWN_FUNCTION */
-static PHP_GSHUTDOWN_FUNCTION(async){
+static PHP_GSHUTDOWN_FUNCTION(async)
+{
 #ifdef PHP_WIN32
 #endif
 } /* }}} */

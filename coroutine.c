@@ -49,7 +49,10 @@ static void coroutine_event_start(zend_async_event_t *event);
 static void coroutine_event_stop(zend_async_event_t *event);
 static void coroutine_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback);
 static void coroutine_del_callback(zend_async_event_t *event, zend_async_event_callback_t *callback);
-static bool coroutine_replay(zend_async_event_t *event, zend_async_event_callback_t *callback, zval *result, zend_object **exception);
+static bool coroutine_replay(zend_async_event_t *event,
+							 zend_async_event_callback_t *callback,
+							 zval *result,
+							 zend_object **exception);
 static zend_string *coroutine_info(zend_async_event_t *event);
 static void coroutine_dispose(zend_async_event_t *event);
 
@@ -286,7 +289,8 @@ static HashTable *async_coroutine_object_gc(zend_object *object, zval **table, i
 	async_fiber_context_t *fiber_context = coroutine->fiber_context;
 
 	/* Check if we should traverse execution stack (similar to fibers) */
-	if (fiber_context == NULL || (fiber_context->context.status != ZEND_FIBER_STATUS_SUSPENDED || !fiber_context->execute_data)) {
+	if (fiber_context == NULL ||
+		(fiber_context->context.status != ZEND_FIBER_STATUS_SUSPENDED || !fiber_context->execute_data)) {
 		zend_get_gc_buffer_use(buf, table, num);
 		return NULL;
 	}
@@ -394,7 +398,7 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 
 		coroutine->coroutine.event.dispose(&coroutine->coroutine.event);
 
-		if(EXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == &coroutine->coroutine)) {
+		if (EXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == &coroutine->coroutine)) {
 			ZEND_ASYNC_CURRENT_COROUTINE = NULL;
 		}
 
@@ -405,7 +409,7 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 		zend_error(E_ERROR, "Attempt to resume a coroutine that has not been resolved");
 		coroutine->coroutine.event.dispose(&coroutine->coroutine.event);
 
-		if(EXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == &coroutine->coroutine)) {
+		if (EXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == &coroutine->coroutine)) {
 			ZEND_ASYNC_CURRENT_COROUTINE = NULL;
 		}
 
@@ -460,7 +464,7 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 	}
 	zend_end_try();
 
-	if(EXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == &coroutine->coroutine)) {
+	if (EXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == &coroutine->coroutine)) {
 		ZEND_ASYNC_CURRENT_COROUTINE = NULL;
 	}
 
@@ -901,8 +905,7 @@ static zend_string *coroutine_info(zend_async_event_t *event)
 							   coroutine->std.handle,
 							   coroutine->coroutine.filename ? ZSTR_VAL(coroutine->coroutine.filename) : "",
 							   coroutine->coroutine.lineno,
-							   coroutine->waker.filename ? ZSTR_VAL(coroutine->waker.filename)
-																	: "",
+							   coroutine->waker.filename ? ZSTR_VAL(coroutine->waker.filename) : "",
 							   coroutine->waker.lineno,
 							   ZSTR_VAL(zend_coroutine_name));
 	} else {
@@ -1348,8 +1351,7 @@ METHOD(getSuspendLocation)
 	async_coroutine_t *coroutine = THIS_COROUTINE;
 
 	if (coroutine->waker.filename) {
-		RETURN_STR(zend_strpprintf(
-				0, "%s:%d", ZSTR_VAL(coroutine->waker.filename), coroutine->waker.lineno));
+		RETURN_STR(zend_strpprintf(0, "%s:%d", ZSTR_VAL(coroutine->waker.filename), coroutine->waker.lineno));
 	} else {
 		RETURN_STRING("unknown");
 	}

@@ -39,7 +39,8 @@ PHP_ASYNC_API ZEND_COLD zend_object *async_throw_input_output(const char *format
 PHP_ASYNC_API ZEND_COLD zend_object *async_throw_timeout(const char *format, const zend_long timeout);
 PHP_ASYNC_API ZEND_COLD zend_object *async_throw_poll(const char *format, ...);
 PHP_ASYNC_API ZEND_COLD zend_object *async_new_composite_exception(void);
-PHP_ASYNC_API void async_composite_exception_add_exception(zend_object *composite, zend_object *exception, bool transfer);
+PHP_ASYNC_API void
+async_composite_exception_add_exception(zend_object *composite, zend_object *exception, bool transfer);
 bool async_spawn_and_throw(zend_object *exception, zend_async_scope_t *scope, int32_t priority);
 void async_apply_exception_to_context(zend_object *exception);
 zend_object *async_extract_exception(void);

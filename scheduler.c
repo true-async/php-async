@@ -31,9 +31,9 @@
 #define FIBER_DEBUG_LOG_ON false
 #define FIBER_DEBUG_SWITCH false
 #if FIBER_DEBUG_LOG_ON
-#  define FIBER_DEBUG(...) fprintf(stdout, __VA_ARGS__)
+#define FIBER_DEBUG(...) fprintf(stdout, __VA_ARGS__)
 #else
-#  define FIBER_DEBUG(...) ((void)0)
+#define FIBER_DEBUG(...) ((void) 0)
 #endif
 
 static zend_function root_function = { ZEND_INTERNAL_FUNCTION };
@@ -95,7 +95,7 @@ static void fiber_context_cleanup(zend_fiber_context *context)
 	efree(fiber_context);
 }
 
-async_fiber_context_t* async_fiber_context_create(void)
+async_fiber_context_t *async_fiber_context_create(void)
 {
 	async_fiber_context_t *context = ecalloc(1, sizeof(async_fiber_context_t));
 
@@ -112,7 +112,7 @@ async_fiber_context_t* async_fiber_context_create(void)
 
 static zend_always_inline void fiber_pool_init(void)
 {
-	circular_buffer_ctor(&ASYNC_G(fiber_context_pool), ASYNC_FIBER_POOL_SIZE, sizeof(async_fiber_context_t*), NULL);
+	circular_buffer_ctor(&ASYNC_G(fiber_context_pool), ASYNC_FIBER_POOL_SIZE, sizeof(async_fiber_context_t *), NULL);
 }
 
 static void fiber_pool_cleanup(void)
@@ -122,12 +122,9 @@ static void fiber_pool_cleanup(void)
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 	ZEND_ASYNC_CURRENT_COROUTINE = NULL;
 
-	while (circular_buffer_pop_ptr(&ASYNC_G(fiber_context_pool), (void**)&fiber_context) == SUCCESS) {
+	while (circular_buffer_pop_ptr(&ASYNC_G(fiber_context_pool), (void **) &fiber_context) == SUCCESS) {
 		if (fiber_context != NULL) {
-			zend_fiber_transfer transfer = {
-				.context = &fiber_context->context,
-				.flags = 0
-			};
+			zend_fiber_transfer transfer = { .context = &fiber_context->context, .flags = 0 };
 
 			// If the current coroutine is NULL, this state explicitly tells the fiber to stop execution.
 			// We set this value each time, since the switch_to_scheduler function may change it.
@@ -228,10 +225,7 @@ static zend_always_inline void fiber_switch_context(async_coroutine_t *coroutine
 
 	ZEND_ASSERT(fiber_context != NULL && "Fiber context is NULL in fiber_switch_context");
 
-	zend_fiber_transfer transfer = {
-		.context = &fiber_context->context,
-		.flags = 0
-	};
+	zend_fiber_transfer transfer = { .context = &fiber_context->context, .flags = 0 };
 
 #if FIBER_DEBUG_SWITCH
 	zend_fiber_context *from = EG(current_fiber_context);
@@ -307,19 +301,18 @@ static zend_always_inline void process_resumed_coroutines(void)
 	circular_buffer_t *resumed_queue = &ASYNC_G(resumed_coroutines);
 	zend_coroutine_t *coroutine = NULL;
 
-	while (circular_buffer_pop_ptr(resumed_queue, (void**)&coroutine) == SUCCESS) {
+	while (circular_buffer_pop_ptr(resumed_queue, (void **) &coroutine) == SUCCESS) {
 		if (EXPECTED(coroutine != NULL && coroutine->waker != NULL)) {
 			ZEND_ASYNC_WAKER_CLEAN_EVENTS(coroutine->waker);
 		}
 	}
 }
 
-
 static zend_always_inline async_coroutine_t *next_coroutine(void)
 {
 	async_coroutine_t *coroutine;
 
-	if (UNEXPECTED(circular_buffer_pop_ptr(&ASYNC_G(coroutine_queue), (void**)&coroutine) == FAILURE)) {
+	if (UNEXPECTED(circular_buffer_pop_ptr(&ASYNC_G(coroutine_queue), (void **) &coroutine) == FAILURE)) {
 		ZEND_ASSERT("Failed to pop the coroutine from the pending queue.");
 		return NULL;
 	}
@@ -382,7 +375,7 @@ static zend_always_inline switch_status execute_next_coroutine(void)
 
 		// The coroutine doesn't have its own Fiber,
 		// so we first need to allocate a Fiber context for it and then start it.
-		circular_buffer_pop_ptr(&ASYNC_G(fiber_context_pool), (void**)&async_coroutine->fiber_context);
+		circular_buffer_pop_ptr(&ASYNC_G(fiber_context_pool), (void **) &async_coroutine->fiber_context);
 
 		if (async_coroutine->fiber_context == NULL) {
 			async_coroutine->fiber_context = async_fiber_context_create();
@@ -410,7 +403,8 @@ static zend_always_inline switch_status execute_next_coroutine(void)
 
 #define AVAILABLE_FOR_COROUTINE (transfer != NULL)
 
-static zend_always_inline switch_status execute_next_coroutine_from_fiber(zend_fiber_transfer *transfer, async_fiber_context_t *fiber_context)
+static zend_always_inline switch_status execute_next_coroutine_from_fiber(zend_fiber_transfer *transfer,
+																		  async_fiber_context_t *fiber_context)
 {
 	async_coroutine_t *async_coroutine = next_coroutine();
 
@@ -486,7 +480,7 @@ next_coroutine:
 		// (AVAILABLE_FOR_COROUTINE == false)
 		// The coroutine doesn't have its own Fiber,
 		// so we first need to allocate a Fiber context for it and then start it.
-		circular_buffer_pop_ptr(&ASYNC_G(fiber_context_pool), (void**)&async_coroutine->fiber_context);
+		circular_buffer_pop_ptr(&ASYNC_G(fiber_context_pool), (void **) &async_coroutine->fiber_context);
 
 		if (async_coroutine->fiber_context == NULL) {
 			async_coroutine->fiber_context = async_fiber_context_create();
@@ -1095,7 +1089,7 @@ static zend_always_inline void scheduler_next_tick(void)
 				   zend_hash_num_elements(&ASYNC_G(coroutines)) > 0 && circular_buffer_is_empty(&ASYNC_G(microtasks)) &&
 				   resolve_deadlocks())) {
 		switch_to_scheduler(transfer);
-				   }
+	}
 
 	if (EXPECTED(is_next_coroutine)) {
 		//
@@ -1251,12 +1245,12 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 
 	zend_first_try
 	{
-		zend_vm_stack stack = (zend_vm_stack)vm_stack_memory;
+		zend_vm_stack stack = (zend_vm_stack) vm_stack_memory;
 
 		// Initialize VM stack structure manually
 		// see zend_vm_stack_init()
 		stack->top = ZEND_VM_STACK_ELEMENTS(stack);
-		stack->end = (zval*)((char*)vm_stack_memory + ZEND_FIBER_VM_STACK_SIZE);
+		stack->end = (zval *) ((char *) vm_stack_memory + ZEND_FIBER_VM_STACK_SIZE);
 		stack->prev = NULL;
 
 		// we allocate space for the first call frame, thereby normalizing the stack
@@ -1358,11 +1352,10 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 						   circular_buffer_is_empty(coroutine_queue) &&
 						   circular_buffer_is_empty(&ASYNC_G(microtasks)) && resolve_deadlocks())) {
 				break;
-						   }
+			}
 
 		} while (zend_hash_num_elements(&ASYNC_G(coroutines)) > 0 ||
 				 circular_buffer_is_not_empty(&ASYNC_G(microtasks)) || ZEND_ASYNC_REACTOR_LOOP_ALIVE());
-
 	}
 	zend_catch
 	{

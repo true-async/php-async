@@ -201,7 +201,8 @@ PHP_ASYNC_API ZEND_COLD zend_object *async_new_composite_exception(void)
 	return Z_OBJ(composite);
 }
 
-PHP_ASYNC_API void async_composite_exception_add_exception(zend_object *composite, zend_object *exception, bool transfer)
+PHP_ASYNC_API void
+async_composite_exception_add_exception(zend_object *composite, zend_object *exception, bool transfer)
 {
 	if (composite == NULL || exception == NULL) {
 		return;
@@ -308,10 +309,11 @@ zend_object *async_extract_exception(void)
  */
 void async_apply_exception(zend_object **to_exception)
 {
-	if (UNEXPECTED(EG(exception) &&
-				   false ==
-						   (instanceof_function(EG(exception)->ce, ZEND_ASYNC_GET_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION)) ||
-							zend_is_graceful_exit(EG(exception)) || zend_is_unwind_exit(EG(exception))))) {
+	if (UNEXPECTED(
+				EG(exception) &&
+				false ==
+						(instanceof_function(EG(exception)->ce, ZEND_ASYNC_GET_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION)) ||
+						 zend_is_graceful_exit(EG(exception)) || zend_is_unwind_exit(EG(exception))))) {
 
 		zend_object *exception = async_extract_exception();
 
