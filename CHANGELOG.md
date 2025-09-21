@@ -5,7 +5,35 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] - 2025-09-31
+
+### Added
+- **UDP socket stream support for TrueAsync**
+- **SSL support for socket stream**
+- **Poll Proxy**: New `zend_async_poll_proxy_t` structure for optimized file descriptor management
+    - Efficient caching of event handlers to reduce EventLoop creation overhead
+    - Poll proxy event aggregation and improved lifecycle management
+
+### Fixed
+- **Fixing `ref_count` logic for the `zend_async_event_callback_t` structure**:
+    - The add/dispose methods correctly increment the counter
+    - Memory leaks fixed
+- Fixed await iterator logic for `awaitXXX` functions
+
+### Changed
+- **Memory Optimization**: Enhanced memory allocation for async structures
+    - Optimized waker trigger structures with improved memory layout
+    - Enhanced memory management for poll proxy events
+    - Better resource cleanup and lifecycle management
+- **Event Loop Performance**: Major scheduler optimizations
+    - **Automatic Event Cleanup**: Added automatic waker event cleanup when coroutines resume (see `ZEND_ASYNC_WAKER_CLEAN_EVENTS`)
+    - Separate queue implementation for resumed coroutines to improve stability
+    - Reduced unnecessary LibUV calls in scheduler tick processing
+- **Socket Performance**:
+    - Event handler caching for sockets to avoid constant EventLoop recreation
+    - Optimized `network_async_accept_incoming` to try `accept()` before waiting
+    - Enhanced stream_select functionality with event-driven architecture
+    - Improved blocking operation handling with boolean return values
 
 ## [0.3.0] - 2025-07-16
 
