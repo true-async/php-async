@@ -57,7 +57,7 @@ $clients = [];
 for ($i = 1; $i <= 3; $i++) {
     $clients[] = spawn(function() use (&$port, $i, &$output) {
 
-        for ($i = 0; $i < 3 && $port === null; $i++) {
+        for ($ii = 0; $ii < 3 && $port === null; $ii++) {
             delay(10);
         }
 
