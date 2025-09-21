@@ -74,13 +74,13 @@ $monitor = spawn(function() use (&$servers_ready, &$servers_completed) {
     echo "Monitor: waiting for servers to be ready\n";
 
     while ($servers_ready < 3) {
-        delay(50);
+        delay(10);
     }
 
     echo "Monitor: all servers ready, waiting for completion\n";
 
     while ($servers_completed < 3) {
-        delay(50);
+        delay(10);
     }
 
     echo "Monitor: all servers completed\n";
