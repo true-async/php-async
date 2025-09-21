@@ -694,7 +694,7 @@ void async_coroutine_resume(zend_coroutine_t *coroutine, zend_object *error, con
 		return;
 	}
 
-	if (UNEXPECTED(circular_buffer_push(&ASYNC_G(coroutine_queue), &coroutine, true)) == FAILURE) {
+	if (UNEXPECTED(circular_buffer_push_ptr_with_resize(&ASYNC_G(coroutine_queue), coroutine)) == FAILURE) {
 		async_throw_error("Failed to enqueue coroutine");
 		return;
 	}
@@ -702,7 +702,9 @@ void async_coroutine_resume(zend_coroutine_t *coroutine, zend_object *error, con
 	coroutine->waker->status = ZEND_ASYNC_WAKER_QUEUED;
 
 	// Add to resumed_coroutines queue for event cleanup
-	circular_buffer_push(&ASYNC_G(resumed_coroutines), &coroutine, true);
+	if (ZEND_ASYNC_IS_SCHEDULER_CONTEXT) {
+		circular_buffer_push_ptr_with_resize(&ASYNC_G(resumed_coroutines), coroutine);
+	}
 }
 
 void async_coroutine_cancel(zend_coroutine_t *zend_coroutine,

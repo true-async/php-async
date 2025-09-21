@@ -1044,7 +1044,9 @@ void async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine)
 			coroutine->waker->status = ZEND_ASYNC_WAKER_QUEUED;
 
 			// Add to resumed_coroutines queue for event cleanup
-			circular_buffer_push_ptr_with_resize(&ASYNC_G(resumed_coroutines), coroutine);
+			if (ZEND_ASYNC_IS_SCHEDULER_CONTEXT) {
+				circular_buffer_push_ptr_with_resize(&ASYNC_G(resumed_coroutines), coroutine);
+			}
 		}
 
 		//
@@ -1074,11 +1076,11 @@ static zend_always_inline void scheduler_next_tick(void)
 
 	if (UNEXPECTED(current_time - ASYNC_G(last_reactor_tick) > REACTOR_CHECK_INTERVAL)) {
 		ASYNC_G(last_reactor_tick) = current_time;
-		const circular_buffer_t * queue = &ASYNC_G(coroutine_queue);
+		const circular_buffer_t *queue = &ASYNC_G(coroutine_queue);
 
 		has_handles = ZEND_ASYNC_REACTOR_EXECUTE(circular_buffer_is_not_empty(queue));
 
-		if (circular_buffer_is_not_empty(&ASYNC_G(resumed_coroutines))) {
+		if (circular_buffer_is_not_empty(&ASYNC_G(coroutine_queue))) {
 			process_resumed_coroutines();
 		}
 
@@ -1290,7 +1292,7 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 		switch_status status = COROUTINE_NOT_EXISTS;
 
 		const circular_buffer_t *coroutine_queue = &ASYNC_G(coroutine_queue);
-		const circular_buffer_t *resumed_coroutines = &ASYNC_G(resumed_coroutines);
+		circular_buffer_t *resumed_coroutines = &ASYNC_G(resumed_coroutines);
 
 		do {
 
@@ -1302,6 +1304,8 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 
 			execute_microtasks();
 			TRY_HANDLE_EXCEPTION();
+
+			ZEND_ASSERT(circular_buffer_is_not_empty(resumed_coroutines) == 0 && "resumed_coroutines should be 0");
 
 			has_next_coroutine = circular_buffer_count(coroutine_queue) > 0;
 			has_handles = ZEND_ASYNC_REACTOR_EXECUTE(has_next_coroutine);

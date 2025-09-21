@@ -87,6 +87,10 @@ static zend_always_inline bool circular_buffer_is_not_empty(const circular_buffe
     return buffer->head != buffer->tail;
 }
 
+static zend_always_inline void circular_buffer_clean(circular_buffer_t *buffer) {
+	buffer->head = buffer->tail;
+}
+
 /* Fast specialized version for pointer push (8 bytes) */
 static zend_always_inline zend_result circular_buffer_push_ptr(circular_buffer_t *buffer, void *ptr) {
     // Check if buffer is full using bitwise AND (capacity is power of 2)
