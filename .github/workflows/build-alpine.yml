@@ -224,7 +224,6 @@ jobs:
         run: |
           /usr/local/bin/php ../../run-tests.php \
             ${{ matrix.asan && '--asan' || '' }} \
-            -d zend_extension=opcache.so \
             -d opcache.enable_cli=1 \
             -d opcache.jit_buffer_size=64M \
             -d opcache.jit=tracing \
@@ -241,7 +240,6 @@ jobs:
         run: |
           /usr/local/bin/php ../../run-tests.php \
             ${{ matrix.asan && '--asan' || '' }} \
-            -d zend_extension=opcache.so \
             -d opcache.enable_cli=1 \
             -P -q -x -j$(nproc) \
             -g FAIL,BORK,LEAK,XLEAK \

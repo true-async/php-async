@@ -159,7 +159,6 @@ jobs:
         working-directory: php-src/ext/async
         run: |
           /usr/local/bin/php ../../run-tests.php \
-            -d zend_extension=opcache.so \
             -d opcache.enable_cli=1 \
             -d opcache.jit_buffer_size=64M \
             -d opcache.jit=tracing \
@@ -175,7 +174,6 @@ jobs:
         working-directory: php-src/ext/async
         run: |
           /usr/local/bin/php ../../run-tests.php \
-            -d zend_extension=opcache.so \
             -d opcache.enable_cli=1 \
             -P -q -x -j$(sysctl -n hw.logicalcpu) \
             -g FAIL,BORK,LEAK,XLEAK \
@@ -191,7 +189,6 @@ jobs:
         working-directory: php-src/ext/async
         run: |
           /usr/local/bin/php ../../run-tests.php \
-            -d zend_extension=opcache.so \
             -d opcache.enable_cli=1 \
             -d opcache.jit_buffer_size=64M \
             -d opcache.jit=function \
