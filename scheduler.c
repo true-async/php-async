@@ -1302,10 +1302,10 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 
 			ZEND_ASYNC_SCHEDULER_CONTEXT = true;
 
+			ZEND_ASSERT(circular_buffer_is_not_empty(resumed_coroutines) == 0 && "resumed_coroutines should be 0");
+
 			execute_microtasks();
 			TRY_HANDLE_EXCEPTION();
-
-			ZEND_ASSERT(circular_buffer_is_not_empty(resumed_coroutines) == 0 && "resumed_coroutines should be 0");
 
 			has_next_coroutine = circular_buffer_count(coroutine_queue) > 0;
 			has_handles = ZEND_ASYNC_REACTOR_EXECUTE(has_next_coroutine);
