@@ -910,7 +910,7 @@ static void libuv_add_signal_event(int signum, zend_async_event_t *event)
 	}
 
 	// Add event to the list (use pointer address as key)
-	zend_hash_index_add_ptr(events_list, (zend_ulong) event, event);
+	zend_hash_index_add_ptr(events_list, async_ptr_to_index(event), event);
 }
 
 /* }}} */
@@ -927,7 +927,7 @@ static void libuv_remove_signal_event(int signum, zend_async_event_t *event)
 		return;
 	}
 
-	zend_hash_index_del(events_list, (zend_ulong) event);
+	zend_hash_index_del(events_list, async_ptr_to_index(event));
 
 	// If no more events for this signal, remove the handler (but check for process events if SIGCHLD)
 	if (zend_hash_num_elements(events_list) == 0) {
@@ -989,7 +989,7 @@ static void libuv_handle_process_events(void)
 
 		// Verify event is still in the HashTable (might have been removed)
 		if (ASYNC_G(process_events) == NULL ||
-			zend_hash_index_find_ptr(ASYNC_G(process_events), (zend_ulong) event) == NULL) {
+			zend_hash_index_find_ptr(ASYNC_G(process_events), async_ptr_to_index(event)) == NULL) {
 			continue;
 		}
 
@@ -1057,7 +1057,7 @@ static void libuv_add_process_event(zend_async_event_t *event)
 	}
 
 	// Add event to the process events list (use pointer address as key)
-	zend_hash_index_add_ptr(ASYNC_G(process_events), (zend_ulong) event, event);
+	zend_hash_index_add_ptr(ASYNC_G(process_events), async_ptr_to_index(event), event);
 }
 
 /* }}} */
@@ -1069,7 +1069,7 @@ static void libuv_remove_process_event(zend_async_event_t *event)
 		return;
 	}
 
-	zend_hash_index_del(ASYNC_G(process_events), (zend_ulong) event);
+	zend_hash_index_del(ASYNC_G(process_events), async_ptr_to_index(event));
 
 	// Only remove SIGCHLD handler if no more process events AND no regular signal events for SIGCHLD
 	if (zend_hash_num_elements(ASYNC_G(process_events)) == 0) {

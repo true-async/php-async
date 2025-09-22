@@ -241,13 +241,10 @@ static HashTable *async_coroutine_object_gc(zend_object *object, zval **table, i
 		}
 
 		/* Add events HashTable contents */
-		zval *event_val;
+		zend_async_event_t *event;
 		zval zval_object;
-		ZEND_HASH_FOREACH_VAL(&coroutine->waker.events, event_val)
+		ZEND_HASH_FOREACH_PTR(&coroutine->waker.events, event)
 		{
-
-			zend_async_event_t *event = (zend_async_event_t *) Z_PTR_P(event_val);
-
 			if (ZEND_ASYNC_EVENT_IS_REFERENCE(event) || ZEND_ASYNC_EVENT_IS_ZEND_OBJ(event)) {
 				ZVAL_OBJ(&zval_object, ZEND_ASYNC_EVENT_TO_OBJECT(event));
 				zend_get_gc_buffer_add_zval(buf, &zval_object);
@@ -255,6 +252,7 @@ static HashTable *async_coroutine_object_gc(zend_object *object, zval **table, i
 		}
 		ZEND_HASH_FOREACH_END();
 
+		zval *event_val;
 		/* Add triggered events if present */
 		if (coroutine->waker.triggered_events) {
 			ZEND_HASH_FOREACH_VAL(coroutine->waker.triggered_events, event_val)

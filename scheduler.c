@@ -687,11 +687,10 @@ static void async_scheduler_dtor(void)
 	zval_c_buffer_cleanup(&ASYNC_G(resumed_coroutines));
 	zval_c_buffer_cleanup(&ASYNC_G(microtasks));
 
-	zval *current;
+	async_coroutine_t *coroutine;
 	// foreach by fibers_state and release all fibers
-	ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), current)
+	ZEND_HASH_FOREACH_PTR(&ASYNC_G(coroutines), coroutine)
 	{
-		async_coroutine_t *coroutine = Z_PTR_P(current);
 		OBJ_RELEASE(&coroutine->std);
 	}
 	ZEND_HASH_FOREACH_END();
@@ -714,10 +713,9 @@ static zend_always_inline void start_waker_events(zend_async_waker_t *waker)
 {
 	ZEND_ASSERT(waker != NULL && "Waker is NULL in async_scheduler_start_waker_events");
 
-	zval *current;
-	ZEND_HASH_FOREACH_VAL(&waker->events, current)
+	zend_async_waker_trigger_t *trigger;
+	ZEND_HASH_FOREACH_PTR(&waker->events, trigger)
 	{
-		const zend_async_waker_trigger_t *trigger = Z_PTR_P(current);
 		trigger->event->start(trigger->event);
 	}
 	ZEND_HASH_FOREACH_END();
@@ -727,10 +725,9 @@ static zend_always_inline void stop_waker_events(zend_async_waker_t *waker)
 {
 	ZEND_ASSERT(waker != NULL && "Waker is NULL in async_scheduler_stop_waker_events");
 
-	zval *current;
-	ZEND_HASH_FOREACH_VAL(&waker->events, current)
+	zend_async_waker_trigger_t *trigger;
+	ZEND_HASH_FOREACH_PTR(&waker->events, trigger)
 	{
-		const zend_async_waker_trigger_t *trigger = Z_PTR_P(current);
 		trigger->event->stop(trigger->event);
 	}
 	ZEND_HASH_FOREACH_END();

@@ -267,4 +267,19 @@ void zend_copy_fci(zend_fcall_info *dest_fci,
 				   zend_fcall_info *src_fci,
 				   zend_fcall_info_cache *src_fcc);
 
+/**
+ * Optimized pointer to hash index conversion.
+ *
+ * Uses right rotation by 3 bits to improve hash distribution for pointer addresses,
+ * reducing collisions caused by zero lower bits from memory alignment.
+ *
+ * @param ptr  Pointer to convert to hash index
+ * @return     Optimized hash index value
+ */
+static zend_always_inline zend_ulong async_ptr_to_index(void *ptr)
+{
+	zend_ulong key = (zend_ulong) ptr;
+	return (key >> 3) | (key << ((sizeof(key) * 8) - 3));
+}
+
 #endif // ASYNC_ZEND_COMMON_H
