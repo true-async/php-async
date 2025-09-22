@@ -26,14 +26,14 @@ if test "$PHP_ASYNC" = "yes"; then
     AC_MSG_CHECKING(for libuv)
 
     if test -x "$PKG_CONFIG" && $PKG_CONFIG --exists libuv; then
-      dnl Require libuv >= 1.44.0 for UV_RUN_ONCE busy loop fix
-      if $PKG_CONFIG libuv --atleast-version 1.44.0; then
+      dnl Require libuv >= 1.45.0 for UV_RUN_ONCE busy loop fix
+      if $PKG_CONFIG libuv --atleast-version 1.45.0; then
         LIBUV_INCLINE=`$PKG_CONFIG libuv --cflags`
         LIBUV_LIBLINE=`$PKG_CONFIG libuv --libs`
         LIBUV_VERSION=`$PKG_CONFIG libuv --modversion`
         AC_MSG_RESULT(from pkgconfig: found version $LIBUV_VERSION)
       else
-        AC_MSG_ERROR(system libuv must be upgraded to version >= 1.44.0 (fixes UV_RUN_ONCE busy loop issue))
+        AC_MSG_ERROR(system libuv must be upgraded to version >= 1.45.0 (fixes UV_RUN_ONCE busy loop issue))
       fi
       PHP_EVAL_LIBLINE($LIBUV_LIBLINE, UV_SHARED_LIBADD)
       PHP_EVAL_INCLINE($LIBUV_INCLINE)

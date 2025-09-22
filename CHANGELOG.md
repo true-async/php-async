@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Optimized `network_async_accept_incoming` to try `accept()` before waiting
     - Enhanced stream_select functionality with event-driven architecture
     - Improved blocking operation handling with boolean return values
+- Upgrade `LibUV` to version `1.45` due to a timer bug that causes the application to hang
 
 ## [0.3.0] - 2025-07-16
 

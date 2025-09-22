@@ -98,7 +98,7 @@ jobs:
             libxslt1-dev \
             libicu-dev
           
-          # Build LibUV from source (need >= 1.44.0)
+          # Build LibUV from source (need >= 1.45.0)
           sudo apt-get install -y cmake ninja-build
           
           # Download and build LibUV 1.48.0
