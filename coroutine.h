@@ -29,7 +29,7 @@ struct _async_fiber_context_s
 
 	/* Active fiber VM stack */
 	zend_vm_stack vm_stack;
-	
+
 	/* Current Zend VM execute data */
 	zend_execute_data *execute_data;
 
@@ -47,7 +47,7 @@ struct _async_coroutine_s
 
 	/* Basic structure for coroutine. */
 	zend_coroutine_t coroutine;
-	
+
 	/* Embedded waker (always allocated, no malloc needed) */
 	zend_async_waker_t waker;
 

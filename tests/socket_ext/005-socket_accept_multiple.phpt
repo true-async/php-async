@@ -10,7 +10,7 @@ if (!extension_loaded('sockets')) {
 <?php
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\awaitAllOrFail;
 use function Async\delay;
 
 echo "Start\n";
@@ -27,13 +27,13 @@ $server = spawn(function() use (&$port, &$output) {
     socket_set_option($socket, SOL_SOCKET, SO_REUSEADDR, 1);
     socket_bind($socket, '127.0.0.1', 0);
     socket_listen($socket, 5);
-    
+
     $addr = '';
     socket_getsockname($socket, $addr, $port);
     $output[] = "Server: listening on port $port";
-    
+
     $clients = [];
-    
+
     // Accept 3 clients
     for ($i = 1; $i <= 3; $i++) {
         $output[] = "Server: waiting for client $i";
@@ -41,14 +41,14 @@ $server = spawn(function() use (&$port, &$output) {
         $output[] = "Server: client $i connected";
         $clients[] = $client;
     }
-    
+
     // Send responses to all clients
     foreach ($clients as $i => $client) {
         $clientNum = $i + 1;
         socket_write($client, "Response to client $clientNum");
         socket_close($client);
     }
-    
+
     socket_close($socket);
 });
 
@@ -56,27 +56,32 @@ $server = spawn(function() use (&$port, &$output) {
 $clients = [];
 for ($i = 1; $i <= 3; $i++) {
     $clients[] = spawn(function() use (&$port, $i, &$output) {
-        while ($port === null) {
-            delay(1);
+
+        for ($ii = 0; $ii < 3 && $port === null; $ii++) {
+            delay(10);
         }
-        
+
+        if(empty($port)) {
+            throw new Exception("Server port is not provided...");
+        }
+
         // Small delay to stagger connections
         delay($i);
-        
+
         $output[] = "Client$i: connecting";
         $socket = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
-        
+
         if (socket_connect($socket, '127.0.0.1', $port)) {
             $output[] = "Client$i: connected";
             $data = socket_read($socket, 1024);
             $output[] = "Client$i: received '$data'";
         }
-        
+
         socket_close($socket);
     });
 }
 
-awaitAll(array_merge([$server], $clients));
+awaitAllOrFail(array_merge([$server], $clients));
 
 // Sort and output results
 sort($output);

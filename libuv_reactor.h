@@ -46,6 +46,10 @@ struct _async_poll_event_t
 {
 	zend_async_poll_event_t event;
 	uv_poll_t uv_handle;
+	/* Array of active proxies for correct event aggregation */
+	zend_async_poll_proxy_t **proxies;
+	uint32_t proxies_count;
+	uint32_t proxies_capacity;
 };
 
 struct _async_timer_event_t

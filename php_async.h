@@ -45,6 +45,8 @@ PHP_ASYNC_API extern zend_class_entry *async_ce_timeout;
 #define PHP_ASYNC_VERSION "0.4.0"
 #define PHP_ASYNC_NAME_VERSION "true async v0.4.0"
 
+#define REACTOR_CHECK_INTERVAL (100 * 1000000) // ms in nanoseconds
+
 typedef struct
 {
 	// The first field must be a reference to a Zend object.
@@ -71,6 +73,8 @@ ZEND_BEGIN_MODULE_GLOBALS(async)
 circular_buffer_t microtasks;
 /* Queue of coroutine_queue */
 circular_buffer_t coroutine_queue;
+/* Queue of resumed coroutines for event cleanup */
+circular_buffer_t resumed_coroutines;
 /* List of coroutines  */
 HashTable coroutines;
 /* The transfer structure is used to return to the main execution context. */
@@ -103,6 +107,9 @@ uv_async_t *uvloop_wakeup;
 /* Circular buffer of libuv_process_t ptr */
 circular_buffer_t *pid_queue;
 #endif
+
+/* Reactor execution optimization */
+uint64_t last_reactor_tick;
 
 #ifdef PHP_WIN32
 #endif

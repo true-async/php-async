@@ -201,7 +201,8 @@ PHP_ASYNC_API ZEND_COLD zend_object *async_new_composite_exception(void)
 	return Z_OBJ(composite);
 }
 
-PHP_ASYNC_API void async_composite_exception_add_exception(zend_object *composite, zend_object *exception, bool transfer)
+PHP_ASYNC_API void
+async_composite_exception_add_exception(zend_object *composite, zend_object *exception, bool transfer)
 {
 	if (composite == NULL || exception == NULL) {
 		return;
@@ -286,8 +287,10 @@ bool async_spawn_and_throw(zend_object *exception, zend_async_scope_t *scope, in
  */
 zend_object *async_extract_exception(void)
 {
-	zend_exception_save();
-	zend_exception_restore();
+	zend_object **exception_ptr = &EG(exception);
+	zend_object **prev_exception_ptr = &EG(prev_exception);
+	zend_exception_save_fast(exception_ptr, prev_exception_ptr);
+	zend_exception_restore_fast(exception_ptr, prev_exception_ptr);
 	zend_object *exception = EG(exception);
 	GC_ADDREF(exception);
 	zend_clear_exception();
@@ -306,10 +309,11 @@ zend_object *async_extract_exception(void)
  */
 void async_apply_exception(zend_object **to_exception)
 {
-	if (UNEXPECTED(EG(exception) &&
-				   false ==
-						   (instanceof_function(EG(exception)->ce, ZEND_ASYNC_GET_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION)) ||
-							zend_is_graceful_exit(EG(exception)) || zend_is_unwind_exit(EG(exception))))) {
+	if (UNEXPECTED(
+				EG(exception) &&
+				false ==
+						(instanceof_function(EG(exception)->ce, ZEND_ASYNC_GET_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION)) ||
+						 zend_is_graceful_exit(EG(exception)) || zend_is_unwind_exit(EG(exception))))) {
 
 		zend_object *exception = async_extract_exception();
 

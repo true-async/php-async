@@ -49,7 +49,10 @@ static void coroutine_event_start(zend_async_event_t *event);
 static void coroutine_event_stop(zend_async_event_t *event);
 static void coroutine_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback);
 static void coroutine_del_callback(zend_async_event_t *event, zend_async_event_callback_t *callback);
-static bool coroutine_replay(zend_async_event_t *event, zend_async_event_callback_t *callback, zval *result, zend_object **exception);
+static bool coroutine_replay(zend_async_event_t *event,
+							 zend_async_event_callback_t *callback,
+							 zval *result,
+							 zend_object **exception);
 static zend_string *coroutine_info(zend_async_event_t *event);
 static void coroutine_dispose(zend_async_event_t *event);
 
@@ -286,7 +289,8 @@ static HashTable *async_coroutine_object_gc(zend_object *object, zval **table, i
 	async_fiber_context_t *fiber_context = coroutine->fiber_context;
 
 	/* Check if we should traverse execution stack (similar to fibers) */
-	if (fiber_context == NULL || (fiber_context->context.status != ZEND_FIBER_STATUS_SUSPENDED || !fiber_context->execute_data)) {
+	if (fiber_context == NULL ||
+		(fiber_context->context.status != ZEND_FIBER_STATUS_SUSPENDED || !fiber_context->execute_data)) {
 		zend_get_gc_buffer_use(buf, table, num);
 		return NULL;
 	}
@@ -394,7 +398,7 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 
 		coroutine->coroutine.event.dispose(&coroutine->coroutine.event);
 
-		if(EXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == &coroutine->coroutine)) {
+		if (EXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == &coroutine->coroutine)) {
 			ZEND_ASYNC_CURRENT_COROUTINE = NULL;
 		}
 
@@ -405,7 +409,7 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 		zend_error(E_ERROR, "Attempt to resume a coroutine that has not been resolved");
 		coroutine->coroutine.event.dispose(&coroutine->coroutine.event);
 
-		if(EXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == &coroutine->coroutine)) {
+		if (EXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == &coroutine->coroutine)) {
 			ZEND_ASYNC_CURRENT_COROUTINE = NULL;
 		}
 
@@ -460,7 +464,7 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 	}
 	zend_end_try();
 
-	if(EXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == &coroutine->coroutine)) {
+	if (EXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == &coroutine->coroutine)) {
 		ZEND_ASYNC_CURRENT_COROUTINE = NULL;
 	}
 
@@ -500,6 +504,8 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 	}
 
 	bool do_bailout = false;
+	zend_object **exception_ptr = &EG(exception);
+	zend_object **prev_exception_ptr = &EG(prev_exception);
 
 	zend_try
 	{
@@ -510,13 +516,13 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 		// call coroutines handlers
 		zend_object *exception = NULL;
 
-		if (EG(exception)) {
-			if (EG(prev_exception)) {
-				zend_exception_set_previous(EG(exception), EG(prev_exception));
-				EG(prev_exception) = NULL;
+		if (UNEXPECTED(*exception_ptr)) {
+			if (*prev_exception_ptr) {
+				zend_exception_set_previous(*exception_ptr, *prev_exception_ptr);
+				*prev_exception_ptr = NULL;
 			}
 
-			exception = EG(exception);
+			exception = *exception_ptr;
 			GC_ADDREF(exception);
 
 			zend_clear_exception();
@@ -545,7 +551,7 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 			GC_ADDREF(exception);
 		}
 
-		zend_exception_save();
+		zend_exception_save_fast(exception_ptr, prev_exception_ptr);
 		// Mark second parameter of zend_async_callbacks_notify as ZVAL
 		ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&coroutine->coroutine.event);
 		ZEND_COROUTINE_CLR_EXCEPTION_HANDLED(&coroutine->coroutine);
@@ -569,7 +575,7 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 			dispose(&coroutine->coroutine);
 		}
 
-		zend_exception_restore();
+		zend_exception_restore_fast(exception_ptr, prev_exception_ptr);
 
 		// If the exception was handled by any handler, we do not propagate it further.
 		// Cancellation-type exceptions are considered handled in all cases and are not propagated further.
@@ -611,7 +617,7 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 	}
 	zend_end_try();
 
-	if (UNEXPECTED(EG(exception) && (zend_is_graceful_exit(EG(exception)) || zend_is_unwind_exit(EG(exception))))) {
+	if (UNEXPECTED(*exception_ptr && (zend_is_graceful_exit(*exception_ptr) || zend_is_unwind_exit(*exception_ptr)))) {
 		zend_clear_exception();
 	}
 
@@ -692,12 +698,17 @@ void async_coroutine_resume(zend_coroutine_t *coroutine, zend_object *error, con
 		return;
 	}
 
-	if (UNEXPECTED(circular_buffer_push(&ASYNC_G(coroutine_queue), &coroutine, true)) == FAILURE) {
+	if (UNEXPECTED(circular_buffer_push_ptr_with_resize(&ASYNC_G(coroutine_queue), coroutine)) == FAILURE) {
 		async_throw_error("Failed to enqueue coroutine");
 		return;
 	}
 
 	coroutine->waker->status = ZEND_ASYNC_WAKER_QUEUED;
+
+	// Add to resumed_coroutines queue for event cleanup
+	if (ZEND_ASYNC_IS_SCHEDULER_CONTEXT) {
+		circular_buffer_push_ptr_with_resize(&ASYNC_G(resumed_coroutines), coroutine);
+	}
 }
 
 void async_coroutine_cancel(zend_coroutine_t *zend_coroutine,
@@ -894,8 +905,7 @@ static zend_string *coroutine_info(zend_async_event_t *event)
 							   coroutine->std.handle,
 							   coroutine->coroutine.filename ? ZSTR_VAL(coroutine->coroutine.filename) : "",
 							   coroutine->coroutine.lineno,
-							   coroutine->waker.filename ? ZSTR_VAL(coroutine->waker.filename)
-																	: "",
+							   coroutine->waker.filename ? ZSTR_VAL(coroutine->waker.filename) : "",
 							   coroutine->waker.lineno,
 							   ZSTR_VAL(zend_coroutine_name));
 	} else {
@@ -983,11 +993,14 @@ static zend_result finally_handlers_iterator_handler(async_iterator_t *iterator,
 	zval_ptr_dtor(&rv);
 	ZVAL_UNDEF(&rv);
 
+	zend_object **exception_ptr = &EG(exception);
+
 	// Check for exceptions after handler execution
-	if (EG(exception)) {
-		zend_exception_save();
-		zend_exception_restore();
-		zend_object *current_exception = EG(exception);
+	if (UNEXPECTED(*exception_ptr)) {
+		zend_object **prev_exception_ptr = &EG(prev_exception);
+		zend_exception_save_fast(exception_ptr, prev_exception_ptr);
+		zend_exception_restore_fast(exception_ptr, prev_exception_ptr);
+		zend_object *current_exception = *exception_ptr;
 		GC_ADDREF(current_exception);
 		zend_clear_exception();
 
@@ -1338,8 +1351,7 @@ METHOD(getSuspendLocation)
 	async_coroutine_t *coroutine = THIS_COROUTINE;
 
 	if (coroutine->waker.filename) {
-		RETURN_STR(zend_strpprintf(
-				0, "%s:%d", ZSTR_VAL(coroutine->waker.filename), coroutine->waker.lineno));
+		RETURN_STR(zend_strpprintf(0, "%s:%d", ZSTR_VAL(coroutine->waker.filename), coroutine->waker.lineno));
 	} else {
 		RETURN_STRING("unknown");
 	}

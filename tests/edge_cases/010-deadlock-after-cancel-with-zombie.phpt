@@ -61,5 +61,6 @@ Warning: the coroutine was suspended in file: %s, line: %d will be canceled in %
 
 Warning: the coroutine was suspended in file: %s, line: %d will be canceled in %s on line %d
 Caught exception: Deadlock detected
+Caught exception: Deadlock detected
 coroutine1 finished
 coroutine2 finished

@@ -31,9 +31,9 @@
 #define FIBER_DEBUG_LOG_ON false
 #define FIBER_DEBUG_SWITCH false
 #if FIBER_DEBUG_LOG_ON
-#  define FIBER_DEBUG(...) fprintf(stdout, __VA_ARGS__)
+#define FIBER_DEBUG(...) fprintf(stdout, __VA_ARGS__)
 #else
-#  define FIBER_DEBUG(...) ((void)0)
+#define FIBER_DEBUG(...) ((void) 0)
 #endif
 
 static zend_function root_function = { ZEND_INTERNAL_FUNCTION };
@@ -64,7 +64,7 @@ static void fiber_context_cleanup(zend_fiber_context *context);
 		if (ZEND_ASYNC_GRACEFUL_SHUTDOWN) { \
 			finally_shutdown(); \
 			switch_to_scheduler(transfer); \
-			zend_exception_restore(); \
+			zend_exception_restore_fast(exception_ptr, prev_exception_ptr); \
 			return; \
 		} \
 		start_graceful_shutdown(); \
@@ -95,7 +95,7 @@ static void fiber_context_cleanup(zend_fiber_context *context)
 	efree(fiber_context);
 }
 
-async_fiber_context_t* async_fiber_context_create(void)
+async_fiber_context_t *async_fiber_context_create(void)
 {
 	async_fiber_context_t *context = ecalloc(1, sizeof(async_fiber_context_t));
 
@@ -112,7 +112,7 @@ async_fiber_context_t* async_fiber_context_create(void)
 
 static zend_always_inline void fiber_pool_init(void)
 {
-	circular_buffer_ctor(&ASYNC_G(fiber_context_pool), ASYNC_FIBER_POOL_SIZE, sizeof(async_fiber_context_t*), NULL);
+	circular_buffer_ctor(&ASYNC_G(fiber_context_pool), ASYNC_FIBER_POOL_SIZE, sizeof(async_fiber_context_t *), NULL);
 }
 
 static void fiber_pool_cleanup(void)
@@ -122,12 +122,9 @@ static void fiber_pool_cleanup(void)
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 	ZEND_ASYNC_CURRENT_COROUTINE = NULL;
 
-	while (circular_buffer_pop_ptr(&ASYNC_G(fiber_context_pool), (void**)&fiber_context) == SUCCESS) {
+	while (circular_buffer_pop_ptr(&ASYNC_G(fiber_context_pool), (void **) &fiber_context) == SUCCESS) {
 		if (fiber_context != NULL) {
-			zend_fiber_transfer transfer = {
-				.context = &fiber_context->context,
-				.flags = 0
-			};
+			zend_fiber_transfer transfer = { .context = &fiber_context->context, .flags = 0 };
 
 			// If the current coroutine is NULL, this state explicitly tells the fiber to stop execution.
 			// We set this value each time, since the switch_to_scheduler function may change it.
@@ -228,10 +225,7 @@ static zend_always_inline void fiber_switch_context(async_coroutine_t *coroutine
 
 	ZEND_ASSERT(fiber_context != NULL && "Fiber context is NULL in fiber_switch_context");
 
-	zend_fiber_transfer transfer = {
-		.context = &fiber_context->context,
-		.flags = 0
-	};
+	zend_fiber_transfer transfer = { .context = &fiber_context->context, .flags = 0 };
 
 #if FIBER_DEBUG_SWITCH
 	zend_fiber_context *from = EG(current_fiber_context);
@@ -302,11 +296,23 @@ static zend_always_inline void return_to_main(zend_fiber_transfer *transfer)
 /// COROUTINE QUEUE MANAGEMENT
 ///////////////////////////////////////////////////////////
 
+static zend_always_inline void process_resumed_coroutines(void)
+{
+	circular_buffer_t *resumed_queue = &ASYNC_G(resumed_coroutines);
+	zend_coroutine_t *coroutine = NULL;
+
+	while (circular_buffer_pop_ptr(resumed_queue, (void **) &coroutine) == SUCCESS) {
+		if (EXPECTED(coroutine != NULL && coroutine->waker != NULL)) {
+			ZEND_ASYNC_WAKER_CLEAN_EVENTS(coroutine->waker);
+		}
+	}
+}
+
 static zend_always_inline async_coroutine_t *next_coroutine(void)
 {
 	async_coroutine_t *coroutine;
 
-	if (UNEXPECTED(circular_buffer_pop_ptr(&ASYNC_G(coroutine_queue), (void**)&coroutine) == FAILURE)) {
+	if (UNEXPECTED(circular_buffer_pop_ptr(&ASYNC_G(coroutine_queue), (void **) &coroutine) == FAILURE)) {
 		ZEND_ASSERT("Failed to pop the coroutine from the pending queue.");
 		return NULL;
 	}
@@ -369,7 +375,7 @@ static zend_always_inline switch_status execute_next_coroutine(void)
 
 		// The coroutine doesn't have its own Fiber,
 		// so we first need to allocate a Fiber context for it and then start it.
-		circular_buffer_pop_ptr(&ASYNC_G(fiber_context_pool), (void**)&async_coroutine->fiber_context);
+		circular_buffer_pop_ptr(&ASYNC_G(fiber_context_pool), (void **) &async_coroutine->fiber_context);
 
 		if (async_coroutine->fiber_context == NULL) {
 			async_coroutine->fiber_context = async_fiber_context_create();
@@ -397,7 +403,8 @@ static zend_always_inline switch_status execute_next_coroutine(void)
 
 #define AVAILABLE_FOR_COROUTINE (transfer != NULL)
 
-static zend_always_inline switch_status execute_next_coroutine_from_fiber(zend_fiber_transfer *transfer, async_fiber_context_t *fiber_context)
+static zend_always_inline switch_status execute_next_coroutine_from_fiber(zend_fiber_transfer *transfer,
+																		  async_fiber_context_t *fiber_context)
 {
 	async_coroutine_t *async_coroutine = next_coroutine();
 
@@ -473,7 +480,7 @@ next_coroutine:
 		// (AVAILABLE_FOR_COROUTINE == false)
 		// The coroutine doesn't have its own Fiber,
 		// so we first need to allocate a Fiber context for it and then start it.
-		circular_buffer_pop_ptr(&ASYNC_G(fiber_context_pool), (void**)&async_coroutine->fiber_context);
+		circular_buffer_pop_ptr(&ASYNC_G(fiber_context_pool), (void **) &async_coroutine->fiber_context);
 
 		if (async_coroutine->fiber_context == NULL) {
 			async_coroutine->fiber_context = async_fiber_context_create();
@@ -560,7 +567,10 @@ static bool resolve_deadlocks(void)
 ///////////////////////////////////////////////////////////
 static void cancel_queued_coroutines(void)
 {
-	zend_exception_save();
+	zend_object **exception = &EG(exception);
+	zend_object **prev_exception = &EG(prev_exception);
+
+	zend_exception_save_fast(exception, prev_exception);
 
 	// 1. Walk through all coroutines and cancel them if they are suspended.
 	zval *current;
@@ -586,15 +596,15 @@ static void cancel_queued_coroutines(void)
 			ZEND_ASYNC_CANCEL(coroutine, cancellation_exception, false);
 		}
 
-		if (EG(exception)) {
-			zend_exception_save();
+		if (*exception) {
+			zend_exception_save_fast(exception, prev_exception);
 		}
 	}
 	ZEND_HASH_FOREACH_END();
 
 	OBJ_RELEASE(cancellation_exception);
 
-	zend_exception_restore();
+	zend_exception_restore_fast(exception, prev_exception);
 }
 
 void start_graceful_shutdown(void)
@@ -674,6 +684,7 @@ static void async_scheduler_dtor(void)
 	OBJ_RELEASE(&async_coroutine->std);
 
 	zval_c_buffer_cleanup(&ASYNC_G(coroutine_queue));
+	zval_c_buffer_cleanup(&ASYNC_G(resumed_coroutines));
 	zval_c_buffer_cleanup(&ASYNC_G(microtasks));
 
 	zval *current;
@@ -1025,6 +1036,11 @@ void async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine)
 			async_throw_error("Failed to enqueue coroutine");
 		} else {
 			coroutine->waker->status = ZEND_ASYNC_WAKER_QUEUED;
+
+			// Add to resumed_coroutines queue for event cleanup
+			if (ZEND_ASYNC_IS_SCHEDULER_CONTEXT) {
+				circular_buffer_push_ptr_with_resize(&ASYNC_G(resumed_coroutines), coroutine);
+			}
 		}
 
 		//
@@ -1043,15 +1059,29 @@ static zend_always_inline void scheduler_next_tick(void)
 	zend_fiber_transfer *transfer = NULL;
 	ZEND_ASYNC_SCHEDULER_CONTEXT = true;
 
+	zend_object **exception_ptr = &EG(exception);
+	zend_object **prev_exception_ptr = &EG(prev_exception);
+
 	execute_microtasks();
 	TRY_HANDLE_SUSPEND_EXCEPTION();
 
-	const bool has_handles = ZEND_ASYNC_REACTOR_EXECUTE(circular_buffer_is_not_empty(&ASYNC_G(coroutine_queue)));
-	TRY_HANDLE_SUSPEND_EXCEPTION();
+	const uint64_t current_time = zend_hrtime();
+	bool has_handles = true;
+
+	if (UNEXPECTED(current_time - ASYNC_G(last_reactor_tick) > REACTOR_CHECK_INTERVAL)) {
+		ASYNC_G(last_reactor_tick) = current_time;
+		const circular_buffer_t *queue = &ASYNC_G(coroutine_queue);
+
+		has_handles = ZEND_ASYNC_REACTOR_EXECUTE(circular_buffer_is_not_empty(queue));
+
+		if (circular_buffer_is_not_empty(&ASYNC_G(coroutine_queue))) {
+			process_resumed_coroutines();
+		}
+
+		TRY_HANDLE_SUSPEND_EXCEPTION();
+	}
 
 	ZEND_ASYNC_SCHEDULER_CONTEXT = false;
-
-	TRY_HANDLE_SUSPEND_EXCEPTION();
 
 	const bool is_next_coroutine = circular_buffer_is_not_empty(&ASYNC_G(coroutine_queue));
 
@@ -1059,7 +1089,7 @@ static zend_always_inline void scheduler_next_tick(void)
 				   zend_hash_num_elements(&ASYNC_G(coroutines)) > 0 && circular_buffer_is_empty(&ASYNC_G(microtasks)) &&
 				   resolve_deadlocks())) {
 		switch_to_scheduler(transfer);
-				   }
+	}
 
 	if (EXPECTED(is_next_coroutine)) {
 		//
@@ -1079,7 +1109,10 @@ void async_scheduler_coroutine_suspend(void)
 	//
 	// Before suspending the coroutine, we save the current exception state.
 	//
-	zend_exception_save();
+	zend_object **exception_ptr = &EG(exception);
+	zend_object **prev_exception_ptr = &EG(prev_exception);
+
+	zend_exception_save_fast(exception_ptr, prev_exception_ptr);
 
 	/**
 	 * Note that the Scheduler is initialized after the first use of suspend,
@@ -1088,8 +1121,8 @@ void async_scheduler_coroutine_suspend(void)
 	if (UNEXPECTED(ZEND_ASYNC_SCHEDULER == NULL)) {
 		async_scheduler_launch();
 
-		if (UNEXPECTED(EG(exception))) {
-			zend_exception_restore();
+		if (UNEXPECTED(*exception_ptr)) {
+			zend_exception_restore_fast(exception_ptr, prev_exception_ptr);
 			return;
 		}
 	}
@@ -1113,7 +1146,7 @@ void async_scheduler_coroutine_suspend(void)
 		if (coroutine->waker->events.nNumOfElements == 0 && not_in_queue) {
 			async_throw_error("The coroutine has no events to wait for");
 			zend_async_waker_clean(coroutine);
-			zend_exception_restore();
+			zend_exception_restore_fast(exception_ptr, prev_exception_ptr);
 			return;
 		}
 
@@ -1122,12 +1155,12 @@ void async_scheduler_coroutine_suspend(void)
 		// If an exception occurs during the startup of the Waker object,
 		// that exception belongs to the current coroutine,
 		// which means we have the right to immediately return to the point from which we were called.
-		if (UNEXPECTED(EG(exception))) {
+		if (UNEXPECTED(*exception_ptr)) {
 			// Before returning, We are required to properly destroy the Waker object.
-			zend_exception_save();
+			zend_exception_save_fast(exception_ptr, prev_exception_ptr);
 			stop_waker_events(coroutine->waker);
 			zend_async_waker_clean(coroutine);
-			zend_exception_restore();
+			zend_exception_restore_fast(exception_ptr, prev_exception_ptr);
 			return;
 		}
 
@@ -1165,7 +1198,7 @@ void async_scheduler_coroutine_suspend(void)
 		async_rethrow_exception(exception);
 	}
 
-	zend_exception_restore();
+	zend_exception_restore_fast(exception_ptr, prev_exception_ptr);
 }
 
 ///////////////////////////////////////////////////////////
@@ -1212,12 +1245,12 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 
 	zend_first_try
 	{
-		zend_vm_stack stack = (zend_vm_stack)vm_stack_memory;
+		zend_vm_stack stack = (zend_vm_stack) vm_stack_memory;
 
 		// Initialize VM stack structure manually
 		// see zend_vm_stack_init()
 		stack->top = ZEND_VM_STACK_ELEMENTS(stack);
-		stack->end = (zval*)((char*)vm_stack_memory + ZEND_FIBER_VM_STACK_SIZE);
+		stack->end = (zval *) ((char *) vm_stack_memory + ZEND_FIBER_VM_STACK_SIZE);
 		stack->prev = NULL;
 
 		// we allocate space for the first call frame, thereby normalizing the stack
@@ -1252,6 +1285,9 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 		bool was_executed = false;
 		switch_status status = COROUTINE_NOT_EXISTS;
 
+		const circular_buffer_t *coroutine_queue = &ASYNC_G(coroutine_queue);
+		circular_buffer_t *resumed_coroutines = &ASYNC_G(resumed_coroutines);
+
 		do {
 
 			TRY_HANDLE_EXCEPTION();
@@ -1260,11 +1296,18 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 
 			ZEND_ASYNC_SCHEDULER_CONTEXT = true;
 
+			ZEND_ASSERT(circular_buffer_is_not_empty(resumed_coroutines) == 0 && "resumed_coroutines should be 0");
+
 			execute_microtasks();
 			TRY_HANDLE_EXCEPTION();
 
-			has_next_coroutine = circular_buffer_is_not_empty(&ASYNC_G(coroutine_queue));
+			has_next_coroutine = circular_buffer_count(coroutine_queue) > 0;
 			has_handles = ZEND_ASYNC_REACTOR_EXECUTE(has_next_coroutine);
+
+			if (circular_buffer_is_not_empty(resumed_coroutines)) {
+				process_resumed_coroutines();
+			}
+
 			TRY_HANDLE_EXCEPTION();
 
 			ZEND_ASYNC_SCHEDULER_CONTEXT = false;
@@ -1306,14 +1349,13 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 
 			if (UNEXPECTED(false == has_handles && false == was_executed &&
 						   zend_hash_num_elements(&ASYNC_G(coroutines)) > 0 &&
-						   circular_buffer_is_empty(&ASYNC_G(coroutine_queue)) &&
+						   circular_buffer_is_empty(coroutine_queue) &&
 						   circular_buffer_is_empty(&ASYNC_G(microtasks)) && resolve_deadlocks())) {
 				break;
-						   }
+			}
 
 		} while (zend_hash_num_elements(&ASYNC_G(coroutines)) > 0 ||
 				 circular_buffer_is_not_empty(&ASYNC_G(microtasks)) || ZEND_ASYNC_REACTOR_LOOP_ALIVE());
-
 	}
 	zend_catch
 	{

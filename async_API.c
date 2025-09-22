@@ -208,6 +208,7 @@ static void engine_shutdown(void)
 
 	circular_buffer_dtor(&ASYNC_G(microtasks));
 	circular_buffer_dtor(&ASYNC_G(coroutine_queue));
+	circular_buffer_dtor(&ASYNC_G(resumed_coroutines));
 	zend_hash_destroy(&ASYNC_G(coroutines));
 
 	if (ASYNC_G(root_context) != NULL) {
@@ -609,7 +610,8 @@ static void await_iterator_dispose(async_await_iterator_t *iterator, async_itera
 		iterator->zend_iterator = NULL;
 
 		// When the iterator has finished, it’s now possible to specify the exact number of elements since it’s known.
-		iterator->await_context->total = iterator->await_context->futures_count;
+		iterator->await_context->total =
+				iterator->await_context->futures_count + iterator->await_context->resolved_count;
 
 		// Scenario: the iterator has already finished, and there’s nothing left to await.
 		// In that case, the coroutine needs to be terminated.

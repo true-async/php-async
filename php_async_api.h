@@ -17,17 +17,17 @@
 #define PHP_ASYNC_API_H
 
 #ifdef PHP_WIN32
-# ifdef ASYNC_EXPORTS
-#  define PHP_ASYNC_API __declspec(dllexport)
-# else
-#  define PHP_ASYNC_API __declspec(dllimport)
-# endif
+#ifdef ASYNC_EXPORTS
+#define PHP_ASYNC_API __declspec(dllexport)
 #else
-# if defined(__GNUC__) && __GNUC__ >= 4
-#  define PHP_ASYNC_API __attribute__ ((visibility("default")))
-# else
-#  define PHP_ASYNC_API
-# endif
+#define PHP_ASYNC_API __declspec(dllimport)
+#endif
+#else
+#if defined(__GNUC__) && __GNUC__ >= 4
+#define PHP_ASYNC_API __attribute__((visibility("default")))
+#else
+#define PHP_ASYNC_API
+#endif
 #endif
 
 #endif // PHP_ASYNC_API_H

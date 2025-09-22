@@ -108,16 +108,19 @@ uint32_t zend_current_exception_get_line(void)
 
 zend_object *zend_exception_merge(zend_object *exception, bool to_previous, bool transfer_error)
 {
-	zend_exception_save();
-	zend_exception_restore();
+	zend_object **exception_ptr = &EG(exception);
+	zend_object **prev_exception_ptr = &EG(prev_exception);
+
+	zend_exception_save_fast(exception_ptr, prev_exception_ptr);
+	zend_exception_restore_fast(exception_ptr, prev_exception_ptr);
 
 	if (exception == NULL) {
-		exception = EG(exception);
-		EG(exception) = NULL;
+		exception = *exception_ptr;
+		*exception_ptr = NULL;
 		return exception;
 	}
 
-	if (EG(exception) == NULL) {
+	if (*exception_ptr == NULL) {
 		return exception;
 	}
 
@@ -127,12 +130,12 @@ zend_object *zend_exception_merge(zend_object *exception, bool to_previous, bool
 		if (false == transfer_error) {
 			GC_ADDREF(exception);
 		}
-		zend_exception_set_previous(EG(exception), exception);
-		exception = EG(exception);
-		EG(exception) = NULL;
+		zend_exception_set_previous(*exception_ptr, exception);
+		exception = *exception_ptr;
+		*exception_ptr = NULL;
 	} else {
-		zend_exception_set_previous(exception, EG(exception));
-		EG(exception) = NULL;
+		zend_exception_set_previous(exception, *exception_ptr);
+		*exception_ptr = NULL;
 	}
 
 	return exception;

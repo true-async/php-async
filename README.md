@@ -47,9 +47,9 @@ docker run --rm true-async-php php -m | grep true_async
 ### Requirements
 
 - **PHP 8.5.0+**
-- **LibUV ≥ 1.44.0** (required) - Fixes critical `UV_RUN_ONCE` busy loop issue that could cause high CPU usage
+- **LibUV ≥ 1.45.0** (required) - Fixes critical `UV_RUN_ONCE` busy loop issue that could cause high CPU usage
 
-### Why LibUV 1.44.0+ is Required
+### Why LibUV 1.45.0+ is Required
 
 Prior to libuv 1.44, there was a critical issue in `uv__io_poll()`/`uv__run_pending` logic that could cause the event loop to "stick" after the first callback when running in `UV_RUN_ONCE` mode, especially when new ready events appeared within callbacks. This resulted in:
 
@@ -95,17 +95,17 @@ The fix in libuv 1.44 ensures that `UV_RUN_ONCE` properly returns after processi
 
 4. **Install LibUV:**:
    
-**IMPORTANT:** LibUV version 1.44.0 or later is required.
+**IMPORTANT:** LibUV version 1.45.0 or later is required.
 
 For Debian/Ubuntu:
 ```bash
-# Check if system libuv meets requirements (≥1.44.0)
+# Check if system libuv meets requirements (≥1.45.0)
 pkg-config --modversion libuv
 
 # If version is too old, install from source:
-wget https://github.com/libuv/libuv/archive/v1.44.0.tar.gz
-tar -xzf v1.44.0.tar.gz
-cd libuv-1.44.0
+wget https://github.com/libuv/libuv/archive/v1.45.0.tar.gz
+tar -xzf v1.45.0.tar.gz
+cd libuv-1.45.0
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)

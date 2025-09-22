@@ -98,7 +98,7 @@ jobs:
             libxslt1-dev \
             libicu-dev
           
-          # Build LibUV from source (need >= 1.44.0)
+          # Build LibUV from source (need >= 1.45.0)
           sudo apt-get install -y cmake ninja-build
           
           # Download and build LibUV 1.48.0
@@ -270,7 +270,6 @@ jobs:
           
           /usr/local/bin/php ../../run-tests.php \
             $TEST_PARAMS \
-            -d zend_extension=opcache.so \
             -d opcache.enable_cli=1 \
             -P -q -j$PARALLEL_JOBS \
             -g FAIL,BORK,LEAK,XLEAK \
@@ -287,7 +286,6 @@ jobs:
         working-directory: php-src/ext/async
         run: |
           /usr/local/bin/php ../../run-tests.php \
-            -d zend_extension=opcache.so \
             -d opcache.enable_cli=1 \
             -d opcache.jit_buffer_size=64M \
             -d opcache.jit=tracing \
@@ -306,7 +304,6 @@ jobs:
         working-directory: php-src/ext/async
         run: |
           /usr/local/bin/php ../../run-tests.php \
-            -d zend_extension=opcache.so \
             -d opcache.enable_cli=1 \
             -d opcache.jit_buffer_size=64M \
             -d opcache.jit=function \

@@ -48,6 +48,7 @@ static void libuv_cleanup_process_events(void);
 #define UVLOOP (&ASYNC_G(uvloop))
 #define LIBUV_REACTOR ((zend_async_globals *) ASYNC_GLOBALS)
 #define LIBUV_REACTOR_VAR zend_async_globals *reactor = LIBUV_REACTOR;
+
 #define LIBUV_REACTOR_VAR_FROM(var) zend_async_globals *reactor = (zend_async_globals *) var;
 #define WATCHER ASYNC_G(watcherThread)
 #define IF_EXCEPTION_STOP_REACTOR \
@@ -195,6 +196,35 @@ static void libuv_close_handle_cb(uv_handle_t *handle)
 
 /* }}} */
 
+/* {{{ libuv_close_poll_handle_cb */
+static void libuv_close_poll_handle_cb(uv_handle_t *handle)
+{
+	async_poll_event_t *poll = (async_poll_event_t *) handle->data;
+
+	/* Check if PHP requested descriptor closure after event cleanup */
+	if (ZEND_ASYNC_EVENT_SHOULD_CLOSE_FD(&poll->event.base)) {
+		if (poll->event.is_socket && ZEND_VALID_SOCKET(poll->event.socket)) {
+			/* Socket cleanup - just close, no blocking operations in LibUV callback */
+#ifdef PHP_WIN32
+			closesocket(poll->event.socket);
+#else
+			close(poll->event.socket);
+#endif
+		} else if (!poll->event.is_socket && poll->event.file != ZEND_FD_NULL) {
+			/* File descriptor cleanup */
+#ifdef PHP_WIN32
+			CloseHandle((HANDLE) poll->event.file);
+#else
+			close(poll->event.file);
+#endif
+		}
+	}
+
+	pefree(poll, 0);
+}
+
+/* }}} */
+
 /* {{{ libuv_add_callback */
 static void libuv_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
 {
@@ -215,19 +245,41 @@ static void libuv_remove_callback(zend_async_event_t *event, zend_async_event_ca
 /// Poll API
 //////////////////////////////////////////////////////////////////////////////
 
+/* Forward declaration */
+static zend_always_inline void
+async_poll_notify_proxies(async_poll_event_t *poll, async_poll_event triggered_events, zend_object *exception);
+
 /* {{{ on_poll_event */
 static void on_poll_event(uv_poll_t *handle, int status, int events)
 {
 	async_poll_event_t *poll = handle->data;
 	zend_object *exception = NULL;
 
-	if (status < 0) {
+	if (status < 0 && status != UV_EBADF) {
 		exception = async_new_exception(async_ce_input_output_exception, "Input output error: %s", uv_strerror(status));
+	}
+
+	// !WARNING!
+	// LibUV may return the UV_EBADF code when the remote host closes
+	// the connection while the descriptor is still present in the EventLoop.
+	// For POLL events, we handle this by ignoring the situation
+	// so that the coroutine receives the ASYNC_DISCONNECT flag.
+	// This code can be considered “incorrect”; however, this solution is acceptable.
+	//
+	if (UNEXPECTED(status == UV_EBADF)) {
+		events = ASYNC_DISCONNECT;
 	}
 
 	poll->event.triggered_events = events;
 
-	ZEND_ASYNC_CALLBACKS_NOTIFY(&poll->event.base, NULL, exception);
+	/* Check if there are active proxies */
+	if (poll->proxies_count > 0) {
+		/* Notify all matching proxies */
+		async_poll_notify_proxies(poll, events, exception);
+	} else {
+		/* Standard base event notification */
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&poll->event.base, NULL, exception);
+	}
 
 	if (exception != NULL) {
 		zend_object_release(exception);
@@ -295,7 +347,181 @@ static void libuv_poll_dispose(zend_async_event_t *event)
 
 	async_poll_event_t *poll = (async_poll_event_t *) (event);
 
-	uv_close((uv_handle_t *) &poll->uv_handle, libuv_close_handle_cb);
+	/* Free proxies array if exists */
+	if (poll->proxies != NULL) {
+		pefree(poll->proxies, 0);
+		poll->proxies = NULL;
+	}
+
+	/* Use poll-specific callback for poll events that may need descriptor cleanup */
+	uv_close((uv_handle_t *) &poll->uv_handle, libuv_close_poll_handle_cb);
+}
+
+/* }}} */
+
+/* {{{ async_poll_notify_proxies */
+static zend_always_inline void
+async_poll_notify_proxies(async_poll_event_t *poll, async_poll_event triggered_events, zend_object *exception)
+{
+	/* Process each proxy that matches triggered events */
+	for (uint32_t i = 0; i < poll->proxies_count; i++) {
+		zend_async_poll_proxy_t *proxy = poll->proxies[i];
+
+		if ((triggered_events & proxy->events) != 0) {
+			/* Increase ref count to prevent disposal during processing */
+			ZEND_ASYNC_EVENT_ADD_REF(&proxy->base);
+
+			/* Calculate events relevant to this proxy */
+			async_poll_event proxy_events = triggered_events & proxy->events;
+
+			/* Set triggered events and notify callbacks */
+			proxy->triggered_events = proxy_events;
+			ZEND_ASYNC_CALLBACKS_NOTIFY_FROM_HANDLER(&proxy->base, &proxy_events, exception);
+
+			/* Release reference after processing */
+			ZEND_ASYNC_EVENT_RELEASE(&proxy->base);
+		}
+	}
+}
+
+/* }}} */
+
+/* {{{ async_poll_add_proxy */
+static zend_always_inline void async_poll_add_proxy(async_poll_event_t *poll, zend_async_poll_proxy_t *proxy)
+{
+	if (poll->proxies == NULL) {
+		poll->proxies = (zend_async_poll_proxy_t **) pecalloc(4, sizeof(zend_async_poll_proxy_t *), 0);
+		poll->proxies_capacity = 2;
+	}
+
+	if (poll->proxies_count == poll->proxies_capacity) {
+		poll->proxies_capacity *= 2;
+		poll->proxies = (zend_async_poll_proxy_t **) perealloc(
+				poll->proxies, poll->proxies_capacity * sizeof(zend_async_poll_proxy_t *), 0);
+	}
+
+	poll->proxies[poll->proxies_count++] = proxy;
+}
+
+/* }}} */
+
+/* {{{ async_poll_remove_proxy */
+static zend_always_inline void async_poll_remove_proxy(async_poll_event_t *poll, zend_async_poll_proxy_t *proxy)
+{
+	for (uint32_t i = 0; i < poll->proxies_count; i++) {
+		if (poll->proxies[i] == proxy) {
+			/* Move last element to this position */
+			poll->proxies[i] = poll->proxies[--poll->proxies_count];
+			break;
+		}
+	}
+}
+
+/* }}} */
+
+/* {{{ async_poll_aggregate_events */
+static zend_always_inline async_poll_event async_poll_aggregate_events(async_poll_event_t *poll)
+{
+	async_poll_event aggregated = 0;
+
+	for (uint32_t i = 0; i < poll->proxies_count; i++) {
+		aggregated |= poll->proxies[i]->events;
+
+		/* Early exit if all possible events are set */
+		if (aggregated == (ASYNC_READABLE | ASYNC_WRITABLE | ASYNC_DISCONNECT | ASYNC_PRIORITIZED)) {
+			break;
+		}
+	}
+
+	return aggregated;
+}
+
+/* }}} */
+
+/* {{{ libuv_poll_proxy_start */
+static void libuv_poll_proxy_start(zend_async_event_t *event)
+{
+	EVENT_START_PROLOGUE(event);
+
+	zend_async_poll_proxy_t *proxy = (zend_async_poll_proxy_t *) event;
+	async_poll_event_t *poll = (async_poll_event_t *) proxy->poll_event;
+
+	/* Add proxy to the array */
+	async_poll_add_proxy(poll, proxy);
+
+	/* Check if all proxy events are already set in base event */
+	if ((poll->event.events & proxy->events) != proxy->events) {
+		/* Add missing proxy events to base event */
+		poll->event.events |= proxy->events;
+
+		const int error = uv_poll_start(&poll->uv_handle, poll->event.events, on_poll_event);
+
+		if (error < 0) {
+			async_throw_error("Failed to update poll handle events: %s", uv_strerror(error));
+			return;
+		}
+	}
+
+	ZEND_ASYNC_INCREASE_EVENT_COUNT;
+	event->loop_ref_count = 1;
+}
+
+/* }}} */
+
+/* {{{ libuv_poll_proxy_stop */
+static void libuv_poll_proxy_stop(zend_async_event_t *event)
+{
+	EVENT_STOP_PROLOGUE(event);
+
+	zend_async_poll_proxy_t *proxy = (zend_async_poll_proxy_t *) event;
+	async_poll_event_t *poll = (async_poll_event_t *) proxy->poll_event;
+
+	/* Remove proxy from the array */
+	async_poll_remove_proxy(poll, proxy);
+
+	/* Recalculate events from remaining proxies */
+	async_poll_event new_events = async_poll_aggregate_events(poll);
+
+	/* Update base event */
+	if (poll->event.events != new_events && poll->event.base.ref_count > 1) {
+		poll->event.events = new_events;
+
+		/* Restart with new events */
+		const int error = uv_poll_start(&poll->uv_handle, new_events, on_poll_event);
+
+		if (error < 0) {
+			async_throw_error("Failed to update poll handle events: %s", uv_strerror(error));
+		}
+	}
+
+	event->loop_ref_count = 0;
+	ZEND_ASYNC_DECREASE_EVENT_COUNT;
+}
+
+/* }}} */
+
+/* {{{ libuv_poll_proxy_dispose */
+static void libuv_poll_proxy_dispose(zend_async_event_t *event)
+{
+	if (ZEND_ASYNC_EVENT_REF(event) > 1) {
+		ZEND_ASYNC_EVENT_DEL_REF(event);
+		return;
+	}
+
+	zend_async_poll_proxy_t *proxy = (zend_async_poll_proxy_t *) event;
+	async_poll_event_t *poll = (async_poll_event_t *) proxy->poll_event;
+
+	if (event->loop_ref_count > 0) {
+		event->loop_ref_count = 1;
+		event->stop(event);
+	}
+
+	zend_async_callbacks_free(event);
+
+	/* Release reference to base poll event */
+	ZEND_ASYNC_EVENT_RELEASE(&poll->event.base);
+
+	pefree(proxy, 0);
 }
 
 /* }}} */
@@ -356,6 +582,38 @@ libuv_new_poll_event(zend_file_descriptor_t fh, zend_socket_t socket, async_poll
 zend_async_poll_event_t *libuv_new_socket_event(zend_socket_t socket, async_poll_event events, size_t extra_size)
 {
 	return libuv_new_poll_event(ZEND_FD_NULL, socket, events, extra_size);
+}
+
+/* }}} */
+
+/* {{{ libuv_new_poll_proxy_event */
+zend_async_poll_proxy_t *
+libuv_new_poll_proxy_event(zend_async_poll_event_t *poll_event, async_poll_event events, size_t extra_size)
+{
+	START_REACTOR_OR_RETURN_NULL;
+
+	zend_async_poll_proxy_t *proxy = pecalloc(
+			1, extra_size != 0 ? sizeof(zend_async_poll_proxy_t) + extra_size : sizeof(zend_async_poll_proxy_t), 0);
+
+	/* Set up proxy */
+	proxy->poll_event = poll_event;
+	proxy->events = events;
+
+	/* Add reference to base poll event */
+	ZEND_ASYNC_EVENT_ADD_REF(&poll_event->base);
+
+	/* Initialize base event structure */
+	proxy->base.extra_offset = sizeof(zend_async_poll_proxy_t);
+	proxy->base.ref_count = 1;
+
+	/* Initialize proxy methods */
+	proxy->base.add_callback = libuv_add_callback;
+	proxy->base.del_callback = libuv_remove_callback;
+	proxy->base.start = libuv_poll_proxy_start;
+	proxy->base.stop = libuv_poll_proxy_stop;
+	proxy->base.dispose = libuv_poll_proxy_dispose;
+
+	return proxy;
 }
 
 /* }}} */
@@ -2448,6 +2706,7 @@ void async_libuv_reactor_register(void)
 								libuv_reactor_loop_alive,
 								libuv_new_socket_event,
 								libuv_new_poll_event,
+								libuv_new_poll_proxy_event,
 								libuv_new_timer_event,
 								libuv_new_signal_event,
 								libuv_new_process_event,

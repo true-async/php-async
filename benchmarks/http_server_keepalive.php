@@ -2,10 +2,10 @@
 /**
  * HTTP Server with Keep-Alive Support
  * High-performance HTTP server implementation with connection pooling
- * 
+ *
  * Usage:
  *   php http_server_keepalive.php [host] [port]
- *   
+ *
  * Test with wrk:
  *   wrk -t12 -c400 -d30s --http1.1 http://127.0.0.1:8080/
  */
@@ -14,21 +14,25 @@
 ini_set('memory_limit', '512M');
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await;
+use function Async\delay;
 
 // Configuration
 $host = $argv[1] ?? '127.0.0.1';
 $port = (int)($argv[2] ?? 8080);
 $keepaliveTimeout = 30; // seconds
 
+$socketCoroutines = 0;
+$socketCoroutinesRun = 0;
+$socketCoroutinesFinished = 0;
+$requestCount = 0;
+$requestHandled = 0;
+
 echo "=== Async HTTP Server with Keep-Alive ===\n";
 echo "Starting server on http://$host:$port\n";
 echo "Keep-Alive timeout: {$keepaliveTimeout}s\n";
 echo "Press Ctrl+C to stop\n\n";
 
-// Global connection pool
-$activeConnections = [];
-$connectionId = 0;
 
 // Cached JSON responses for performance
 $cachedResponses = [
@@ -41,19 +45,20 @@ $cachedResponses = [
 /**
  * Fast HTTP request parsing for benchmarks - only extract URI
  */
-function parseHttpRequest($request) {
+function parseHttpRequest($request)
+{
     // Fast path: find first space and second space to extract URI
     $firstSpace = strpos($request, ' ');
     if ($firstSpace === false) return '/';
-    
+
     $secondSpace = strpos($request, ' ', $firstSpace + 1);
     if ($secondSpace === false) return '/';
-    
+
     $uri = substr($request, $firstSpace + 1, $secondSpace - $firstSpace - 1);
-    
+
     // Check for Connection: close header (simple search)
     $connectionClose = stripos($request, 'connection: close') !== false;
-    
+
     return [
         'uri' => $uri,
         'connection_close' => $connectionClose
@@ -61,108 +66,120 @@ function parseHttpRequest($request) {
 }
 
 /**
- * Fast request processing with cached responses
+ * Process HTTP request and send response
  */
-function processHttpRequest($uri) {
+function processHttpRequest($client, $rawRequest)
+{
     global $cachedResponses;
-    
+
+    $parsedRequest = parseHttpRequest($rawRequest);
+    $uri = $parsedRequest['uri'];
+    $shouldKeepAlive = !$parsedRequest['connection_close'];
+
     // Use cached responses for static content
     if (isset($cachedResponses[$uri])) {
-        return [$cachedResponses[$uri], 200];
-    }
-    
-    // Dynamic endpoints
-    if ($uri === '/benchmark') {
-        $responseBody = json_encode(['id' => uniqid(), 'time' => microtime(true)], JSON_UNESCAPED_SLASHES);
-        return [$responseBody, 200];
-    }
-    
-    // 404 response
-    $responseBody = json_encode(['error' => 'Not Found', 'uri' => $uri], JSON_UNESCAPED_SLASHES);
-    return [$responseBody, 404];
-}
-
-/**
- * Fast HTTP response building
- */
-function buildHttpResponse($responseBody, $statusCode, $keepAlive = true) {
-    $statusText = $statusCode === 200 ? 'OK' : 'Not Found';
-    $contentLength = strlen($responseBody);
-    
-    // Build response using array for better performance
-    $headers = [
-        "HTTP/1.1 $statusCode $statusText",
-        "Content-Type: application/json",
-        "Content-Length: $contentLength",
-        "Server: AsyncKeepAlive/1.0"
-    ];
-    
-    if ($keepAlive) {
-        $headers[] = "Connection: keep-alive";
-        $headers[] = "Keep-Alive: timeout=30, max=1000";
+        $responseBody = $cachedResponses[$uri];
+        $statusCode = 200;
     } else {
-        $headers[] = "Connection: close";
+        // 404 response
+        $responseBody = json_encode(['error' => 'Not Found', 'uri' => $uri], JSON_UNESCAPED_SLASHES);
+        $statusCode = 404;
     }
-    
-    return implode("\r\n", $headers) . "\r\n\r\n" . $responseBody;
+
+    // Build and send response directly
+    $contentLength = strlen($responseBody);
+    $statusText = $statusCode === 200 ? 'OK' : 'Not Found';
+
+    if ($shouldKeepAlive) {
+        $response = 'HTTP/1.1 ' . $statusCode . ' ' . $statusText . "\r\n" .
+                   'Content-Type: application/json' . "\r\n" .
+                   'Content-Length: ' . $contentLength . "\r\n" .
+                   'Server: AsyncKeepAlive/1.0' . "\r\n" .
+                   'Connection: keep-alive' . "\r\n" .
+                   'Keep-Alive: timeout=30, max=1000' . "\r\n\r\n" . $responseBody;
+    } else {
+        $response = 'HTTP/1.1 ' . $statusCode . ' ' . $statusText . "\r\n" .
+                   'Content-Type: application/json' . "\r\n" .
+                   'Content-Length: ' . $contentLength . "\r\n" .
+                   'Server: AsyncKeepAlive/1.0' . "\r\n" .
+                   'Connection: close' . "\r\n\r\n" . $responseBody;
+    }
+
+    $written = fwrite($client, $response);
+
+    if ($written === false) {
+        return false; // Write failed
+    }
+
+    return $shouldKeepAlive;
 }
 
 /**
- * Handle persistent connection with Keep-Alive support
+ * Handle socket connection with keep-alive support
+ * Each socket gets its own coroutine that lives for the entire connection
  */
-function handleConnection($client, $connId) {
-    global $activeConnections;
-    
-    $activeConnections[$connId] = $client;
-    
-    $requestCount = 0;
-    $startTime = time();
-    
+function handleSocket($client)
+{
+    global $socketCoroutinesRun, $socketCoroutinesFinished;
+    global $requestCount, $requestHandled;
+
+    $socketCoroutinesRun++;
+
     try {
         while (true) {
-            // Set read timeout for Keep-Alive
-            stream_set_timeout($client, 30);
-            
-            // Read HTTP request - simple 8KB block read for performance
-            $request = fread($client, 8192);
-            if ($request === false || empty(trim($request))) {
-                // Connection closed by client or timeout
-                break;
+            $request = '';
+            $totalBytes = 0;
+
+            // Read HTTP request with byte counting
+            while (true) {
+                $chunk = fread($client, 1024);
+
+                if ($chunk === false || $chunk === '') {
+                    // Connection closed by client or read error
+                    return;
+                }
+
+                $request .= $chunk;
+                $totalBytes += strlen($chunk);
+
+                // Check for request size limit
+                if ($totalBytes > 8192) {
+                    // Request too large, close connection immediately
+                    fclose($client);
+                    $requestCount++;
+                    $requestHandled++;
+                    return;
+                }
+
+                // Check if we have complete HTTP request (ends with \r\n\r\n)
+                if (strpos($request, "\r\n\r\n") !== false) {
+                    break;
+                }
             }
-            
+
+            if (empty(trim($request))) {
+                // Empty request, skip to next iteration
+                continue;
+            }
+
             $requestCount++;
-            $parsedRequest = parseHttpRequest($request);
-            
-            // Check if client wants to close connection
-            $shouldKeepAlive = !$parsedRequest['connection_close'];
-            
-            // Process request (now returns pre-encoded JSON body)
-            [$responseBody, $statusCode] = processHttpRequest($parsedRequest['uri']);
-            
-            // Build and send response
-            $response = buildHttpResponse($responseBody, $statusCode, $shouldKeepAlive);
-            
-            $bytesSent = fwrite($client, $response);
-            if ($bytesSent === false) {
-                throw new Exception("Failed to send response");
+
+            // Process request and send response
+            $shouldKeepAlive = processHttpRequest($client, $request);
+
+            $requestHandled++;
+
+            if ($shouldKeepAlive === false) {
+                // Write failed or connection should be closed
+                return;
             }
-            
-            // Close connection if requested by client
-            if (!$shouldKeepAlive) {
-                break;
-            }
-            
-            // Limit max requests per connection to prevent resource exhaustion
-            if ($requestCount >= 1000) {
-                break;
-            }
+
+            // Continue to next request in keep-alive connection
         }
-        
-    } catch (Exception $e) {
-        echo "Connection error: " . $e->getMessage() . "\n";
+
     } finally {
-        // Clean up connection
-        unset($activeConnections[$connId]);
+        $socketCoroutinesFinished++;
+        // Always clean up the socket
         if (is_resource($client)) {
             fclose($client);
         }
@@ -171,48 +188,63 @@ function handleConnection($client, $connId) {
 
 /**
  * HTTP Server with Keep-Alive support
+ * Simple coroutine-based implementation without stream_select
  */
 function startHttpServer($host, $port) {
-    global $connectionId;
-    
     return spawn(function() use ($host, $port) {
-        global $connectionId;
-        
+
+        global $socketCoroutines;
+
         // Create server socket
         $server = stream_socket_server("tcp://$host:$port", $errno, $errstr, STREAM_SERVER_BIND | STREAM_SERVER_LISTEN);
         if (!$server) {
             throw new Exception("Could not create server: $errstr ($errno)");
         }
-        
+
+	stream_context_set_option($server, 'socket', 'tcp_nodelay', true);
+
         echo "Server listening on $host:$port\n";
         echo "Try: curl http://$host:$port/\n";
-        echo "Benchmark: wrk -t12 -c400 -d30s --http1.1 http://$host:$port/benchmark\n\n";
-        
-        while (true) {
-            // Accept new connections (this is async in async extension)
-            $client = stream_socket_accept($server, 0);
+        echo "Benchmark: wrk -t12 -c400 -d30s http://$host:$port/\n\n";
 
+        // Simple accept loop - much cleaner!
+        while (true) {
+            // Accept new connections
+            $client = stream_socket_accept($server, 0);
             if ($client) {
-                $connectionId++;
-                
-                // Handle connection in separate coroutine with Keep-Alive
-                spawn(handleConnection(...), $client, $connectionId);
+                $socketCoroutines++;
+                // Spawn a coroutine to handle this client's entire lifecycle
+                spawn(handleSocket(...), $client);
             }
         }
-        
+
         fclose($server);
     });
 }
 
+spawn(function() {
+
+    global $socketCoroutines, $socketCoroutinesRun, $socketCoroutinesFinished, $requestCount, $requestHandled;
+
+    while(true) {
+        delay(2000);
+        echo "Sockets: $socketCoroutines\n";
+        echo "Coroutines: $socketCoroutinesRun\n";
+        echo "Finished: $socketCoroutinesFinished\n";
+        echo "Request: $requestCount\n";
+        echo "Handled: $requestHandled\n\n";
+    }
+});
 
 // Start server
 try {
     $serverTask = startHttpServer($host, $port);
-    
-    // Run until interrupted
-    awaitAll([$serverTask]);
-    
+    await($serverTask);
+
 } catch (Exception $e) {
     echo "Server error: " . $e->getMessage() . "\n";
-    exit(1);
+} finally {
+    echo "Sockets: $socketCoroutines\n";
+    echo "Coroutines: $socketCoroutinesRun\n";
+    echo "Finished: $socketCoroutinesFinished\n";
 }
