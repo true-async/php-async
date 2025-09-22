@@ -1074,12 +1074,12 @@ static void scope_dispose(zend_async_event_t *scope_event)
 		return;
 	}
 
-	if (ZEND_ASYNC_EVENT_REF(scope_event) > 1) {
+	if (ZEND_ASYNC_EVENT_REFCOUNT(scope_event) > 1) {
 		ZEND_ASYNC_EVENT_DEL_REF(scope_event);
 		return;
 	}
 
-	if (ZEND_ASYNC_EVENT_REF(scope_event) == 1) {
+	if (ZEND_ASYNC_EVENT_REFCOUNT(scope_event) == 1) {
 		ZEND_ASYNC_EVENT_DEL_REF(scope_event);
 	}
 

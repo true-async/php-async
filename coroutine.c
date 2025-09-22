@@ -1077,10 +1077,10 @@ static void finally_handlers_iterator_dtor(zend_async_iterator_t *zend_iterator)
 	efree(context);
 	iterator->extended_data = NULL;
 
-	if (ZEND_ASYNC_EVENT_REF(&scope->scope.event) > 0) {
+	if (ZEND_ASYNC_EVENT_REFCOUNT(&scope->scope.event) > 0) {
 		ZEND_ASYNC_EVENT_DEL_REF(&scope->scope.event);
 
-		if (ZEND_ASYNC_EVENT_REF(&scope->scope.event) <= 1) {
+		if (ZEND_ASYNC_EVENT_REFCOUNT(&scope->scope.event) <= 1) {
 			scope->scope.try_to_dispose(&scope->scope);
 		}
 	}
