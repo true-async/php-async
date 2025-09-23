@@ -987,14 +987,17 @@ static void libuv_handle_process_events(void)
 	for (i = 0; i < num_events; i++) {
 		event = events_copy[i];
 
+		// Get PID to use as key for verification
+		async_process_event_t *process = (async_process_event_t *) event;
+		uintptr_t pid_key = (uintptr_t)process->event.process;
+
 		// Verify event is still in the HashTable (might have been removed)
 		if (ASYNC_G(process_events) == NULL ||
-			zend_hash_index_find_ptr(ASYNC_G(process_events), async_ptr_to_index(event)) == NULL) {
+			zend_hash_index_find_ptr(ASYNC_G(process_events), pid_key) == NULL) {
 			continue;
 		}
 
 #ifndef PHP_WIN32
-		async_process_event_t *process = (async_process_event_t *) event;
 		pid_t pid = (pid_t) process->event.process;
 		int status;
 		pid_t result = waitpid(pid, &status, WNOHANG);
@@ -1051,13 +1054,9 @@ static void libuv_add_process_event(zend_async_event_t *event)
 		return;
 	}
 
-	// Initialize process_events if needed
-	if (ASYNC_G(process_events) == NULL) {
-		ASYNC_G(process_events) = zend_new_array(0);
-	}
-
-	// Add event to the process events list (use pointer address as key)
-	zend_hash_index_add_ptr(ASYNC_G(process_events), async_ptr_to_index(event), event);
+	// Note: Event is already added to process_events hash table by
+	// libuv_get_or_create_process_event() using PID as key.
+	// This function now only ensures SIGCHLD handler is active.
 }
 
 /* }}} */
@@ -1069,7 +1068,14 @@ static void libuv_remove_process_event(zend_async_event_t *event)
 		return;
 	}
 
-	zend_hash_index_del(ASYNC_G(process_events), async_ptr_to_index(event));
+	// Get process handle from event to use as key
+	async_process_event_t *process_event = (async_process_event_t *)event;
+	uintptr_t pid_key = (uintptr_t)process_event->event.process;
+
+	// Check ref count before removing - only remove if this is the last reference
+	if (ZEND_ASYNC_EVENT_REFCOUNT(event) <= 1) {
+		zend_hash_index_del(ASYNC_G(process_events), pid_key);
+	}
 
 	// Only remove SIGCHLD handler if no more process events AND no regular signal events for SIGCHLD
 	if (zend_hash_num_elements(ASYNC_G(process_events)) == 0) {
@@ -1530,6 +1536,23 @@ zend_async_process_event_t *libuv_new_process_event(zend_process_t process_handl
 {
 	START_REACTOR_OR_RETURN_NULL;
 
+	// Use process handle as key for hash lookup
+	uintptr_t pid_key = (uintptr_t)process_handle;
+
+	// Initialize process_events if needed
+	if (ASYNC_G(process_events) == NULL) {
+		ASYNC_G(process_events) = zend_new_array(0);
+	}
+
+	// Check if we already have an event for this process
+	zend_async_process_event_t *existing_event = zend_hash_index_find_ptr(ASYNC_G(process_events), pid_key);
+	if (existing_event != NULL) {
+		// Found existing event - increment ref count and return it
+		ZEND_ASYNC_EVENT_ADD_REF(&existing_event->base);
+		return existing_event;
+	}
+
+	// Create new event only if one doesn't exist
 	async_process_event_t *process_event = pecalloc(
 			1, extra_size != 0 ? sizeof(async_process_event_t) + extra_size : sizeof(async_process_event_t), 0);
 
@@ -1542,6 +1565,9 @@ zend_async_process_event_t *libuv_new_process_event(zend_process_t process_handl
 	process_event->event.base.start = libuv_process_event_start;
 	process_event->event.base.stop = libuv_process_event_stop;
 	process_event->event.base.dispose = libuv_process_event_dispose;
+
+	// Add to hash table using PID as key
+	zend_hash_index_add_ptr(ASYNC_G(process_events), pid_key, &process_event->event);
 
 	return &process_event->event;
 }
