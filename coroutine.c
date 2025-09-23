@@ -663,17 +663,19 @@ void async_coroutine_suspend(const bool from_main)
 
 void async_coroutine_resume(zend_coroutine_t *coroutine, zend_object *error, const bool transfer_error)
 {
-	if (UNEXPECTED(coroutine->waker == NULL || coroutine->waker->status == ZEND_ASYNC_WAKER_NO_STATUS)) {
+	zend_async_waker_t *waker = coroutine->waker;
+
+	if (UNEXPECTED(waker == NULL || waker->status == ZEND_ASYNC_WAKER_NO_STATUS)) {
 		async_throw_error("Cannot resume a coroutine that has not been suspended");
 		return;
 	}
 
 	if (error != NULL) {
-		if (coroutine->waker->error != NULL) {
+		if (waker->error != NULL) {
 
 			if (false == instanceof_function(error->ce, ZEND_ASYNC_GET_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION))) {
-				zend_exception_set_previous(error, coroutine->waker->error);
-				coroutine->waker->error = error;
+				zend_exception_set_previous(error, waker->error);
+				waker->error = error;
 
 				if (false == transfer_error) {
 					GC_ADDREF(error);
@@ -684,7 +686,7 @@ void async_coroutine_resume(zend_coroutine_t *coroutine, zend_object *error, con
 				}
 			}
 		} else {
-			coroutine->waker->error = error;
+			waker->error = error;
 
 			if (false == transfer_error) {
 				GC_ADDREF(error);
@@ -692,7 +694,19 @@ void async_coroutine_resume(zend_coroutine_t *coroutine, zend_object *error, con
 		}
 	}
 
-	if (UNEXPECTED(coroutine->waker->status == ZEND_ASYNC_WAKER_QUEUED)) {
+	if (UNEXPECTED(waker->status == ZEND_ASYNC_WAKER_QUEUED)) {
+		return;
+	}
+
+	const bool in_scheduler_context = ZEND_ASYNC_SCHEDULER_CONTEXT;
+
+	// **Short execution path**:
+	// If the event handlers are running under the scheduler
+	// And this is the current coroutine
+	// There is no point in returning it to the queue,
+	// we will execute it immediately!
+	if (UNEXPECTED(in_scheduler_context && coroutine == ZEND_ASYNC_CURRENT_COROUTINE)) {
+		waker->status = ZEND_ASYNC_WAKER_RESULT;
 		return;
 	}
 
@@ -701,10 +715,10 @@ void async_coroutine_resume(zend_coroutine_t *coroutine, zend_object *error, con
 		return;
 	}
 
-	coroutine->waker->status = ZEND_ASYNC_WAKER_QUEUED;
+	waker->status = ZEND_ASYNC_WAKER_QUEUED;
 
 	// Add to resumed_coroutines queue for event cleanup
-	if (ZEND_ASYNC_IS_SCHEDULER_CONTEXT) {
+	if (in_scheduler_context) {
 		circular_buffer_push_ptr_with_resize(&ASYNC_G(resumed_coroutines), coroutine);
 	}
 }

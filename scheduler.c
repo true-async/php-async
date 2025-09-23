@@ -1054,7 +1054,9 @@ void async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine)
 static zend_always_inline void scheduler_next_tick(void)
 {
 	zend_fiber_transfer *transfer = NULL;
-	ZEND_ASYNC_SCHEDULER_CONTEXT = true;
+	bool *in_scheduler_context = &ZEND_ASYNC_SCHEDULER_CONTEXT;
+
+	*in_scheduler_context = true;
 
 	zend_object **exception_ptr = &EG(exception);
 	zend_object **prev_exception_ptr = &EG(prev_exception);
@@ -1078,7 +1080,14 @@ static zend_always_inline void scheduler_next_tick(void)
 		TRY_HANDLE_SUSPEND_EXCEPTION();
 	}
 
-	ZEND_ASYNC_SCHEDULER_CONTEXT = false;
+	*in_scheduler_context = false;
+
+	// Fast return path without context switching...
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (UNEXPECTED(coroutine != NULL && coroutine->waker != NULL && coroutine->waker->status == ZEND_ASYNC_WAKER_RESULT)) {
+		return;
+	}
 
 	const bool is_next_coroutine = circular_buffer_is_not_empty(&ASYNC_G(coroutine_queue));
 
@@ -1135,19 +1144,38 @@ void async_scheduler_coroutine_suspend(void)
 	//
 	if (coroutine != NULL && coroutine->waker != NULL) {
 
-		const bool not_in_queue = ZEND_ASYNC_WAKER_NOT_IN_QUEUE(coroutine->waker);
+		zend_async_waker_t *waker = coroutine->waker;
+		const bool not_in_queue = ZEND_ASYNC_WAKER_NOT_IN_QUEUE(waker);
 
 		// Let's check that the coroutine has something to wait for;
 		// If a coroutine isn't waiting for anything, it must be in the execution queue.
 		// otherwise, it's a potential deadlock.
-		if (coroutine->waker->events.nNumOfElements == 0 && not_in_queue) {
+		if (waker->events.nNumOfElements == 0 && not_in_queue) {
 			async_throw_error("The coroutine has no events to wait for");
 			zend_async_waker_clean(coroutine);
 			zend_exception_restore_fast(exception_ptr, prev_exception_ptr);
 			return;
 		}
 
-		start_waker_events(coroutine->waker);
+		// Before starting the events, we change the status of the Waker.
+		// This is important because the coroutine may return to the execution queue immediately
+		// after the events are initialized.
+		if (not_in_queue) {
+			waker->status = ZEND_ASYNC_WAKER_WAITING;
+		}
+
+		bool *in_scheduler_context = &ZEND_ASYNC_SCHEDULER_CONTEXT;
+		bool prev_in_scheduler_context = *in_scheduler_context;
+
+		*in_scheduler_context = true;
+		start_waker_events(waker);
+		*in_scheduler_context = prev_in_scheduler_context;
+
+		// Fast return path without placing the coroutine in the queue.
+		if (UNEXPECTED(waker->status == ZEND_ASYNC_WAKER_RESULT)) {
+			zend_hash_clean(&waker->events);
+			goto resuming;
+		}
 
 		// If an exception occurs during the startup of the Waker object,
 		// that exception belongs to the current coroutine,
@@ -1159,10 +1187,6 @@ void async_scheduler_coroutine_suspend(void)
 			zend_async_waker_clean(coroutine);
 			zend_exception_restore_fast(exception_ptr, prev_exception_ptr);
 			return;
-		}
-
-		if (not_in_queue) {
-			coroutine->waker->status = ZEND_ASYNC_WAKER_WAITING;
 		}
 	}
 
@@ -1187,6 +1211,8 @@ void async_scheduler_coroutine_suspend(void)
 	if (UNEXPECTED(coroutine->switch_handlers)) {
 		ZEND_COROUTINE_ENTER(coroutine);
 	}
+
+resuming:
 
 	// Rethrow exception if waker has it
 	if (coroutine->waker->error != NULL) {
@@ -1239,6 +1265,7 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 
 	// Allocate VM stack on C stack instead of heap
 	char vm_stack_memory[ZEND_FIBER_VM_STACK_SIZE];
+	bool *in_scheduler_context = &ZEND_ASYNC_SCHEDULER_CONTEXT;
 
 	zend_first_try
 	{
@@ -1291,7 +1318,7 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 
 			ZEND_ASYNC_SCHEDULER_HEARTBEAT;
 
-			ZEND_ASYNC_SCHEDULER_CONTEXT = true;
+			*in_scheduler_context = true;
 
 			ZEND_ASSERT(circular_buffer_is_not_empty(resumed_coroutines) == 0 && "resumed_coroutines should be 0");
 
@@ -1307,7 +1334,7 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 
 			TRY_HANDLE_EXCEPTION();
 
-			ZEND_ASYNC_SCHEDULER_CONTEXT = false;
+			*in_scheduler_context = false;
 
 			if (EXPECTED(has_next_coroutine)) {
 				status = execute_next_coroutine_from_fiber(is_scheduler ? NULL : transfer, fiber_context);
@@ -1358,6 +1385,7 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 	{
 		fiber_context->flags |= ZEND_FIBER_FLAG_BAILOUT;
 		transfer->flags = ZEND_FIBER_TRANSFER_FLAG_BAILOUT;
+		*in_scheduler_context = false;
 	}
 	zend_end_try();
 
