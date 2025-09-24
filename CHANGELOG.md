@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - The add/dispose methods correctly increment the counter
     - Memory leaks fixed
 - Fixed await iterator logic for `awaitXXX` functions
+- Fixed process waiting logic for UNIX-like systems
 
 ### Changed
 - **Memory Optimization**: Enhanced memory allocation for async structures

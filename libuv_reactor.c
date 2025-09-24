@@ -37,7 +37,7 @@ static void libuv_remove_signal_event(int signum, zend_async_event_t *event);
 static void libuv_add_process_event(zend_async_event_t *event);
 static void libuv_remove_process_event(zend_async_event_t *event);
 static void libuv_handle_process_events(void);
-static void libuv_handle_signal_events(int signum);
+static void libuv_handle_signal_events(const int signum);
 static void libuv_signal_close_cb(uv_handle_t *handle);
 
 // Forward declarations for cleanup functions
@@ -828,6 +828,23 @@ zend_async_signal_event_t *libuv_new_signal_event(int signum, size_t extra_size)
 /////////////////////////////////////////////////////////////////////////////////
 /// Global Signal Management API
 /////////////////////////////////////////////////////////////////////////////////
+/**
+ * **UNIX Signal Handling**
+ *
+ * The Unix signal handling code allows creating multiple wait events for the same signal, but in reality,
+ * there will be only one actual handler for the EventLoop.
+ *
+ * > Note that the `SIGCHLD` handler is also used to detect the process-event.
+ *
+ * **Implementation details of process handling.**
+ *
+ * Because the process exit code can only be retrieved once,
+ * while multiple coroutines may want to wait for the same process,
+ * we use a single EventLoop event for each unique process ID.
+ *
+ * Thus, ASYNC_G(process_events) is a hash table with the key as ProcessId
+ * and the value as an Event for process handling.
+**/
 
 /* {{{ libuv_signal_close_cb */
 static void libuv_signal_close_cb(uv_handle_t *handle)
@@ -869,20 +886,26 @@ static uv_signal_t *libuv_get_or_create_signal_handler(int signum)
 	handler = pecalloc(1, sizeof(uv_signal_t), 0);
 
 	int error = uv_signal_init(UVLOOP, handler);
-	if (error < 0) {
+	if (UNEXPECTED(error < 0)) {
 		async_throw_error("Failed to initialize signal handle: %s", uv_strerror(error));
 		pefree(handler, 0);
 		return NULL;
 	}
 
 	error = uv_signal_start(handler, libuv_global_signal_callback, signum);
-	if (error < 0) {
+	if (UNEXPECTED(error < 0)) {
 		async_throw_error("Failed to start signal handle: %s", uv_strerror(error));
 		uv_close((uv_handle_t *) handler, libuv_signal_close_cb);
 		return NULL;
 	}
 
-	zend_hash_index_add_ptr(ASYNC_G(signal_handlers), signum, handler);
+	if (UNEXPECTED(zend_hash_index_add_ptr(ASYNC_G(signal_handlers), signum, handler) == NULL)) {
+		async_throw_error("Failed to store signal handler");
+		uv_signal_stop(handler);
+		uv_close((uv_handle_t *) handler, libuv_signal_close_cb);
+		return NULL;
+	}
+
 	return handler;
 }
 
@@ -906,11 +929,13 @@ static void libuv_add_signal_event(int signum, zend_async_event_t *event)
 	HashTable *events_list = zend_hash_index_find_ptr(ASYNC_G(signal_events), signum);
 	if (events_list == NULL) {
 		events_list = zend_new_array(0);
-		zend_hash_index_add_ptr(ASYNC_G(signal_events), signum, events_list);
 	}
 
 	// Add event to the list (use pointer address as key)
-	zend_hash_index_add_ptr(events_list, async_ptr_to_index(event), event);
+	if (UNEXPECTED(zend_hash_index_add_ptr(events_list, async_ptr_to_index(event), event) == NULL)) {
+		async_throw_error("Failed to store signal event");
+		return;
+	}
 }
 
 /* }}} */
@@ -1024,7 +1049,7 @@ static void libuv_handle_process_events(void)
 /* }}} */
 
 /* {{{ libuv_handle_signal_events */
-static void libuv_handle_signal_events(int signum)
+static void libuv_handle_signal_events(const int signum)
 {
 	if (ASYNC_G(signal_events) == NULL) {
 		return;
@@ -1049,14 +1074,7 @@ static void libuv_handle_signal_events(int signum)
 static void libuv_add_process_event(zend_async_event_t *event)
 {
 	// Ensure SIGCHLD handler exists
-	uv_signal_t *handler = libuv_get_or_create_signal_handler(SIGCHLD);
-	if (handler == NULL) {
-		return;
-	}
-
-	// Note: Event is already added to process_events hash table by
-	// libuv_get_or_create_process_event() using PID as key.
-	// This function now only ensures SIGCHLD handler is active.
+	libuv_get_or_create_signal_handler(SIGCHLD);
 }
 
 /* }}} */
@@ -1070,12 +1088,8 @@ static void libuv_remove_process_event(zend_async_event_t *event)
 
 	// Get process handle from event to use as key
 	async_process_event_t *process_event = (async_process_event_t *)event;
-	uintptr_t pid_key = (uintptr_t)process_event->event.process;
 
-	// Check ref count before removing - only remove if this is the last reference
-	if (ZEND_ASYNC_EVENT_REFCOUNT(event) <= 1) {
-		zend_hash_index_del(ASYNC_G(process_events), pid_key);
-	}
+	zend_hash_index_del(ASYNC_G(process_events), (uintptr_t)process_event->event.process);
 
 	// Only remove SIGCHLD handler if no more process events AND no regular signal events for SIGCHLD
 	if (zend_hash_num_elements(ASYNC_G(process_events)) == 0) {
@@ -1566,8 +1580,10 @@ zend_async_process_event_t *libuv_new_process_event(zend_process_t process_handl
 	process_event->event.base.stop = libuv_process_event_stop;
 	process_event->event.base.dispose = libuv_process_event_dispose;
 
-	// Add to hash table using PID as key
-	zend_hash_index_add_ptr(ASYNC_G(process_events), pid_key, &process_event->event);
+	if (UNEXPECTED(zend_hash_index_add_ptr(ASYNC_G(process_events), pid_key, &process_event->event) == NULL)) {
+		async_throw_error("Failed to store process event");
+		return NULL;
+	}
 
 	return &process_event->event;
 }
