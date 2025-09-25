@@ -23,7 +23,7 @@ $coroutines = [
 echo "start\n";
 
 try {
-    $result = awaitFirstSuccess($coroutines, timeout(10));
+    $result = awaitFirstSuccess($coroutines, timeout(50));
     echo "Unexpected success\n";
 } catch (Async\TimeoutException $e) {
     echo "Timeout caught as expected\n";
