@@ -113,13 +113,14 @@ typedef struct
 #define SCOPE_CAN_BE_DISPOSED(scope) scope_can_be_disposed(scope, true, true)
 
 // Event method forward declarations
-static void scope_event_start(zend_async_event_t *event);
-static void scope_event_stop(zend_async_event_t *event);
-static void scope_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback);
-static void scope_del_callback(zend_async_event_t *event, zend_async_event_callback_t *callback);
+static bool scope_event_start(zend_async_event_t *event);
+static bool scope_event_stop(zend_async_event_t *event);
+static bool scope_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback);
+static bool scope_del_callback(zend_async_event_t *event, zend_async_event_callback_t *callback);
 static bool
 scope_replay(zend_async_event_t *event, zend_async_event_callback_t *callback, zval *result, zend_object **exception);
 static zend_string *scope_info(zend_async_event_t *event);
+static bool scope_dispose(zend_async_event_t *scope_event);
 
 #define THROW_IF_SCHEDULER_CONTEXT \
 	if (UNEXPECTED(ZEND_ASYNC_IS_SCHEDULER_CONTEXT)) { \
@@ -661,13 +662,15 @@ METHOD(disposeAfterTimeout)
 	callback->scope = scope_object->scope;
 	callback->scope->scope.event.ref_count++;
 
-	timer_event->base.add_callback(&timer_event->base, &callback->callback);
-	if (UNEXPECTED(EG(exception) != NULL)) {
+	if (!timer_event->base.add_callback(&timer_event->base, &callback->callback)) {
 		timer_event->base.dispose(&timer_event->base);
 		return;
 	}
 
-	timer_event->base.start(&timer_event->base);
+	if (!timer_event->base.start(&timer_event->base)) {
+		timer_event->base.dispose(&timer_event->base);
+		return;
+	}
 }
 
 METHOD(getChildScopes)
@@ -810,11 +813,12 @@ void async_scope_mark_coroutine_zombie(async_coroutine_t *coroutine)
 	}
 }
 
-static void scope_before_coroutine_enqueue(zend_coroutine_t *coroutine, zend_async_scope_t *zend_scope, zval *result)
+static bool scope_before_coroutine_enqueue(zend_coroutine_t *coroutine, zend_async_scope_t *zend_scope, zval *result)
 {
 	async_scope_t *scope = (async_scope_t *) zend_scope;
 
 	async_scope_add_coroutine(scope, (async_coroutine_t *) coroutine);
+	return true;
 }
 
 static void scope_after_coroutine_enqueue(zend_coroutine_t *coroutine, zend_async_scope_t *scope)
@@ -998,24 +1002,26 @@ static bool scope_try_to_dispose(zend_async_scope_t *scope)
 	return true;
 }
 
-static void scope_event_start(zend_async_event_t *event)
+static bool scope_event_start(zend_async_event_t *event)
 {
 	// Empty implementation - scopes don't need explicit start
+	return true;
 }
 
-static void scope_event_stop(zend_async_event_t *event)
+static bool scope_event_stop(zend_async_event_t *event)
 {
 	// Empty implementation - scopes don't need explicit stop
+	return true;
 }
 
-static void scope_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
+static bool scope_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
 {
-	zend_async_callbacks_push(event, callback);
+	return zend_async_callbacks_push(event, callback);
 }
 
-static void scope_del_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
+static bool scope_del_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
 {
-	zend_async_callbacks_remove(event, callback);
+	return zend_async_callbacks_remove(event, callback);
 }
 
 static bool
@@ -1066,17 +1072,17 @@ static zend_string *scope_info(zend_async_event_t *event)
 	}
 }
 
-static void scope_dispose(zend_async_event_t *scope_event)
+static bool scope_dispose(zend_async_event_t *scope_event)
 {
 	async_scope_t *scope = (async_scope_t *) scope_event;
 
 	if (ZEND_ASYNC_SCOPE_IS_DISPOSING(&scope->scope)) {
-		return;
+		return true;
 	}
 
 	if (ZEND_ASYNC_EVENT_REFCOUNT(scope_event) > 1) {
 		ZEND_ASYNC_EVENT_DEL_REF(scope_event);
-		return;
+		return true;
 	}
 
 	if (ZEND_ASYNC_EVENT_REFCOUNT(scope_event) == 1) {
@@ -1107,7 +1113,7 @@ static void scope_dispose(zend_async_event_t *scope_event)
 			async_spawn_and_throw(critical_exception, &scope->scope, 0);
 		}
 		ZEND_ASYNC_SCOPE_CLR_DISPOSING(&scope->scope);
-		return;
+		return true;
 	}
 
 	if (scope->scope.parent_scope) {
@@ -1158,6 +1164,7 @@ static void scope_dispose(zend_async_event_t *scope_event)
 	if (critical_exception != NULL) {
 		async_rethrow_exception(critical_exception);
 	}
+	return true;
 }
 
 zend_async_scope_t *async_new_scope(zend_async_scope_t *parent_scope, const bool with_zend_object)

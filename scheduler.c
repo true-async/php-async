@@ -607,10 +607,10 @@ static void cancel_queued_coroutines(void)
 	zend_exception_restore_fast(exception, prev_exception);
 }
 
-void start_graceful_shutdown(void)
+bool start_graceful_shutdown(void)
 {
 	if (ZEND_ASYNC_GRACEFUL_SHUTDOWN) {
-		return;
+		return true;
 	}
 
 	ZEND_ASYNC_GRACEFUL_SHUTDOWN = true;
@@ -636,6 +636,7 @@ void start_graceful_shutdown(void)
 	}
 
 	// After exiting this function, EG(exception) must be 100% clean.
+	return true;
 }
 
 static void finally_shutdown(void)
@@ -740,33 +741,31 @@ static zend_always_inline void stop_waker_events(zend_async_waker_t *waker)
 /**
  * The main loop of the scheduler.
  */
-void async_scheduler_launch(void)
+bool async_scheduler_launch(void)
 {
 	if (ZEND_ASYNC_SCHEDULER) {
 		async_throw_error("The scheduler cannot be started when is already enabled");
-		return;
+		return false;
 	}
 
 	if (EG(active_fiber)) {
 		async_throw_error("The True Async Scheduler cannot be started from within a Fiber");
-		return;
+		return false;
 	}
 
 	if (false == zend_async_reactor_is_enabled()) {
 		async_throw_error("The scheduler cannot be started without the Reactor");
-		return;
+		return false;
 	}
 
-	ZEND_ASYNC_REACTOR_STARTUP();
-
-	if (UNEXPECTED(EG(exception) != NULL)) {
-		return;
+	if (!ZEND_ASYNC_REACTOR_STARTUP()) {
+		return false;
 	}
 
 	fiber_pool_init();
 
 	if (UNEXPECTED(EG(exception) != NULL)) {
-		return;
+		return false;
 	}
 
 	//
@@ -779,39 +778,38 @@ void async_scheduler_launch(void)
 	if (ZEND_ASYNC_MAIN_SCOPE == NULL) {
 		ZEND_ASYNC_MAIN_SCOPE = ZEND_ASYNC_NEW_SCOPE(NULL);
 
-		if (UNEXPECTED(EG(exception) != NULL)) {
-			return;
+		if (ZEND_ASYNC_MAIN_SCOPE == NULL) {
+			return false;
 		}
 	}
 
 	if (UNEXPECTED(EG(exception) != NULL)) {
-		return;
+		return false;
 	}
 
 	zend_async_scope_t *scope = ZEND_ASYNC_MAIN_SCOPE;
 	async_coroutine_t *main_coroutine = (async_coroutine_t *) ZEND_ASYNC_NEW_COROUTINE(scope);
 
-	if (UNEXPECTED(EG(exception) != NULL)) {
-		return;
+	if (UNEXPECTED(main_coroutine == NULL)) {
+		return false;
 	}
 
 	if (UNEXPECTED(main_coroutine == NULL)) {
 		async_throw_error("Failed to create the main coroutine");
-		return;
+		return false;
 	}
 
 	zval options;
 	ZVAL_UNDEF(&options);
-	scope->before_coroutine_enqueue(&main_coroutine->coroutine, scope, &options);
-	zval_dtor(&options);
-
-	if (UNEXPECTED(EG(exception) != NULL)) {
-		return;
+	if (!scope->before_coroutine_enqueue(&main_coroutine->coroutine, scope, &options)) {
+		zval_dtor(&options);
+		return false;
 	}
+	zval_dtor(&options);
 
 	scope->after_coroutine_enqueue(&main_coroutine->coroutine, scope);
 	if (UNEXPECTED(EG(exception) != NULL)) {
-		return;
+		return false;
 	}
 
 	// Create a new Fiber context for the main coroutine.
@@ -835,7 +833,7 @@ void async_scheduler_launch(void)
 
 	if (UNEXPECTED(zend_hash_index_add_ptr(&ASYNC_G(coroutines), main_coroutine->std.handle, main_coroutine) == NULL)) {
 		async_throw_error("Failed to add the main coroutine to the list");
-		return;
+		return false;
 	}
 
 	ZEND_ASYNC_INCREASE_COROUTINE_COUNT;
@@ -865,31 +863,30 @@ void async_scheduler_launch(void)
 	ASYNC_G(main_vm_stack) = EG(vm_stack);
 
 	zend_coroutine_t *scheduler_coroutine = ZEND_ASYNC_NEW_COROUTINE(NULL);
-	if (UNEXPECTED(EG(exception) != NULL)) {
-		return;
+	if (UNEXPECTED(scheduler_coroutine == NULL)) {
+		return false;
 	}
 
 	if (UNEXPECTED(scheduler_coroutine == NULL)) {
 		async_throw_error("Failed to create the scheduler coroutine");
-		return;
+		return false;
 	}
 
 	scope = ZEND_ASYNC_NEW_SCOPE(NULL);
-	if (UNEXPECTED(EG(exception))) {
-		return;
+	if (UNEXPECTED(scope == NULL)) {
+		return false;
 	}
 
 	ZVAL_UNDEF(&options);
-	scope->before_coroutine_enqueue(scheduler_coroutine, scope, &options);
-	zval_dtor(&options);
-
-	if (UNEXPECTED(EG(exception) != NULL)) {
-		return;
+	if (!scope->before_coroutine_enqueue(scheduler_coroutine, scope, &options)) {
+		zval_dtor(&options);
+		return false;
 	}
+	zval_dtor(&options);
 
 	scope->after_coroutine_enqueue(scheduler_coroutine, scope);
 	if (UNEXPECTED(EG(exception) != NULL)) {
-		return;
+		return false;
 	}
 
 	scheduler_coroutine->internal_entry = NULL;
@@ -897,10 +894,7 @@ void async_scheduler_launch(void)
 	ZEND_ASYNC_SCHEDULER = scheduler_coroutine;
 	ZEND_ASYNC_ACTIVATE;
 
-	zend_async_call_main_coroutine_start_handlers(&main_coroutine->coroutine);
-	if (UNEXPECTED(EG(exception))) {
-		return;
-	}
+	return zend_async_call_main_coroutine_start_handlers(&main_coroutine->coroutine);
 }
 
 /**
@@ -910,15 +904,13 @@ void async_scheduler_launch(void)
  * This function is needed because the main coroutine runs differently from the others
  * — its logic cycle is broken.
  */
-void async_scheduler_main_coroutine_suspend(void)
+bool async_scheduler_main_coroutine_suspend(void)
 {
 	bool do_bailout = false;
 
 	if (UNEXPECTED(ZEND_ASYNC_SCHEDULER == NULL)) {
-		async_scheduler_launch();
-
-		if (UNEXPECTED(EG(exception) != NULL)) {
-			return;
+		if (!async_scheduler_launch()) {
+			return false;
 		}
 	}
 
@@ -996,19 +988,19 @@ void async_scheduler_main_coroutine_suspend(void)
 	} else if (exit_exception != NULL) {
 		async_rethrow_exception(exit_exception);
 	}
+
+	return EG(exception) == NULL;
 }
 
-void async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine)
+bool async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine)
 {
 	/**
 	 * Note that the Scheduler is initialized after the first use of suspend,
 	 * not at the start of the Zend engine.
 	 */
 	if (UNEXPECTED(coroutine == NULL && ZEND_ASYNC_SCHEDULER == NULL)) {
-		async_scheduler_launch();
-
-		if (UNEXPECTED(EG(exception) != NULL)) {
-			return;
+		if (!async_scheduler_launch()) {
+			return false;
 		}
 
 		coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
@@ -1023,7 +1015,7 @@ void async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine)
 			zend_async_waker_t *waker = zend_async_waker_new(coroutine);
 			if (UNEXPECTED(EG(exception))) {
 				async_throw_error("Failed to create waker for coroutine");
-				return;
+				return false;
 			}
 
 			coroutine->waker = waker;
@@ -1045,6 +1037,8 @@ void async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine)
 		//
 		stop_waker_events(coroutine->waker);
 	}
+
+	return true;
 }
 
 /**
@@ -1110,7 +1104,7 @@ static zend_always_inline void scheduler_next_tick(void)
 	}
 }
 
-void async_scheduler_coroutine_suspend(void)
+bool async_scheduler_coroutine_suspend(void)
 {
 	//
 	// Before suspending the coroutine, we save the current exception state.
@@ -1125,11 +1119,8 @@ void async_scheduler_coroutine_suspend(void)
 	 * not at the start of the Zend engine.
 	 */
 	if (UNEXPECTED(ZEND_ASYNC_SCHEDULER == NULL)) {
-		async_scheduler_launch();
-
-		if (UNEXPECTED(*exception_ptr)) {
-			zend_exception_restore_fast(exception_ptr, prev_exception_ptr);
-			return;
+		if (!async_scheduler_launch()) {
+			return false;
 		}
 	}
 
@@ -1154,7 +1145,7 @@ void async_scheduler_coroutine_suspend(void)
 			async_throw_error("The coroutine has no events to wait for");
 			zend_async_waker_clean(coroutine);
 			zend_exception_restore_fast(exception_ptr, prev_exception_ptr);
-			return;
+			return false;
 		}
 
 		// Before starting the events, we change the status of the Waker.
@@ -1186,7 +1177,7 @@ void async_scheduler_coroutine_suspend(void)
 			stop_waker_events(coroutine->waker);
 			zend_async_waker_clean(coroutine);
 			zend_exception_restore_fast(exception_ptr, prev_exception_ptr);
-			return;
+			return false;
 		}
 	}
 
@@ -1222,6 +1213,8 @@ resuming:
 	}
 
 	zend_exception_restore_fast(exception_ptr, prev_exception_ptr);
+
+	return *exception_ptr == NULL;
 }
 
 ///////////////////////////////////////////////////////////

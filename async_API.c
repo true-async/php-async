@@ -58,26 +58,26 @@ zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object *scope_provider, 
 		async_throw_error("Cannot spawn a coroutine when async is disabled");
 		return NULL;
 	} else if (UNEXPECTED(ZEND_ASYNC_IS_READY)) {
-		async_scheduler_launch();
-		if (UNEXPECTED(EG(exception) != NULL)) {
+		if (UNEXPECTED(!async_scheduler_launch())) {
 			return NULL;
 		}
 	}
 
 	if (scope == NULL && scope_provider != NULL) {
 		scope = async_provide_scope(scope_provider);
-
-		if (UNEXPECTED(EG(exception) != NULL)) {
+		if (UNEXPECTED(EG(exception))) {
 			return NULL;
 		}
 	}
 
 	if (scope == NULL) {
 
-		if (UNEXPECTED(ZEND_ASYNC_CURRENT_SCOPE == NULL && ZEND_ASYNC_MAIN_SCOPE == NULL)) {
-			ZEND_ASYNC_MAIN_SCOPE = ZEND_ASYNC_NEW_SCOPE(NULL);
+		zend_async_scope_t **main_scope_ptr = &ZEND_ASYNC_MAIN_SCOPE;
 
-			if (UNEXPECTED(EG(exception))) {
+		if (UNEXPECTED(ZEND_ASYNC_CURRENT_SCOPE == NULL && *main_scope_ptr == NULL)) {
+			*main_scope_ptr = ZEND_ASYNC_NEW_SCOPE(NULL);
+
+			if (UNEXPECTED(*main_scope_ptr == NULL)) {
 				return NULL;
 			}
 		}
@@ -85,7 +85,7 @@ zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object *scope_provider, 
 		if (EXPECTED(ZEND_ASYNC_CURRENT_SCOPE != NULL)) {
 			scope = ZEND_ASYNC_CURRENT_SCOPE;
 		} else {
-			scope = ZEND_ASYNC_MAIN_SCOPE;
+			scope = *main_scope_ptr;
 		}
 	}
 
@@ -100,7 +100,7 @@ zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object *scope_provider, 
 	}
 
 	async_coroutine_t *coroutine = (async_coroutine_t *) async_new_coroutine(scope);
-	if (UNEXPECTED(EG(exception))) {
+	if (UNEXPECTED(coroutine == NULL)) {
 		return NULL;
 	}
 
@@ -108,13 +108,12 @@ zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object *scope_provider, 
 
 	zval options;
 	ZVAL_UNDEF(&options);
-	scope->before_coroutine_enqueue(&coroutine->coroutine, scope, &options);
-	zval_dtor(&options);
-
-	if (UNEXPECTED(EG(exception))) {
+	if (!scope->before_coroutine_enqueue(&coroutine->coroutine, scope, &options)) {
+		zval_dtor(&options);
 		coroutine->coroutine.event.dispose(&coroutine->coroutine.event);
 		return NULL;
 	}
+	zval_dtor(&options);
 
 	const bool is_spawn_strategy =
 			scope_provider != NULL && instanceof_function(scope_provider->ce, async_ce_spawn_strategy);
@@ -141,7 +140,7 @@ zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object *scope_provider, 
 	}
 
 	zend_async_waker_t *waker = zend_async_waker_new(&coroutine->coroutine);
-	if (UNEXPECTED(EG(exception))) {
+	if (UNEXPECTED(waker == NULL)) {
 		coroutine->coroutine.event.dispose(&coroutine->coroutine.event);
 		return NULL;
 	}
@@ -202,7 +201,7 @@ zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object *scope_provider, 
 	return &coroutine->coroutine;
 }
 
-static void engine_shutdown(void)
+static bool engine_shutdown(void)
 {
 	ZEND_ASYNC_REACTOR_SHUTDOWN();
 
@@ -218,6 +217,7 @@ static void engine_shutdown(void)
 	}
 
 	// async_host_name_list_dtor();
+	return true;
 }
 
 zend_array *get_coroutines(void)
@@ -225,18 +225,19 @@ zend_array *get_coroutines(void)
 	return &ASYNC_G(coroutines);
 }
 
-void add_microtask(zend_async_microtask_t *microtask)
+bool add_microtask(zend_async_microtask_t *microtask)
 {
 	if (microtask->is_cancelled) {
-		return;
+		return true;
 	}
 
 	if (UNEXPECTED(circular_buffer_push(&ASYNC_G(microtasks), &microtask, true) == FAILURE)) {
 		async_throw_error("Failed to enqueue microtask");
-		return;
+		return false;
 	}
 
 	microtask->ref_count++;
+	return true;
 }
 
 zend_array *get_awaiting_info(zend_coroutine_t *coroutine)
@@ -351,7 +352,9 @@ static void async_waiting_callback(zend_async_event_t *event,
 	// We remove the callback because we treat all events
 	// as FUTURE-type objects, where the trigger can be activated only once.
 	ZEND_ASYNC_EVENT_CALLBACK_ADD_REF(callback);
-	event->del_callback(event, callback);
+	if (!event->del_callback(event, callback)) {
+		// Optimized: ignore del_callback failure in callback context
+	}
 	ZEND_ASYNC_EVENT_CALLBACK_DEC_REF(callback);
 
 	if (exception != NULL) {
@@ -446,7 +449,9 @@ static void async_waiting_cancellation_callback(zend_async_event_t *event,
 
 	await_context->resolved_count++;
 	ZEND_ASYNC_EVENT_CALLBACK_ADD_REF(callback);
-	event->del_callback(event, callback);
+	if (!event->del_callback(event, callback)) {
+		// Optimized: ignore del_callback failure in callback context
+	}
 	ZEND_ASYNC_EVENT_CALLBACK_DEC_REF(callback);
 
 	if (exception != NULL) {
@@ -1009,7 +1014,7 @@ void async_await_futures(zval *iterable,
 		// which ensures that all child tasks are stopped if the main task is cancelled.
 		zend_async_scope_t *scope = ZEND_ASYNC_NEW_SCOPE(ZEND_ASYNC_CURRENT_SCOPE);
 
-		if (UNEXPECTED(scope == NULL || EG(exception))) {
+		if (UNEXPECTED(scope == NULL)) {
 			zend_iterator_dtor(zend_iterator);
 			await_context->dtor(await_context);
 			return;
@@ -1017,7 +1022,7 @@ void async_await_futures(zval *iterable,
 
 		zend_coroutine_t *iterator_coroutine = ZEND_ASYNC_SPAWN_WITH_SCOPE_EX(scope, ZEND_COROUTINE_NORMAL);
 
-		if (UNEXPECTED(iterator_coroutine == NULL || EG(exception))) {
+		if (UNEXPECTED(iterator_coroutine == NULL)) {
 			zend_iterator_dtor(zend_iterator);
 			await_context->dtor(await_context);
 			scope->try_to_dispose(scope);

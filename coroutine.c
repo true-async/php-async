@@ -45,16 +45,16 @@ static void coroutine_call_finally_handlers(async_coroutine_t *coroutine);
 static void finally_context_dtor(finally_handlers_context_t *context);
 
 // Forward declarations for event system
-static void coroutine_event_start(zend_async_event_t *event);
-static void coroutine_event_stop(zend_async_event_t *event);
-static void coroutine_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback);
-static void coroutine_del_callback(zend_async_event_t *event, zend_async_event_callback_t *callback);
+static bool coroutine_event_start(zend_async_event_t *event);
+static bool coroutine_event_stop(zend_async_event_t *event);
+static bool coroutine_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback);
+static bool coroutine_del_callback(zend_async_event_t *event, zend_async_event_callback_t *callback);
 static bool coroutine_replay(zend_async_event_t *event,
 							 zend_async_event_callback_t *callback,
 							 zval *result,
 							 zend_object **exception);
 static zend_string *coroutine_info(zend_async_event_t *event);
-static void coroutine_dispose(zend_async_event_t *event);
+static bool coroutine_dispose(zend_async_event_t *event);
 
 ///////////////////////////////////////////////////////////
 /// 2. Object Lifecycle Management
@@ -645,29 +645,28 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
  *
  * @param from_main For main coroutine
  */
-void async_coroutine_suspend(const bool from_main)
+bool async_coroutine_suspend(const bool from_main)
 {
 	if (UNEXPECTED(from_main)) {
 		// If the Scheduler was never used, it means no coroutines were created,
 		// so execution can be finished without doing anything.
 		if (circular_buffer_is_empty(&ASYNC_G(microtasks)) && zend_hash_num_elements(&ASYNC_G(coroutines)) == 0) {
-			return;
+			return true;
 		}
 
-		async_scheduler_main_coroutine_suspend();
-		return;
+		return async_scheduler_main_coroutine_suspend();
 	}
 
-	async_scheduler_coroutine_suspend();
+	return async_scheduler_coroutine_suspend();
 }
 
-void async_coroutine_resume(zend_coroutine_t *coroutine, zend_object *error, const bool transfer_error)
+bool async_coroutine_resume(zend_coroutine_t *coroutine, zend_object *error, const bool transfer_error)
 {
 	zend_async_waker_t *waker = coroutine->waker;
 
 	if (UNEXPECTED(waker == NULL || waker->status == ZEND_ASYNC_WAKER_NO_STATUS)) {
 		async_throw_error("Cannot resume a coroutine that has not been suspended");
-		return;
+		return false;
 	}
 
 	if (error != NULL) {
@@ -695,7 +694,7 @@ void async_coroutine_resume(zend_coroutine_t *coroutine, zend_object *error, con
 	}
 
 	if (UNEXPECTED(waker->status == ZEND_ASYNC_WAKER_QUEUED)) {
-		return;
+		return true;
 	}
 
 	const bool in_scheduler_context = ZEND_ASYNC_SCHEDULER_CONTEXT;
@@ -707,12 +706,12 @@ void async_coroutine_resume(zend_coroutine_t *coroutine, zend_object *error, con
 	// we will execute it immediately!
 	if (UNEXPECTED(in_scheduler_context && coroutine == ZEND_ASYNC_CURRENT_COROUTINE)) {
 		waker->status = ZEND_ASYNC_WAKER_RESULT;
-		return;
+		return true;
 	}
 
 	if (UNEXPECTED(circular_buffer_push_ptr_with_resize(&ASYNC_G(coroutine_queue), coroutine)) == FAILURE) {
 		async_throw_error("Failed to enqueue coroutine");
-		return;
+		return false;
 	}
 
 	waker->status = ZEND_ASYNC_WAKER_QUEUED;
@@ -721,9 +720,11 @@ void async_coroutine_resume(zend_coroutine_t *coroutine, zend_object *error, con
 	if (in_scheduler_context) {
 		circular_buffer_push_ptr_with_resize(&ASYNC_G(resumed_coroutines), coroutine);
 	}
+
+	return true;
 }
 
-void async_coroutine_cancel(zend_coroutine_t *zend_coroutine,
+bool async_coroutine_cancel(zend_coroutine_t *zend_coroutine,
 							zend_object *error,
 							bool transfer_error,
 							const bool is_safely)
@@ -734,7 +735,7 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine,
 			OBJ_RELEASE(error);
 		}
 
-		return;
+		return true;
 	}
 
 	// An attempt to cancel a coroutine that is currently running.
@@ -757,7 +758,7 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine,
 			zend_coroutine->exception = async_new_exception(async_ce_cancellation_exception, "Coroutine cancelled");
 		}
 
-		return;
+		return true;
 	}
 
 	zend_async_waker_t *waker = zend_async_waker_define(zend_coroutine);
@@ -768,7 +769,7 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine,
 		error = async_new_exception(async_ce_cancellation_exception, "Coroutine cancelled");
 		transfer_error = true;
 		if (UNEXPECTED(EG(exception))) {
-			return;
+			return false;
 		}
 	}
 
@@ -786,7 +787,7 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine,
 			OBJ_RELEASE(error);
 		}
 
-		return;
+		return true;
 	}
 
 	bool was_cancelled = ZEND_COROUTINE_IS_CANCELLED(zend_coroutine);
@@ -815,8 +816,7 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine,
 		// In any other case, the cancellation exception overrides the existing exception.
 		//
 		ZEND_ASYNC_WAKER_APPLY_CANCELLATION(waker, error, transfer_error);
-		async_scheduler_coroutine_enqueue(zend_coroutine);
-		return;
+		return async_scheduler_coroutine_enqueue(zend_coroutine);
 	}
 
 	// In safely mode, we don't forcibly terminate the coroutine,
@@ -827,7 +827,8 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine,
 		if (transfer_error && error != NULL) {
 			OBJ_RELEASE(error);
 		}
-		return;
+
+		return true;
 	}
 
 	if (was_cancelled && waker->error != NULL &&
@@ -839,29 +840,32 @@ void async_coroutine_cancel(zend_coroutine_t *zend_coroutine,
 		ZEND_ASYNC_WAKER_APPLY_CANCELLATION(waker, error, transfer_error);
 	}
 
-	async_scheduler_coroutine_enqueue(zend_coroutine);
+	return async_scheduler_coroutine_enqueue(zend_coroutine);
 }
 
 ///////////////////////////////////////////////////////////
 /// 4. Event System Interface
 ///////////////////////////////////////////////////////////
 
-static void coroutine_event_start(zend_async_event_t *event)
+static bool coroutine_event_start(zend_async_event_t *event)
 {
+	return true;
 }
 
-static void coroutine_event_stop(zend_async_event_t *event)
+static bool coroutine_event_stop(zend_async_event_t *event)
 {
+	// Empty implementation - coroutines don't need explicit stop
+	return true;
 }
 
-static void coroutine_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
+static bool coroutine_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
 {
-	zend_async_callbacks_push(event, callback);
+	return zend_async_callbacks_push(event, callback);
 }
 
-static void coroutine_del_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
+static bool coroutine_del_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
 {
-	zend_async_callbacks_remove(event, callback);
+	return zend_async_callbacks_remove(event, callback);
 }
 
 /**
@@ -930,10 +934,11 @@ static zend_string *coroutine_info(zend_async_event_t *event)
 	}
 }
 
-static void coroutine_dispose(zend_async_event_t *event)
+static bool coroutine_dispose(zend_async_event_t *event)
 {
 	async_coroutine_t *coroutine = (async_coroutine_t *) event;
 	OBJ_RELEASE(&coroutine->std);
+	return true;
 }
 
 ///////////////////////////////////////////////////////////
