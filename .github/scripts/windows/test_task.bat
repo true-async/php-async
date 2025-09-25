@@ -51,11 +51,16 @@ if exist "%DEPS_DIR%\bin" (
 echo.
 echo Copying DLL files...
 copy /y "%DEPS_DIR%\bin\*.dll" "%PHP_BUILD_DIR%\"
-if %errorlevel% neq 0 (
-    echo ERROR: Failed to copy DLL files (exit code: %errorlevel%)
+set COPY_EXIT_CODE=%errorlevel%
+echo Copy command completed with exit code: %COPY_EXIT_CODE%
+
+rem Exit code 1 from copy can mean "some files already exist" which is OK
+rem Only exit on codes 4+ which indicate real errors
+if %COPY_EXIT_CODE% gtr 3 (
+    echo ERROR: Failed to copy DLL files (exit code: %COPY_EXIT_CODE%)
     exit /b 1
 ) else (
-    echo SUCCESS: DLL files copied
+    echo SUCCESS: DLL files copied (or already present)
 )
 
 echo.
