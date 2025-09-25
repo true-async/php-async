@@ -329,6 +329,8 @@ static bool libuv_poll_stop(zend_async_event_t *event)
 		async_throw_error("Failed to stop poll handle: %s", uv_strerror(error));
 		return false;
 	}
+
+	return true;
 }
 
 /* }}} */
