@@ -23,7 +23,15 @@ if exist "%PHP_BUILD_DIR%\php.exe" (
 
 echo.
 echo Copying deps DLLs like official PHP does...
-set DEPS_DIR=C:\build-cache\deps-master-vs17-x64
+
+rem Find target branch like build_task.bat does
+call %~dp0find-target-branch.bat
+set DEPS_DIR=%PHP_BUILD_CACHE_BASE_DIR%\deps-%BRANCH%-%PHP_SDK_VS%-%PHP_SDK_ARCH%
+
+echo Target branch: %BRANCH%
+echo PHP SDK VS: %PHP_SDK_VS%
+echo PHP SDK ARCH: %PHP_SDK_ARCH%
+echo DEPS_DIR: %DEPS_DIR%
 
 echo Checking if DEPS_DIR exists: %DEPS_DIR%
 if exist "%DEPS_DIR%\bin" (
@@ -31,6 +39,12 @@ if exist "%DEPS_DIR%\bin" (
     dir "%DEPS_DIR%\bin\*.dll" /b
 ) else (
     echo ERROR: %DEPS_DIR%\bin not found!
+    echo Available directories in build cache:
+    if exist "%PHP_BUILD_CACHE_BASE_DIR%" (
+        dir "%PHP_BUILD_CACHE_BASE_DIR%" /b
+    ) else (
+        echo Build cache directory doesn't exist: %PHP_BUILD_CACHE_BASE_DIR%
+    )
     exit /b 1
 )
 
