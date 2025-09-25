@@ -54,8 +54,7 @@ static zend_object *async_timeout_create(zend_ulong ms, bool is_periodic);
 
 #define SCHEDULER_LAUNCH \
 	if (UNEXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == NULL)) { \
-		async_scheduler_launch(); \
-		if (UNEXPECTED(EG(exception) != NULL)) { \
+		if (!async_scheduler_launch()) { \
 			RETURN_THROWS(); \
 		} \
 	}
@@ -79,7 +78,7 @@ PHP_FUNCTION(Async_spawn)
 
 	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_SPAWN();
 
-	if (UNEXPECTED(EG(exception))) {
+	if (UNEXPECTED(coroutine == NULL)) {
 		return;
 	}
 
@@ -275,9 +274,7 @@ PHP_FUNCTION(Async_await)
 		}
 	}
 
-	ZEND_ASYNC_SUSPEND();
-
-	if (UNEXPECTED(EG(exception) != NULL)) {
+	if (!ZEND_ASYNC_SUSPEND()) {
 		zend_async_waker_clean(coroutine);
 		RETURN_THROWS();
 	}
