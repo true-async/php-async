@@ -793,7 +793,7 @@ static void async_timeout_destroy_object(zend_object *object)
 	}
 }
 
-static void async_timeout_event_dispose(zend_async_event_t *event)
+static bool async_timeout_event_dispose(zend_async_event_t *event)
 {
 	async_timeout_ext_t *timeout = ASYNC_TIMEOUT_FROM_EVENT(event);
 
@@ -810,6 +810,8 @@ static void async_timeout_event_dispose(zend_async_event_t *event)
 	if (timeout->prev_dispose) {
 		timeout->prev_dispose(event);
 	}
+
+	return true;
 }
 
 static void timeout_before_notify_handler(zend_async_event_t *event, void *result, zend_object *exception)
