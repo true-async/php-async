@@ -24,7 +24,25 @@ if exist "%PHP_BUILD_DIR%\php.exe" (
 echo.
 echo Copying deps DLLs like official PHP does...
 set DEPS_DIR=C:\build-cache\deps-master-vs17-x64
-copy /-y %DEPS_DIR%\bin\*.dll %PHP_BUILD_DIR%\*
+
+echo Checking if DEPS_DIR exists: %DEPS_DIR%
+if exist "%DEPS_DIR%\bin" (
+    echo FOUND: %DEPS_DIR%\bin
+    dir "%DEPS_DIR%\bin\*.dll" /b
+) else (
+    echo ERROR: %DEPS_DIR%\bin not found!
+    exit /b 1
+)
+
+echo.
+echo Copying DLL files...
+copy /y "%DEPS_DIR%\bin\*.dll" "%PHP_BUILD_DIR%\"
+if %errorlevel% neq 0 (
+    echo ERROR: Failed to copy DLL files (exit code: %errorlevel%)
+    exit /b 1
+) else (
+    echo SUCCESS: DLL files copied
+)
 
 echo.
 echo Running async extension tests...
