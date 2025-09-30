@@ -80,9 +80,9 @@ After GC
 Destructor start: object-B
 Suspended in destructor: object-B
 Still has reference to: object-A
-Test complete
-Destructor end: object-B
 Destructor start: object-A
 Suspended in destructor: object-A
 Still has reference to: object-B
+Test complete
+Destructor end: object-B
 Destructor end: object-A
