@@ -747,7 +747,7 @@ bool async_scheduler_launch(void)
 		return false;
 	}
 
-	if (EG(active_fiber)) {
+	if (UNEXPECTED(EG(active_fiber))) {
 		async_throw_error("The True Async Scheduler cannot be started from within a Fiber");
 		return false;
 	}
