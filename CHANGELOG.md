@@ -5,7 +5,15 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.0] - 2025-09-31
+## [0.5.0] - 2025-10-31
+
+### Changed
+- **Deadlock Detection**: Replaced warnings with structured exception handling
+  - Deadlock detection now throws `Async\DeadlockError` exception instead of multiple warnings
+  - **Breaking Change**: Applications relying on deadlock warnings 
+  will need to be updated to catch `Async\DeadlockError` exceptions
+
+## [0.4.0] - 2025-09-30
 
 ### Added
 - **UDP socket stream support for TrueAsync**

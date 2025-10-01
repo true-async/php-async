@@ -54,13 +54,12 @@ start
 coroutine1 running
 coroutine2 running
 end
-
-Warning: no active coroutines, deadlock detected. Coroutines in waiting: 2 in %s on line %d
-
-Warning: the coroutine was suspended in file: %s, line: %d will be canceled in %s on line %d
-
-Warning: the coroutine was suspended in file: %s, line: %d will be canceled in %s on line %d
 Caught exception: Deadlock detected
 Caught exception: Deadlock detected
 coroutine1 finished
 coroutine2 finished
+
+Fatal error: Uncaught Async\DeadlockError: Deadlock detected: no active coroutines, 2 coroutines in waiting in [no active file]:0
+Stack trace:
+#0 {main}
+  thrown in [no active file] on line 0

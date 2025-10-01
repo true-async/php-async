@@ -267,6 +267,8 @@ static zend_class_entry *async_get_class_ce(zend_async_class type)
 			return async_ce_poll_exception;
 		case ZEND_ASYNC_EXCEPTION_DNS:
 			return async_ce_dns_exception;
+		case ZEND_ASYNC_EXCEPTION_DEADLOCK:
+			return async_ce_deadlock_error;
 		default:
 			return NULL;
 	}

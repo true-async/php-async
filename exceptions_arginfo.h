@@ -1,5 +1,5 @@
 /* This is a generated file, edit the .stub.php file instead.
- * Stub hash: 6ee15183630fa16055647deb278f0222bf5db317 */
+ * Stub hash: f06ce54277b0830aebcbd112c67238db6dca4d9b */
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_CompositeException_addException, 0, 1, IS_VOID, 0)
 	ZEND_ARG_OBJ_INFO(0, exception, Throwable, 0)
@@ -73,6 +73,16 @@ static zend_class_entry *register_class_Async_PollException(zend_class_entry *cl
 
 	INIT_NS_CLASS_ENTRY(ce, "Async", "PollException", NULL);
 	class_entry = zend_register_internal_class_with_flags(&ce, class_entry_Exception, 0);
+
+	return class_entry;
+}
+
+static zend_class_entry *register_class_Async_DeadlockError(zend_class_entry *class_entry_Error)
+{
+	zend_class_entry ce, *class_entry;
+
+	INIT_NS_CLASS_ENTRY(ce, "Async", "DeadlockError", NULL);
+	class_entry = zend_register_internal_class_with_flags(&ce, class_entry_Error, 0);
 
 	return class_entry;
 }
