@@ -7,10 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.0] - 2025-10-31
 
+### Added
+- **TrueAsync API**: Added `ZEND_ASYNC_SCHEDULER_LAUNCH()` macro for scheduler initialization
+
 ### Changed
 - **Deadlock Detection**: Replaced warnings with structured exception handling
   - Deadlock detection now throws `Async\DeadlockError` exception instead of multiple warnings
-  - **Breaking Change**: Applications relying on deadlock warnings 
+  - **Breaking Change**: Applications relying on deadlock warnings
   will need to be updated to catch `Async\DeadlockError` exceptions
 
 ## [0.4.0] - 2025-09-30

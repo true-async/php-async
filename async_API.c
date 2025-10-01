@@ -1124,6 +1124,7 @@ void async_api_register(void)
 {
 	zend_async_scheduler_register(PHP_ASYNC_NAME_VERSION,
 								  false,
+								  async_scheduler_launch,
 								  async_new_coroutine,
 								  async_new_scope,
 								  (zend_async_new_context_t) async_context_new,
