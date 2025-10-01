@@ -37,6 +37,11 @@ class TimeoutException extends \Exception {}
 class PollException extends \Exception {}
 
 /**
+ * Exception thrown when a deadlock is detected.
+ */
+class DeadlockError extends \Error {}
+
+/**
  * Exception that can contain multiple exceptions.
  * Used when multiple exceptions occur in finally handlers.
  * @strict-properties
