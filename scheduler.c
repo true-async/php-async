@@ -526,37 +526,36 @@ static bool resolve_deadlocks(void)
 		return false;
 	}
 
-	async_warning("no active coroutines, deadlock detected. Coroutines in waiting: %u", real_coroutines);
+	// Create deadlock exception to be set as exit_exception
+	zend_object *deadlock_exception = async_new_exception(async_ce_deadlock_error, 
+		"Deadlock detected: no active coroutines, %u coroutines in waiting", real_coroutines);
 
-	ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), value)
-
-	async_coroutine_t *coroutine = (async_coroutine_t *) Z_PTR_P(value);
-
-	ZEND_ASSERT(coroutine->coroutine.waker != NULL && "The Coroutine has no waker object");
-
-	if (coroutine->coroutine.waker != NULL && coroutine->coroutine.waker->filename != NULL) {
-
-		// Maybe we need to get the function name
-		// zend_string * function_name = NULL;
-		// zend_get_function_name_by_fci(&fiber_state->fiber->fci, &fiber_state->fiber->fci_cache, &function_name);
-
-		async_warning("the coroutine was suspended in file: %s, line: %d will be canceled",
-					  ZSTR_VAL(coroutine->coroutine.waker->filename),
-					  coroutine->coroutine.waker->lineno);
+	// Set as exit exception if there isn't one already
+	if (ZEND_ASYNC_EXIT_EXCEPTION == NULL) {
+		ZEND_ASYNC_EXIT_EXCEPTION = deadlock_exception;
+	} else {
+		// If there's already an exit exception, make the deadlock exception previous
+		zend_exception_set_previous(deadlock_exception, ZEND_ASYNC_EXIT_EXCEPTION);
+		ZEND_ASYNC_EXIT_EXCEPTION = deadlock_exception;
 	}
 
-	// In case a deadlock condition is detected, cancellation protection flags no longer apply.
-	if (ZEND_COROUTINE_IS_PROTECTED(&coroutine->coroutine)) {
-		ZEND_COROUTINE_CLR_PROTECTED(&coroutine->coroutine);
+	ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), value) {
+		async_coroutine_t *coroutine = (async_coroutine_t *) Z_PTR_P(value);
+
+		ZEND_ASSERT(coroutine->coroutine.waker != NULL && "The Coroutine has no waker object");
+
+		// In case a deadlock condition is detected, cancellation protection flags no longer apply.
+		if (ZEND_COROUTINE_IS_PROTECTED(&coroutine->coroutine)) {
+			ZEND_COROUTINE_CLR_PROTECTED(&coroutine->coroutine);
+		}
+
+		ZEND_ASYNC_CANCEL(
+				&coroutine->coroutine, async_new_exception(async_ce_cancellation_exception, "Deadlock detected"), true);
+
+		if (EG(exception) != NULL) {
+			return true;
+		}
 	}
-
-	ZEND_ASYNC_CANCEL(
-			&coroutine->coroutine, async_new_exception(async_ce_cancellation_exception, "Deadlock detected"), true);
-
-	if (EG(exception) != NULL) {
-		return true;
-	}
-
 	ZEND_HASH_FOREACH_END();
 
 	return false;
