@@ -1,9 +1,10 @@
 --TEST--
-Fiber static variable isolation
+Coroutine static variable isolation
 --FILE--
 <?php
 
-use Async\{Task, Fiber, Scheduler};
+use function Async\spawn;
+use function Async\await;
 
 // Function with static variable
 function counter() {
@@ -11,32 +12,30 @@ function counter() {
     return ++$count;
 }
 
-// Test 1: Static variables are isolated between fibers
+// Test 1: Static variables are isolated between coroutines
 echo "=== Test 1: Static function isolation ===\n";
 
-$fiber1_results = [];
-$fiber2_results = [];
+$coro1 = spawn(function() {
+    $results = [];
+    $results[] = counter(); // Should be 1
+    $results[] = counter(); // Should be 2
+    $results[] = counter(); // Should be 3
+    return $results;
+});
 
-async function fiber1() use (&$fiber1_results) {
-    $fiber1_results[] = counter(); // Should be 1
-    $fiber1_results[] = counter(); // Should be 2
-    $fiber1_results[] = counter(); // Should be 3
-}
+$coro2 = spawn(function() {
+    $results = [];
+    $results[] = counter(); // Should be 1 (isolated from coro1)
+    $results[] = counter(); // Should be 2 (isolated from coro1)
+    $results[] = counter(); // Should be 3 (isolated from coro1)
+    return $results;
+});
 
-async function fiber2() use (&$fiber2_results) {
-    $fiber2_results[] = counter(); // Should be 1 (isolated)
-    $fiber2_results[] = counter(); // Should be 2 (isolated)
-    $fiber2_results[] = counter(); // Should be 3 (isolated)
-}
+$results1 = await($coro1);
+$results2 = await($coro2);
 
-// Run fibers concurrently
-$task1 = async function() { return fiber1(); };
-$task2 = async function() { return fiber2(); };
-
-Scheduler::run([$task1(), $task2()]);
-
-var_dump($fiber1_results);
-var_dump($fiber2_results);
+var_dump($results1);
+var_dump($results2);
 
 // Test 2: Global code should still work (backward compatibility)
 echo "\n=== Test 2: Global code backward compatibility ===\n";
@@ -49,33 +48,28 @@ function global_counter() {
 echo "First call: " . global_counter() . "\n";  // Should be 101
 echo "Second call: " . global_counter() . "\n"; // Should be 102
 
-// Test 3: Multiple fibers with shared function
-echo "\n=== Test 3: Multiple concurrent fibers ===\n";
+// Test 3: Multiple concurrent coroutines
+echo "\n=== Test 3: Multiple concurrent coroutines ===\n";
 
-$results = [];
-
-async function increment_shared_static() {
+function shared_increment() {
     static $shared = 0;
     return ++$shared;
 }
 
-async function concurrent_task() {
-    $res = [];
-    for ($i = 0; $i < 3; $i++) {
-        $res[] = increment_shared_static();
-    }
-    return $res;
-}
-
-$tasks = [];
+$coroutines = [];
 for ($i = 0; $i < 3; $i++) {
-    $tasks[] = async function() { return concurrent_task(); };
+    $coroutines[] = spawn(function() {
+        $res = [];
+        for ($j = 0; $j < 3; $j++) {
+            $res[] = shared_increment();
+        }
+        return $res;
+    });
 }
 
-$results = Scheduler::run($tasks);
-
-foreach ($results as $idx => $res) {
-    echo "Task $idx results: ";
+foreach ($coroutines as $idx => $coro) {
+    $res = await($coro);
+    echo "Coroutine $idx results: ";
     var_dump($res);
 }
 
@@ -103,8 +97,8 @@ array(3) {
 First call: 101
 Second call: 102
 
-=== Test 3: Multiple concurrent fibers ===
-Task 0 results: array(3) {
+=== Test 3: Multiple concurrent coroutines ===
+Coroutine 0 results: array(3) {
   [0]=>
   int(1)
   [1]=>
@@ -112,7 +106,7 @@ Task 0 results: array(3) {
   [2]=>
   int(3)
 }
-Task 1 results: array(3) {
+Coroutine 1 results: array(3) {
   [0]=>
   int(1)
   [1]=>
@@ -120,7 +114,7 @@ Task 1 results: array(3) {
   [2]=>
   int(3)
 }
-Task 2 results: array(3) {
+Coroutine 2 results: array(3) {
   [0]=>
   int(1)
   [1]=>
