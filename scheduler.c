@@ -801,10 +801,10 @@ bool async_scheduler_launch(void)
 	zval options;
 	ZVAL_UNDEF(&options);
 	if (!scope->before_coroutine_enqueue(&main_coroutine->coroutine, scope, &options)) {
-		zval_dtor(&options);
+		zval_ptr_dtor(&options);
 		return false;
 	}
-	zval_dtor(&options);
+	zval_ptr_dtor(&options);
 
 	scope->after_coroutine_enqueue(&main_coroutine->coroutine, scope);
 	if (UNEXPECTED(EG(exception) != NULL)) {
@@ -878,10 +878,10 @@ bool async_scheduler_launch(void)
 
 	ZVAL_UNDEF(&options);
 	if (!scope->before_coroutine_enqueue(scheduler_coroutine, scope, &options)) {
-		zval_dtor(&options);
+		zval_ptr_dtor(&options);
 		return false;
 	}
-	zval_dtor(&options);
+	zval_ptr_dtor(&options);
 
 	scope->after_coroutine_enqueue(scheduler_coroutine, scope);
 	if (UNEXPECTED(EG(exception) != NULL)) {
