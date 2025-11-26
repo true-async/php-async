@@ -179,6 +179,20 @@ static void coroutine_free(zend_object *object)
 {
 	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(object);
 
+	/* Clean up per-coroutine static variables storage for functions */
+	if (coroutine->coroutine.static_variables_map != NULL) {
+		zend_hash_destroy(coroutine->coroutine.static_variables_map);
+		FREE_HASHTABLE(coroutine->coroutine.static_variables_map);
+		coroutine->coroutine.static_variables_map = NULL;
+	}
+
+	/* Clean up per-coroutine static members storage for classes */
+	if (coroutine->coroutine.static_members_map != NULL) {
+		zend_hash_destroy(coroutine->coroutine.static_members_map);
+		FREE_HASHTABLE(coroutine->coroutine.static_members_map);
+		coroutine->coroutine.static_members_map = NULL;
+	}
+
 	zend_async_callbacks_free(&coroutine->coroutine.event);
 	zend_object_std_dtor(object);
 }
