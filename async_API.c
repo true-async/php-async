@@ -109,11 +109,11 @@ zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object *scope_provider, 
 	zval options;
 	ZVAL_UNDEF(&options);
 	if (!scope->before_coroutine_enqueue(&coroutine->coroutine, scope, &options)) {
-		zval_dtor(&options);
+		zval_ptr_dtor(&options);
 		coroutine->coroutine.event.dispose(&coroutine->coroutine.event);
 		return NULL;
 	}
-	zval_dtor(&options);
+	zval_ptr_dtor(&options);
 
 	const bool is_spawn_strategy =
 			scope_provider != NULL && instanceof_function(scope_provider->ce, async_ce_spawn_strategy);
@@ -136,7 +136,7 @@ zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object *scope_provider, 
 			return NULL;
 		}
 
-		zval_dtor(&options);
+		zval_ptr_dtor(&options);
 	}
 
 	zend_async_waker_t *waker = zend_async_waker_new(&coroutine->coroutine);
@@ -187,7 +187,7 @@ zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object *scope_provider, 
 			return NULL;
 		}
 
-		zval_dtor(&options);
+		zval_ptr_dtor(&options);
 	}
 
 	if (UNEXPECTED(zend_hash_index_add_ptr(&ASYNC_G(coroutines), coroutine->std.handle, coroutine) == NULL)) {
