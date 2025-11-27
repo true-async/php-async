@@ -186,12 +186,8 @@ static void coroutine_free(zend_object *object)
 		coroutine->coroutine.static_variables_map = NULL;
 	}
 
-	/* Clean up per-coroutine static members storage for classes */
-	if (coroutine->coroutine.static_members_map != NULL) {
-		zend_hash_destroy(coroutine->coroutine.static_members_map);
-		FREE_HASHTABLE(coroutine->coroutine.static_members_map);
-		coroutine->coroutine.static_members_map = NULL;
-	}
+	/* Clean up per-coroutine global variables symbol table */
+	zend_coroutine_symbol_table_dtor(&coroutine->coroutine);
 
 	zend_async_callbacks_free(&coroutine->coroutine.event);
 	zend_object_std_dtor(object);
