@@ -47,7 +47,7 @@ final class Scope implements ScopeProvider
 
     #[\Override] public function provideScope(): Scope {}
 
-    public function __construct() {}
+    public function __construct(bool $inheritSuperglobals = true) {}
 
     public function asNotSafely(): Scope {}
 
@@ -85,4 +85,9 @@ final class Scope implements ScopeProvider
     public function disposeAfterTimeout(int $timeout): void {}
 
     public function getChildScopes(): array {}
+
+    /**
+     * Check if Scope inherits SuperGlobals from global
+     */
+    public function isInheritSuperglobals(): bool {}
 }

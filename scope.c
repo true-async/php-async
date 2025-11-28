@@ -144,6 +144,58 @@ static bool scope_dispose(zend_async_event_t *scope_event);
 
 #define THIS_SCOPE ((async_scope_object_t *) Z_OBJ_P(ZEND_THIS))
 
+/**
+ * Initialize SuperGlobals for a Scope (lazy initialization)
+ * Returns the initialized HashTable
+ */
+HashTable *zend_async_scope_init_superglobals(zend_async_scope_t *scope)
+{
+	if (scope->superglobals != NULL) {
+		return scope->superglobals; /* Already initialized */
+	}
+
+	/* Allocate HashTable */
+	ALLOC_HASHTABLE(scope->superglobals);
+	zend_hash_init(scope->superglobals, 8, NULL, ZVAL_PTR_DTOR, 0);
+
+	/* Initialize with empty arrays for each SuperGlobal */
+	zval empty_array;
+
+	/* $_GET */
+	array_init(&empty_array);
+	zend_hash_str_add(scope->superglobals, "_GET", sizeof("_GET") - 1, &empty_array);
+
+	/* $_POST */
+	array_init(&empty_array);
+	zend_hash_str_add(scope->superglobals, "_POST", sizeof("_POST") - 1, &empty_array);
+
+	/* $_COOKIE */
+	array_init(&empty_array);
+	zend_hash_str_add(scope->superglobals, "_COOKIE", sizeof("_COOKIE") - 1, &empty_array);
+
+	/* $_SERVER */
+	array_init(&empty_array);
+	zend_hash_str_add(scope->superglobals, "_SERVER", sizeof("_SERVER") - 1, &empty_array);
+
+	/* $_ENV */
+	array_init(&empty_array);
+	zend_hash_str_add(scope->superglobals, "_ENV", sizeof("_ENV") - 1, &empty_array);
+
+	/* $_FILES */
+	array_init(&empty_array);
+	zend_hash_str_add(scope->superglobals, "_FILES", sizeof("_FILES") - 1, &empty_array);
+
+	/* $_REQUEST */
+	array_init(&empty_array);
+	zend_hash_str_add(scope->superglobals, "_REQUEST", sizeof("_REQUEST") - 1, &empty_array);
+
+	/* $_SESSION */
+	array_init(&empty_array);
+	zend_hash_str_add(scope->superglobals, "_SESSION", sizeof("_SESSION") - 1, &empty_array);
+
+	return scope->superglobals;
+}
+
 METHOD(inherit)
 {
 	zend_object *parent_scope_obj = NULL;
@@ -185,10 +237,25 @@ METHOD(provideScope)
 
 METHOD(__construct)
 {
-	ZEND_PARSE_PARAMETERS_NONE();
+	bool inherit_superglobals = true;
 
-	// Constructor is called when object is created
-	// Main initialization is handled in scope_object_create
+	ZEND_PARSE_PARAMETERS_START(0, 1)
+	Z_PARAM_OPTIONAL
+	Z_PARAM_BOOL(inherit_superglobals)
+	ZEND_PARSE_PARAMETERS_END();
+
+	async_scope_object_t *scope_object = THIS_SCOPE;
+	if (UNEXPECTED(scope_object->scope == NULL)) {
+		async_throw_error("Scope object has been disposed");
+		RETURN_THROWS();
+	}
+
+	// Set the inheritance flag
+	if (inherit_superglobals) {
+		ZEND_ASYNC_SCOPE_SET_INHERIT_SUPERGLOBALS(&scope_object->scope->scope);
+	} else {
+		ZEND_ASYNC_SCOPE_CLR_INHERIT_SUPERGLOBALS(&scope_object->scope->scope);
+	}
 }
 
 METHOD(asNotSafely)
@@ -694,6 +761,18 @@ METHOD(getChildScopes)
 	}
 }
 
+METHOD(isInheritSuperglobals)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	async_scope_object_t *scope_object = THIS_SCOPE;
+	if (UNEXPECTED(scope_object->scope == NULL)) {
+		RETURN_FALSE;
+	}
+
+	RETURN_BOOL(ZEND_ASYNC_SCOPE_IS_INHERIT_SUPERGLOBALS(&scope_object->scope->scope));
+}
+
 //////////////////////////////////////////////////////////
 /// Scope methods end
 //////////////////////////////////////////////////////////
@@ -1156,6 +1235,13 @@ static bool scope_dispose(zend_async_event_t *scope_event)
 		scope->finally_handlers = NULL;
 	}
 
+	// Free SuperGlobals HashTable
+	if (scope->scope.superglobals != NULL) {
+		zend_hash_destroy(scope->scope.superglobals);
+		FREE_HASHTABLE(scope->scope.superglobals);
+		scope->scope.superglobals = NULL;
+	}
+
 	zend_async_callbacks_free(&scope->scope.event);
 	async_scope_free_coroutines(scope);
 	zend_async_scope_free_children(&scope->scope);
@@ -1222,6 +1308,12 @@ zend_async_scope_t *async_new_scope(zend_async_scope_t *parent_scope, const bool
 
 	// Initialize finally handlers
 	scope->finally_handlers = NULL;
+
+	// Initialize SuperGlobals (lazy - will be NULL until first access)
+	scope->scope.superglobals = NULL;
+
+	// By default, inherit SuperGlobals from global
+	ZEND_ASYNC_SCOPE_SET_INHERIT_SUPERGLOBALS(&scope->scope);
 
 	event->start = scope_event_start;
 	event->stop = scope_event_stop;
