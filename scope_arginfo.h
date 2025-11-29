@@ -1,5 +1,5 @@
 /* This is a generated file, edit the .stub.php file instead.
- * Stub hash: a93e0b70e865dea520f8d9d22e73b6640e1c0ebc */
+ * Stub hash: be3625bac12f9daeae03dd49284a2cddb8e792f6 */
 
 ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_class_Async_ScopeProvider_provideScope, 0, 0, Async\\Scope, 1)
 ZEND_END_ARG_INFO()
@@ -22,6 +22,7 @@ ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_class_Async_Scope_provideScope, 0
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Async_Scope___construct, 0, 0, 0)
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, inheritSuperglobals, _IS_BOOL, 0, "true")
 ZEND_END_ARG_INFO()
 
 #define arginfo_class_Async_Scope_asNotSafely arginfo_class_Async_Scope_provideScope
@@ -73,6 +74,8 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_Scope_getChildScopes, 0, 0, IS_ARRAY, 0)
 ZEND_END_ARG_INFO()
 
+#define arginfo_class_Async_Scope_isInheritSuperglobals arginfo_class_Async_Scope_isFinished
+
 ZEND_METHOD(Async_Scope, inherit);
 ZEND_METHOD(Async_Scope, provideScope);
 ZEND_METHOD(Async_Scope, __construct);
@@ -91,6 +94,7 @@ ZEND_METHOD(Async_Scope, dispose);
 ZEND_METHOD(Async_Scope, disposeSafely);
 ZEND_METHOD(Async_Scope, disposeAfterTimeout);
 ZEND_METHOD(Async_Scope, getChildScopes);
+ZEND_METHOD(Async_Scope, isInheritSuperglobals);
 
 static const zend_function_entry class_Async_ScopeProvider_methods[] = {
 	ZEND_RAW_FENTRY("provideScope", NULL, arginfo_class_Async_ScopeProvider_provideScope, ZEND_ACC_PUBLIC|ZEND_ACC_ABSTRACT, NULL, NULL)
@@ -122,6 +126,7 @@ static const zend_function_entry class_Async_Scope_methods[] = {
 	ZEND_ME(Async_Scope, disposeSafely, arginfo_class_Async_Scope_disposeSafely, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_Scope, disposeAfterTimeout, arginfo_class_Async_Scope_disposeAfterTimeout, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_Scope, getChildScopes, arginfo_class_Async_Scope_getChildScopes, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_Scope, isInheritSuperglobals, arginfo_class_Async_Scope_isInheritSuperglobals, ZEND_ACC_PUBLIC)
 	ZEND_FE_END
 };
 
@@ -155,9 +160,9 @@ static zend_class_entry *register_class_Async_Scope(zend_class_entry *class_entr
 	zend_class_implements(class_entry, 1, class_entry_Async_ScopeProvider);
 
 
-	zend_string *attribute_name_Override_func_providescope_0 = zend_string_init_interned("Override", sizeof("Override") - 1, 1);
+	zend_string *attribute_name_Override_func_providescope_0 = zend_string_init_interned("Override", sizeof("Override") - 1, true);
 	zend_add_function_attribute(zend_hash_str_find_ptr(&class_entry->function_table, "providescope", sizeof("providescope") - 1), attribute_name_Override_func_providescope_0, 0);
-	zend_string_release(attribute_name_Override_func_providescope_0);
+	zend_string_release_ex(attribute_name_Override_func_providescope_0, true);
 
 	return class_entry;
 }
