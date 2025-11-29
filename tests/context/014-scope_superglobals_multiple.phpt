@@ -15,8 +15,8 @@ $coro = $scope->spawn(function() {
 });
 await($coro);
 
-var_dump($_POST ?? null);
-var_dump($_COOKIE ?? null);
+var_dump($_POST);
+var_dump($_COOKIE);
 
 ?>
 --EXPECT--
@@ -28,5 +28,7 @@ array(1) {
   ["cookie_key"]=>
   string(12) "cookie_value"
 }
-NULL
-NULL
+array(0) {
+}
+array(0) {
+}

@@ -199,10 +199,12 @@ HashTable *zend_async_scope_init_superglobals(zend_async_scope_t *scope)
 METHOD(inherit)
 {
 	zend_object *parent_scope_obj = NULL;
+	bool inherit_superglobals = true;
 
-	ZEND_PARSE_PARAMETERS_START(0, 1)
+	ZEND_PARSE_PARAMETERS_START(0, 2)
 	Z_PARAM_OPTIONAL
 	Z_PARAM_OBJ_OF_CLASS_OR_NULL(parent_scope_obj, async_ce_scope)
+	Z_PARAM_BOOL(inherit_superglobals)
 	ZEND_PARSE_PARAMETERS_END();
 
 	zend_async_scope_t *base_parent_scope = NULL;
@@ -223,6 +225,13 @@ METHOD(inherit)
 	zend_async_scope_t *new_scope = async_new_scope(base_parent_scope, true);
 	if (UNEXPECTED(new_scope == NULL)) {
 		RETURN_THROWS();
+	}
+
+	// Set the inheritSuperglobals flag
+	if (inherit_superglobals) {
+		ZEND_ASYNC_SCOPE_SET_INHERIT_SUPERGLOBALS(new_scope);
+	} else {
+		ZEND_ASYNC_SCOPE_CLR_INHERIT_SUPERGLOBALS(new_scope);
 	}
 
 	RETURN_OBJ(new_scope->scope_object);

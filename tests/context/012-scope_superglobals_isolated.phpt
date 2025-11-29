@@ -13,7 +13,7 @@ $coro = $scope->spawn(function() {
 await($coro);
 
 // Global $_GET should be unaffected
-var_dump($_GET ?? null);
+var_dump($_GET);
 
 ?>
 --EXPECT--
@@ -21,4 +21,5 @@ array(1) {
   ["key"]=>
   string(11) "scope_value"
 }
-NULL
+array(0) {
+}

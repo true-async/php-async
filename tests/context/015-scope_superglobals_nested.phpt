@@ -34,7 +34,9 @@ array(2) {
   ["child_key"]=>
   string(11) "child_value"
 }
-array(1) {
+array(2) {
   ["parent_key"]=>
   string(12) "parent_value"
+  ["child_key"]=>
+  string(11) "child_value"
 }
