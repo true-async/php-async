@@ -6,6 +6,9 @@ Coroutine global variable - creating new globals in coroutine
 use function Async\spawn;
 use function Async\await;
 
+$old_var = "I exist";
+var_dump($GLOBALS['old_var']);
+
 // Create coroutine that creates its own global variables
 $coro = spawn(function() {
     global $new_var, $another_var;
@@ -25,8 +28,11 @@ echo "new_var exists in global: " . (isset($new_var) ? "yes" : "no") . "\n";
 echo "another_var exists in global: " . (isset($another_var) ? "yes" : "no") . "\n";
 echo "new_var in \$GLOBALS: " . (isset($GLOBALS['new_var']) ? "yes" : "no") . "\n";
 
+var_dump($GLOBALS['old_var']);
+
 ?>
 --EXPECT--
+string(7) "I exist"
 Coroutine result: array(4) {
   [0]=>
   int(42)
@@ -40,3 +46,4 @@ Coroutine result: array(4) {
 new_var exists in global: no
 another_var exists in global: no
 new_var in $GLOBALS: no
+string(7) "I exist"
