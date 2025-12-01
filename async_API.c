@@ -163,6 +163,14 @@ zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object *scope_provider, 
 		return NULL;
 	}
 
+	if (UNEXPECTED(zend_hash_index_add_ptr(&ASYNC_G(coroutines), coroutine->std.handle, coroutine) == NULL)) {
+		waker->status = ZEND_ASYNC_WAKER_IGNORED;
+		async_throw_error("Failed to add coroutine to the list");
+		return NULL;
+	}
+
+	ZEND_ASYNC_INCREASE_COROUTINE_COUNT;
+
 	scope->after_coroutine_enqueue(&coroutine->coroutine, scope);
 	if (UNEXPECTED(EG(exception))) {
 		waker->status = ZEND_ASYNC_WAKER_IGNORED;
@@ -189,14 +197,6 @@ zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object *scope_provider, 
 
 		zval_ptr_dtor(&options);
 	}
-
-	if (UNEXPECTED(zend_hash_index_add_ptr(&ASYNC_G(coroutines), coroutine->std.handle, coroutine) == NULL)) {
-		waker->status = ZEND_ASYNC_WAKER_IGNORED;
-		async_throw_error("Failed to add coroutine to the list");
-		return NULL;
-	}
-
-	ZEND_ASYNC_INCREASE_COROUTINE_COUNT;
 
 	return &coroutine->coroutine;
 }
