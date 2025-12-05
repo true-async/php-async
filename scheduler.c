@@ -1028,7 +1028,7 @@ bool async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine)
 			// Behavior for a new coroutine
 			// see: async_API.c spawn(zend_async_scope_t *scope, zend_object *scope_provider, int32_t priority)
 			if (false == ZEND_COROUTINE_IS_STARTED(coroutine)
-				&& zend_hash_index_find(&ASYNC_G(coroutines), ((async_coroutine_t *)coroutine)->std.handle) != NULL) {
+				&& zend_hash_index_find(&ASYNC_G(coroutines), ((async_coroutine_t *)coroutine)->std.handle) == NULL) {
 				// save the filename and line number where the coroutine was created
 				zend_apply_current_filename_and_line(&coroutine->filename, &coroutine->lineno);
 
