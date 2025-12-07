@@ -1032,6 +1032,14 @@ bool async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine)
 				}
 
 				ZEND_ASYNC_INCREASE_COROUTINE_COUNT;
+
+				// Notify scope that a new coroutine has been enqueued
+				zend_async_scope_t *scope = coroutine->scope;
+				scope->after_coroutine_enqueue(coroutine, scope);
+				if (UNEXPECTED(EG(exception))) {
+					coroutine->waker->status = ZEND_ASYNC_WAKER_IGNORED;
+					return false;
+				}
 			}
 
 			// Add to resumed_coroutines queue for event cleanup
