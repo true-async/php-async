@@ -798,14 +798,6 @@ bool async_scheduler_launch(void)
 		return false;
 	}
 
-	zval options;
-	ZVAL_UNDEF(&options);
-	if (!scope->before_coroutine_enqueue(&main_coroutine->coroutine, scope, &options)) {
-		zval_ptr_dtor(&options);
-		return false;
-	}
-	zval_ptr_dtor(&options);
-
 	scope->after_coroutine_enqueue(&main_coroutine->coroutine, scope);
 	if (UNEXPECTED(EG(exception) != NULL)) {
 		return false;
@@ -876,6 +868,7 @@ bool async_scheduler_launch(void)
 		return false;
 	}
 
+	zval options;
 	ZVAL_UNDEF(&options);
 	if (!scope->before_coroutine_enqueue(scheduler_coroutine, scope, &options)) {
 		zval_ptr_dtor(&options);
@@ -1035,7 +1028,7 @@ bool async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine)
 				if (UNEXPECTED(zend_hash_index_add_ptr(&ASYNC_G(coroutines), ((async_coroutine_t *)coroutine)->std.handle, coroutine) == NULL)) {
 					coroutine->waker->status = ZEND_ASYNC_WAKER_IGNORED;
 					async_throw_error("Failed to add coroutine to the list");
-					return NULL;
+					return false;
 				}
 
 				ZEND_ASYNC_INCREASE_COROUTINE_COUNT;
