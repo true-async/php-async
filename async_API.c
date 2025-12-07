@@ -106,17 +106,11 @@ zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object *scope_provider, 
 
 	zend_apply_current_filename_and_line(&coroutine->coroutine.filename, &coroutine->coroutine.lineno);
 
-	zval options;
-	ZVAL_UNDEF(&options);
-	if (!scope->before_coroutine_enqueue(&coroutine->coroutine, scope, &options)) {
-		zval_ptr_dtor(&options);
-		coroutine->coroutine.event.dispose(&coroutine->coroutine.event);
-		return NULL;
-	}
-	zval_ptr_dtor(&options);
-
 	const bool is_spawn_strategy =
 			scope_provider != NULL && instanceof_function(scope_provider->ce, async_ce_spawn_strategy);
+
+	zval options;
+	ZVAL_UNDEF(&options);
 
 	// call SpawnStrategy::beforeCoroutineEnqueue
 	if (is_spawn_strategy) {

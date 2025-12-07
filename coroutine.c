@@ -347,7 +347,16 @@ zend_coroutine_t *async_new_coroutine(zend_async_scope_t *scope)
 	}
 
 	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(object);
-	coroutine->coroutine.scope = scope;
+
+	// Add the coroutine to the scope before calling the enqueue hook
+	zval options;
+	ZVAL_UNDEF(&options);
+	if (!scope->before_coroutine_enqueue(&coroutine->coroutine, scope, &options)) {
+		zval_ptr_dtor(&options);
+		coroutine->coroutine.event.dispose(&coroutine->coroutine.event);
+		return NULL;
+	}
+	zval_ptr_dtor(&options);
 
 	return &coroutine->coroutine;
 }
