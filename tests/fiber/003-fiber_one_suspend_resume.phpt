@@ -1,5 +1,5 @@
 --TEST--
-UC-003: One suspend/resume cycle
+One suspend/resume cycle
 --FILE--
 <?php
 
