@@ -1025,6 +1025,16 @@ bool async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine)
 				// save the filename and line number where the coroutine was created
 				zend_apply_current_filename_and_line(&coroutine->filename, &coroutine->lineno);
 
+				// Notify scope that a new coroutine has been enqueued
+				zend_async_scope_t *scope = coroutine->scope;
+
+				if (UNEXPECTED(scope == NULL)) {
+					// throw error if the coroutine has no scope
+					coroutine->waker->status = ZEND_ASYNC_WAKER_NO_STATUS;
+					async_throw_error("The coroutine has no scope assigned");
+					return false;
+				}
+
 				if (UNEXPECTED(zend_hash_index_add_ptr(&ASYNC_G(coroutines), ((async_coroutine_t *)coroutine)->std.handle, coroutine) == NULL)) {
 					coroutine->waker->status = ZEND_ASYNC_WAKER_IGNORED;
 					async_throw_error("Failed to add coroutine to the list");
@@ -1033,8 +1043,6 @@ bool async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine)
 
 				ZEND_ASYNC_INCREASE_COROUTINE_COUNT;
 
-				// Notify scope that a new coroutine has been enqueued
-				zend_async_scope_t *scope = coroutine->scope;
 				scope->after_coroutine_enqueue(coroutine, scope);
 				if (UNEXPECTED(EG(exception))) {
 					coroutine->waker->status = ZEND_ASYNC_WAKER_IGNORED;
