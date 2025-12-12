@@ -1,5 +1,5 @@
 --TEST--
-UC-015: Fiber with NULL values in suspend/resume
+Fiber with NULL values in suspend/resume
 --FILE--
 <?php
 

@@ -1,5 +1,5 @@
 --TEST--
-UC-014: Fiber garbage collection when suspended
+Fiber garbage collection when suspended
 --FILE--
 <?php
 
