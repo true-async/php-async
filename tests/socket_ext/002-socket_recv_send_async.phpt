@@ -16,9 +16,10 @@ use function Async\delay;
 echo "Start\n";
 
 $port = null;
+$output = [];
 
 // Server coroutine
-$server = spawn(function() use (&$port) {
+$server = spawn(function() use (&$port, &$output) {
     echo "Server: creating socket\n";
     $socket = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
     socket_set_option($socket, SOL_SOCKET, SO_REUSEADDR, 1);
@@ -30,40 +31,47 @@ $server = spawn(function() use (&$port) {
     echo "Server: listening on port $port\n";
     
     $client = socket_accept($socket);
-    echo "Server: client connected\n";
+    $output[] = "Server: client connected";
     
     $buffer = '';
     $bytes = socket_recv($client, $buffer, 1024, 0);
-    echo "Server: received $bytes bytes: '$buffer'\n";
+    $output[] = "Server: received $bytes bytes: '$buffer'";
     
     $sent = socket_send($client, "Response from server", 20, 0);
-    echo "Server: sent $sent bytes\n";
+    $output[] = "Server: sent $sent bytes";
     
     socket_close($client);
     socket_close($socket);
 });
 
 // Client coroutine
-$client = spawn(function() use (&$port) {
+$client = spawn(function() use (&$port, &$output) {
     while ($port === null) {
         delay(1);
     }
     
-    echo "Client: connecting\n";
+    $output[] = "Client: connecting";
     $socket = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
     socket_connect($socket, '127.0.0.1', $port);
     
     $sent = socket_send($socket, "Request from client", 19, 0);
-    echo "Client: sent $sent bytes\n";
+    $output[] = "Client: sent $sent bytes";
     
     $buffer = '';
     $bytes = socket_recv($socket, $buffer, 1024, 0);
-    echo "Client: received $bytes bytes: '$buffer'\n";
+    $output[] = "Client: received $bytes bytes: '$buffer'";
     
     socket_close($socket);
 });
 
 awaitAll([$server, $client]);
+
+// Sort output for deterministic results
+sort($output);
+foreach ($output as $message) {
+    echo $message . "\n";
+}
+
 echo "End\n";
 
 ?>
@@ -72,9 +80,9 @@ Start
 Server: creating socket
 Server: listening on port %d
 Client: connecting
-Server: client connected
+Client: received 20 bytes: 'Response from server'
 Client: sent 19 bytes
+Server: client connected
 Server: received 19 bytes: 'Request from client'
 Server: sent 20 bytes
-Client: received 20 bytes: 'Response from server'
 End

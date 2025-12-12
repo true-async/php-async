@@ -27,7 +27,6 @@ function test_post_request($server) {
     $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $error = curl_error($ch);
     
-    curl_close($ch);
     
     echo "HTTP Code: $http_code\n";
     echo "Error: " . ($error ?: "none") . "\n";

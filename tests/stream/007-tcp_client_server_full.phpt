@@ -11,9 +11,10 @@ use function Async\suspend;
 echo "Start\n";
 
 $server_port = null;
+$output = [];
 
 // Server coroutine
-$server = spawn(function() use (&$server_port) {
+$server = spawn(function() use (&$server_port, &$output) {
     echo "Server: starting\n";
 
     $socket = stream_socket_server("tcp://127.0.0.1:0", $errno, $errstr);
@@ -28,10 +29,10 @@ $server = spawn(function() use (&$server_port) {
     
     echo "Server: accepting connections\n";
     $client = stream_socket_accept($socket);
-    echo "Server: client connected\n";
+    $output[] = "Server: client connected";
     
     $data = fread($client, 1024);
-    echo "Server: received '$data' and sending response...\n";
+    $output[] = "Server: received '$data' and sending response...";
     
     fwrite($client, "Server response: $data");
     
@@ -41,13 +42,13 @@ $server = spawn(function() use (&$server_port) {
 });
 
 // Client coroutine
-$client = spawn(function() use (&$server_port) {
+$client = spawn(function() use (&$server_port, &$output) {
     // Wait for server to start
     while ($server_port === null) {
         delay(1);
     }
     
-    echo "Client: connecting to port $server_port...\n";
+    $output[] = "Client: connecting to port $server_port...";
 
     $socket = stream_socket_client("tcp://127.0.0.1:$server_port", $errno, $errstr, 1);
 
@@ -56,11 +57,11 @@ $client = spawn(function() use (&$server_port) {
         return;
     }
     
-    echo "Client: connected and send message...\n";
+    $output[] = "Client: connected and send message...";
     fwrite($socket, "Hello from client");
     
     $response = fread($socket, 1024);
-    echo "Client: received '$response'\n";
+    $output[] = "Client: received '$response'";
     
     fclose($socket);
     return "client_done";
@@ -73,6 +74,13 @@ $worker = spawn(function() {
 });
 
 [$results, $exceptions] = awaitAll([$server, $client, $worker]);
+
+// Sort output for deterministic results
+sort($output);
+foreach ($output as $message) {
+    echo $message . "\n";
+}
+
 echo "Results: " . implode(", ", $results) . "\n";
 echo "End\n";
 
@@ -83,10 +91,10 @@ Server: starting
 Worker: finished
 Server: listening on port %d
 Server: accepting connections
-Client: connecting to port %d...
-Server: client connected
 Client: connected and send message...
-Server: received 'Hello from client' and sending response...
+Client: connecting to port %d...
 Client: received 'Server response: Hello from client'
+Server: client connected
+Server: received 'Hello from client' and sending response...
 Results: server_done, client_done, worker_done
 End

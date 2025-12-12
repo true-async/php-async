@@ -53,7 +53,7 @@ echo "scope finally handler added\n";
 
 // Cancel the parent scope - should trigger all finally handlers
 echo "cancelling parent scope\n";
-$scope->cancel(new \Async\CancellationException("Scope cancelled with finally"));
+$scope->cancel(new \Async\CancellationError("Scope cancelled with finally"));
 
 // Let cancellation propagate
 suspend();

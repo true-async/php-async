@@ -1,8 +1,6 @@
 name: True Async Ubuntu Speed Test
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
 
@@ -51,6 +49,15 @@ jobs:
           mkdir -p php-src/ext/async
           cp -r async/* php-src/ext/async/
 
+      # Cache APT packages to speed up dependency installation
+      - name: Cache APT packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-apt-packages-${{ hashFiles('.github/workflows/build.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-apt-packages-
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -63,23 +70,40 @@ jobs:
             firebird-dev \
             valgrind cmake
 
-      - name: Install LibUV >= 1.44.0
+      # Cache LibUV 1.45.0 installation to avoid rebuilding
+      - name: Cache LibUV 1.45.0
+        id: cache-libuv
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/lib/libuv*
+            /usr/local/include/uv*
+            /usr/local/lib/pkgconfig/libuv.pc
+          key: ${{ runner.os }}-libuv-1.45.0-release
+
+      - name: Install LibUV >= 1.45.0
         run: |
+          # Check if we have cached LibUV 1.45.0
+          if [ "${{ steps.cache-libuv.outputs.cache-hit }}" == "true" ]; then
+            echo "Using cached LibUV 1.45.0 installation"
+            sudo ldconfig
+            echo "LibUV version: $(pkg-config --modversion libuv)"
           # Check if system libuv meets requirements
-          if pkg-config --exists libuv && pkg-config --atleast-version=1.44.0 libuv; then
+          elif pkg-config --exists libuv && pkg-config --atleast-version=1.45.0 libuv; then
             echo "System libuv version: $(pkg-config --modversion libuv)"
             sudo apt-get install -y libuv1-dev
           else
-            echo "Installing LibUV 1.44.0 from source"
-            wget https://github.com/libuv/libuv/archive/v1.44.0.tar.gz
-            tar -xzf v1.44.0.tar.gz
-            cd libuv-1.44.0
+            echo "Installing LibUV 1.45.0 from source"
+            wget https://github.com/libuv/libuv/archive/v1.45.0.tar.gz
+            tar -xzf v1.45.0.tar.gz
+            cd libuv-1.45.0
             mkdir build && cd build
             cmake .. -DCMAKE_BUILD_TYPE=Release
             make -j$(nproc)
             sudo make install
             sudo ldconfig
             cd ../..
+            echo "LibUV 1.45.0 compiled and installed"
           fi
 
       - name: Configure PHP
@@ -89,7 +113,6 @@ jobs:
           ./configure \
             --enable-zts \
             --enable-fpm \
-            --enable-opcache \
             --with-pdo-mysql=mysqlnd \
             --with-mysqli=mysqlnd \
             --with-pgsql \
@@ -154,7 +177,6 @@ jobs:
         run: |
           /usr/local/bin/php -v
           /usr/local/bin/php ../../run-tests.php \
-            -d zend_extension=opcache.so \
             -d opcache.enable_cli=1 \
             -d opcache.jit_buffer_size=64M \
             -d opcache.jit=tracing \

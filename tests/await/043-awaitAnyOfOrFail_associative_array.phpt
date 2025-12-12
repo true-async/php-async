@@ -30,7 +30,7 @@ $coroutines = [
 
 echo "start\n";
 
-$results = awaitAnyOfOrFail(2, $coroutines);
+$results = awaitAnyOfOrFail(3, $coroutines);
 
 echo "Keys preserved: " . (count(array_intersect(array_keys($results), ['slow', 'fast', 'medium', 'very_slow'])) == count($results) ? "YES" : "NO") . "\n";
 

@@ -1,0 +1,317 @@
+name: True Async Linux x64 Build
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-linux-x64:
+    strategy:
+      fail-fast: false
+      matrix:
+        debug: [true, false]
+        zts: [true, false]
+        asan: [false, true]
+        exclude:
+          # Only run ASAN on debug+zts build to reduce test matrix
+          - asan: true
+            debug: false
+          - asan: true
+            zts: false
+    
+    name: "LINUX_X64_${{ matrix.debug && 'DEBUG' || 'RELEASE' }}_${{ matrix.zts && 'ZTS' || 'NTS' }}${{ matrix.asan && '_ASAN' || ''}}"
+    runs-on: ubuntu-22.04
+    timeout-minutes: ${{ matrix.asan && 360 || 60 }}
+
+    services:
+      mysql:
+        image: mysql:8.3
+        ports:
+          - 3306:3306
+        env:
+          MYSQL_DATABASE: test
+          MYSQL_ROOT_PASSWORD: root
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
+
+      postgres:
+        image: postgres
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+
+    steps:
+      - name: Checkout php-async repo
+        uses: actions/checkout@v4
+        with:
+          path: async
+
+      - name: Clone php-src (true-async-stable)
+        run: |
+          git clone --depth=1 --branch=true-async-stable https://github.com/true-async/php-src php-src
+
+      - name: Copy php-async extension into php-src
+        run: |
+          mkdir -p php-src/ext/async
+          cp -r async/* php-src/ext/async/
+
+      - name: Install build dependencies
+        working-directory: php-src
+        run: |
+          set -x
+          sudo apt-get update -y
+          
+          # Standard PHP dependencies
+          sudo apt-get install -y \
+            autoconf \
+            bison \
+            build-essential \
+            curl \
+            re2c \
+            libxml2-dev \
+            libssl-dev \
+            pkg-config \
+            libargon2-dev \
+            libcurl4-openssl-dev \
+            libedit-dev \
+            libsodium-dev \
+            libsqlite3-dev \
+            libonig-dev \
+            libzip-dev \
+            libpng-dev \
+            libjpeg-dev \
+            libwebp-dev \
+            libfreetype6-dev \
+            libgmp-dev \
+            libldap2-dev \
+            libsasl2-dev \
+            libpq-dev \
+            libmysqlclient-dev \
+            libbz2-dev \
+            libenchant-2-dev \
+            libffi-dev \
+            libgdbm-dev \
+            liblmdb-dev \
+            libsnmp-dev \
+            libtidy-dev \
+            libxslt1-dev \
+            libicu-dev
+          
+          # Build LibUV from source (need >= 1.45.0)
+          sudo apt-get install -y cmake ninja-build
+          
+          # Download and build LibUV 1.48.0
+          wget https://github.com/libuv/libuv/archive/v1.48.0.tar.gz
+          tar -xzf v1.48.0.tar.gz
+          cd libuv-1.48.0
+          mkdir build
+          cd build
+          cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+          ninja
+          sudo ninja install
+          sudo ldconfig
+          cd ../..
+          
+          # Build libcurl from source (need >= 7.87.0 for TrueAsync)
+          wget https://github.com/curl/curl/releases/download/curl-8_5_0/curl-8.5.0.tar.gz
+          tar -xzf curl-8.5.0.tar.gz
+          cd curl-8.5.0
+          ./configure --prefix=/usr/local --with-openssl --enable-shared --disable-static
+          make -j$(nproc)
+          sudo make install
+          sudo ldconfig
+          cd ..
+          
+          # ASAN dependencies if needed
+          if [ "${{ matrix.asan }}" = "true" ]; then
+            sudo apt-get install -y clang-14 lldb-14
+          fi
+
+      - name: System info
+        run: |
+          echo "::group::Show host CPU info"
+          lscpu
+          echo "::endgroup::"
+          echo "::group::Show installed package versions" 
+          dpkg -l | grep -E "(libuv|clang)" || true
+          echo "::endgroup::"
+          echo "::group::Show LibUV version"
+          pkg-config --modversion libuv || echo "LibUV version not available via pkg-config"
+          echo "::endgroup::"
+
+      - name: Configure PHP
+        working-directory: php-src
+        run: |
+          set -x
+          
+          # Set compiler flags based on matrix
+          CFLAGS=""
+          LDFLAGS=""
+          CC="gcc"
+          CXX="g++"
+          
+          if [ "${{ matrix.asan }}" = "true" ]; then
+            CFLAGS="-fsanitize=address,undefined -fno-sanitize=function -DZEND_TRACK_ARENA_ALLOC -DZEND_RC_DEBUG=1"
+            LDFLAGS="-fsanitize=address,undefined -fno-sanitize=function"
+            CC="clang-14"
+            CXX="clang++-14"
+          fi
+          
+          ./buildconf --force
+          
+          # Configure with async extension
+          CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS" CC="$CC" CXX="$CXX" ./configure \
+            --enable-option-checking=fatal \
+            --prefix=/usr/local \
+            --with-pdo-mysql=mysqlnd \
+            --with-mysqli=mysqlnd \
+            --with-pgsql \
+            --with-pdo-pgsql \
+            --with-pdo-sqlite \
+            --without-pear \
+            --enable-gd \
+            --with-jpeg \
+            --with-webp \
+            --with-freetype \
+            --enable-exif \
+            --with-zip \
+            --with-zlib \
+            --enable-soap \
+            --enable-xmlreader \
+            --with-xsl \
+            --with-tidy \
+            --with-libxml \
+            --enable-sysvsem \
+            --enable-sysvshm \
+            --enable-shmop \
+            --enable-pcntl \
+            --with-readline \
+            --enable-mbstring \
+            --with-curl \
+            --with-gettext \
+            --enable-sockets \
+            --with-bz2 \
+            --with-openssl \
+            --with-gmp \
+            --enable-bcmath \
+            --enable-calendar \
+            --enable-ftp \
+            --with-enchant \
+            --enable-sysvmsg \
+            --with-ffi \
+            --enable-zend-test \
+            --enable-dl-test=shared \
+            --with-ldap \
+            --with-ldap-sasl \
+            --enable-intl \
+            --with-mhash \
+            --with-sodium \
+            --enable-dba \
+            --with-lmdb \
+            --with-gdbm \
+            --with-snmp \
+            --enable-werror \
+            --with-config-file-path=/etc \
+            --with-config-file-scan-dir=/etc/php.d \
+            --${{ matrix.debug && 'enable' || 'disable' }}-debug \
+            --${{ matrix.zts && 'enable' || 'disable' }}-zts \
+            --enable-async
+
+      - name: Build PHP
+        working-directory: php-src
+        run: |
+          # Use reduced parallelism for ASAN to prevent timeouts
+          PARALLEL_JOBS=${{ matrix.asan && '$(nproc)' || '$(nproc)' }}
+          make -j$PARALLEL_JOBS >/dev/null
+
+      - name: Install PHP
+        working-directory: php-src
+        run: |
+          sudo make install
+          sudo mkdir -p /etc/php.d
+          echo "opcache.enable_cli=1" | sudo tee /etc/php.d/opcache.ini
+
+      - name: Run basic tests
+        working-directory: php-src/ext/async
+        run: |
+          /usr/local/bin/php -v
+          
+          # Configure test parameters based on ASAN
+          TEST_PARAMS=""
+          if [ "${{ matrix.asan }}" = "true" ]; then
+            TEST_PARAMS="--asan -x"
+            PARALLEL_JOBS="$(expr $(nproc) - 1)"  # Leave one CPU idle for ASAN
+          else
+            PARALLEL_JOBS="$(nproc)"
+          fi
+          
+          /usr/local/bin/php ../../run-tests.php \
+            $TEST_PARAMS \
+            -P -q -j$PARALLEL_JOBS \
+            -g FAIL,BORK,LEAK,XLEAK \
+            --no-progress \
+            --offline \
+            --show-diff \
+            --show-slow 4000 \
+            --set-timeout 120 \
+            .
+
+      - name: Test OpCache
+        working-directory: php-src/ext/async
+        run: |
+          TEST_PARAMS=""
+          if [ "${{ matrix.asan }}" = "true" ]; then
+            TEST_PARAMS="--asan -x"
+            PARALLEL_JOBS="$(expr $(nproc) - 1)"
+          else
+            PARALLEL_JOBS="$(nproc)"
+          fi
+          
+          /usr/local/bin/php ../../run-tests.php \
+            $TEST_PARAMS \
+            -d opcache.enable_cli=1 \
+            -P -q -j$PARALLEL_JOBS \
+            -g FAIL,BORK,LEAK,XLEAK \
+            --no-progress \
+            --offline \
+            --show-diff \
+            --show-slow 4000 \
+            --set-timeout 120 \
+            .
+
+      - name: Test Tracing JIT
+        # Skip JIT with ASAN due to complexity
+        if: matrix.asan != true
+        working-directory: php-src/ext/async
+        run: |
+          /usr/local/bin/php ../../run-tests.php \
+            -d opcache.enable_cli=1 \
+            -d opcache.jit_buffer_size=64M \
+            -d opcache.jit=tracing \
+            -P -q -j$(nproc) \
+            -g FAIL,BORK,LEAK,XLEAK \
+            --no-progress \
+            --offline \
+            --show-diff \
+            --show-slow 4000 \
+            --set-timeout 120 \
+            .
+
+      - name: Test Function JIT  
+        # Skip JIT with ASAN due to complexity
+        if: matrix.asan != true
+        working-directory: php-src/ext/async
+        run: |
+          /usr/local/bin/php ../../run-tests.php \
+            -d opcache.enable_cli=1 \
+            -d opcache.jit_buffer_size=64M \
+            -d opcache.jit=function \
+            -P -q -j$(nproc) \
+            -g FAIL,BORK,LEAK,XLEAK \
+            --no-progress \
+            --offline \
+            --show-diff \
+            --show-slow 4000 \
+            --set-timeout 120 \
+            .

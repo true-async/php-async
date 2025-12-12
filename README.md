@@ -31,12 +31,25 @@ tightly integrated at the core level.
 PHP TRUE ASYNC is supported for PHP 8.5.0 and later.
 `LibUV` is the primary reactor implementation for this extension.
 
+### Docker (for tests)
+
+```bash
+# Build the image
+docker build -t true-async-php .
+
+# Run interactively
+docker run -it true-async-php bash
+
+# Check TrueAsync module
+docker run --rm true-async-php php -m | grep true_async
+```
+
 ### Requirements
 
 - **PHP 8.5.0+**
-- **LibUV ≥ 1.44.0** (required) - Fixes critical `UV_RUN_ONCE` busy loop issue that could cause high CPU usage
+- **LibUV ≥ 1.45.0** (required) - Fixes critical `UV_RUN_ONCE` busy loop issue that could cause high CPU usage
 
-### Why LibUV 1.44.0+ is Required
+### Why LibUV 1.45.0+ is Required
 
 Prior to libuv 1.44, there was a critical issue in `uv__io_poll()`/`uv__run_pending` logic that could cause the event loop to "stick" after the first callback when running in `UV_RUN_ONCE` mode, especially when new ready events appeared within callbacks. This resulted in:
 
@@ -82,17 +95,17 @@ The fix in libuv 1.44 ensures that `UV_RUN_ONCE` properly returns after processi
 
 4. **Install LibUV:**:
    
-**IMPORTANT:** LibUV version 1.44.0 or later is required.
+**IMPORTANT:** LibUV version 1.45.0 or later is required.
 
 For Debian/Ubuntu:
 ```bash
-# Check if system libuv meets requirements (≥1.44.0)
+# Check if system libuv meets requirements (≥1.45.0)
 pkg-config --modversion libuv
 
 # If version is too old, install from source:
-wget https://github.com/libuv/libuv/archive/v1.44.0.tar.gz
-tar -xzf v1.44.0.tar.gz
-cd libuv-1.44.0
+wget https://github.com/libuv/libuv/archive/v1.45.0.tar.gz
+tar -xzf v1.45.0.tar.gz
+cd libuv-1.45.0
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
@@ -159,6 +172,14 @@ Please see the [LibUV installation guide](https://github.com/libuv/libuv) for mo
 - `gethostbyname()` - resolve hostname to IP address
 - `gethostbyaddr()` - resolve IP address to hostname  
 - `gethostbynamel()` - get list of IP addresses for hostname
+
+### Database Functions
+- **PDO MySQL** - async-compatible PDO operations
+  - `PDO::__construct()`, `PDO::prepare()`, `PDO::exec()` - non-blocking
+  - `PDOStatement::execute()`, `PDOStatement::fetch()` - async data access
+- **MySQLi** - async-compatible MySQLi operations  
+  - `mysqli_connect()`, `mysqli_query()`, `mysqli_prepare()` - non-blocking
+  - `mysqli_stmt_execute()`, `mysqli_fetch_*()` - async result fetching
 
 ### CURL Functions  
 - `curl_exec()` - execute cURL request
@@ -287,6 +308,39 @@ foreach ($urls as $i => $url) {
 
 $elapsed = microtime(true) - $start;
 echo "All requests completed in: " . round($elapsed, 3) . "s\n";
+```
+
+### Async Database Operations
+
+```php
+<?php
+
+// Concurrent database queries with PDO MySQL
+Async\spawn(function() {
+    $pdo = new PDO('mysql:host=localhost;dbname=test', $user, $pass);
+    
+    // All operations are non-blocking in async context
+    $stmt = $pdo->prepare("SELECT * FROM users WHERE active = ?");
+    $stmt->execute([1]);
+    
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        echo "User: {$row['name']}\n";
+    }
+});
+
+// MySQLi concurrent operations
+Async\spawn(function() {
+    $mysqli = new mysqli('localhost', $user, $pass, 'test');
+    
+    // Non-blocking query execution
+    $result = $mysqli->query("SELECT COUNT(*) as total FROM orders");
+    $row = $result->fetch_assoc();
+    echo "Total orders: {$row['total']}\n";
+    
+    $mysqli->close();
+});
+
+echo "Database queries started\n";
 ```
 
 ### Process Execution

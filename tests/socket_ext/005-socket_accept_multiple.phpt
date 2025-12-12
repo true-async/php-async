@@ -10,77 +10,105 @@ if (!extension_loaded('sockets')) {
 <?php
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\awaitAllOrFail;
 use function Async\delay;
 
 echo "Start\n";
 
+// Array to collect output from spawn functions
+$output = [];
+
 $port = null;
 
 // Server coroutine
-$server = spawn(function() use (&$port) {
-    echo "Server: creating socket\n";
+$server = spawn(function() use (&$port, &$output) {
+    $output[] = "Server: creating socket";
     $socket = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
     socket_set_option($socket, SOL_SOCKET, SO_REUSEADDR, 1);
     socket_bind($socket, '127.0.0.1', 0);
     socket_listen($socket, 5);
-    
+
     $addr = '';
     socket_getsockname($socket, $addr, $port);
-    echo "Server: listening on port $port\n";
-    
+    $output[] = "Server: listening on port $port";
+
     $clients = [];
-    
+
     // Accept 3 clients
     for ($i = 1; $i <= 3; $i++) {
-        echo "Server: waiting for client $i\n";
+        $output[] = "Server: waiting for client $i";
         $client = socket_accept($socket);
-        echo "Server: client $i connected\n";
+        $output[] = "Server: client $i connected";
         $clients[] = $client;
     }
-    
+
     // Send responses to all clients
     foreach ($clients as $i => $client) {
         $clientNum = $i + 1;
         socket_write($client, "Response to client $clientNum");
         socket_close($client);
     }
-    
+
     socket_close($socket);
 });
 
 // Multiple client coroutines
 $clients = [];
 for ($i = 1; $i <= 3; $i++) {
-    $clients[] = spawn(function() use (&$port, $i) {
-        while ($port === null) {
-            delay(1);
+    $clients[] = spawn(function() use (&$port, $i, &$output) {
+
+        for ($ii = 0; $ii < 3 && $port === null; $ii++) {
+            delay(10);
         }
-        
+
+        if(empty($port)) {
+            throw new Exception("Server port is not provided...");
+        }
+
         // Small delay to stagger connections
         delay($i);
-        
-        echo "Client$i: connecting\n";
+
+        $output[] = "Client$i: connecting";
         $socket = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
-        
+
         if (socket_connect($socket, '127.0.0.1', $port)) {
-            echo "Client$i: connected\n";
+            $output[] = "Client$i: connected";
             $data = socket_read($socket, 1024);
-            echo "Client$i: received '$data'\n";
+            $output[] = "Client$i: received '$data'";
         }
-        
+
         socket_close($socket);
     });
 }
 
-awaitAll(array_merge([$server], $clients));
+awaitAllOrFail(array_merge([$server], $clients));
+
+// Sort and output results
+sort($output);
+foreach ($output as $line) {
+    echo $line . "\n";
+}
+
 echo "End\n";
 
 ?>
 --EXPECTF--
 Start
+Client1: connected
+Client1: connecting
+Client1: received 'Response to client 1'
+Client2: connected
+Client2: connecting
+Client2: received 'Response to client 2'
+Client3: connected
+Client3: connecting
+Client3: received 'Response to client 3'
+Server: client 1 connected
+Server: client 2 connected
+Server: client 3 connected
 Server: creating socket
 Server: listening on port %d
 Server: waiting for client 1
-Client1: connecting
-%a
+Server: waiting for client 2
+Server: waiting for client 3
+End

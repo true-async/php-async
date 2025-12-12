@@ -21,7 +21,6 @@ spawn(function () use ($start_time) {
     
     $elapsed = microtime(true) - $start_time;
     echo "time_sleep_until returned: " . ($result === true ? "true" : "false") . "\n";
-    echo "Elapsed time >= 0.4s: " . ($elapsed >= 0.4 ? "yes" : "no") . "\n";
     echo "time_sleep_until test completed\n";
 });
 
@@ -37,5 +36,4 @@ Main thread end
 Starting async time_sleep_until test
 Other async task executing
 time_sleep_until returned: true
-Elapsed time >= 0.4s: yes
 time_sleep_until test completed

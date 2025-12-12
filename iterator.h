@@ -32,16 +32,14 @@ typedef enum
 	ASYNC_ITERATOR_FINISHED,
 } async_iterator_state_t;
 
-async_iterator_t * async_iterator_new(
-	zval *array,
-	zend_object_iterator *zend_iterator,
-	zend_fcall_t *fcall,
-	async_iterator_handler_t handler,
-	zend_async_scope_t *scope,
-	unsigned int concurrency,
-	int32_t priority,
-	size_t iterator_size
-);
+async_iterator_t *async_iterator_new(zval *array,
+									 zend_object_iterator *zend_iterator,
+									 zend_fcall_t *fcall,
+									 async_iterator_handler_t handler,
+									 zend_async_scope_t *scope,
+									 unsigned int concurrency,
+									 int32_t priority,
+									 size_t iterator_size);
 
 #define ASYNC_ITERATOR_DTOR zend_async_iterator_method_t
 
@@ -49,7 +47,8 @@ void async_iterator_run(async_iterator_t *iterator);
 void async_iterator_run_in_coroutine(async_iterator_t *iterator, int32_t priority);
 void async_iterator_apply_exception(async_iterator_t *iterator);
 
-struct _async_iterator_t {
+struct _async_iterator_t
+{
 	ZEND_ASYNC_ITERATOR_FIELDS
 	/* The current state of the iterator. See async_iterator_state_t */
 	async_iterator_state_t state;
@@ -68,4 +67,4 @@ struct _async_iterator_t {
 	zend_object_iterator *zend_iterator;
 };
 
-#endif //ITERATOR_H
+#endif // ITERATOR_H

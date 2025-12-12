@@ -19,7 +19,7 @@ $error_coroutine = $scope->spawn(function() {
 
     try {
         suspend(); // Suspend to simulate work
-    } catch (\CancellationException $e) {
+    } catch (\CancellationError $e) {
         echo "coroutine cancelled\n";
         suspend();
         throw new \RuntimeException("Coroutine error after cancellation");

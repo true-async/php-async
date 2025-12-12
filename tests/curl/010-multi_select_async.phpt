@@ -51,8 +51,6 @@ function test_curl_multi($server) {
     curl_multi_remove_handle($mh, $ch2);
     curl_multi_close($mh);
 
-    curl_close($ch1);
-    curl_close($ch2);
 
     echo "Response 1: $response1\n";
     echo "Response 2: $response2\n";

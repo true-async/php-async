@@ -1,5 +1,7 @@
 --TEST--
 Stack overflow bailout in nested async operations
+--INI--
+opcache.jit_hot_func=0
 --SKIPIF--
 <?php
 $zend_mm_enabled = getenv("USE_ZEND_ALLOC");
@@ -24,13 +26,13 @@ echo "Before spawn\n";
 
 spawn(function() {
     echo "Outer async started\n";
-    
+
     spawn(function() {
         echo "Inner async started\n";
         deepRecursion();
         echo "Inner async after stack overflow (should not reach)\n";
     });
-    
+
     echo "Outer async continues\n";
 });
 

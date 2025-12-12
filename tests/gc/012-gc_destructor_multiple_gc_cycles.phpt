@@ -91,8 +91,8 @@ Created: batch2-B
 Total destructors called: 2
 Destructor start: batch2-A (count: 3)
 Suspended in destructor: batch2-A
-Test complete
-Destructor end: batch2-A
 Destructor start: batch2-B (count: 4)
 Suspended in destructor: batch2-B
+Test complete
+Destructor end: batch2-A
 Destructor end: batch2-B

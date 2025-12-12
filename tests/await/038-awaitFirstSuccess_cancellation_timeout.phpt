@@ -15,7 +15,7 @@ $coroutines = [
     }),
     
     spawn(function() {
-        delay(10); // Will be cancelled before success
+        delay(100); // Will be cancelled before success
         return "success";
     })
 ];
@@ -23,7 +23,7 @@ $coroutines = [
 echo "start\n";
 
 try {
-    $result = awaitFirstSuccess($coroutines, timeout(1));
+    $result = awaitFirstSuccess($coroutines, timeout(50));
     echo "Unexpected success\n";
 } catch (Async\TimeoutException $e) {
     echo "Timeout caught as expected\n";

@@ -15,8 +15,7 @@ for ($i = 0; $i < 5; $i++) {
     $coroutines[] = spawn(function() use ($i) {
         $hostname = $i % 2 == 0 ? 'localhost' : '127.0.0.1';
         $ip = gethostbyname($hostname);
-        echo "Coroutine $i: $hostname -> $ip\n";
-        return $ip;
+        return ['coroutine' => $i, 'input' => $hostname, 'output' => $ip];
     });
 }
 
@@ -24,25 +23,30 @@ for ($i = 0; $i < 5; $i++) {
 for ($i = 5; $i < 8; $i++) {
     $coroutines[] = spawn(function() use ($i) {
         $hostname = gethostbyaddr('127.0.0.1');
-        echo "Coroutine $i: 127.0.0.1 -> $hostname\n";
-        return $hostname;
+        return ['coroutine' => $i, 'input' => '127.0.0.1', 'output' => $hostname];
     });
 }
 
 [$results, $exceptions] = awaitAll($coroutines);
+
+// Print results in deterministic order
+foreach ($results as $result) {
+    echo "Coroutine {$result['coroutine']}: {$result['input']} -> {$result['output']}\n";
+}
+
 echo "All DNS lookups completed\n";
 echo "Total results: " . count($results) . "\n";
 
 ?>
 --EXPECTF--
 Starting concurrent DNS lookups
-Coroutine %d: %s -> %s
-Coroutine %d: %s -> %s
-Coroutine %d: %s -> %s
-Coroutine %d: %s -> %s
-Coroutine %d: %s -> %s
-Coroutine %d: 127.0.0.1 -> %s
-Coroutine %d: 127.0.0.1 -> %s
-Coroutine %d: 127.0.0.1 -> %s
+Coroutine 0: localhost -> %s
+Coroutine 1: 127.0.0.1 -> %s
+Coroutine 2: localhost -> %s
+Coroutine 3: 127.0.0.1 -> %s
+Coroutine 4: localhost -> %s
+Coroutine 5: 127.0.0.1 -> %s
+Coroutine 6: 127.0.0.1 -> %s
+Coroutine 7: 127.0.0.1 -> %s
 All DNS lookups completed
 Total results: 8

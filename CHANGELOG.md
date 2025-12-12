@@ -5,11 +5,67 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-## [0.3.0] - TBD
+## [0.5.0] - 2025-10-31
 
 ### Added
+- **TrueAsync API**: Added `ZEND_ASYNC_SCHEDULER_LAUNCH()` macro for scheduler initialization
+
+### Changed
+- **Deadlock Detection**: Replaced warnings with structured exception handling
+  - Deadlock detection now throws `Async\DeadlockError` exception instead of multiple warnings
+  - **Breaking Change**: Applications relying on deadlock warnings
+  will need to be updated to catch `Async\DeadlockError` exceptions
+
+## [0.4.0] - 2025-09-30
+
+### Added
+- **UDP socket stream support for TrueAsync**
+- **SSL support for socket stream**
+- **Poll Proxy**: New `zend_async_poll_proxy_t` structure for optimized file descriptor management
+    - Efficient caching of event handlers to reduce EventLoop creation overhead
+    - Poll proxy event aggregation and improved lifecycle management
+
+### Fixed
+- **Fixing `ref_count` logic for the `zend_async_event_callback_t` structure**:
+    - The add/dispose methods correctly increment the counter
+    - Memory leaks fixed
+- Fixed await iterator logic for `awaitXXX` functions
+- Fixed process waiting logic for UNIX-like systems
+
+### Changed
+- **Memory Optimization**: Enhanced memory allocation for async structures
+    - Optimized waker trigger structures with improved memory layout
+    - Enhanced memory management for poll proxy events
+    - Better resource cleanup and lifecycle management
+- **Event Loop Performance**: Major scheduler optimizations
+    - **Automatic Event Cleanup**: Added automatic waker event cleanup when coroutines resume (see `ZEND_ASYNC_WAKER_CLEAN_EVENTS`)
+    - Separate queue implementation for resumed coroutines to improve stability
+    - Reduced unnecessary LibUV calls in scheduler tick processing
+- **Socket Performance**:
+    - Event handler caching for sockets to avoid constant EventLoop recreation
+    - Optimized `network_async_accept_incoming` to try `accept()` before waiting
+    - Enhanced stream_select functionality with event-driven architecture
+    - Improved blocking operation handling with boolean return values
+- **TrueAsync API Performance**: Optimized execution paths by replacing expensive `EG(exception)` checks with direct `bool` return values across all async functions
+- Upgrade `LibUV` to version `1.45` due to a timer bug that causes the application to hang
+
+## [0.3.0] - 2025-07-16
+
+### Added
+- Docker support with multi-stage build (Ubuntu 24.04, libuv 1.49, curl 8.10)
+- PDO MySQL and MySQLi async support
+- **TrueAsync API Extensions**: Enhanced async API with new object creation and coroutine grouping capabilities
+    - Added `ZEND_ASYNC_NEW_GROUP()` API for creating CoroutineGroup objects for managing multiple coroutines
+    - Added `ZEND_ASYNC_NEW_FUTURE_OBJ()` and `ZEND_ASYNC_NEW_CHANNEL_OBJ()` APIs for creating Zend objects from async primitives
+    - Extended `zend_async_task_t` structure with `run` method for thread pool task execution
+    - Enhanced `zend_async_scheduler_register()` function with new API function pointers
+- **Multiple Callbacks Per Event Support**: Complete redesign of waker trigger system to support multiple callbacks on a single event
+    - Modified `zend_async_waker_trigger_s` structure to use flexible array member with dynamic capacity
+    - Added `waker_trigger_create()` and `waker_trigger_add_callback()` helper functions for efficient memory management
+    - Implemented single-block memory allocation for better performance (trigger + callback array in one allocation)
+    - Default capacity starts at 1 and doubles as needed (1 → 2 → 4 → 8...)
+    - Fixed `coroutine_event_callback_dispose()` to remove only specific callbacks instead of entire events
+    - **Breaking Change**: Events now persist until all associated callbacks are removed
 - **Bailout Tests**: Added 15 tests covering memory exhaustion and stack overflow scenarios in async operations
 - **Garbage Collection Support**: Implemented comprehensive GC handlers for async objects
     - Added `async_coroutine_object_gc()` function to track all ZVALs in coroutine structures
@@ -30,6 +86,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Async Iterator API**:
     - Fixed iterator state management to prevent memory leaks
 - Fixed the `spawnWith()` function for interaction with the `ScopeProvider` and `SpawnStrategy` interface
+- **Build System Fixes**:
+    - Fixed macOS compilation error with missing field initializer in `uv_stdio_container_t` structure (`libuv_reactor.c:1956`)
+    - Fixed Windows build script PowerShell syntax error (missing `shell: cmd` directive)
+    - Fixed race condition issues in 10 async test files for deterministic test execution on all platforms
 
 ### Changed
 - **Breaking Change: Function Renaming** - Major API reorganization for better consistency:

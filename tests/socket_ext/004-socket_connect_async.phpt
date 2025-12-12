@@ -16,14 +16,15 @@ use function Async\delay;
 echo "Start\n";
 
 $port = null;
+$output = [];
 
 // Server coroutine
-$server = spawn(function() use (&$port) {
+$server = spawn(function() use (&$port, &$output) {
     echo "Server: creating socket\n";
     $socket = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
     socket_set_option($socket, SOL_SOCKET, SO_REUSEADDR, 1);
     socket_bind($socket, '127.0.0.1', 0);
-    socket_listen($socket);
+    socket_listen($socket, 5);
     
     $addr = '';
     socket_getsockname($socket, $addr, $port);
@@ -31,10 +32,10 @@ $server = spawn(function() use (&$port) {
     
     echo "Server: accepting connections\n";
     $client1 = socket_accept($socket);
-    echo "Server: client1 connected\n";
+    $output[] = "Server: client1 connected";
     
     $client2 = socket_accept($socket);
-    echo "Server: client2 connected\n";
+    $output[] = "Server: client2 connected";
     
     socket_write($client1, "Hello client1");
     socket_write($client2, "Hello client2");
@@ -45,45 +46,52 @@ $server = spawn(function() use (&$port) {
 });
 
 // Client coroutines
-$client1 = spawn(function() use (&$port) {
+$client1 = spawn(function() use (&$port, &$output) {
     while ($port === null) {
         delay(1);
     }
     
-    echo "Client1: connecting\n";
+    $output[] = "Client1: connecting";
     $socket = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
     
     if (socket_connect($socket, '127.0.0.1', $port)) {
-        echo "Client1: connected successfully\n";
+        $output[] = "Client1: connected successfully";
         $data = socket_read($socket, 1024);
-        echo "Client1: received '$data'\n";
+        $output[] = "Client1: received '$data'";
     } else {
-        echo "Client1: connection failed\n";
+        $output[] = "Client1: connection failed";
     }
     
     socket_close($socket);
 });
 
-$client2 = spawn(function() use (&$port) {
+$client2 = spawn(function() use (&$port, &$output) {
     while ($port === null) {
         delay(1);
     }
 
-    echo "Client2: connecting\n";
+    $output[] = "Client2: connecting";
     $socket = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
 
     if (socket_connect($socket, '127.0.0.1', $port)) {
-        echo "Client2: connected successfully\n";
+        $output[] = "Client2: connected successfully";
         $data = socket_read($socket, 1024);
-        echo "Client2: received '$data'\n";
+        $output[] = "Client2: received '$data'";
     } else {
-        echo "Client2: connection failed\n";
+        $output[] = "Client2: connection failed";
     }
     
     socket_close($socket);
 });
 
 awaitAll([$server, $client1, $client2]);
+
+// Sort output for deterministic results
+sort($output);
+foreach ($output as $message) {
+    echo $message . "\n";
+}
+
 echo "End\n";
 
 ?>
@@ -92,8 +100,12 @@ Start
 Server: creating socket
 Server: listening on port %d
 Server: accepting connections
-Client1: connecting
-Client2: connecting
-Server: client1 connected
 Client1: connected successfully
-%a
+Client1: connecting
+Client1: received 'Hello client1'
+Client2: connected successfully
+Client2: connecting
+Client2: received 'Hello client2'
+Server: client1 connected
+Server: client2 connected
+End

@@ -1,0 +1,250 @@
+name: True Async Alpine Build
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-alpine:
+    strategy:
+      fail-fast: false
+      matrix:
+        debug: [true, false]
+        zts: [true, false]
+        asan: [false, true]
+        exclude:
+          # Only run ASAN on debug+zts build to reduce test matrix
+          - asan: true
+            debug: false
+          - asan: true
+            zts: false
+
+    name: "ALPINE_X64_${{ matrix.debug && 'DEBUG' || 'RELEASE' }}_${{ matrix.zts && 'ZTS' || 'NTS' }}${{ matrix.asan && '_ASAN' || ''}}"
+    runs-on: ubuntu-22.04
+    container:
+      image: 'alpine:3.20.1'
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout php-async repo
+        uses: actions/checkout@v4
+        with:
+          path: async
+
+      - name: Clone php-src (true-async-stable)
+        run: |
+          apk add --no-cache git
+          git clone --depth=1 --branch=true-async-stable https://github.com/true-async/php-src php-src
+
+      - name: Copy php-async extension into php-src
+        run: |
+          mkdir -p php-src/ext/async
+          cp -r async/* php-src/ext/async/
+
+      - name: Install base packages
+        run: |
+          set -x
+          apk update -q
+          apk add \
+              util-linux \
+              bash \
+              sudo \
+              build-base \
+              autoconf \
+              unzip \
+              tar \
+              bison \
+              re2c \
+              pkgconf \
+              mysql-client \
+              bzip2-dev \
+              curl-dev \
+              freetype-dev \
+              gettext-dev \
+              gnu-libiconv-dev \
+              gmp-dev \
+              icu-dev \
+              icu-data-full \
+              jpeg-dev \
+              libffi-dev \
+              libpng-dev \
+              libsodium-dev \
+              libwebp-dev \
+              libxml2-dev \
+              libxpm-dev \
+              libxslt-dev \
+              libzip-dev \
+              oniguruma-dev \
+              openssl-dev \
+              readline-dev \
+              sqlite-dev \
+              tidyhtml-dev \
+              gdbm-dev \
+              lmdb-dev \
+              argon2-dev \
+              enchant2-dev \
+              freetds-dev \
+              imap-dev \
+              net-snmp-dev \
+              openldap-dev \
+              unixodbc-dev \
+              postgresql14-dev \
+              tzdata \
+              musl-locales \
+              musl-locales-lang
+
+      - name: Install LibUV and ASAN tools
+        run: |
+          # Install LibUV
+          apk add libuv-dev cmake
+          
+          # Install ASAN tools if needed
+          if [ "${{ matrix.asan }}" = "true" ]; then
+            # libclang_rt.asan-x86_64.a is provided by compiler-rt, and only for clang17
+            apk add clang17 compiler-rt
+          fi
+
+      - name: System info
+        run: |
+          echo "::group::Show host CPU info"
+          lscpu
+          echo "::endgroup::"
+          echo "::group::Show installed package versions"
+          apk list
+          echo "::endgroup::"
+          echo "::group::Show LibUV version"
+          pkg-config --modversion libuv || echo "LibUV version not available via pkg-config"
+          echo "::endgroup::"
+
+      - name: Configure PHP
+        working-directory: php-src
+        run: |
+          set -x
+          
+          # Set compiler flags based on matrix
+          CFLAGS=""
+          LDFLAGS=""
+          CC="gcc"
+          CXX="g++"
+          
+          if [ "${{ matrix.asan }}" = "true" ]; then
+            CFLAGS="-fsanitize=undefined,address -fno-sanitize=function -DZEND_TRACK_ARENA_ALLOC"
+            LDFLAGS="-fsanitize=undefined,address -fno-sanitize=function"
+            CC="clang-17"
+            CXX="clang++-17"
+          fi
+          
+          ./buildconf --force
+          
+          # Configure with async extension
+          CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS" CC="$CC" CXX="$CXX" ./configure \
+            --enable-option-checking=fatal \
+            --prefix=/usr/local \
+            --with-pdo-mysql=mysqlnd \
+            --with-mysqli=mysqlnd \
+            --with-pgsql \
+            --with-pdo-pgsql \
+            --with-pdo-sqlite \
+            --without-pear \
+            --enable-gd \
+            --with-jpeg \
+            --with-webp \
+            --with-freetype \
+            --enable-exif \
+            --with-zip \
+            --with-zlib \
+            --enable-soap \
+            --enable-xmlreader \
+            --with-xsl \
+            --with-tidy \
+            --with-libxml \
+            --enable-sysvsem \
+            --enable-sysvshm \
+            --enable-shmop \
+            --enable-pcntl \
+            --with-readline \
+            --enable-mbstring \
+            --with-curl \
+            --with-gettext \
+            --enable-sockets \
+            --with-bz2 \
+            --with-openssl \
+            --with-gmp \
+            --with-iconv \
+            --enable-bcmath \
+            --enable-calendar \
+            --enable-ftp \
+            --enable-sysvmsg \
+            --with-ffi \
+            --enable-zend-test \
+            --enable-dl-test=shared \
+            --enable-intl \
+            --with-mhash \
+            --with-sodium \
+            --enable-dba \
+            --enable-werror \
+            --with-config-file-path=/etc \
+            --with-config-file-scan-dir=/etc/php.d \
+            --${{ matrix.debug && 'enable' || 'disable' }}-debug \
+            --${{ matrix.zts && 'enable' || 'disable' }}-zts \
+            --enable-async
+
+      - name: Build PHP
+        working-directory: php-src
+        run: |
+          make -j$(nproc) >/dev/null
+
+      - name: Install PHP
+        working-directory: php-src
+        run: |
+          make install
+          mkdir -p /etc/php.d
+          {
+            echo "opcache.enable_cli=1"
+            echo "opcache.protect_memory=1"
+          } > /etc/php.d/opcache.ini
+
+      - name: Run basic tests
+        working-directory: php-src/ext/async
+        run: |
+          /usr/local/bin/php -v
+          /usr/local/bin/php ../../run-tests.php \
+            ${{ matrix.asan && '--asan' || '' }} \
+            -P -q -x -j$(nproc) \
+            -g FAIL,BORK,LEAK,XLEAK \
+            --no-progress \
+            --offline \
+            --show-diff \
+            --show-slow 4000 \
+            --set-timeout 120
+
+      - name: Test Tracing JIT
+        # Alpine supports JIT
+        working-directory: php-src/ext/async
+        run: |
+          /usr/local/bin/php ../../run-tests.php \
+            ${{ matrix.asan && '--asan' || '' }} \
+            -d opcache.enable_cli=1 \
+            -d opcache.jit_buffer_size=64M \
+            -d opcache.jit=tracing \
+            -P -q -x -j$(nproc) \
+            -g FAIL,BORK,LEAK,XLEAK \
+            --no-progress \
+            --offline \
+            --show-diff \
+            --show-slow 4000 \
+            --set-timeout 120
+
+      - name: Test OpCache
+        working-directory: php-src/ext/async
+        run: |
+          /usr/local/bin/php ../../run-tests.php \
+            ${{ matrix.asan && '--asan' || '' }} \
+            -d opcache.enable_cli=1 \
+            -P -q -x -j$(nproc) \
+            -g FAIL,BORK,LEAK,XLEAK \
+            --no-progress \
+            --offline \
+            --show-diff \
+            --show-slow 4000 \
+            --set-timeout 120

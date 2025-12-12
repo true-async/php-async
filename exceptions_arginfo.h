@@ -1,5 +1,5 @@
 /* This is a generated file, edit the .stub.php file instead.
- * Stub hash: 9bd64d6113fa23a91c46300cf51db636fea98124 */
+ * Stub hash: f06ce54277b0830aebcbd112c67238db6dca4d9b */
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_CompositeException_addException, 0, 1, IS_VOID, 0)
 	ZEND_ARG_OBJ_INFO(0, exception, Throwable, 0)
@@ -17,12 +17,12 @@ static const zend_function_entry class_Async_CompositeException_methods[] = {
 	ZEND_FE_END
 };
 
-static zend_class_entry *register_class_Async_CancellationException(zend_class_entry *class_entry_CancellationException)
+static zend_class_entry *register_class_Async_CancellationError(zend_class_entry *class_entry_Error)
 {
 	zend_class_entry ce, *class_entry;
 
-	INIT_NS_CLASS_ENTRY(ce, "Async", "CancellationException", NULL);
-	class_entry = zend_register_internal_class_with_flags(&ce, class_entry_CancellationException, 0);
+	INIT_NS_CLASS_ENTRY(ce, "Async", "CancellationError", NULL);
+	class_entry = zend_register_internal_class_with_flags(&ce, class_entry_Error, 0);
 
 	return class_entry;
 }
@@ -73,6 +73,16 @@ static zend_class_entry *register_class_Async_PollException(zend_class_entry *cl
 
 	INIT_NS_CLASS_ENTRY(ce, "Async", "PollException", NULL);
 	class_entry = zend_register_internal_class_with_flags(&ce, class_entry_Exception, 0);
+
+	return class_entry;
+}
+
+static zend_class_entry *register_class_Async_DeadlockError(zend_class_entry *class_entry_Error)
+{
+	zend_class_entry ce, *class_entry;
+
+	INIT_NS_CLASS_ENTRY(ce, "Async", "DeadlockError", NULL);
+	class_entry = zend_register_internal_class_with_flags(&ce, class_entry_Error, 0);
 
 	return class_entry;
 }

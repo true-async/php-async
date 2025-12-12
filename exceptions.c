@@ -13,6 +13,7 @@
   | Author: Edmond                                                       |
   +----------------------------------------------------------------------+
 */
+#include "php_async.h"
 #include "exceptions.h"
 
 #include <zend_API.h>
@@ -22,20 +23,21 @@
 #include "exceptions_arginfo.h"
 #include "zend_common.h"
 
-zend_class_entry * async_ce_async_exception = NULL;
-zend_class_entry * async_ce_cancellation_exception = NULL;
-zend_class_entry * async_ce_input_output_exception = NULL;
-zend_class_entry * async_ce_timeout_exception = NULL;
-zend_class_entry * async_ce_poll_exception = NULL;
-zend_class_entry * async_ce_dns_exception = NULL;
-zend_class_entry * async_ce_composite_exception = NULL;
+zend_class_entry *async_ce_async_exception = NULL;
+zend_class_entry *async_ce_cancellation_exception = NULL;
+zend_class_entry *async_ce_input_output_exception = NULL;
+zend_class_entry *async_ce_timeout_exception = NULL;
+zend_class_entry *async_ce_poll_exception = NULL;
+zend_class_entry *async_ce_dns_exception = NULL;
+zend_class_entry *async_ce_deadlock_error = NULL;
+zend_class_entry *async_ce_composite_exception = NULL;
 
 PHP_METHOD(Async_CompositeException, addException)
 {
 	zval *exception;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_OBJECT_OF_CLASS(exception, zend_ce_throwable)
+	Z_PARAM_OBJECT_OF_CLASS(exception, zend_ce_throwable)
 	ZEND_PARSE_PARAMETERS_END();
 
 	zval *object = ZEND_THIS;
@@ -48,8 +50,7 @@ PHP_METHOD(Async_CompositeException, getExceptions)
 
 	zval *object = ZEND_THIS;
 	zval *exceptions_prop = zend_read_property(
-		async_ce_composite_exception, Z_OBJ_P(object), "exceptions", sizeof("exceptions")-1, 0, NULL
-	);
+			async_ce_composite_exception, Z_OBJ_P(object), "exceptions", sizeof("exceptions") - 1, 0, NULL);
 
 	if (Z_TYPE_P(exceptions_prop) == IS_ARRAY) {
 		RETURN_ZVAL(exceptions_prop, 1, 0);
@@ -61,15 +62,16 @@ PHP_METHOD(Async_CompositeException, getExceptions)
 void async_register_exceptions_ce(void)
 {
 	async_ce_async_exception = register_class_Async_AsyncException(zend_ce_exception);
-	async_ce_cancellation_exception = register_class_Async_CancellationException(zend_ce_cancellation_exception);
+	async_ce_cancellation_exception = register_class_Async_CancellationError(zend_ce_error);
 	async_ce_input_output_exception = register_class_Async_InputOutputException(zend_ce_exception);
 	async_ce_timeout_exception = register_class_Async_TimeoutException(zend_ce_exception);
 	async_ce_poll_exception = register_class_Async_PollException(zend_ce_exception);
 	async_ce_dns_exception = register_class_Async_DnsException(zend_ce_exception);
+	async_ce_deadlock_error = register_class_Async_DeadlockError(zend_ce_error);
 	async_ce_composite_exception = register_class_Async_CompositeException(zend_ce_exception);
 }
 
-zend_object * async_new_exception(zend_class_entry *exception_ce, const char *format, ...)
+PHP_ASYNC_API zend_object *async_new_exception(zend_class_entry *exception_ce, const char *format, ...)
 {
 	zval exception, message_val;
 
@@ -77,8 +79,7 @@ zend_object * async_new_exception(zend_class_entry *exception_ce, const char *fo
 		exception_ce = zend_ce_exception;
 	}
 
-	ZEND_ASSERT(instanceof_function(exception_ce, zend_ce_throwable)
-		&& "Exceptions must implement Throwable");
+	ZEND_ASSERT(instanceof_function(exception_ce, zend_ce_throwable) && "Exceptions must implement Throwable");
 
 	object_init_ex(&exception, exception_ce);
 
@@ -97,7 +98,7 @@ zend_object * async_new_exception(zend_class_entry *exception_ce, const char *fo
 	return Z_OBJ(exception);
 }
 
-ZEND_API ZEND_COLD zend_object * async_throw_error(const char *format, ...)
+PHP_ASYNC_API ZEND_COLD zend_object *async_throw_error(const char *format, ...)
 {
 	va_list args;
 	va_start(args, format);
@@ -107,7 +108,7 @@ ZEND_API ZEND_COLD zend_object * async_throw_error(const char *format, ...)
 	zend_object *obj = NULL;
 
 	if (EXPECTED(EG(current_execute_data))) {
-		 obj = zend_throw_exception(async_ce_async_exception, ZSTR_VAL(message), 0);
+		obj = zend_throw_exception(async_ce_async_exception, ZSTR_VAL(message), 0);
 	} else {
 		obj = async_new_exception(async_ce_async_exception, ZSTR_VAL(message));
 		async_apply_exception_to_context(obj);
@@ -117,13 +118,12 @@ ZEND_API ZEND_COLD zend_object * async_throw_error(const char *format, ...)
 	return obj;
 }
 
-ZEND_API ZEND_COLD zend_object * async_throw_cancellation(const char *format, ...)
+PHP_ASYNC_API ZEND_COLD zend_object *async_throw_cancellation(const char *format, ...)
 {
 	const zend_object *previous_exception = EG(exception);
 
-	if (format == NULL
-		&& previous_exception != NULL
-		&& instanceof_function(previous_exception->ce, async_ce_cancellation_exception)) {
+	if (format == NULL && previous_exception != NULL &&
+		instanceof_function(previous_exception->ce, async_ce_cancellation_exception)) {
 		format = "The operation was canceled by timeout";
 	} else {
 		format = format ? format : "The operation was canceled";
@@ -145,7 +145,7 @@ ZEND_API ZEND_COLD zend_object * async_throw_cancellation(const char *format, ..
 	return obj;
 }
 
-ZEND_API ZEND_COLD zend_object * async_throw_input_output(const char *format, ...)
+PHP_ASYNC_API ZEND_COLD zend_object *async_throw_input_output(const char *format, ...)
 {
 	format = format ? format : "An input/output error occurred.";
 
@@ -165,7 +165,7 @@ ZEND_API ZEND_COLD zend_object * async_throw_input_output(const char *format, ..
 	return obj;
 }
 
-ZEND_API ZEND_COLD zend_object * async_throw_timeout(const char *format, const zend_long timeout)
+PHP_ASYNC_API ZEND_COLD zend_object *async_throw_timeout(const char *format, const zend_long timeout)
 {
 	format = format ? format : "A timeout of %u microseconds occurred";
 
@@ -178,7 +178,7 @@ ZEND_API ZEND_COLD zend_object * async_throw_timeout(const char *format, const z
 	}
 }
 
-ZEND_API ZEND_COLD zend_object * async_throw_poll(const char *format, ...)
+PHP_ASYNC_API ZEND_COLD zend_object *async_throw_poll(const char *format, ...)
 {
 	va_list args;
 	va_start(args, format);
@@ -196,14 +196,35 @@ ZEND_API ZEND_COLD zend_object * async_throw_poll(const char *format, ...)
 	return obj;
 }
 
-ZEND_API ZEND_COLD zend_object * async_new_composite_exception(void)
+PHP_ASYNC_API ZEND_COLD zend_object *async_throw_deadlock(const char *format, ...)
+{
+	format = format ? format : "A deadlock was detected";
+
+	va_list args;
+	va_start(args, format);
+
+	zend_object *obj = NULL;
+
+	if (EXPECTED(EG(current_execute_data))) {
+		obj = zend_throw_exception_ex(async_ce_deadlock_error, 0, format, args);
+	} else {
+		obj = async_new_exception(async_ce_deadlock_error, format, args);
+		async_apply_exception_to_context(obj);
+	}
+
+	va_end(args);
+	return obj;
+}
+
+PHP_ASYNC_API ZEND_COLD zend_object *async_new_composite_exception(void)
 {
 	zval composite;
 	object_init_ex(&composite, async_ce_composite_exception);
 	return Z_OBJ(composite);
 }
 
-ZEND_API ZEND_COLD void async_composite_exception_add_exception(zend_object *composite, zend_object *exception, bool transfer)
+PHP_ASYNC_API void
+async_composite_exception_add_exception(zend_object *composite, zend_object *exception, bool transfer)
 {
 	if (composite == NULL || exception == NULL) {
 		return;
@@ -286,10 +307,12 @@ bool async_spawn_and_throw(zend_object *exception, zend_async_scope_t *scope, in
  *
  * @return The extracted exception object with an increased reference count.
  */
-zend_object * async_extract_exception(void)
+zend_object *async_extract_exception(void)
 {
-	zend_exception_save();
-	zend_exception_restore();
+	zend_object **exception_ptr = &EG(exception);
+	zend_object **prev_exception_ptr = &EG(prev_exception);
+	zend_exception_save_fast(exception_ptr, prev_exception_ptr);
+	zend_exception_restore_fast(exception_ptr, prev_exception_ptr);
 	zend_object *exception = EG(exception);
 	GC_ADDREF(exception);
 	zend_clear_exception();
@@ -308,11 +331,11 @@ zend_object * async_extract_exception(void)
  */
 void async_apply_exception(zend_object **to_exception)
 {
-	if (UNEXPECTED(EG(exception)
-		&& false == (
-			instanceof_function(EG(exception)->ce, zend_ce_cancellation_exception)
-			|| zend_is_graceful_exit(EG(exception)) || zend_is_unwind_exit(EG(exception))
-		))) {
+	if (UNEXPECTED(
+				EG(exception) &&
+				false ==
+						(instanceof_function(EG(exception)->ce, ZEND_ASYNC_GET_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION)) ||
+						 zend_is_graceful_exit(EG(exception)) || zend_is_unwind_exit(EG(exception))))) {
 
 		zend_object *exception = async_extract_exception();
 
@@ -324,7 +347,7 @@ void async_apply_exception(zend_object **to_exception)
 	}
 }
 
-void async_rethrow_exception(zend_object *exception)
+PHP_ASYNC_API void async_rethrow_exception(zend_object *exception)
 {
 	if (EG(current_execute_data)) {
 		zend_throw_exception_internal(exception);

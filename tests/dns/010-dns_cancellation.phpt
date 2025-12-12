@@ -20,7 +20,7 @@ $coroutine = spawn(function() {
     try {
         $result = await($dns_coroutine);
         echo "DNS lookup result: $result\n";
-    } catch (Async\CancellationException $e) {
+    } catch (Async\CancellationError $e) {
         echo "DNS lookup was cancelled\n";
     } catch (Throwable $e) {
         echo "DNS lookup failed with: " . get_class($e) . "\n";

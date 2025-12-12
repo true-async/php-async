@@ -42,64 +42,78 @@ typedef struct _async_dns_addrinfo_t async_dns_addrinfo_t;
 
 typedef struct _async_exec_event_t async_exec_event_t;
 
-struct _async_poll_event_t {
+struct _async_poll_event_t
+{
 	zend_async_poll_event_t event;
 	uv_poll_t uv_handle;
+	/* Array of active proxies for correct event aggregation */
+	zend_async_poll_proxy_t **proxies;
+	uint32_t proxies_count;
+	uint32_t proxies_capacity;
 };
 
-struct _async_timer_event_t {
+struct _async_timer_event_t
+{
 	zend_async_timer_event_t event;
 	uv_timer_t uv_handle;
 };
 
-struct _async_signal_event_t {
+struct _async_signal_event_t
+{
 	zend_async_signal_event_t event;
 	// uv_signal_t removed - now using global signal management
 };
 
-struct _async_filesystem_event_t {
+struct _async_filesystem_event_t
+{
 	zend_async_filesystem_event_t event;
 	uv_fs_event_t uv_handle;
 };
 
-struct _async_dns_nameinfo_t {
+struct _async_dns_nameinfo_t
+{
 	zend_async_dns_nameinfo_t event;
 	uv_getnameinfo_t uv_handle;
 };
 
-struct _async_dns_addrinfo_t {
+struct _async_dns_addrinfo_t
+{
 	zend_async_dns_addrinfo_t event;
 	uv_getaddrinfo_t uv_handle;
 };
 
-struct _async_process_event_t {
+struct _async_process_event_t
+{
 	zend_async_process_event_t event;
 #ifdef PHP_WIN32
 	HANDLE hJob;
 #endif
 };
 
-struct _async_thread_event_t {
+struct _async_thread_event_t
+{
 	zend_async_thread_event_t event;
 	uv_thread_t uv_handle;
 };
 
-struct _async_exec_event_t {
+struct _async_exec_event_t
+{
 	zend_async_exec_event_t event;
-	uv_process_t * process;
-	uv_pipe_t * stdout_pipe;
-	uv_pipe_t * stderr_pipe;
+	uv_process_t *process;
+	uv_pipe_t *stdout_pipe;
+	uv_pipe_t *stderr_pipe;
 	uv_process_options_t options;
 #ifdef PHP_WIN32
-	char * quoted_cmd;
+	char *quoted_cmd;
 #endif
 };
 
-struct _async_trigger_event_t {
+struct _async_trigger_event_t
+{
 	zend_async_trigger_event_t event;
 	uv_async_t uv_handle;
 };
 
 void async_libuv_reactor_register(void);
 
-#endif //LIBUV_REACTOR_H
+#endif // LIBUV_REACTOR_H

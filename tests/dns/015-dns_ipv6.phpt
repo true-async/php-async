@@ -2,6 +2,9 @@
 DNS IPv6 resolution in async context
 --SKIPIF--
 <?php
+if (getenv("CI_NO_IPV6")) {
+    die('skip IPv6 tests disabled in CI environment');
+}
 if (!defined('AF_INET6')) {
     die('skip IPv6 not supported');
 }

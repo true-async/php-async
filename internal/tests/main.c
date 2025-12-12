@@ -26,7 +26,8 @@
 
 #include "circular_buffer_test.h"
 
-int main() {
+int main()
+{
 	circular_buffer_run();
 	printf("All tests passed!\n");
 	return 0;

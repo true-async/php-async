@@ -1,5 +1,5 @@
 /* This is a generated file, edit the .stub.php file instead.
- * Stub hash: 655728a28912cc420f1fe0ae483291cff8153fdc */
+ * Stub hash: a93e0b70e865dea520f8d9d22e73b6640e1c0ebc */
 
 ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_class_Async_ScopeProvider_provideScope, 0, 0, Async\\Scope, 1)
 ZEND_END_ARG_INFO()
@@ -32,7 +32,7 @@ ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_class_Async_Scope_spawn, 0, 1, As
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_Scope_cancel, 0, 0, IS_VOID, 0)
-	ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, cancellationException, Async\\CancellationException, 1, "null")
+	ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, cancellationError, Async\\CancellationError, 1, "null")
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_Scope_awaitCompletion, 0, 1, IS_VOID, 0)

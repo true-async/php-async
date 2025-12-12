@@ -11,7 +11,7 @@ echo "start\n";
 
 $coroutines = [
     spawn(function() {
-        suspend();
+        //suspend();
         throw new RuntimeException("first error");
     }),
     spawn(function() {

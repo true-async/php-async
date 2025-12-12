@@ -1,0 +1,96 @@
+# PHP Clang-Format Configuration
+# Based on WebKit style with PHP coding standards compliance
+# References: PHP CODING_STANDARDS.md, K&R style, Linux Kernel standards
+
+# Core formatting foundation
+BasedOnStyle: WebKit                   # K&R style foundation (PHP standard requirement)
+SortIncludes: 'false'                  # Preserve PHP include organization structure
+ColumnLimit: 120                       # Reasonable line length for readability
+IndentWidth: 4                         # PHP standard: 4-space indentation
+TabWidth: 4                            # PHP standard: tabs represent 4 spaces
+ContinuationIndentWidth: 8             # Double indentation for line continuations
+UseTab: ForContinuationAndIndentation  # PHP standard: use tabs for indentation
+
+# Pointer and alignment settings
+PointerAlignment: Right                 # Common C convention: int *ptr (not int* ptr)
+IndentCaseLabels: true                 # Standard practice for switch statements
+AlignConsecutiveAssignments: false     # Avoid artificial alignment per PHP standards
+AlignEscapedNewlines: DontAlign        # Natural positioning of escaped newlines
+AllowShortFunctionsOnASingleLine: false # PHP standard: always use braces and proper formatting
+SpaceAfterCStyleCast: true             # Standard C practice: (int) value
+AlignOperands: false                   # Natural operator positioning
+
+# Brace placement - K&R style compliance (PHP CODING_STANDARDS.md)
+BraceWrapping:
+  AfterFunction: true                   # K&R: function braces on new line
+  AfterClass: true                     # Consistent with function style
+  AfterStruct: true                    # C standard practice
+  AfterUnion: true                     # C standard practice
+  AfterEnum: true                      # C standard practice
+  AfterControlStatement: Never         # K&R: if/for/while braces on same line
+  BeforeElse: false                    # K&R: } else { pattern
+  IndentBraces: false                  # Braces at same level as statement
+BreakBeforeBraces: Custom              # Enable custom brace wrapping
+
+# Spacing and whitespace (PHP standards compliance)
+SpaceBeforeParens: ControlStatements   # Space before if/for/while parentheses
+InsertTrailingCommas: None             # Clean, minimal comma usage
+MaxEmptyLinesToKeep: 2                 # PHP standard: generous whitespace between functions
+KeepEmptyLinesAtTheStartOfBlocks: true # PHP standard: empty line after variable declarations
+
+# Short statement prevention (PHP standard: "always use braces")
+AllowShortIfStatementsOnASingleLine: Never  # PHP requirement: always use braces
+AllowShortLoopsOnASingleLine: false         # PHP requirement: always use braces
+AllowShortBlocksOnASingleLine: Never        # PHP requirement: always use braces
+
+# Basic spacing rules
+SpaceInEmptyParentheses: false         # Clean: func() not func( )
+SpaceBeforeAssignmentOperators: true   # Standard: a = b not a=b
+SpaceBeforeSquareBrackets: false       # Clean: array[0] not array [0]
+
+# Preprocessor handling (PHP standard compliance)
+IndentPPDirectives: None               # Keep #include at column 1, manual indentation for conditionals only
+
+# Advanced formatting for code quality (based on Linux Kernel and GNU standards)
+AlignAfterOpenBracket: Align           # GNU standard: align function arguments nicely
+AlignConsecutiveDeclarations: false    # Avoid artificial alignment (PHP philosophy)
+AlignConsecutiveMacros: false          # Natural macro positioning
+AlignTrailingComments: true            # Linux Kernel practice: align end-of-line comments
+BinPackArguments: false                # Google/GNU standard: one argument per line for clarity
+BinPackParameters: false               # Google/GNU standard: one parameter per line for clarity
+
+# Line breaking preferences
+BreakBeforeBinaryOperators: None       # Standard practice: operators at end of line
+BreakBeforeTernaryOperators: true      # Better readability for ternary expressions
+BreakStringLiterals: true              # MISRA-C compliance: break long string literals
+CompactNamespaces: false               # Not applicable to C, but consistent spacing
+FixNamespaceComments: false            # Not applicable to C
+IncludeBlocks: Preserve                # Maintain PHP's careful include organization
+
+# Line breaking penalties (optimization for readability)
+PenaltyBreakAssignment: 2              # Slight penalty for breaking assignments
+PenaltyBreakBeforeFirstCallParameter: 19 # Prefer keeping first parameter on same line
+PenaltyBreakComment: 300               # High penalty for breaking comments
+PenaltyBreakFirstLessLess: 120         # Stream operator handling
+PenaltyBreakString: 1000               # High penalty for string breaks
+PenaltyExcessCharacter: 1000000        # Very high penalty for exceeding column limit
+PenaltyReturnTypeOnItsOwnLine: 60      # Moderate penalty for return type breaks
+
+# Comment and documentation handling
+ReflowComments: true                   # GNU standard: reformat comments for consistency
+SeparateDefinitionBlocks: Always       # PHP standard: empty lines between functions
+SortUsingDeclarations: false           # Preserve manual include ordering
+
+# Detailed spacing control (MISRA-C and industry best practices)
+SpaceAfterLogicalNot: false            # Standard: !condition not ! condition
+SpaceAroundPointerQualifiers: Default  # Standard C pointer qualifier spacing
+SpaceBeforeCpp11BracedList: false      # Clean braced list formatting
+SpaceBeforeRangeBasedForLoopColon: true # Readability in range-based loops
+SpaceInEmptyBlock: false               # Clean empty blocks: {} not { }
+SpacesBeforeTrailingComments: 1        # Standard: single space before comment
+SpacesInAngles: false                  # Clean template/generic syntax
+SpacesInConditionalStatement: false    # Clean: if (condition) not if ( condition )
+SpacesInContainerLiterals: false       # Clean array/container literals
+SpacesInCStyleCastParentheses: false   # Clean: (int)value not ( int )value
+SpacesInParentheses: false             # Clean: func(arg) not func( arg )
+SpacesInSquareBrackets: false          # Clean: array[0] not array[ 0 ]

@@ -1,17 +1,17 @@
 --TEST--
-Coroutine: cancel() - basic usage with CancellationException
+Coroutine: cancel() - basic usage with CancellationError
 --FILE--
 <?php
 
 use function Async\spawn;
 use function Async\await;
-use Async\CancellationException;
+use Async\CancellationError;
 
 $coroutine = spawn(function() {
     return "should not complete";
 });
 
-$cancellation = new CancellationException("test cancellation");
+$cancellation = new CancellationError("test cancellation");
 $coroutine->cancel($cancellation);
 
 var_dump($coroutine->isCancellationRequested());
@@ -19,7 +19,7 @@ var_dump($coroutine->isCancelled());
 
 try {
     await($coroutine);
-} catch (CancellationException $e) {
+} catch (CancellationError $e) {
     echo "Caught: " . $e->getMessage() . "\n";
 }
 

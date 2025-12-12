@@ -53,7 +53,7 @@ final class Scope implements ScopeProvider
 
     public function spawn(\Closure $callable, mixed ...$params): Coroutine {}
 
-    public function cancel(?CancellationException $cancellationException = null): void {}
+    public function cancel(?CancellationError $cancellationError = null): void {}
 
     public function awaitCompletion(Awaitable $cancellation): void {}
 

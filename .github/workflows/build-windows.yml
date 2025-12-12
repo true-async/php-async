@@ -1,0 +1,80 @@
+name: True Async Windows Build
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  WINDOWS:
+    name: WINDOWS_X64_ZTS
+    runs-on: windows-2022
+    timeout-minutes: 50
+    env:
+      PHP_BUILD_CACHE_BASE_DIR: C:\build-cache
+      PHP_BUILD_OBJ_DIR: C:\obj
+      PHP_BUILD_CACHE_SDK_DIR: C:\build-cache\sdk
+      PHP_BUILD_SDK_BRANCH: php-sdk-2.3.0
+      PHP_BUILD_CRT: vs17
+      PLATFORM: x64
+      THREAD_SAFE: "1"
+      INTRINSICS: AVX2
+      PARALLEL: -j2
+      OPCACHE: "1"
+    steps:
+      - name: git config
+        run: git config --global core.autocrlf false && git config --global core.eol lf
+
+      - name: Checkout php-src to root
+        uses: actions/checkout@v4
+        with:
+          repository: true-async/php-src
+          ref: true-async-stable
+
+      - name: Checkout async extension
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          path: async
+
+      - name: Copy async extension to ext/async
+        shell: cmd
+        run: |
+          if not exist ext\async mkdir ext\async
+          xcopy /E /I /H /Y async ext\async
+
+      - name: Replace all modified GitHub Actions files
+        shell: cmd
+        run: |
+          xcopy /E /I /H /Y async\.github .github
+
+      - name: Setup LibUV
+        shell: powershell
+        run: |
+          if (!(Test-Path "C:\vcpkg")) {
+            git clone https://github.com/Microsoft/vcpkg.git C:\vcpkg
+            C:\vcpkg\bootstrap-vcpkg.bat
+          }
+          C:\vcpkg\vcpkg.exe install libuv:x64-windows
+
+      - name: Setup
+        uses: ./.github/actions/setup-windows
+
+      - name: Build
+        run: .github/scripts/windows/build.bat
+
+      - name: Test
+        run: .github/scripts/windows/test.bat
+
+      - name: Publish built PHP
+        run: .github/scripts/windows/publish.bat
+
+      - name: Archive built PHP
+        shell: powershell
+        run: |
+          Compress-Archive -Path "C:\php-release\*" -DestinationPath php-windows.zip
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: true-async-php-windows
+          path: php-windows.zip

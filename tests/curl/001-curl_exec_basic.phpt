@@ -32,7 +32,6 @@ function test_basic_get($server) {
     $total_time = curl_getinfo($ch, CURLINFO_TOTAL_TIME);
     $error = curl_error($ch);
     
-    curl_close($ch);
     
     $duration = round(($end_time - $start_time) * 1000, 2);
     
@@ -65,7 +64,6 @@ function test_json_endpoint($server) {
     $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $content_type = curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
     
-    curl_close($ch);
     
     echo "JSON HTTP Code: $http_code\n";
     echo "JSON Content-Type: $content_type\n";
@@ -92,7 +90,6 @@ function test_error_handling($server) {
     $response = curl_exec($ch);
     $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     
-    curl_close($ch);
     
     echo "Error HTTP Code: $http_code\n";
     echo "Error Response: $response\n";

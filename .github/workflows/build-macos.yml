@@ -1,0 +1,201 @@
+name: True Async macOS Build
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        debug: [true, false]
+        zts: [true, false]
+        os: ['13', '14'] # macOS 13 (Intel) and 14 (ARM64)
+    
+    name: "MACOS_${{ matrix.os == '13' && 'X64' || 'ARM64' }}_${{ matrix.debug && 'DEBUG' || 'RELEASE' }}_${{ matrix.zts && 'ZTS' || 'NTS' }}"
+    runs-on: macos-${{ matrix.os }}
+
+    steps:
+      - name: Checkout php-async repo
+        uses: actions/checkout@v4
+        with:
+          path: async
+
+      - name: Clone php-src (true-async-stable)
+        run: |
+          git clone --depth=1 --branch=true-async-stable https://github.com/true-async/php-src php-src
+
+      - name: Copy php-async extension into php-src
+        run: |
+          mkdir -p php-src/ext/async
+          cp -r async/* php-src/ext/async/
+
+      - name: Install build dependencies via Homebrew
+        run: |
+          set -x
+          
+          # Patch brew to overwrite always
+          formula_installer="$(brew --repo)"/Library/Homebrew/formula_installer.rb
+          code=" keg.link\(verbose: verbose\?"
+          sudo sed -Ei '' "s/$code.*/$code, overwrite: true\)/" "$formula_installer"
+
+          # Install LibUV (usually recent on Homebrew)
+          # Ensure no conflicts with cmake from pinned/local tap
+          brew uninstall --ignore-dependencies cmake || true
+
+          # Install standard PHP dependencies
+          brew reinstall autoconf webp tidy-html5 libzip libsodium icu4c curl
+          brew install \
+            bison \
+            re2c
+          brew install \
+            bzip2 \
+            enchant \
+            libffi \
+            intltool \
+            libiconv \
+            t1lib \
+            libxml2 \
+            libjpeg \
+            libxslt
+
+      - name: Configure PHP
+        working-directory: php-src
+        run: |
+          set -x
+          BREW_OPT="$(brew --prefix)"/opt
+          export PATH="$BREW_OPT/bison/bin:$PATH"
+          export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$BREW_OPT/openssl@1.1/lib/pkgconfig"
+          export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$BREW_OPT/curl/lib/pkgconfig"
+          export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$BREW_OPT/libffi/lib/pkgconfig"
+          export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$BREW_OPT/libxml2/lib/pkgconfig"
+          export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$BREW_OPT/libxslt/lib/pkgconfig"
+          export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$BREW_OPT/zlib/lib/pkgconfig"
+          export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$BREW_OPT/icu4c/lib/pkgconfig"
+          sed -i -e 's/Requires.private:.*//g' "$BREW_OPT/curl/lib/pkgconfig/libcurl.pc"
+          
+          ./buildconf --force
+          ./configure \
+            --enable-option-checking=fatal \
+            --prefix=/usr/local \
+            --enable-fpm \
+            --with-pdo-mysql=mysqlnd \
+            --with-mysqli=mysqlnd \
+            --with-pgsql="$BREW_OPT"/libpq \
+            --with-pdo-pgsql="$BREW_OPT"/libpq \
+            --with-pdo-sqlite \
+            --without-pear \
+            --enable-gd \
+            --with-jpeg \
+            --with-webp \
+            --with-freetype \
+            --enable-exif \
+            --with-zip \
+            --with-zlib \
+            --enable-soap \
+            --enable-xmlreader \
+            --with-xsl \
+            --with-tidy="$BREW_OPT"/tidy-html5 \
+            --with-libxml \
+            --enable-sysvsem \
+            --enable-sysvshm \
+            --enable-shmop \
+            --enable-pcntl \
+            --with-readline="$BREW_OPT"/readline \
+            --enable-mbstring \
+            --with-curl \
+            --with-gettext="$BREW_OPT"/gettext \
+            --enable-sockets \
+            --with-bz2="$BREW_OPT"/bzip2 \
+            --with-openssl \
+            --with-gmp="$BREW_OPT"/gmp \
+            --with-iconv="$BREW_OPT"/libiconv \
+            --enable-bcmath \
+            --enable-calendar \
+            --enable-ftp \
+            --enable-sysvmsg \
+            --with-ffi \
+            --enable-zend-test \
+            --enable-dl-test=shared \
+            --enable-intl \
+            --with-mhash \
+            --with-sodium \
+            --enable-dba \
+            --enable-werror \
+            --with-config-file-path=/etc \
+            --with-config-file-scan-dir=/etc/php.d \
+            --${{ matrix.debug && 'enable' || 'disable' }}-debug \
+            --${{ matrix.zts && 'enable' || 'disable' }}-zts \
+            --enable-async
+
+      - name: Build PHP
+        run: |-
+          export PATH="$(brew --prefix)/opt/bison/bin:$PATH"
+          cd php-src
+          make -j$(sysctl -n hw.logicalcpu) >/dev/null
+
+      - name: Install PHP
+        run: |
+          cd php-src
+          sudo make install
+
+      - name: Run basic tests
+        working-directory: php-src/ext/async
+        run: |
+          /usr/local/bin/php -v
+          /usr/local/bin/php ../../run-tests.php \
+            -P -q -x -j$(sysctl -n hw.logicalcpu) \
+            -g FAIL,BORK,LEAK,XLEAK \
+            --no-progress \
+            --offline \
+            --show-diff \
+            --show-slow 4000 \
+            --set-timeout 120
+
+      - name: Test Tracing JIT
+        # Skip JIT on ARM64 + ZTS due to known issues
+        if: matrix.os != '14' || !matrix.zts
+        working-directory: php-src/ext/async
+        run: |
+          /usr/local/bin/php ../../run-tests.php \
+            -d opcache.enable_cli=1 \
+            -d opcache.jit_buffer_size=64M \
+            -d opcache.jit=tracing \
+            -P -q -x -j$(sysctl -n hw.logicalcpu) \
+            -g FAIL,BORK,LEAK,XLEAK \
+            --no-progress \
+            --offline \
+            --show-diff \
+            --show-slow 4000 \
+            --set-timeout 120
+
+      - name: Test OpCache
+        working-directory: php-src/ext/async
+        run: |
+          /usr/local/bin/php ../../run-tests.php \
+            -d opcache.enable_cli=1 \
+            -P -q -x -j$(sysctl -n hw.logicalcpu) \
+            -g FAIL,BORK,LEAK,XLEAK \
+            --no-progress \
+            --offline \
+            --show-diff \
+            --show-slow 4000 \
+            --set-timeout 120
+
+      - name: Test Function JIT
+        # Skip JIT on ARM64 + ZTS due to known issues
+        if: matrix.os != '14' || !matrix.zts
+        working-directory: php-src/ext/async
+        run: |
+          /usr/local/bin/php ../../run-tests.php \
+            -d opcache.enable_cli=1 \
+            -d opcache.jit_buffer_size=64M \
+            -d opcache.jit=function \
+            -P -q -x -j$(sysctl -n hw.logicalcpu) \
+            -g FAIL,BORK,LEAK,XLEAK \
+            --no-progress \
+            --offline \
+            --show-diff \
+            --show-slow 4000 \
+            --set-timeout 120

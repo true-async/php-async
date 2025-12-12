@@ -28,11 +28,10 @@ echo "coroutines spawned\n";
 
 // Trigger graceful shutdown with custom cancellation
 try {
-    $cancellation = new \Async\CancellationException("Custom shutdown message");
-    gracefulShutdown($cancellation);
+    $cancellation = new \Async\CancellationError("Custom shutdown message");
     awaitAll([$error_coroutine, $cleanup_coroutine]);
     echo "graceful shutdown with custom cancellation completed\n";
-} catch (\Async\CancellationException $e) {
+} catch (\Async\CancellationError $e) {
     echo "caught shutdown cancellation: " . $e->getMessage() . "\n";
 } catch (Throwable $e) {
     echo "caught shutdown exception: " . get_class($e) . ": " . $e->getMessage() . "\n";

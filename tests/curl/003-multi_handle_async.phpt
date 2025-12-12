@@ -57,9 +57,6 @@ function test_multi_handle($server) {
     curl_multi_remove_handle($mh, $ch3);
     curl_multi_close($mh);
     
-    curl_close($ch1);
-    curl_close($ch2);
-    curl_close($ch3);
     
     echo "Response 1: $response1\n";
     echo "Response 2: $response2\n";

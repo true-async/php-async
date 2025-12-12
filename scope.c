@@ -24,14 +24,13 @@
 
 #define METHOD(name) PHP_METHOD(Async_Scope, name)
 
-zend_class_entry * async_ce_scope = NULL;
-zend_class_entry * async_ce_scope_provider = NULL;
-zend_class_entry * async_ce_spawn_strategy = NULL;
+zend_class_entry *async_ce_scope = NULL;
+zend_class_entry *async_ce_scope_provider = NULL;
+zend_class_entry *async_ce_spawn_strategy = NULL;
 
 static zend_object_handlers async_scope_handlers;
 
-static zend_always_inline void
-async_scope_add_coroutine(async_scope_t *scope, async_coroutine_t *coroutine)
+static zend_always_inline void async_scope_add_coroutine(async_scope_t *scope, async_coroutine_t *coroutine)
 {
 	async_coroutines_vector_t *vector = &scope->coroutines;
 
@@ -56,8 +55,7 @@ async_scope_add_coroutine(async_scope_t *scope, async_coroutine_t *coroutine)
 	}
 }
 
-static zend_always_inline void
-async_scope_remove_coroutine(async_scope_t *scope, async_coroutine_t *coroutine)
+static zend_always_inline void async_scope_remove_coroutine(async_scope_t *scope, async_coroutine_t *coroutine)
 {
 	async_coroutines_vector_t *vector = &scope->coroutines;
 	for (uint32_t i = 0; i < vector->length; ++i) {
@@ -75,8 +73,7 @@ async_scope_remove_coroutine(async_scope_t *scope, async_coroutine_t *coroutine)
 	}
 }
 
-static zend_always_inline void
-async_scope_free_coroutines(async_scope_t *scope)
+static zend_always_inline void async_scope_free_coroutines(async_scope_t *scope)
 {
 	async_coroutines_vector_t *vector = &scope->coroutines;
 
@@ -93,9 +90,10 @@ async_scope_free_coroutines(async_scope_t *scope)
 /// Scope methods
 //////////////////////////////////////////////////////////
 
-static void callback_resolve_when_zombie_completed(
-	zend_async_event_t *event, zend_async_event_callback_t *callback, void * result, zend_object *exception
-);
+static void callback_resolve_when_zombie_completed(zend_async_event_t *event,
+												   zend_async_event_callback_t *callback,
+												   void *result,
+												   zend_object *exception);
 
 static bool scope_can_be_disposed(async_scope_t *scope, bool with_zombies, bool check_zend_objects);
 static void scope_check_completion_and_notify(async_scope_t *scope, bool with_zombies);
@@ -104,7 +102,8 @@ static void scope_check_completion_and_notify(async_scope_t *scope, bool with_zo
 static bool async_scope_call_finally_handlers(async_scope_t *scope);
 
 // Structure for scope finally handlers context
-typedef struct {
+typedef struct
+{
 	async_scope_t *scope;
 	zend_object *composite_exception;
 } scope_finally_handlers_context_t;
@@ -114,28 +113,33 @@ typedef struct {
 #define SCOPE_CAN_BE_DISPOSED(scope) scope_can_be_disposed(scope, true, true)
 
 // Event method forward declarations
-static void scope_event_start(zend_async_event_t *event);
-static void scope_event_stop(zend_async_event_t *event);
-static void scope_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback);
-static void scope_del_callback(zend_async_event_t *event, zend_async_event_callback_t *callback);
-static bool scope_replay(zend_async_event_t *event, zend_async_event_callback_t *callback, zval *result, zend_object **exception);
-static zend_string* scope_info(zend_async_event_t *event);
+static bool scope_event_start(zend_async_event_t *event);
+static bool scope_event_stop(zend_async_event_t *event);
+static bool scope_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback);
+static bool scope_del_callback(zend_async_event_t *event, zend_async_event_callback_t *callback);
+static bool
+scope_replay(zend_async_event_t *event, zend_async_event_callback_t *callback, zval *result, zend_object **exception);
+static zend_string *scope_info(zend_async_event_t *event);
+static bool scope_dispose(zend_async_event_t *scope_event);
 
-#define THROW_IF_SCHEDULER_CONTEXT if (UNEXPECTED(ZEND_ASYNC_IS_SCHEDULER_CONTEXT)) {		\
-		async_throw_error("The operation cannot be executed in the scheduler context");		\
-		RETURN_THROWS();																	\
+#define THROW_IF_SCHEDULER_CONTEXT \
+	if (UNEXPECTED(ZEND_ASYNC_IS_SCHEDULER_CONTEXT)) { \
+		async_throw_error("The operation cannot be executed in the scheduler context"); \
+		RETURN_THROWS(); \
 	}
 
-#define THROW_IF_ASYNC_OFF if (UNEXPECTED(ZEND_ASYNC_OFF)) {								\
-		async_throw_error("The operation cannot be executed while async is off");			\
-		RETURN_THROWS();																	\
+#define THROW_IF_ASYNC_OFF \
+	if (UNEXPECTED(ZEND_ASYNC_OFF)) { \
+		async_throw_error("The operation cannot be executed while async is off"); \
+		RETURN_THROWS(); \
 	}
 
-#define SCHEDULER_LAUNCH if (UNEXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == NULL)) {		\
-		async_scheduler_launch();														\
-		if (UNEXPECTED(EG(exception) != NULL)) {										\
-			RETURN_THROWS();															\
-		}																				\
+#define SCHEDULER_LAUNCH \
+	if (UNEXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == NULL)) { \
+		async_scheduler_launch(); \
+		if (UNEXPECTED(EG(exception) != NULL)) { \
+			RETURN_THROWS(); \
+		} \
 	}
 
 #define THIS_SCOPE ((async_scope_object_t *) Z_OBJ_P(ZEND_THIS))
@@ -145,8 +149,8 @@ METHOD(inherit)
 	zend_object *parent_scope_obj = NULL;
 
 	ZEND_PARSE_PARAMETERS_START(0, 1)
-		Z_PARAM_OPTIONAL
-		Z_PARAM_OBJ_OF_CLASS_OR_NULL(parent_scope_obj, async_ce_scope)
+	Z_PARAM_OPTIONAL
+	Z_PARAM_OBJ_OF_CLASS_OR_NULL(parent_scope_obj, async_ce_scope)
 	ZEND_PARSE_PARAMETERS_END();
 
 	zend_async_scope_t *base_parent_scope = NULL;
@@ -216,8 +220,8 @@ METHOD(spawn)
 	zend_fcall_info_cache fcc;
 
 	ZEND_PARSE_PARAMETERS_START(1, -1)
-		Z_PARAM_FUNC(fci, fcc);
-		Z_PARAM_VARIADIC_WITH_NAMED(args, args_count, named_args);
+	Z_PARAM_FUNC(fci, fcc);
+	Z_PARAM_VARIADIC_WITH_NAMED(args, args_count, named_args);
 	ZEND_PARSE_PARAMETERS_END();
 
 	async_scope_object_t *scope_object = THIS_SCOPE;
@@ -247,8 +251,8 @@ METHOD(cancel)
 	zend_object *cancellation = NULL;
 
 	ZEND_PARSE_PARAMETERS_START(0, 1)
-		Z_PARAM_OPTIONAL
-		Z_PARAM_OBJ_OR_NULL(cancellation)
+	Z_PARAM_OPTIONAL
+	Z_PARAM_OBJ_OR_NULL(cancellation)
 	ZEND_PARSE_PARAMETERS_END();
 
 	async_scope_object_t *scope_object = THIS_SCOPE;
@@ -256,7 +260,7 @@ METHOD(cancel)
 		return;
 	}
 
-	zend_async_scope_t * scope = &scope_object->scope->scope;
+	zend_async_scope_t *scope = &scope_object->scope->scope;
 
 	ZEND_ASYNC_SCOPE_CANCEL(scope, cancellation, false, ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(scope));
 }
@@ -266,7 +270,7 @@ METHOD(awaitCompletion)
 	zend_object *cancellation_obj;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_OBJ_OF_CLASS(cancellation_obj, async_ce_awaitable)
+	Z_PARAM_OBJ_OF_CLASS(cancellation_obj, async_ce_awaitable)
 	ZEND_PARSE_PARAMETERS_END();
 
 	zend_coroutine_t *current_coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
@@ -290,7 +294,8 @@ METHOD(awaitCompletion)
 
 	// Check for deadlock: current coroutine belongs to this scope or its children
 	if (async_scope_contains_coroutine(scope_object->scope, current_coroutine, 0)) {
-		async_throw_error("Cannot await completion of scope from a coroutine that belongs to the same scope or its children");
+		async_throw_error(
+				"Cannot await completion of scope from a coroutine that belongs to the same scope or its children");
 		RETURN_THROWS();
 	}
 	if (UNEXPECTED(EG(exception))) {
@@ -308,39 +313,36 @@ METHOD(awaitCompletion)
 	}
 
 	zend_async_resume_when(
-		current_coroutine, &scope_object->scope->scope.event, false, zend_async_waker_callback_resolve, NULL
-	);
+			current_coroutine, &scope_object->scope->scope.event, false, zend_async_waker_callback_resolve, NULL);
 	if (UNEXPECTED(EG(exception))) {
-		zend_async_waker_destroy(current_coroutine);
+		zend_async_waker_clean(current_coroutine);
 		RETURN_THROWS();
 	}
 
-	zend_async_resume_when(
-		current_coroutine,
-		ZEND_ASYNC_OBJECT_TO_EVENT(cancellation_obj),
-		false,
-		zend_async_waker_callback_cancel,
-		NULL
-	);
+	zend_async_resume_when(current_coroutine,
+						   ZEND_ASYNC_OBJECT_TO_EVENT(cancellation_obj),
+						   false,
+						   zend_async_waker_callback_cancel,
+						   NULL);
 	if (UNEXPECTED(EG(exception))) {
-		zend_async_waker_destroy(current_coroutine);
+		zend_async_waker_clean(current_coroutine);
 		RETURN_THROWS();
 	}
 
 	ZEND_ASYNC_SUSPEND();
-	zend_async_waker_destroy(current_coroutine);
+	zend_async_waker_clean(current_coroutine);
 }
 
 METHOD(awaitAfterCancellation)
 {
-	zend_fcall_info error_handler_fci = {0};
-	zend_fcall_info_cache error_handler_fcc = {0};
+	zend_fcall_info error_handler_fci = { 0 };
+	zend_fcall_info_cache error_handler_fcc = { 0 };
 	zend_object *cancellation_obj = NULL;
 
 	ZEND_PARSE_PARAMETERS_START(0, 2)
-		Z_PARAM_OPTIONAL
-		Z_PARAM_FUNC_OR_NULL(error_handler_fci, error_handler_fcc)
-		Z_PARAM_OBJ_OR_NULL(cancellation_obj)
+	Z_PARAM_OPTIONAL
+	Z_PARAM_FUNC_OR_NULL(error_handler_fci, error_handler_fcc)
+	Z_PARAM_OBJ_OR_NULL(cancellation_obj)
 	ZEND_PARSE_PARAMETERS_END();
 
 	zend_coroutine_t *current_coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
@@ -359,7 +361,8 @@ METHOD(awaitAfterCancellation)
 
 	// Check for deadlock: current coroutine belongs to this scope or its children
 	if (async_scope_contains_coroutine(scope_object->scope, current_coroutine, 0)) {
-		async_throw_error("Cannot await completion of scope from a coroutine that belongs to the same scope or its children");
+		async_throw_error(
+				"Cannot await completion of scope from a coroutine that belongs to the same scope or its children");
 		RETURN_THROWS();
 	}
 	if (UNEXPECTED(EG(exception))) {
@@ -378,10 +381,9 @@ METHOD(awaitAfterCancellation)
 
 	// We need to create a custom callback to handle errors coming from coroutines.
 	scope_coroutine_callback_t *scope_callback = (scope_coroutine_callback_t *) zend_async_coroutine_callback_new(
-		current_coroutine, callback_resolve_when_zombie_completed, sizeof(scope_coroutine_callback_t)
-	);
+			current_coroutine, callback_resolve_when_zombie_completed, sizeof(scope_coroutine_callback_t));
 	if (UNEXPECTED(scope_callback == NULL)) {
-		zend_async_waker_destroy(current_coroutine);
+		zend_async_waker_clean(current_coroutine);
 		RETURN_THROWS();
 	}
 
@@ -393,30 +395,26 @@ METHOD(awaitAfterCancellation)
 		scope_callback->error_fci_cache = NULL;
 	}
 
-	zend_async_resume_when(
-		current_coroutine, &scope_object->scope->scope.event, true, NULL, &scope_callback->callback
-	);
+	zend_async_resume_when(current_coroutine, &scope_object->scope->scope.event, true, NULL, &scope_callback->callback);
 	if (UNEXPECTED(EG(exception))) {
-		zend_async_waker_destroy(current_coroutine);
+		zend_async_waker_clean(current_coroutine);
 		RETURN_THROWS();
 	}
 
 	if (cancellation_obj != NULL) {
-		zend_async_resume_when(
-			current_coroutine,
-			ZEND_ASYNC_OBJECT_TO_EVENT(cancellation_obj),
-			false,
-			zend_async_waker_callback_cancel,
-			NULL
-		);
+		zend_async_resume_when(current_coroutine,
+							   ZEND_ASYNC_OBJECT_TO_EVENT(cancellation_obj),
+							   false,
+							   zend_async_waker_callback_cancel,
+							   NULL);
 		if (UNEXPECTED(EG(exception))) {
-			zend_async_waker_destroy(current_coroutine);
+			zend_async_waker_clean(current_coroutine);
 			RETURN_THROWS();
 		}
 	}
 
 	ZEND_ASYNC_SUSPEND();
-	zend_async_waker_destroy(current_coroutine);
+	zend_async_waker_clean(current_coroutine);
 }
 
 METHOD(isFinished)
@@ -461,7 +459,7 @@ METHOD(setExceptionHandler)
 	zend_fcall_info_cache fcc;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_FUNC(fci, fcc)
+	Z_PARAM_FUNC(fci, fcc)
 	ZEND_PARSE_PARAMETERS_END();
 
 	async_scope_object_t *scope_object = THIS_SCOPE;
@@ -471,14 +469,14 @@ METHOD(setExceptionHandler)
 	}
 
 	async_scope_t *scope = scope_object->scope;
-	
+
 	// Free existing exception handler if any
 	if (scope->exception_fci != NULL || scope->exception_fcc != NULL) {
 		zend_free_fci(scope->exception_fci, scope->exception_fcc);
 		scope->exception_fci = NULL;
 		scope->exception_fcc = NULL;
 	}
-	
+
 	// Allocate and copy new handler
 	scope->exception_fci = emalloc(sizeof(zend_fcall_info));
 	scope->exception_fcc = emalloc(sizeof(zend_fcall_info_cache));
@@ -491,7 +489,7 @@ METHOD(setChildScopeExceptionHandler)
 	zend_fcall_info_cache fcc;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_FUNC(fci, fcc)
+	Z_PARAM_FUNC(fci, fcc)
 	ZEND_PARSE_PARAMETERS_END();
 
 	async_scope_object_t *scope_object = THIS_SCOPE;
@@ -501,14 +499,14 @@ METHOD(setChildScopeExceptionHandler)
 	}
 
 	async_scope_t *scope = scope_object->scope;
-	
+
 	// Free existing child exception handler if any
 	if (scope->child_exception_fci != NULL || scope->child_exception_fcc != NULL) {
 		zend_free_fci(scope->child_exception_fci, scope->child_exception_fcc);
 		scope->child_exception_fci = NULL;
 		scope->child_exception_fcc = NULL;
 	}
-	
+
 	// Allocate and copy new handler
 	scope->child_exception_fci = emalloc(sizeof(zend_fcall_info));
 	scope->child_exception_fcc = emalloc(sizeof(zend_fcall_info_cache));
@@ -520,7 +518,7 @@ METHOD(onFinally)
 	zval *callable;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_ZVAL(callable)
+	Z_PARAM_ZVAL(callable)
 	ZEND_PARSE_PARAMETERS_END();
 
 	// Validate callable
@@ -567,7 +565,8 @@ METHOD(dispose)
 
 	async_scope_object_t *scope_object = THIS_SCOPE;
 	if (scope_object->scope != NULL) {
-		ZEND_ASYNC_SCOPE_CLOSE(&scope_object->scope->scope, ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(&scope_object->scope->scope));
+		ZEND_ASYNC_SCOPE_CLOSE(&scope_object->scope->scope,
+							   ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(&scope_object->scope->scope));
 	}
 }
 
@@ -581,7 +580,8 @@ METHOD(disposeSafely)
 	}
 }
 
-typedef struct {
+typedef struct
+{
 	zend_async_event_callback_t callback;
 	async_scope_t *scope;
 } scope_timeout_callback_t;
@@ -597,19 +597,16 @@ static void scope_timeout_coroutine_entry(void)
 
 	coroutine->extended_data = NULL;
 
-	zend_object * exception = async_new_exception(
-		async_ce_cancellation_exception, "Scope has been disposed due to timeout"
-	);
+	zend_object *exception =
+			async_new_exception(async_ce_cancellation_exception, "Scope has been disposed due to timeout");
 
 	ZEND_ASYNC_SCOPE_CANCEL(&scope->scope, exception, false, ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(&scope->scope));
 }
 
-static void scope_timeout_callback(
-	zend_async_event_t *event,
-	zend_async_event_callback_t *callback,
-	void * result,
-	zend_object *exception
-)
+static void scope_timeout_callback(zend_async_event_t *event,
+								   zend_async_event_callback_t *callback,
+								   void *result,
+								   zend_object *exception)
 {
 	scope_timeout_callback_t *scope_callback = (scope_timeout_callback_t *) callback;
 	async_scope_t *scope = scope_callback->scope;
@@ -629,7 +626,7 @@ METHOD(disposeAfterTimeout)
 	zend_long timeout;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_LONG(timeout)
+	Z_PARAM_LONG(timeout)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (timeout < 0) {
@@ -646,8 +643,7 @@ METHOD(disposeAfterTimeout)
 		return;
 	}
 
-	if (scope_object->scope->coroutines.length == 0
-		&& scope_object->scope->scope.scopes.length == 0) {
+	if (scope_object->scope->coroutines.length == 0 && scope_object->scope->scope.scopes.length == 0) {
 		return;
 	}
 
@@ -656,9 +652,8 @@ METHOD(disposeAfterTimeout)
 		RETURN_THROWS();
 	}
 
-	scope_timeout_callback_t * callback = (scope_timeout_callback_t *) zend_async_event_callback_new(
-		scope_timeout_callback,sizeof(scope_timeout_callback_t)
-	);
+	scope_timeout_callback_t *callback = (scope_timeout_callback_t *) zend_async_event_callback_new(
+			scope_timeout_callback, sizeof(scope_timeout_callback_t));
 	if (UNEXPECTED(callback == NULL)) {
 		timer_event->base.dispose(&timer_event->base);
 		RETURN_THROWS();
@@ -667,13 +662,15 @@ METHOD(disposeAfterTimeout)
 	callback->scope = scope_object->scope;
 	callback->scope->scope.event.ref_count++;
 
-	timer_event->base.add_callback(&timer_event->base, &callback->callback);
-	if (UNEXPECTED(EG(exception) != NULL)) {
+	if (!timer_event->base.add_callback(&timer_event->base, &callback->callback)) {
 		timer_event->base.dispose(&timer_event->base);
 		return;
 	}
 
-	timer_event->base.start(&timer_event->base);
+	if (!timer_event->base.start(&timer_event->base)) {
+		timer_event->base.dispose(&timer_event->base);
+		return;
+	}
 }
 
 METHOD(getChildScopes)
@@ -700,13 +697,14 @@ METHOD(getChildScopes)
 //////////////////////////////////////////////////////////
 /// Scope methods end
 //////////////////////////////////////////////////////////
-static void callback_resolve_when_zombie_completed(
-	zend_async_event_t *event, zend_async_event_callback_t *callback, void * result, zend_object *exception
-)
+static void callback_resolve_when_zombie_completed(zend_async_event_t *event,
+												   zend_async_event_callback_t *callback,
+												   void *result,
+												   zend_object *exception)
 {
 	async_scope_t *scope = (async_scope_t *) event;
 	scope_coroutine_callback_t *scope_callback = (scope_coroutine_callback_t *) callback;
-	zend_coroutine_t * coroutine = scope_callback->callback.coroutine;
+	zend_coroutine_t *coroutine = scope_callback->callback.coroutine;
 
 	if (UNEXPECTED(exception != NULL && scope_callback->error_fci == NULL)) {
 		// No error handler - resume with exception
@@ -717,7 +715,7 @@ static void callback_resolve_when_zombie_completed(
 
 	if (UNEXPECTED(exception != NULL && scope_callback->error_fci != NULL)) {
 		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
-		
+
 		// Prepare parameters for handler(\Throwable $error, Scope $scope)
 		zval params[2];
 		ZVAL_OBJ(&params[0], exception);
@@ -726,18 +724,17 @@ static void callback_resolve_when_zombie_completed(
 		// Setup function call
 		scope_callback->error_fci->param_count = 2;
 		scope_callback->error_fci->params = params;
-		
+
 		zval retval;
 		ZVAL_UNDEF(&retval);
 		scope_callback->error_fci->retval = &retval;
-		
+
 		if (UNEXPECTED(zend_call_function(scope_callback->error_fci, scope_callback->error_fci_cache) == FAILURE)) {
 			zval_ptr_dtor(&retval);
 			ZEND_ASYNC_RESUME_WITH_ERROR(
-				coroutine,
-				async_new_exception(async_ce_async_exception, "Failed to call error handler in scope completion"),
-				true
-			);
+					coroutine,
+					async_new_exception(async_ce_async_exception, "Failed to call error handler in scope completion"),
+					true);
 
 			return;
 		}
@@ -749,7 +746,7 @@ static void callback_resolve_when_zombie_completed(
 			zend_clear_exception();
 			return;
 		}
-		
+
 		zval_ptr_dtor(&retval);
 	}
 
@@ -816,30 +813,30 @@ void async_scope_mark_coroutine_zombie(async_coroutine_t *coroutine)
 	}
 }
 
-static void scope_before_coroutine_enqueue(zend_coroutine_t *coroutine, zend_async_scope_t *zend_scope, zval *result)
+static bool scope_before_coroutine_enqueue(zend_coroutine_t *coroutine, zend_async_scope_t *zend_scope, zval *result)
 {
 	async_scope_t *scope = (async_scope_t *) zend_scope;
 
 	async_scope_add_coroutine(scope, (async_coroutine_t *) coroutine);
+	return true;
 }
 
 static void scope_after_coroutine_enqueue(zend_coroutine_t *coroutine, zend_async_scope_t *scope)
 {
 }
 
-static zend_always_inline bool try_to_handle_exception(
-	async_scope_t *current_scope, async_scope_t * from_scope, zend_object *exception, async_coroutine_t *coroutine
-);
+static zend_always_inline bool try_to_handle_exception(async_scope_t *current_scope,
+													   async_scope_t *from_scope,
+													   zend_object *exception,
+													   async_coroutine_t *coroutine);
 
-static bool scope_catch_or_cancel(
-	zend_async_scope_t *scope,
-	zend_coroutine_t *coroutine,
-	zend_async_scope_t *from_scope,
-	zend_object *exception,
-	bool transfer_error,
-	const bool is_safely,
-	const bool is_cancellation
-)
+static bool scope_catch_or_cancel(zend_async_scope_t *scope,
+								  zend_coroutine_t *coroutine,
+								  zend_async_scope_t *from_scope,
+								  zend_object *exception,
+								  bool transfer_error,
+								  const bool is_safely,
+								  const bool is_cancellation)
 {
 	async_scope_t *async_scope = (async_scope_t *) scope;
 	transfer_error = exception != NULL ? transfer_error : false;
@@ -889,18 +886,16 @@ static bool scope_catch_or_cancel(
 	// 5. Otherwise, we move to the next parent or exit.
 	//
 
-	if (false == is_cancellation
-		&& (async_scope->exception_fci != NULL || async_scope->child_exception_fci != NULL)
-		&& try_to_handle_exception(
-			async_scope, (async_scope_t *) from_scope, exception, (async_coroutine_t *) coroutine
-		)) {
+	if (false == is_cancellation && (async_scope->exception_fci != NULL || async_scope->child_exception_fci != NULL) &&
+		try_to_handle_exception(
+				async_scope, (async_scope_t *) from_scope, exception, (async_coroutine_t *) coroutine)) {
 		goto exit_true;
 	}
 
 	ZEND_ASYNC_SCOPE_SET_CANCELLED(&async_scope->scope);
 
-	if (((async_scope_object_t *)async_scope->scope.scope_object) != NULL) {
-		((async_scope_object_t *)async_scope->scope.scope_object)->is_cancelled = true;
+	if (((async_scope_object_t *) async_scope->scope.scope_object) != NULL) {
+		((async_scope_object_t *) async_scope->scope.scope_object)->is_cancelled = true;
 	}
 
 	// If an unexpected exception occurs during the function's execution, we combine them into one.
@@ -910,23 +905,21 @@ static bool scope_catch_or_cancel(
 	}
 
 	zend_object *critical_exception = NULL;
-	zend_async_scope_t * this_scope = &async_scope->scope;
+	zend_async_scope_t *this_scope = &async_scope->scope;
 	zend_async_scopes_vector_t *scopes = &this_scope->scopes;
 
 	// First cancel all children scopes
 	for (uint32_t i = 0; i < scopes->length; ++i) {
 		async_scope_t *child_scope = (async_scope_t *) scopes->data[i];
-		child_scope->scope.catch_or_cancel(
-			&child_scope->scope,
-			coroutine,
-			this_scope,
-			// In CATCH mode, we don’t pass the exception that caused the cancellation
-			// to the child Scopes; instead, a new cancellation exception is generated.
-			is_cancellation ? exception : NULL,
-			false,
-			is_safely,
-			true
-		);
+		child_scope->scope.catch_or_cancel(&child_scope->scope,
+										   coroutine,
+										   this_scope,
+										   // In CATCH mode, we don’t pass the exception that caused the cancellation
+										   // to the child Scopes; instead, a new cancellation exception is generated.
+										   is_cancellation ? exception : NULL,
+										   false,
+										   is_safely,
+										   true);
 
 		if (UNEXPECTED(EG(exception))) {
 			critical_exception = zend_exception_merge(critical_exception, true, true);
@@ -963,14 +956,7 @@ static bool scope_catch_or_cancel(
 		zend_async_scope_t *parent_scope = async_scope->scope.parent_scope;
 
 		return parent_scope->catch_or_cancel(
-			parent_scope,
-			coroutine,
-			&async_scope->scope,
-			exception,
-			transfer_error,
-			is_safely,
-			false
-		);
+				parent_scope, coroutine, &async_scope->scope, exception, transfer_error, is_safely, false);
 	}
 
 exit_false:
@@ -1016,27 +1002,30 @@ static bool scope_try_to_dispose(zend_async_scope_t *scope)
 	return true;
 }
 
-static void scope_event_start(zend_async_event_t *event)
+static bool scope_event_start(zend_async_event_t *event)
 {
 	// Empty implementation - scopes don't need explicit start
+	return true;
 }
 
-static void scope_event_stop(zend_async_event_t *event)
+static bool scope_event_stop(zend_async_event_t *event)
 {
 	// Empty implementation - scopes don't need explicit stop
+	return true;
 }
 
-static void scope_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
+static bool scope_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
 {
-	zend_async_callbacks_push(event, callback);
+	return zend_async_callbacks_push(event, callback);
 }
 
-static void scope_del_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
+static bool scope_del_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
 {
-	zend_async_callbacks_remove(event, callback);
+	return zend_async_callbacks_remove(event, callback);
 }
 
-static bool scope_replay(zend_async_event_t *event, zend_async_event_callback_t *callback, zval *result, zend_object **exception)
+static bool
+scope_replay(zend_async_event_t *event, zend_async_event_callback_t *callback, zval *result, zend_object **exception)
 {
 	async_scope_t *scope = (async_scope_t *) event;
 
@@ -1067,7 +1056,7 @@ static bool scope_replay(zend_async_event_t *event, zend_async_event_callback_t 
 	return true;
 }
 
-static zend_string* scope_info(zend_async_event_t *event)
+static zend_string *scope_info(zend_async_event_t *event)
 {
 	async_scope_t *scope = (async_scope_t *) event;
 	uint32_t scope_id = 0;
@@ -1083,27 +1072,27 @@ static zend_string* scope_info(zend_async_event_t *event)
 	}
 }
 
-static void scope_dispose(zend_async_event_t *scope_event)
+static bool scope_dispose(zend_async_event_t *scope_event)
 {
 	async_scope_t *scope = (async_scope_t *) scope_event;
 
 	if (ZEND_ASYNC_SCOPE_IS_DISPOSING(&scope->scope)) {
-		return;
+		return true;
 	}
 
-	if (ZEND_ASYNC_EVENT_REF(scope_event) > 1) {
+	if (ZEND_ASYNC_EVENT_REFCOUNT(scope_event) > 1) {
 		ZEND_ASYNC_EVENT_DEL_REF(scope_event);
-		return;
+		return true;
 	}
 
-	if (ZEND_ASYNC_EVENT_REF(scope_event) == 1) {
+	if (ZEND_ASYNC_EVENT_REFCOUNT(scope_event) == 1) {
 		ZEND_ASYNC_EVENT_DEL_REF(scope_event);
 	}
 
 	ZEND_ASYNC_SCOPE_SET_DISPOSING(&scope->scope);
 
-	ZEND_ASSERT(scope->coroutines.length == 0 && scope->scope.scopes.length == 0
-		&& "Scope should be empty before disposal");
+	ZEND_ASSERT(scope->coroutines.length == 0 && scope->scope.scopes.length == 0 &&
+				"Scope should be empty before disposal");
 
 	zend_object *critical_exception = NULL;
 
@@ -1116,16 +1105,15 @@ static void scope_dispose(zend_async_event_t *scope_event)
 		critical_exception = zend_exception_merge(critical_exception, true, true);
 	}
 
-	if (scope->finally_handlers != NULL
-		&& zend_hash_num_elements(scope->finally_handlers) > 0
-		&& async_scope_call_finally_handlers(scope)) {
+	if (scope->finally_handlers != NULL && zend_hash_num_elements(scope->finally_handlers) > 0 &&
+		async_scope_call_finally_handlers(scope)) {
 		// If finally handlers were called, we don't dispose the scope yet
 		ZEND_ASYNC_EVENT_ADD_REF(&scope->scope.event);
 		if (critical_exception) {
 			async_spawn_and_throw(critical_exception, &scope->scope, 0);
 		}
 		ZEND_ASYNC_SCOPE_CLR_DISPOSING(&scope->scope);
-		return;
+		return true;
 	}
 
 	if (scope->scope.parent_scope) {
@@ -1148,7 +1136,7 @@ static void scope_dispose(zend_async_event_t *scope_event)
 		zend_string_release(scope->filename);
 		scope->filename = NULL;
 	}
-	
+
 	// Free exception handlers
 	if (scope->exception_fci != NULL || scope->exception_fcc != NULL) {
 		zend_free_fci(scope->exception_fci, scope->exception_fcc);
@@ -1160,7 +1148,7 @@ static void scope_dispose(zend_async_event_t *scope_event)
 		scope->child_exception_fci = NULL;
 		scope->child_exception_fcc = NULL;
 	}
-	
+
 	// Free finally handlers
 	if (scope->finally_handlers != NULL) {
 		zend_hash_destroy(scope->finally_handlers);
@@ -1176,9 +1164,10 @@ static void scope_dispose(zend_async_event_t *scope_event)
 	if (critical_exception != NULL) {
 		async_rethrow_exception(critical_exception);
 	}
+	return true;
 }
 
-zend_async_scope_t * async_new_scope(zend_async_scope_t * parent_scope, const bool with_zend_object)
+zend_async_scope_t *async_new_scope(zend_async_scope_t *parent_scope, const bool with_zend_object)
 {
 	async_scope_t *scope = ecalloc(1, sizeof(async_scope_t));
 	async_scope_object_t *scope_object = NULL;
@@ -1219,18 +1208,18 @@ zend_async_scope_t * async_new_scope(zend_async_scope_t * parent_scope, const bo
 	scope->coroutines.capacity = 0;
 	scope->coroutines.data = NULL;
 	scope->active_coroutines_count = 0;
-	
+
 	// Initialize spawn location
 	scope->filename = NULL;
 	scope->lineno = 0;
 	zend_apply_current_filename_and_line(&scope->filename, &scope->lineno);
-	
+
 	// Initialize exception handlers
 	scope->exception_fci = NULL;
 	scope->exception_fcc = NULL;
 	scope->child_exception_fci = NULL;
 	scope->child_exception_fcc = NULL;
-	
+
 	// Initialize finally handlers
 	scope->finally_handlers = NULL;
 
@@ -1276,9 +1265,8 @@ static void scope_destroy(zend_object *object)
 	// This means we are obligated to cancel the Scope and all its child Scopes along with their coroutines.
 	// However, the Scope itself will not be destroyed.
 	if (false == scope->scope.try_to_dispose(&scope->scope)) {
-		zend_object *exception = async_new_exception(
-			async_ce_cancellation_exception, "Scope is being disposed due to object destruction"
-		);
+		zend_object *exception = async_new_exception(async_ce_cancellation_exception,
+													 "Scope is being disposed due to object destruction");
 
 		ZEND_ASYNC_SCOPE_CANCEL(&scope->scope, exception, true, ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(&scope->scope));
 	}
@@ -1286,7 +1274,7 @@ static void scope_destroy(zend_object *object)
 
 static HashTable *scope_object_gc(zend_object *object, zval **table, int *num)
 {
-	async_scope_object_t *scope_obj = (async_scope_object_t *)object;
+	async_scope_object_t *scope_obj = (async_scope_object_t *) object;
 	async_scope_t *scope = scope_obj->scope;
 
 	if (scope == NULL) {
@@ -1310,26 +1298,32 @@ static HashTable *scope_object_gc(zend_object *object, zval **table, int *num)
 	/* Add finally handlers if present */
 	if (scope->finally_handlers) {
 		zval *val;
-		ZEND_HASH_FOREACH_VAL(scope->finally_handlers, val) {
+		ZEND_HASH_FOREACH_VAL(scope->finally_handlers, val)
+		{
 			zend_get_gc_buffer_add_zval(buf, val);
-		} ZEND_HASH_FOREACH_END();
+		}
+		ZEND_HASH_FOREACH_END();
 	}
 
 	/* Add context ZVALs if present */
 	if (scope->scope.context) {
 		/* Cast to actual context implementation to access HashTables */
-		async_context_t *context = (async_context_t *)scope->scope.context;
-		
+		async_context_t *context = (async_context_t *) scope->scope.context;
+
 		/* Add all values from context->values HashTable */
 		zval *val;
-		ZEND_HASH_FOREACH_VAL(&context->values, val) {
+		ZEND_HASH_FOREACH_VAL(&context->values, val)
+		{
 			zend_get_gc_buffer_add_zval(buf, val);
-		} ZEND_HASH_FOREACH_END();
-		
+		}
+		ZEND_HASH_FOREACH_END();
+
 		/* Add all object keys from context->keys HashTable */
-		ZEND_HASH_FOREACH_VAL(&context->keys, val) {
+		ZEND_HASH_FOREACH_VAL(&context->keys, val)
+		{
 			zend_get_gc_buffer_add_zval(buf, val);
-		} ZEND_HASH_FOREACH_END();
+		}
+		ZEND_HASH_FOREACH_END();
 	}
 
 	zend_get_gc_buffer_use(buf, table, num);
@@ -1354,9 +1348,8 @@ static void scope_object_free(zend_object *object)
 	// This means we are obligated to cancel the Scope and all its child Scopes along with their coroutines.
 	// However, the Scope itself will not be destroyed.
 	if (false == scope->scope.try_to_dispose(&scope->scope)) {
-		zend_object *exception = async_new_exception(
-			async_ce_cancellation_exception, "Scope is being disposed due to object destruction"
-		);
+		zend_object *exception = async_new_exception(async_ce_cancellation_exception,
+													 "Scope is being disposed due to object destruction");
 
 		ZEND_ASYNC_SCOPE_CANCEL(&scope->scope, exception, true, ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(&scope->scope));
 	}
@@ -1392,21 +1385,22 @@ static bool scope_can_be_disposed(async_scope_t *scope, bool with_zombies, bool 
 	}
 
 	// If scope is closed or cancelled, it's considered completed
-	if (false == can_be_disposed
-		&& (ZEND_ASYNC_SCOPE_IS_CLOSED(&scope->scope) || ZEND_ASYNC_SCOPE_IS_CANCELLED(&scope->scope))) {
+	if (false == can_be_disposed &&
+		(ZEND_ASYNC_SCOPE_IS_CLOSED(&scope->scope) || ZEND_ASYNC_SCOPE_IS_CANCELLED(&scope->scope))) {
 		return true;
 	}
 
 	// If scope has active coroutines, it's not completed
-	if ((with_zombies ? (scope->active_coroutines_count + scope->zombie_coroutines_count) : scope->active_coroutines_count) > 0) {
+	if ((with_zombies ? (scope->active_coroutines_count + scope->zombie_coroutines_count)
+					  : scope->active_coroutines_count) > 0) {
 		return false;
 	}
 
 	// If a Scope has no active coroutines,
 	// it can be disposed provided that it is either cancelled or
 	// its Zend object has already been destroyed.
-	if (can_be_disposed
-		&& false == (ZEND_ASYNC_SCOPE_IS_CANCELLED(&scope->scope) || scope->scope.scope_object == NULL)) {
+	if (can_be_disposed &&
+		false == (ZEND_ASYNC_SCOPE_IS_CANCELLED(&scope->scope) || scope->scope.scope_object == NULL)) {
 		return false;
 	}
 
@@ -1446,9 +1440,10 @@ static void scope_check_completion_and_notify(async_scope_t *scope, bool with_zo
 	}
 }
 
-static zend_always_inline bool try_to_handle_exception(
-	async_scope_t *current_scope, async_scope_t *from_scope, zend_object *exception, async_coroutine_t *coroutine
-)
+static zend_always_inline bool try_to_handle_exception(async_scope_t *current_scope,
+													   async_scope_t *from_scope,
+													   zend_object *exception,
+													   async_coroutine_t *coroutine)
 {
 	// Fast return:
 	if (current_scope->exception_fci == NULL && current_scope->child_exception_fci == NULL) {
@@ -1495,7 +1490,8 @@ static zend_always_inline bool try_to_handle_exception(
 
 	// If the exception came from another child Scope,
 	// we first try to handle it using the child Scope exception handler.
-	if (from_scope != NULL && current_scope->child_exception_fci != NULL && current_scope->child_exception_fcc != NULL) {
+	if (from_scope != NULL && current_scope->child_exception_fci != NULL &&
+		current_scope->child_exception_fcc != NULL) {
 
 		zend_fcall_info *exception_fci = current_scope->child_exception_fci;
 

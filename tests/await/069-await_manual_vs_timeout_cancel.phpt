@@ -22,13 +22,13 @@ $manual_coroutine = spawn(function() {
 // Let it start
 suspend();
 
-$manual_coroutine->cancel(new \Async\CancellationException("Manual cancel message"));
+$manual_coroutine->cancel(new \Async\CancellationError("Manual cancel message"));
 echo "manual coroutine cancelled\n";
 
 try {
     $result = await($manual_coroutine);
     echo "manual await should not succeed\n";
-} catch (\Async\CancellationException $e) {
+} catch (\Async\CancellationError $e) {
     echo "manual cancellation caught: " . get_class($e) . ": " . $e->getMessage() . "\n";
 } catch (Throwable $e) {
     echo "manual unexpected: " . get_class($e) . ": " . $e->getMessage() . "\n";
@@ -49,8 +49,8 @@ try {
     echo "timeout await should not succeed\n";
 } catch (\Async\TimeoutException $e) {
     echo "timeout cancellation caught: " . get_class($e) . ": " . $e->getMessage() . "\n";
-    $timeout_coroutine->cancel(new \Async\CancellationException("Timeout after 1 milliseconds"));
-} catch (\Async\CancellationException $e) {
+    $timeout_coroutine->cancel(new \Async\CancellationError("Timeout after 1 milliseconds"));
+} catch (\Async\CancellationError $e) {
     echo "timeout as cancellation: " . get_class($e) . ": " . $e->getMessage() . "\n";
 } catch (Throwable $e) {
     echo "timeout unexpected: " . get_class($e) . ": " . $e->getMessage() . "\n";
@@ -68,12 +68,12 @@ $race_coroutine = spawn(function() {
 suspend();
 
 // Cancel manually before timeout
-$race_coroutine->cancel(new \Async\CancellationException("Manual wins"));
+$race_coroutine->cancel(new \Async\CancellationError("Manual wins"));
 
 try {
-    $result = await($race_coroutine, timeout(1)); // Should get manual cancel, not timeout
+    $result = await($race_coroutine, timeout(1000)); // Should get manual cancel, not timeout
     echo "race await should not succeed\n";
-} catch (\Async\CancellationException $e) {
+} catch (\Async\CancellationError $e) {
     echo "race cancellation caught: " . get_class($e) . ": " . $e->getMessage() . "\n";
 } catch (\Async\TimeoutException $e) {
     echo "race timeout caught: " . get_class($e) . ": " . $e->getMessage() . "\n";
@@ -88,10 +88,10 @@ echo "end\n";
 start
 manual coroutine started
 manual coroutine cancelled
-manual cancellation caught: Async\CancellationException: Manual cancel message
+manual cancellation caught: Async\CancellationError: Manual cancel message
 timeout coroutine spawned
 timeout coroutine started
 timeout cancellation caught: Async\TimeoutException: Timeout occurred after 1 milliseconds
 race coroutine started
-race cancellation caught: Async\CancellationException: Manual wins
+race cancellation caught: Async\CancellationError: Manual wins
 end

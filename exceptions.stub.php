@@ -8,7 +8,7 @@ namespace Async;
  * Exception thrown when a Coroutine is canceled.
  * Code inside the Coroutine must properly handle this exception to ensure graceful termination.
  */
-class CancellationException extends \CancellationException {}
+class CancellationError extends \Error {}
 
 /**
  * Common type of exception.
@@ -35,6 +35,11 @@ class TimeoutException extends \Exception {}
  * Exception thrown when a poll operation fails.
  */
 class PollException extends \Exception {}
+
+/**
+ * Exception thrown when a deadlock is detected.
+ */
+class DeadlockError extends \Error {}
 
 /**
  * Exception that can contain multiple exceptions.
