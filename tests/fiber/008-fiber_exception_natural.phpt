@@ -1,5 +1,5 @@
 --TEST--
-UC-008: Natural exception inside Fiber
+Natural exception inside Fiber
 --FILE--
 <?php
 

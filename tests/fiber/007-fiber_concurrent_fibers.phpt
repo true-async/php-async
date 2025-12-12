@@ -1,5 +1,5 @@
 --TEST--
-UC-007: Multiple concurrent Fibers
+Multiple concurrent Fibers
 --FILE--
 <?php
 
