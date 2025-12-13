@@ -47,10 +47,10 @@ struct _async_future_s {
 extern zend_class_entry *async_ce_future_state;
 extern zend_class_entry *async_ce_future;
 
-#define ASYNC_FUTURE_STATE_FROM_EVENT(ev) ((async_future_state_t *)(ev)->extra_offset)
+/* Convert zend_object to async_future_state_t */
 #define ASYNC_FUTURE_STATE_FROM_OBJ(obj) ((async_future_state_t *)((char *)(obj) - (obj)->handlers->offset))
 
-#define ASYNC_FUTURE_FROM_EVENT(ev) ((async_future_t *)(ev)->extra_offset)
+/* Convert zend_object to async_future_t */
 #define ASYNC_FUTURE_FROM_OBJ(obj) ((async_future_t *)((char *)(obj) - (obj)->handlers->offset))
 
 /* Registration function */
