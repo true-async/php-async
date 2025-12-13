@@ -322,7 +322,7 @@ FUTURE_METHOD(__construct)
     ZEND_ASYNC_EVENT_REF_SET(future, XtOffsetOf(async_future_t, std), state->event);
 }
 
-FUTURE_METHOD(complete)
+FUTURE_METHOD(completed)
 {
     zval *value = NULL;
     
@@ -363,7 +363,7 @@ FUTURE_METHOD(complete)
     zval_ptr_dtor(&args[0]);
 }
 
-FUTURE_METHOD(error)
+FUTURE_METHOD(failed)
 {
     zval *throwable;
     

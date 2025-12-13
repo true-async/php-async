@@ -59,12 +59,12 @@ final class Future implements FutureLike
      *
      * @return Future<Tv>
      */
-    public static function complete(mixed $value = null): Future {}
+    public static function completed(mixed $value = null): Future {}
 
     /**
      * @return Future<never>
      */
-    public static function error(\Throwable $throwable): Future {}
+    public static function failed(\Throwable $throwable): Future {}
 
     /**
      * param FutureState<T> $state
