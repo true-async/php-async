@@ -49,6 +49,6 @@ echo "Test completed\n";
 --EXPECT--
 Test: Fiber GC during start
 FiberHolder created
-FiberHolder destroyed
 Main fiber started
 Test completed
+FiberHolder destroyed

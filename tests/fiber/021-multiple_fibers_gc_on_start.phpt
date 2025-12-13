@@ -60,7 +60,8 @@ Test: Multiple fibers GC on start
 Driver created
 Driver created
 About to start run fiber
-Driver destroyed
 Run fiber started
 Run fiber completed
 Test completed
+Driver destroyed
+Driver destroyed
