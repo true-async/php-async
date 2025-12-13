@@ -24,8 +24,8 @@
 #include "scheduler.h"
 #include "zend_smart_str.h"
 
-#define METHOD(name) PHP_METHOD(Async_Future, name)
-#define STATE_METHOD(name) PHP_METHOD(Async_FutureState, name)
+#define FUTURE_METHOD(name) PHP_METHOD(Async_Future, name)
+#define FUTURE_STATE_METHOD(name) PHP_METHOD(Async_FutureState, name)
 
 #define SCHEDULER_LAUNCH if (UNEXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == NULL)) {		\
 		async_scheduler_launch();														\
@@ -45,65 +45,85 @@ static zend_object_handlers async_future_handlers;
 /// FutureState event functions (like coroutine)
 ///////////////////////////////////////////////////////////
 
-static void future_state_event_start(zend_async_event_t *event)
+static bool future_state_event_start(zend_async_event_t *event)
 {
     /* Nothing to start for FutureState */
+    return true;
 }
 
-static void future_state_event_stop(zend_async_event_t *event)
+static bool future_state_event_stop(zend_async_event_t *event)
 {
-    /* Nothing to stop for FutureState */
+    /* Mark event as closed and notify callbacks */
+    if (ZEND_ASYNC_EVENT_IS_CLOSED(event)) {
+        return true;
+    }
+    
+    ZEND_ASYNC_EVENT_SET_CLOSED(event);
+    
+    zend_future_t *future = (zend_future_t *)event;
+    ZEND_ASYNC_CALLBACKS_NOTIFY(event, &future->result, future->exception);
+    
+    return true;
 }
 
-static void future_state_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
+static bool future_state_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
 {
-    zend_async_callbacks_push(event, callback);
+    return zend_async_callbacks_push(event, callback);
 }
 
-static void future_state_del_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
+static bool future_state_del_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
 {
-    zend_async_callbacks_remove(event, callback);
+    return zend_async_callbacks_remove(event, callback);
 }
 
 static bool future_state_replay(zend_async_event_t *event, zend_async_event_callback_t *callback, zval *result, zend_object **exception)
 {
-    async_future_state_t *state = (async_future_state_t *) event;
+    zend_future_t *future = (zend_future_t *) event;
 
-    if (!state->completed) {
+    if (!ZEND_FUTURE_IS_COMPLETED(future)) {
         return false;
     }
 
     if (callback != NULL) {
-        callback->callback(event, callback, &state->result, state->exception);
-        return true;
+        callback->callback(event, callback, &future->result, future->exception);
     }
 
-    if (result != NULL) {
-        ZVAL_COPY(result, &state->result);
-    }
-
-    if (exception == NULL && state->exception != NULL) {
-        GC_ADDREF(state->exception);
-        async_rethrow_exception(state->exception);
-    } else if (exception != NULL && state->exception != NULL) {
-        *exception = state->exception;
-        GC_ADDREF(*exception);
-    }
-
-    return state->exception != NULL || Z_TYPE(state->result) != IS_UNDEF;
+	return EG(exception) == NULL;
 }
 
 static zend_string* future_state_info(zend_async_event_t *event)
 {
-    async_future_state_t *state = (async_future_state_t *) event;
+    zend_future_t *future = (zend_future_t *) event;
 
-    return zend_strpprintf(0, "FutureState(%s)", state->completed ? "completed" : "pending");
+    return zend_strpprintf(0, "FutureState(%s)", ZEND_FUTURE_IS_COMPLETED(future) ? "completed" : "pending");
 }
 
-static void future_state_dispose(zend_async_event_t *event)
+static bool future_state_dispose(zend_async_event_t *event)
 {
-    async_future_state_t *state = (async_future_state_t *) event;
-    OBJ_RELEASE(&state->std);
+    zend_future_t *future = (zend_future_t *) event;
+    
+    zval_ptr_dtor(&future->result);
+    
+    if (future->exception != NULL) {
+        OBJ_RELEASE(future->exception);
+        future->exception = NULL;
+    }
+    
+    if (future->filename != NULL) {
+        zend_string_release(future->filename);
+        future->filename = NULL;
+    }
+    
+    if (future->completed_filename != NULL) {
+        zend_string_release(future->completed_filename);
+        future->completed_filename = NULL;
+    }
+    
+    zend_async_callbacks_free(event);
+    
+    efree(future);
+    
+    return true;
 }
 
 ///////////////////////////////////////////////////////////
@@ -114,11 +134,9 @@ static zend_object *async_future_state_object_create(zend_class_entry *ce)
 {
     async_future_state_t *state = zend_object_alloc(sizeof(async_future_state_t), ce);
     
-    zend_future_t *zend_future = ecalloc(1, sizeof(zend_future_t));
-    zend_async_event_t *event = &zend_future->event;
-
-    ZVAL_UNDEF(&zend_future->result);
-    zend_future->exception = NULL;
+    zend_future_t *future = ecalloc(1, sizeof(zend_future_t));
+    zend_async_event_t *event = &future->event;
+    ZVAL_UNDEF(&future->result);
 
     /* Set event handlers */
     event->start = future_state_event_start;
@@ -131,8 +149,6 @@ static zend_object *async_future_state_object_create(zend_class_entry *ce)
     event->ref_count = 1;
 
     ZEND_ASYNC_EVENT_REF_SET(state, XtOffsetOf(async_future_state_t, std), event);
-
-    state->event = event;
 
     zend_object_std_init(&state->std, ce);
     object_properties_init(&state->std, ce);
@@ -148,7 +164,7 @@ static void async_future_state_object_free(zend_object *object)
     state->event = NULL;
 
     if (future != NULL) {
-        future->event.dispose(&future->event);
+        ZEND_ASYNC_EVENT_RELEASE(&future->event);
     }
 
     zend_object_std_dtor(&state->std);
@@ -161,7 +177,6 @@ static void async_future_state_object_free(zend_object *object)
 static zend_object *async_future_object_create(zend_class_entry *ce)
 {
     async_future_t *future = zend_object_alloc(sizeof(async_future_t), ce);
-    future->event = NULL;
 
     zend_object_std_init(&future->std, ce);
     object_properties_init(&future->std, ce);
@@ -177,7 +192,7 @@ static void async_future_object_free(zend_object *object)
     future->event = NULL;
 
     if (zend_future != NULL) {
-        zend_future->event.dispose(&zend_future->event);
+        ZEND_ASYNC_EVENT_RELEASE(&zend_future->event);
     }
 
     zend_object_std_dtor(&future->std);
@@ -189,12 +204,12 @@ static void async_future_object_free(zend_object *object)
 
 #define THIS_FUTURE_STATE ((async_future_state_t *) ASYNC_FUTURE_STATE_FROM_OBJ(Z_OBJ_P(ZEND_THIS)))
 
-STATE_METHOD(__construct)
+FUTURE_STATE_METHOD(__construct)
 {
     ZEND_PARSE_PARAMETERS_NONE();
 }
 
-STATE_METHOD(complete)
+FUTURE_STATE_METHOD(complete)
 {
     zval *result;
     
@@ -213,7 +228,7 @@ STATE_METHOD(complete)
 
     if (ZEND_FUTURE_IS_COMPLETED(future)) {
         if (future->completed_filename != NULL) {
-            async_throw_error("FutureState is already completed at %s:%d", future->completed_filename, future->completed_lineno);
+            async_throw_error("FutureState is already completed at %s:%d", ZSTR_VAL(future->completed_filename), future->completed_lineno);
         } else {
             async_throw_error("FutureState is already completed at Unknown:0");
         }
@@ -224,7 +239,7 @@ STATE_METHOD(complete)
     ZEND_FUTURE_COMPLETE(future, result);
 }
 
-STATE_METHOD(error)
+FUTURE_STATE_METHOD(error)
 {
     zval *throwable;
     
@@ -243,7 +258,7 @@ STATE_METHOD(error)
 
     if (ZEND_FUTURE_IS_COMPLETED(future)) {
         if (future->completed_filename != NULL) {
-            async_throw_error("FutureState is already completed at %s:%d", future->completed_filename, future->completed_lineno);
+            async_throw_error("FutureState is already completed at %s:%d", ZSTR_VAL(future->completed_filename), future->completed_lineno);
         } else {
             async_throw_error("FutureState is already completed at Unknown:0");
         }
@@ -254,27 +269,27 @@ STATE_METHOD(error)
     ZEND_FUTURE_REJECT(future, Z_OBJ_P(throwable));
 }
 
-STATE_METHOD(isComplete)
+FUTURE_STATE_METHOD(isComplete)
 {
     ZEND_PARSE_PARAMETERS_NONE();
-    
-    async_future_state_t *state = THIS_FUTURE_STATE;
+
+    const async_future_state_t *state = THIS_FUTURE_STATE;
     zend_future_t *future = (zend_future_t *)state->event;
     
     RETURN_BOOL(ZEND_FUTURE_IS_COMPLETED(future));
 }
 
-STATE_METHOD(ignore)
+FUTURE_STATE_METHOD(ignore)
 {
     ZEND_PARSE_PARAMETERS_NONE();
-    
-    async_future_state_t *state = THIS_FUTURE_STATE;
+
+    const async_future_state_t *state = THIS_FUTURE_STATE;
     zend_future_t *future = (zend_future_t *)state->event;
     
     ZEND_FUTURE_SET_IGNORED(future);
 }
 
-STATE_METHOD(getAwaitingInfo)
+FUTURE_STATE_METHOD(getAwaitingInfo)
 {
     ZEND_PARSE_PARAMETERS_NONE();
     
@@ -288,9 +303,8 @@ STATE_METHOD(getAwaitingInfo)
 ///////////////////////////////////////////////////////////
 
 #define THIS_FUTURE ((async_future_t *) ASYNC_FUTURE_FROM_OBJ(Z_OBJ_P(ZEND_THIS)))
-#define THIS_ZEND_FUTURE (zend_future_t *) THIS_FUTURE->event
 
-METHOD(__construct)
+FUTURE_METHOD(__construct)
 {
     zval *state_obj;
 
@@ -299,42 +313,57 @@ METHOD(__construct)
     ZEND_PARSE_PARAMETERS_END();
 
     async_future_t *future = THIS_FUTURE;
-    async_future_state_t *state = ASYNC_FUTURE_STATE_FROM_OBJ(Z_OBJ_P(state_obj));
+    const async_future_state_t *state = ASYNC_FUTURE_STATE_FROM_OBJ(Z_OBJ_P(state_obj));
 
+    // Both Future and FutureState reference the same event
     future->event = state->event;
     ZEND_ASYNC_EVENT_ADD_REF(state->event);
+    
+    ZEND_ASYNC_EVENT_REF_SET(future, XtOffsetOf(async_future_t, std), state->event);
 }
 
-METHOD(complete)
+FUTURE_METHOD(complete)
 {
-    zval *result = NULL;
+    zval *value = NULL;
     
     ZEND_PARSE_PARAMETERS_START(0, 1)
         Z_PARAM_OPTIONAL
-        Z_PARAM_ZVAL(result)
+        Z_PARAM_ZVAL(value)
     ZEND_PARSE_PARAMETERS_END();
 
-    zend_future_t *future = THIS_ZEND_FUTURE;
-
-    if (future == NULL) {
-        async_throw_error("Future is already destroyed");
+    // Create FutureState
+    async_future_state_t *state = async_future_state_create();
+    
+    if (state == NULL) {
         RETURN_THROWS();
     }
-
-    if (ZEND_FUTURE_IS_COMPLETED(future)) {
-        if (future->completed_filename != NULL) {
-            async_throw_error("Future is already completed at %s:%d", future->completed_filename, future->completed_lineno);
-        } else {
-            async_throw_error("Future is already completed at Unknown:0");
-        }
-
-        RETURN_THROWS();
+    
+    zend_future_t *future = (zend_future_t *)state->event;
+    
+    // Complete it immediately
+    if (value != NULL) {
+        ZEND_FUTURE_COMPLETE(future, value);
+    } else {
+        zval null_val;
+        ZVAL_NULL(&null_val);
+        ZEND_FUTURE_COMPLETE(future, &null_val);
     }
-
-    ZEND_FUTURE_COMPLETE(future, result);
+    
+    // Create Future object wrapping this state
+    zval state_zval;
+    ZVAL_OBJ(&state_zval, &state->std);
+    
+    object_init_ex(return_value, async_ce_future);
+    
+    zval args[1];
+    ZVAL_COPY(&args[0], &state_zval);
+    
+    zend_call_method_with_1_params(Z_OBJ_P(return_value), async_ce_future, NULL, "__construct", NULL, &args[0]);
+    
+    zval_ptr_dtor(&args[0]);
 }
 
-METHOD(error)
+FUTURE_METHOD(error)
 {
     zval *throwable;
     
@@ -342,45 +371,62 @@ METHOD(error)
         Z_PARAM_OBJECT_OF_CLASS(throwable, zend_ce_throwable)
     ZEND_PARSE_PARAMETERS_END();
 
-    zend_future_t *future = THIS_ZEND_FUTURE;
-
-    if (future == NULL) {
-        async_throw_error("Future is already destroyed");
+    // Create FutureState
+    async_future_state_t *state = async_future_state_create();
+    
+    if (state == NULL) {
         RETURN_THROWS();
     }
-
-    if (ZEND_FUTURE_IS_COMPLETED(future)) {
-        if (future->completed_filename != NULL) {
-            async_throw_error("Future is already completed at %s:%d", future->completed_filename, future->completed_lineno);
-        } else {
-            async_throw_error("Future is already completed at Unknown:0");
-        }
-
-        RETURN_THROWS();
-    }
-
+    
+    zend_future_t *future = (zend_future_t *)state->event;
+    
+    // Reject it immediately
     ZEND_FUTURE_REJECT(future, Z_OBJ_P(throwable));
+    
+    // Create Future object wrapping this state
+    zval state_zval;
+    ZVAL_OBJ(&state_zval, &state->std);
+    
+    object_init_ex(return_value, async_ce_future);
+    
+    zval args[1];
+    ZVAL_COPY(&args[0], &state_zval);
+    
+    zend_call_method_with_1_params(Z_OBJ_P(return_value), async_ce_future, NULL, "__construct", NULL, &args[0]);
+    
+    zval_ptr_dtor(&args[0]);
 }
 
-METHOD(isComplete)
+FUTURE_METHOD(isComplete)
 {
     ZEND_PARSE_PARAMETERS_NONE();
     
-    zend_future_t *future = THIS_ZEND_FUTURE;
+    async_future_t *future = THIS_FUTURE;
+    
+    if (future->event == NULL) {
+        RETURN_FALSE;
+    }
+    
+    zend_future_t *state = (zend_future_t *)future->event;
 
-    RETURN_BOOL(ZEND_FUTURE_IS_COMPLETED(future));
+    RETURN_BOOL(ZEND_FUTURE_IS_COMPLETED(state));
 }
 
-METHOD(ignore)
+FUTURE_METHOD(ignore)
 {
     ZEND_PARSE_PARAMETERS_NONE();
-
-
+    
+    async_future_t *future = THIS_FUTURE;
+    
+    if (future->event != NULL) {
+        zend_future_t *state = (zend_future_t *)future->event;
+        ZEND_FUTURE_SET_IGNORED(state);
+    }
 
     RETURN_ZVAL(ZEND_THIS, 1, 0);
 }
 
-METHOD(await)
+FUTURE_METHOD(await)
 {
     zend_object * cancellation = NULL;
     
@@ -397,14 +443,14 @@ METHOD(await)
         RETURN_NULL();
     }
 
-    zend_future_t *future = THIS_ZEND_FUTURE;
+    const async_future_t *future = THIS_FUTURE;
     
-    if (future == NULL) {
+    if (future->event == NULL) {
         async_throw_error("Future has no state");
         RETURN_THROWS();
     }
 
-    zend_async_event_t *event = &future->event;
+    zend_async_event_t *event = future->event;
 
     if (ZEND_ASYNC_EVENT_IS_CLOSED(event)) {
 
@@ -477,19 +523,19 @@ METHOD(await)
 }
 
 /* TODO: Implement map, catch, finally methods */
-METHOD(map)
+FUTURE_METHOD(map)
 {
     async_throw_error("Future::map() not yet implemented");
     RETURN_THROWS();
 }
 
-METHOD(catch)
+FUTURE_METHOD(catch)
 {
     async_throw_error("Future::catch() not yet implemented");
     RETURN_THROWS();
 }
 
-METHOD(finally)
+FUTURE_METHOD(finally)
 {
     async_throw_error("Future::finally() not yet implemented");
     RETURN_THROWS();

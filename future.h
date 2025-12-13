@@ -24,20 +24,23 @@ typedef struct _async_future_s async_future_t;
 
 /**
  * FutureState object structure.
- * Inherits from zend_async_event_t to participate in the event system.
+ * Holds a reference to the underlying zend_future_t event.
+ * Allows modification through complete() and error() methods.
  */
 struct _async_future_state_s {
-    ZEND_ASYNC_EVENT_REF_FIELDS
-    zend_object std;
+    ZEND_ASYNC_EVENT_REF_FIELDS        /* Reference to zend_future_t */
+    zend_object std;                   /* Standard object */
 };
 
 /**
  * Future object structure.
- * Holds a reference to FutureState.
+ * Holds a reference to the same zend_future_t event as FutureState.
+ * Provides readonly access (await, isComplete, ignore, map, catch, finally).
+ * Both structures have identical beginning (ZEND_ASYNC_EVENT_REF_FIELDS).
  */
 struct _async_future_s {
-    ZEND_ASYNC_EVENT_REF_FIELDS
-    zend_object std;                /* Standard object */
+    ZEND_ASYNC_EVENT_REF_FIELDS        /* Reference to zend_future_t (same as FutureState) */
+    zend_object std;                   /* Standard object */
 };
 
 /* Class entry declarations */

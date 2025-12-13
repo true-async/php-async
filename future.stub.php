@@ -50,7 +50,7 @@ final class FutureState
 /**
  * @template-covariant T
  */
-final class Future implements Awaitable
+final class Future implements FutureLike
 {
     /**
      * @template Tv
