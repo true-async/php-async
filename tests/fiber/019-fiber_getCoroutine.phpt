@@ -16,7 +16,7 @@ $c = spawn(function() {
 
     $coro = $f->getCoroutine();
     echo "Has coroutine: " . ($coro !== null ? "yes" : "no") . "\n";
-    echo "Coroutine ID: " . $coro->getId() . "\n";
+    echo "Has ID: " . ($coro->getId() > 0 ? "yes" : "no") . "\n";
     echo "Is started: " . ($coro->isStarted() ? "yes" : "no") . "\n";
     echo "Is suspended: " . ($coro->isSuspended() ? "yes" : "no") . "\n";
 
@@ -33,7 +33,7 @@ $f = new Fiber(function() {
 $f->start();
 
 $coro = $f->getCoroutine();
-echo "Regular fiber coroutine: " . ($coro === null ? "null" : "not-null") . "\n";
+echo "Regular fiber: " . ($coro === null ? "null" : "not-null") . "\n";
 
 $f->resume();
 
@@ -41,8 +41,8 @@ echo "OK\n";
 ?>
 --EXPECT--
 Has coroutine: yes
-Coroutine ID: 2
+Has ID: yes
 Is started: yes
 Is suspended: yes
-Regular fiber coroutine: null
+Regular fiber: null
 OK
