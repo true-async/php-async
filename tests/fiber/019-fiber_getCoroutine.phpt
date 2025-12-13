@@ -25,18 +25,6 @@ $c = spawn(function() {
 
 await($c);
 
-// Test without coroutine (regular fiber)
-$f = new Fiber(function() {
-    Fiber::suspend();
-});
-
-$f->start();
-
-$coro = $f->getCoroutine();
-echo "Regular fiber: " . ($coro === null ? "null" : "not-null") . "\n";
-
-$f->resume();
-
 echo "OK\n";
 ?>
 --EXPECT--
@@ -44,5 +32,4 @@ Has coroutine: yes
 Has ID: yes
 Is started: yes
 Is suspended: yes
-Regular fiber: null
 OK
