@@ -526,6 +526,48 @@ static bool resolve_deadlocks(void)
 		return false;
 	}
 
+	//
+	// Let’s count the number of coroutine-fibers that are in the YIELD state.
+	// This state differs from the regular Suspended state in that
+	// the Fiber has transferred control back to the parent coroutine.
+	//
+	zend_long fiber_coroutines_count = 0;
+
+	ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), value) {
+		const zend_coroutine_t *coroutine = (zend_coroutine_t *) Z_PTR_P(value);
+
+		if (ZEND_COROUTINE_IS_FIBER(coroutine)
+			&& ZEND_COROUTINE_IS_YIELD(coroutine)
+			&& coroutine->extended_data != NULL) {
+			fiber_coroutines_count++;
+		}
+	}
+	ZEND_HASH_FOREACH_END();
+
+	//
+	// If all coroutines are fiber coroutines in the SUSPENDED state,
+	// we can simply cancel them without creating a deadlock exception.
+	//
+	if (fiber_coroutines_count == real_coroutines) {
+
+		ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), value) {
+			zend_coroutine_t *coroutine = (zend_coroutine_t *) Z_PTR_P(value);
+
+			if (ZEND_COROUTINE_IS_FIBER(coroutine)
+				&& ZEND_COROUTINE_IS_YIELD(coroutine)
+				&& coroutine->extended_data != NULL) {
+					ZEND_ASYNC_CANCEL(coroutine,
+						async_new_exception(async_ce_cancellation_exception, "Fiber coroutine cancelled"), true);
+
+				if (UNEXPECTED(EG(exception) != NULL)) {
+					return true;
+				}
+			}
+		}
+		ZEND_HASH_FOREACH_END();
+		return false;
+	}
+
 	// Create deadlock exception to be set as exit_exception
 	zend_object *deadlock_exception = async_new_exception(async_ce_deadlock_error, 
 		"Deadlock detected: no active coroutines, %u coroutines in waiting", real_coroutines);
@@ -552,7 +594,7 @@ static bool resolve_deadlocks(void)
 		ZEND_ASYNC_CANCEL(
 				&coroutine->coroutine, async_new_exception(async_ce_cancellation_exception, "Deadlock detected"), true);
 
-		if (EG(exception) != NULL) {
+		if (UNEXPECTED(EG(exception) != NULL)) {
 			return true;
 		}
 	}
