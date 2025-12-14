@@ -556,8 +556,7 @@ static bool resolve_deadlocks(void)
 			if (ZEND_COROUTINE_IS_FIBER(coroutine)
 				&& ZEND_COROUTINE_IS_YIELD(coroutine)
 				&& coroutine->extended_data != NULL) {
-					ZEND_ASYNC_CANCEL(coroutine,
-						async_new_exception(async_ce_cancellation_exception, "Fiber coroutine cancelled"), true);
+					ZEND_ASYNC_CANCEL(coroutine, zend_create_graceful_exit(), true);
 
 				if (UNEXPECTED(EG(exception) != NULL)) {
 					return true;
