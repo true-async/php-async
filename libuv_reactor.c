@@ -173,7 +173,7 @@ bool libuv_reactor_execute(bool no_wait)
 
 	const bool has_handles = uv_run(UVLOOP, no_wait ? UV_RUN_NOWAIT : UV_RUN_ONCE);
 
-	return has_handles;
+	return has_handles && ZEND_ASYNC_ACTIVE_EVENT_COUNT > 0;
 }
 
 /* }}} */
