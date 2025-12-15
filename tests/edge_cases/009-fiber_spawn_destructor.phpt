@@ -100,14 +100,18 @@ Created: SpawnInDestructor
 Starting some async operations
 Unsetting objects to trigger destructors
 Destructing: FiberInDestructor
-Error in destructor: Cannot create a fiber while an True Async is active
+Starting fiber in destructor
+Main coroutine running
+Fiber running in destructor
+Main coroutine resumed
+Fiber suspended with: destructor fiber
+Fiber resumed in destructor
+Fiber completed with: destructor done
 Destructor finished: FiberInDestructor
 Destructing: SpawnInDestructor
 Spawning coroutine in destructor
 Waiting for coroutine in destructor
-Main coroutine running
 Coroutine running in destructor
-Main coroutine resumed
 Coroutine resumed in destructor
 Coroutine completed with: destructor coroutine done
 Destructor finished: SpawnInDestructor
