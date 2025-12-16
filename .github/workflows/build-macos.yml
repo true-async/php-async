@@ -74,7 +74,13 @@ jobs:
           export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$BREW_OPT/zlib/lib/pkgconfig"
           export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$BREW_OPT/icu4c/lib/pkgconfig"
           sed -i -e 's/Requires.private:.*//g' "$BREW_OPT/curl/lib/pkgconfig/libcurl.pc"
-          
+
+          # Disable JIT for macOS 15 Intel (x86_64) RELEASE builds due to Clang 17 tail call optimization bug
+          JIT_FLAG=""
+          if [[ "${{ matrix.os }}" == "15-intel" && "${{ matrix.debug }}" == "false" ]]; then
+            JIT_FLAG="--disable-opcache-jit"
+          fi
+
           ./buildconf --force
           ./configure \
             --enable-option-checking=fatal \
@@ -127,7 +133,8 @@ jobs:
             --with-config-file-scan-dir=/etc/php.d \
             --${{ matrix.debug && 'enable' || 'disable' }}-debug \
             --${{ matrix.zts && 'enable' || 'disable' }}-zts \
-            --enable-async
+            --enable-async \
+            $JIT_FLAG
 
       - name: Build PHP
         run: |-
