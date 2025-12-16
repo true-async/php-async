@@ -7,7 +7,7 @@ Poll2 async: Multiple coroutines with socket operations
 require_once __DIR__ . '/stream_helper.php';
 use function Async\spawn;
 use function Async\await;
-use function Async\awaitAll;
+use function Async\await_all;
 
 echo "Before spawn\n";
 
@@ -45,7 +45,7 @@ for ($i = 1; $i <= 3; $i++) {
     });
 }
 
-[$results, $exceptions] = awaitAll($coroutines);
+[$results, $exceptions] = await_all($coroutines);
 
 // Sort and output results
 sort($output);

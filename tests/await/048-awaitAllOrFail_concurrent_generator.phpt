@@ -1,10 +1,10 @@
 --TEST--
-awaitAllOrFail() - With concurrent generator using suspend() in body
+await_all_or_fail() - With concurrent generator using suspend() in body
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAllOrFail;
+use function Async\await_all_or_fail;
 use function Async\suspend;
 
 function concurrentGenerator($values) {
@@ -29,7 +29,7 @@ spawn(function() {
     }
 });
 
-$results = awaitAllOrFail($generator);
+$results = await_all_or_fail($generator);
 
 echo "Results: " . implode(", ", $results) . "\n";
 echo "Count: " . count($results) . "\n";

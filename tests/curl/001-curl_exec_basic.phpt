@@ -8,7 +8,7 @@ require_once __DIR__ . '/../common/http_server.php';
 
 use function Async\spawn;
 use function Async\await;
-use function Async\awaitAll;
+use function Async\await_all;
 
 // Start our test server
 $server = async_test_server_start();
@@ -110,7 +110,7 @@ $coroutines = [
     spawn(fn() => test_error_handling($server))
 ];
 
-$results = awaitAll($coroutines);
+$results = await_all($coroutines);
 
 echo "All tests completed successfully\n";
 echo "Test end\n";

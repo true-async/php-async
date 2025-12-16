@@ -3,7 +3,7 @@ Async\spawnWith: SpawnStrategy hook execution order
 --FILE--
 <?php
 
-use function Async\spawnWith;
+use function Async\spawn_with;
 use function Async\await;
 use Async\SpawnStrategy;
 use Async\Scope;
@@ -40,7 +40,7 @@ echo "start\n";
 
 $strategy = new OrderTestStrategy();
 
-$coroutine = spawnWith($strategy, function() {
+$coroutine = spawn_with($strategy, function() {
     echo "3. coroutine executed\n";
     return "order test";
 });

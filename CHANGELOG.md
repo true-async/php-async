@@ -28,6 +28,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Deadlock detection now throws `Async\DeadlockError` exception instead of multiple warnings
   - **Breaking Change**: Applications relying on deadlock warnings
   will need to be updated to catch `Async\DeadlockError` exceptions
+- **Breaking Change: PHP Coding Standards Compliance** - Function names updated to follow official PHP naming conventions:
+  - `spawnWith()` → `spawn_with()`
+  - `awaitAnyOrFail()` → `await_any_or_fail()`
+  - `awaitFirstSuccess()` → `await_first_success()`
+  - `awaitAllOrFail()` → `await_all_or_fail()`
+  - `awaitAll()` → `await_all()`
+  - `awaitAnyOfOrFail()` → `await_any_of_or_fail()`
+  - `awaitAnyOf()` → `await_any_of()`
+  - `currentContext()` → `current_context()`
+  - `coroutineContext()` → `coroutine_context()`
+  - `currentCoroutine()` → `current_coroutine()`
+  - `rootContext()` → `root_context()`
+  - `getCoroutines()` → `get_coroutines()`
+  - `gracefulShutdown()` → `graceful_shutdown()`
+  - **Rationale**: Compliance with [PHP Coding Standards](https://github.com/php/policies/blob/main/coding-standards-and-naming.rst) - functions must use lowercase with underscores
 
 ## [0.4.0] - 2025-09-30
 

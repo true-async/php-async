@@ -10,7 +10,7 @@ if (!extension_loaded('sockets')) {
 <?php
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 use function Async\delay;
 
 echo "Start\n";
@@ -75,7 +75,7 @@ $worker = spawn(function() use (&$output) {
     $output[] = "Worker: doing work while server waits";
 });
 
-awaitAll([$server, $client, $worker]);
+await_all([$server, $client, $worker]);
 
 // Sort and output results
 sort($output);

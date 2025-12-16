@@ -1,10 +1,10 @@
 --TEST--
-awaitFirstSuccess() - all coroutines throw exceptions
+await_first_success() - all coroutines throw exceptions
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitFirstSuccess;
+use function Async\await_first_success;
 
 echo "start\n";
 
@@ -17,7 +17,7 @@ $coroutines = [
     }),
 ];
 
-$result = awaitFirstSuccess($coroutines);
+$result = await_first_success($coroutines);
 var_dump($result);
 
 echo "end\n";

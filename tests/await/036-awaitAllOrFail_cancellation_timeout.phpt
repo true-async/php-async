@@ -1,10 +1,10 @@
 --TEST--
-awaitAllOrFail() - with cancellation timeout
+await_all_or_fail() - with cancellation timeout
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAllOrFail;
+use function Async\await_all_or_fail;
 use function Async\await;
 use function Async\delay;
 use function Async\timeout;
@@ -28,7 +28,7 @@ $coroutines = [
 echo "start\n";
 
 try {
-    $results = awaitAllOrFail($coroutines, timeout(1));
+    $results = await_all_or_fail($coroutines, timeout(1));
     echo "Unexpected success\n";
 } catch (Async\TimeoutException $e) {
     echo "Timeout caught as expected\n";

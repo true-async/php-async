@@ -1,10 +1,10 @@
 --TEST--
-awaitAll() - iterator exception in current() method
+await_all() - iterator exception in current() method
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 
 echo "start\n";
 
@@ -40,7 +40,7 @@ class FailingCurrentIterator implements Iterator
 }
 
 try {
-    $results = awaitAll(new FailingCurrentIterator());
+    $results = await_all(new FailingCurrentIterator());
     echo "ERROR: Should have thrown exception\n";
 } catch (\RuntimeException $e) {
     echo "Caught current() exception: " . $e->getMessage() . "\n";

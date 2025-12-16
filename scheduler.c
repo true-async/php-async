@@ -533,12 +533,12 @@ static bool resolve_deadlocks(void)
 	//
 	zend_long fiber_coroutines_count = 0;
 
-	ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), value) {
+	ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), value)
+	{
 		const zend_coroutine_t *coroutine = (zend_coroutine_t *) Z_PTR_P(value);
 
-		if (ZEND_COROUTINE_IS_FIBER(coroutine)
-			&& ZEND_COROUTINE_IS_YIELD(coroutine)
-			&& coroutine->extended_data != NULL) {
+		if (ZEND_COROUTINE_IS_FIBER(coroutine) && ZEND_COROUTINE_IS_YIELD(coroutine) &&
+			coroutine->extended_data != NULL) {
 			fiber_coroutines_count++;
 		}
 	}
@@ -550,13 +550,13 @@ static bool resolve_deadlocks(void)
 	//
 	if (fiber_coroutines_count == real_coroutines) {
 
-		ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), value) {
+		ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), value)
+		{
 			zend_coroutine_t *coroutine = (zend_coroutine_t *) Z_PTR_P(value);
 
-			if (ZEND_COROUTINE_IS_FIBER(coroutine)
-				&& ZEND_COROUTINE_IS_YIELD(coroutine)
-				&& coroutine->extended_data != NULL) {
-					ZEND_ASYNC_CANCEL(coroutine, zend_create_graceful_exit(), true);
+			if (ZEND_COROUTINE_IS_FIBER(coroutine) && ZEND_COROUTINE_IS_YIELD(coroutine) &&
+				coroutine->extended_data != NULL) {
+				ZEND_ASYNC_CANCEL(coroutine, zend_create_graceful_exit(), true);
 
 				if (UNEXPECTED(EG(exception) != NULL)) {
 					return true;
@@ -568,8 +568,10 @@ static bool resolve_deadlocks(void)
 	}
 
 	// Create deadlock exception to be set as exit_exception
-	zend_object *deadlock_exception = async_new_exception(async_ce_deadlock_error, 
-		"Deadlock detected: no active coroutines, %u coroutines in waiting", real_coroutines);
+	zend_object *deadlock_exception =
+			async_new_exception(async_ce_deadlock_error,
+								"Deadlock detected: no active coroutines, %u coroutines in waiting",
+								real_coroutines);
 
 	// Set as exit exception if there isn't one already
 	if (ZEND_ASYNC_EXIT_EXCEPTION == NULL) {
@@ -580,7 +582,8 @@ static bool resolve_deadlocks(void)
 		ZEND_ASYNC_EXIT_EXCEPTION = deadlock_exception;
 	}
 
-	ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), value) {
+	ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), value)
+	{
 		async_coroutine_t *coroutine = (async_coroutine_t *) Z_PTR_P(value);
 
 		ZEND_ASSERT(coroutine->coroutine.waker != NULL && "The Coroutine has no waker object");
@@ -1061,8 +1064,8 @@ bool async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine)
 
 			// Behavior for a new coroutine
 			// see: async_API.c spawn(zend_async_scope_t *scope, zend_object *scope_provider, int32_t priority)
-			if (false == ZEND_COROUTINE_IS_STARTED(coroutine)
-				&& zend_hash_index_find(&ASYNC_G(coroutines), ((async_coroutine_t *)coroutine)->std.handle) == NULL) {
+			if (false == ZEND_COROUTINE_IS_STARTED(coroutine) &&
+				zend_hash_index_find(&ASYNC_G(coroutines), ((async_coroutine_t *) coroutine)->std.handle) == NULL) {
 				// save the filename and line number where the coroutine was created
 				zend_apply_current_filename_and_line(&coroutine->filename, &coroutine->lineno);
 
@@ -1076,7 +1079,9 @@ bool async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine)
 					return false;
 				}
 
-				if (UNEXPECTED(zend_hash_index_add_ptr(&ASYNC_G(coroutines), ((async_coroutine_t *)coroutine)->std.handle, coroutine) == NULL)) {
+				if (UNEXPECTED(zend_hash_index_add_ptr(&ASYNC_G(coroutines),
+													   ((async_coroutine_t *) coroutine)->std.handle,
+													   coroutine) == NULL)) {
 					coroutine->waker->status = ZEND_ASYNC_WAKER_IGNORED;
 					async_throw_error("Failed to add coroutine to the list");
 					return false;
@@ -1144,7 +1149,8 @@ static zend_always_inline void scheduler_next_tick(void)
 	// Fast return path without context switching...
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
-	if (UNEXPECTED(coroutine != NULL && coroutine->waker != NULL && coroutine->waker->status == ZEND_ASYNC_WAKER_RESULT)) {
+	if (UNEXPECTED(coroutine != NULL && coroutine->waker != NULL &&
+				   coroutine->waker->status == ZEND_ASYNC_WAKER_RESULT)) {
 		return;
 	}
 

@@ -1,10 +1,10 @@
 --TEST--
-awaitAnyOfOrFail() - with Iterator
+await_any_of_or_fail() - with Iterator
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAnyOfOrFail;
+use function Async\await_any_of_or_fail;
 use function Async\await;
 
 class TestIterator implements Iterator
@@ -47,7 +47,7 @@ $coroutines = [
 ];
 
 $iterator = new TestIterator($coroutines);
-$results = awaitAnyOfOrFail(2, $iterator);
+$results = await_any_of_or_fail(2, $iterator);
 
 $countOfResults = count($results) >= 2 ? "OK" : "FALSE: ".count($results);
 echo "Count of results: $countOfResults\n";

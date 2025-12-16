@@ -1,10 +1,10 @@
 --TEST--
-awaitAnyOf() - with Iterator
+await_any_of() - with Iterator
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAnyOf;
+use function Async\await_any_of;
 use function Async\await;
 
 class TestIterator implements Iterator
@@ -47,7 +47,7 @@ $coroutines = [
 ];
 
 $iterator = new TestIterator($coroutines);
-$result = awaitAnyOf(2, $iterator);
+$result = await_any_of(2, $iterator);
 
 $countOfResults = count($result[0]) >= 2 ? "OK" : "FALSE: ".count($result[0]);
 $countOfErrors = count($result[1]) == 1 ? "OK" : "FALSE: ".count($result[1]);

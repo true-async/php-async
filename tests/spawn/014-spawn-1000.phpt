@@ -4,7 +4,7 @@ Spawn 1000 coroutines return values
 <?php
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 use function Async\delay;
 
 echo "start\n";

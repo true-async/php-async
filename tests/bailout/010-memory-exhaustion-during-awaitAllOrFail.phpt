@@ -13,7 +13,7 @@ memory_limit=2M
 <?php
 
 use function Async\spawn;
-use function Async\awaitAllOrFail;
+use function Async\await_all_or_fail;
 
 register_shutdown_function(function() {
     echo "Shutdown function called\n";
@@ -39,7 +39,7 @@ $coroutines = [
 ];
 
 echo "Before awaitAllOrFail\n";
-$results = awaitAllOrFail($coroutines);
+$results = await_all_or_fail($coroutines);
 echo "After awaitAllOrFail (should not reach)\n";
 
 ?>

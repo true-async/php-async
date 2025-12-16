@@ -12,7 +12,7 @@ if (!function_exists('php_cli_server_start')) {
 <?php
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 
 // Start CLI server
 include __DIR__ . "/../../../../sapi/cli/tests/php_cli_server.inc";
@@ -34,7 +34,7 @@ $worker = spawn(function() {
     echo "Worker: finished\n";
 });
 
-awaitAll([$http_coroutine, $worker]);
+await_all([$http_coroutine, $worker]);
 echo "End\n";
 
 ?>

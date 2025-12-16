@@ -1,18 +1,18 @@
 --TEST--
-getCoroutines() - integration with coroutine lifecycle management
+get_coroutines() - integration with coroutine lifecycle management
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\getCoroutines;
-use function Async\currentCoroutine;
+use function Async\get_coroutines;
+use function Async\current_coroutine;
 use function Async\suspend;
-use function Async\awaitAll;
+use function Async\await_all;
 
 echo "start\n";
 
 // Track initial state
-$initial_count = count(getCoroutines());
+$initial_count = count(get_coroutines());
 echo "Initial count: {$initial_count}\n";
 
 // Test 1: Create multiple coroutines and track changes
@@ -24,22 +24,22 @@ for ($i = 0; $i < 5; $i++) {
     });
 }
 
-$after_spawn = count(getCoroutines()) - $initial_count;
+$after_spawn = count(get_coroutines()) - $initial_count;
 echo "After spawning 5: {$after_spawn}\n";
 
 // Verify all coroutines are in the list
-$all_coroutines = getCoroutines();
-$currentCoroutine = currentCoroutine();
+$all_coroutines = get_coroutines();
+$currentCoroutine = current_coroutine();
 
 // It’s necessary to check that all coroutines are in the list, regardless of their index.
 foreach ($coroutines as $index => $coroutine) {
     if (!in_array($coroutine, $all_coroutines, true)) {
-        echo "ERROR: Coroutine $index not found in getCoroutines()\n";
+        echo "ERROR: Coroutine $index not found in get_coroutines()\n";
     }
 }
 
 if (!in_array($currentCoroutine, $all_coroutines, true)) {
-    echo "ERROR: Current coroutine not found in getCoroutines()\n";
+    echo "ERROR: Current coroutine not found in get_coroutines()\n";
 }
 
 foreach ($coroutines as $index => $coroutine) {
@@ -55,14 +55,14 @@ foreach ($coroutines as $index => $coroutine) {
     echo "Coroutine {$index} is isCancellationRequested: " . ($coroutine->isCancellationRequested() ? "true" : "false") . "\n";
 }
 
-[$results, $exceptions] = awaitAll($coroutines); // Ensure we yield to allow cancellation to take effect
+[$results, $exceptions] = await_all($coroutines); // Ensure we yield to allow cancellation to take effect
 
-$after_partial_cancel = count(getCoroutines()) - $initial_count;
+$after_partial_cancel = count(get_coroutines()) - $initial_count;
 echo "After cancelling 2: {$after_partial_cancel}\n";
 
 echo "Completed results: " . count($results) . "\n";
 
-$final_count = count(getCoroutines()) - $initial_count;
+$final_count = count(get_coroutines()) - $initial_count;
 echo "Final count: {$final_count}\n";
 
 echo "end\n";

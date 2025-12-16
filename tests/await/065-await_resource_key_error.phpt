@@ -1,10 +1,10 @@
 --TEST--
-awaitAll() - iterator with resource keys error
+await_all() - iterator with resource keys error
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 
 echo "start\n";
 
@@ -52,7 +52,7 @@ class ResourceKeyIterator implements Iterator
 }
 
 try {
-    $result = awaitAll(new ResourceKeyIterator());
+    $result = await_all(new ResourceKeyIterator());
     echo "ERROR: Should have failed with resource keys\n";
 } catch (Async\AsyncException $e) {
     echo "Caught resource key error: " . $e->getMessage() . "\n";

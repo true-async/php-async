@@ -860,7 +860,7 @@ zend_async_signal_event_t *libuv_new_signal_event(int signum, size_t extra_size)
  *
  * Thus, ASYNC_G(process_events) is a hash table with the key as ProcessId
  * and the value as an Event for process handling.
-**/
+ **/
 
 /* {{{ libuv_signal_close_cb */
 static void libuv_signal_close_cb(uv_handle_t *handle)
@@ -1030,11 +1030,10 @@ static void libuv_handle_process_events(void)
 
 		// Get PID to use as key for verification
 		async_process_event_t *process = (async_process_event_t *) event;
-		uintptr_t pid_key = (uintptr_t)process->event.process;
+		uintptr_t pid_key = (uintptr_t) process->event.process;
 
 		// Verify event is still in the HashTable (might have been removed)
-		if (ASYNC_G(process_events) == NULL ||
-			zend_hash_index_find_ptr(ASYNC_G(process_events), pid_key) == NULL) {
+		if (ASYNC_G(process_events) == NULL || zend_hash_index_find_ptr(ASYNC_G(process_events), pid_key) == NULL) {
 			continue;
 		}
 
@@ -1103,9 +1102,9 @@ static void libuv_remove_process_event(zend_async_event_t *event)
 	}
 
 	// Get process handle from event to use as key
-	async_process_event_t *process_event = (async_process_event_t *)event;
+	async_process_event_t *process_event = (async_process_event_t *) event;
 
-	zend_hash_index_del(ASYNC_G(process_events), (uintptr_t)process_event->event.process);
+	zend_hash_index_del(ASYNC_G(process_events), (uintptr_t) process_event->event.process);
 
 	// Only remove SIGCHLD handler if no more process events AND no regular signal events for SIGCHLD
 	if (zend_hash_num_elements(ASYNC_G(process_events)) == 0) {
@@ -1574,7 +1573,7 @@ zend_async_process_event_t *libuv_new_process_event(zend_process_t process_handl
 	START_REACTOR_OR_RETURN_NULL;
 
 	// Use process handle as key for hash lookup
-	uintptr_t pid_key = (uintptr_t)process_handle;
+	uintptr_t pid_key = (uintptr_t) process_handle;
 
 	// Initialize process_events if needed
 	if (ASYNC_G(process_events) == NULL) {

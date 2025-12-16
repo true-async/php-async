@@ -1,10 +1,10 @@
 --TEST--
-awaitAllOrFail() - one coroutine throws exception
+await_all_or_fail() - one coroutine throws exception
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAllOrFail;
+use function Async\await_all_or_fail;
 
 echo "start\n";
 
@@ -21,7 +21,7 @@ $coroutines = [
 ];
 
 try {
-    $results = awaitAllOrFail($coroutines);
+    $results = await_all_or_fail($coroutines);
     var_dump($results);
 } catch (RuntimeException $e) {
     echo "caught exception: " . $e->getMessage() . "\n";

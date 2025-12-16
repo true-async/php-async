@@ -1,23 +1,23 @@
 --TEST--
-awaitAllOrFail() - with empty iterable
+await_all_or_fail() - with empty iterable
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAllOrFail;
+use function Async\await_all_or_fail;
 use function Async\await;
 
 // Test with empty array
 echo "start\n";
 
-$results = awaitAllOrFail([]);
+$results = await_all_or_fail([]);
 
 echo "Empty array count: " . count($results) . "\n";
 echo "Empty array type: " . gettype($results) . "\n";
 
 // Test with empty ArrayObject
 $emptyArrayObject = new ArrayObject([]);
-$results2 = awaitAllOrFail($emptyArrayObject);
+$results2 = await_all_or_fail($emptyArrayObject);
 
 echo "Empty ArrayObject count: " . count($results2) . "\n";
 echo "Empty ArrayObject type: " . gettype($results2) . "\n";
@@ -28,7 +28,7 @@ function emptyGenerator() {
     yield; // unreachable
 }
 
-$results3 = awaitAllOrFail(emptyGenerator());
+$results3 = await_all_or_fail(emptyGenerator());
 
 echo "Empty generator count: " . count($results3) . "\n";
 echo "Empty generator type: " . gettype($results3) . "\n";

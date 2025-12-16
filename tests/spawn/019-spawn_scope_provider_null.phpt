@@ -1,9 +1,9 @@
 --TEST--
-spawnWith() - scope provider returns null (valid case)
+spawn_with() - scope provider returns null (valid case)
 --FILE--
 <?php
 
-use function Async\spawnWith;
+use function Async\spawn_with;
 use function Async\await;
 
 echo "start\n";
@@ -17,7 +17,7 @@ class NullScopeProvider implements \Async\ScopeProvider
 }
 
 try {
-    $coroutine = spawnWith(new NullScopeProvider(), function() {
+    $coroutine = spawn_with(new NullScopeProvider(), function() {
         return "success";
     });
 

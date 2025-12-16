@@ -10,7 +10,7 @@ if (!extension_loaded('sockets')) {
 <?php
 
 use function Async\spawn;
-use function Async\awaitAllOrFail;
+use function Async\await_all_or_fail;
 use function Async\delay;
 
 echo "Start\n";
@@ -81,7 +81,7 @@ for ($i = 1; $i <= 3; $i++) {
     });
 }
 
-awaitAllOrFail(array_merge([$server], $clients));
+await_all_or_fail(array_merge([$server], $clients));
 
 // Sort and output results
 sort($output);

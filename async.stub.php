@@ -23,7 +23,7 @@ function spawn(callable $task, mixed ... $args): Coroutine {}
  *
  * @return Coroutine
  */
-function spawnWith(ScopeProvider $provider, callable $task, mixed ... $args): Coroutine {}
+function spawn_with(ScopeProvider $provider, callable $task, mixed ... $args): Coroutine {}
 
 /**
  * Suspends the execution of a Coroutine until the Scheduler takes control.
@@ -37,30 +37,30 @@ function protect(\Closure $closure): mixed {}
 
 function await(Awaitable $awaitable, ?Awaitable $cancellation = null): mixed {}
 
-function awaitAnyOrFail(iterable $triggers, ?Awaitable $cancellation = null): mixed {}
+function await_any_or_fail(iterable $triggers, ?Awaitable $cancellation = null): mixed {}
 
-function awaitFirstSuccess(iterable $triggers, ?Awaitable $cancellation = null): mixed {}
+function await_first_success(iterable $triggers, ?Awaitable $cancellation = null): mixed {}
 
-function awaitAllOrFail(iterable $triggers, ?Awaitable $cancellation = null, bool $preserveKeyOrder = true): array {}
+function await_all_or_fail(iterable $triggers, ?Awaitable $cancellation = null, bool $preserveKeyOrder = true): array {}
 
-function awaitAll(iterable $triggers, ?Awaitable $cancellation = null, bool $preserveKeyOrder = true, bool $fillNull = false): array {}
+function await_all(iterable $triggers, ?Awaitable $cancellation = null, bool $preserveKeyOrder = true, bool $fillNull = false): array {}
 
-function awaitAnyOfOrFail(int $count, iterable $triggers, ?Awaitable $cancellation = null, bool $preserveKeyOrder = true): array {}
+function await_any_of_or_fail(int $count, iterable $triggers, ?Awaitable $cancellation = null, bool $preserveKeyOrder = true): array {}
 
-function awaitAnyOf(int $count, iterable $triggers, ?Awaitable $cancellation = null, bool $preserveKeyOrder = true, bool $fillNull = false): array {}
+function await_any_of(int $count, iterable $triggers, ?Awaitable $cancellation = null, bool $preserveKeyOrder = true, bool $fillNull = false): array {}
 
 function delay(int $ms): void {}
 
 function timeout(int $ms): Awaitable {}
 
-function currentContext(): Context {}
+function current_context(): Context {}
 
-function coroutineContext(): Context {}
+function coroutine_context(): Context {}
 
 /**
  * Returns the current coroutine.
  */
-function currentCoroutine(): Coroutine {}
+function current_coroutine(): Coroutine {}
 
 /**
  * Adds an onFinally handler for the current coroutine.
@@ -70,19 +70,19 @@ function currentCoroutine(): Coroutine {}
 /**
  * Returns the root Scope.
  */
-function rootContext(): Context {}
+function root_context(): Context {}
 
 /**
  * Returns the list of all coroutines
  *
  * @return Coroutine[]
  */
-function getCoroutines(): array {}
+function get_coroutines(): array {}
 
 /**
  * Start the graceful shutdown of the Scheduler.
  */
-function gracefulShutdown(?CancellationError $cancellationError = null): void {}
+function graceful_shutdown(?CancellationError $cancellationError = null): void {}
 
 /**
  * Execute an external program.

@@ -4,9 +4,9 @@ Scheduler: graceful shutdown with exception handling
 <?php
 
 use function Async\spawn;
-use function Async\gracefulShutdown;
+use function Async\graceful_shutdown;
 use function Async\suspend;
-use function Async\awaitAll;
+use function Async\await_all;
 
 echo "start\n";
 
@@ -29,7 +29,7 @@ echo "coroutines spawned\n";
 // Trigger graceful shutdown with custom cancellation
 try {
     $cancellation = new \Async\CancellationError("Custom shutdown message");
-    awaitAll([$error_coroutine, $cleanup_coroutine]);
+    await_all([$error_coroutine, $cleanup_coroutine]);
     echo "graceful shutdown with custom cancellation completed\n";
 } catch (\Async\CancellationError $e) {
     echo "caught shutdown cancellation: " . $e->getMessage() . "\n";

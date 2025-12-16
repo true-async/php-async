@@ -1,10 +1,10 @@
 --TEST--
-awaitFirstSuccess() - with Iterator
+await_first_success() - with Iterator
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitFirstSuccess;
+use function Async\await_first_success;
 use function Async\await;
 
 class TestIterator implements Iterator
@@ -51,7 +51,7 @@ $functions = [
 ];
 
 $iterator = new TestIterator($functions);
-$result = awaitFirstSuccess($iterator);
+$result = await_first_success($iterator);
 
 echo "Result: {$result[0]}\n";
 echo "end\n";

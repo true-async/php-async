@@ -5,7 +5,7 @@ CompositeException with multiple finally handlers
 
 use function Async\spawn;
 use function Async\suspend;
-use function Async\currentCoroutine;
+use function Async\current_coroutine;
 use function Async\await;
 
 echo "start\n";
@@ -27,7 +27,7 @@ $scope->setExceptionHandler(function($scope, $coroutine, $exception) {
 $composite_coroutine = $scope->spawn(function() {
     echo "composite coroutine started\n";
     
-    $coroutine = \Async\currentCoroutine();
+    $coroutine = \Async\current_coroutine();
     
     // Add multiple finally handlers that throw
     $coroutine->onFinally(function() {

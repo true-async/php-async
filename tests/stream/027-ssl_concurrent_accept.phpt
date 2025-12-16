@@ -6,7 +6,7 @@ SSL Stream: concurrent SSL accept operations without EventLoop conflicts
 <?php
 
 use function Async\spawn;
-use function Async\awaitAllOrFail;
+use function Async\await_all_or_fail;
 use function Async\delay;
 
 echo "Start SSL concurrent accept test\n";
@@ -86,7 +86,7 @@ $monitor = spawn(function() use (&$servers_ready, &$servers_completed) {
     echo "Monitor: all servers completed\n";
 });
 
-awaitAllOrFail([$server1, $server2, $server3, $monitor]);
+await_all_or_fail([$server1, $server2, $server3, $monitor]);
 
 // Sort output for deterministic results
 sort($output);

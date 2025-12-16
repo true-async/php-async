@@ -1,10 +1,10 @@
 --TEST--
-awaitAllOrFail() - with Iterator
+await_all_or_fail() - with Iterator
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAllOrFail;
+use function Async\await_all_or_fail;
 use function Async\await;
 
 class TestIterator implements Iterator
@@ -51,7 +51,7 @@ $functions = [
 ];
 
 $iterator = new TestIterator($functions);
-$results = awaitAllOrFail($iterator);
+$results = await_all_or_fail($iterator);
 
 $countOfResults = count($results) == 3 ? "OK" : "FALSE: ".count($results);
 echo "Count of results: $countOfResults\n";

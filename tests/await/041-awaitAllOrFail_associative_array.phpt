@@ -1,10 +1,10 @@
 --TEST--
-awaitAllOrFail() - with associative array
+await_all_or_fail() - with associative array
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAllOrFail;
+use function Async\await_all_or_fail;
 use function Async\await;
 
 $coroutines = [
@@ -23,7 +23,7 @@ $coroutines = [
 
 echo "start\n";
 
-$results = awaitAllOrFail($coroutines);
+$results = await_all_or_fail($coroutines);
 
 echo "Count: " . count($results) . "\n";
 echo "Keys preserved: " . (array_keys($results) === ['task1', 'task2', 'task3'] ? "YES" : "NO") . "\n";

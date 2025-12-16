@@ -3,7 +3,7 @@ Async\spawnWith: SpawnStrategy with exception in coroutine
 --FILE--
 <?php
 
-use function Async\spawnWith;
+use function Async\spawn_with;
 use function Async\await;
 use Async\SpawnStrategy;
 use Async\Scope;
@@ -39,7 +39,7 @@ echo "start\n";
 
 $strategy = new ExceptionTestStrategy();
 
-$coroutine = spawnWith($strategy, function() {
+$coroutine = spawn_with($strategy, function() {
     echo "coroutine start\n";
     throw new RuntimeException("test exception from coroutine");
 });

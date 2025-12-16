@@ -1,10 +1,10 @@
 --TEST--
-awaitAnyOrFail() - with Iterator
+await_any_or_fail() - with Iterator
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAnyOrFail;
+use function Async\await_any_or_fail;
 use function Async\await;
 use function Async\suspend;
 
@@ -59,7 +59,7 @@ $functions = [
 ];
 
 $iterator = new TestIterator($functions);
-$result = awaitAnyOrFail($iterator);
+$result = await_any_or_fail($iterator);
 
 echo "Result: $result\n";
 echo "end\n";
