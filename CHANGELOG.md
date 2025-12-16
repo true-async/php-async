@@ -5,10 +5,23 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.0] - 2025-10-31
+## [0.5.0] - 2025-12-31
 
 ### Added
+- **Fiber Support**: Full integration of PHP Fibers with TrueAsync coroutine system
+  - `Fiber::suspend()` and `Fiber::resume()` work in async scheduler context
+  - `Fiber::getCoroutine()` method to access fiber's coroutine
+  - Fiber status methods (isStarted, isSuspended, isRunning, isTerminated)
+  - Support for nested fibers and fiber-coroutine interactions
+  - Comprehensive test coverage for all fiber scenarios
 - **TrueAsync API**: Added `ZEND_ASYNC_SCHEDULER_LAUNCH()` macro for scheduler initialization
+- **TrueAsync API**: Updated to version 0.8.0 with fiber support
+
+### Fixed
+- **Critical GC Bug**: Fixed garbage collection crash during coroutine cancellation when exception occurs in main coroutine while GC is running
+- Fixed double free in `zend_fiber_object_destroy()`
+- Fixed `stream_select()` for `timeout == NULL` case in async context
+- Fixed fiber memory leaks and improved GC logic
 
 ### Changed
 - **Deadlock Detection**: Replaced warnings with structured exception handling
