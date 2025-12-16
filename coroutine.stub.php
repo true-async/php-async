@@ -42,8 +42,13 @@ final class Coroutine implements Awaitable
 
     /**
      * Returns the Coroutine debug trace.
+     * If the coroutine is in the suspended state, returns a backtrace array.
+     * Otherwise, returns an empty array.
+     *
+     * @param int $options Options for the backtrace (DEBUG_BACKTRACE_PROVIDE_OBJECT, DEBUG_BACKTRACE_IGNORE_ARGS)
+     * @param int $limit Maximum number of stack frames to return (0 for no limit)
      */
-    public function getTrace(): array {}
+    public function getTrace(int $options = DEBUG_BACKTRACE_PROVIDE_OBJECT, int $limit = 0): array {}
 
     /**
      * Return spawn file and line.

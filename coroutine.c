@@ -32,6 +32,7 @@
 #include "zend_exceptions.h"
 #include "zend_generators.h"
 #include "zend_ini.h"
+#include "zend_builtin_functions.h"
 
 #define METHOD(name) PHP_METHOD(Async_Coroutine, name)
 #define THIS_COROUTINE ((async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS)))
@@ -1333,9 +1334,40 @@ METHOD(getException)
 
 METHOD(getTrace)
 {
-	// TODO: Implement debug trace collection
-	// This would require fiber stack trace functionality
-	array_init(return_value);
+	zend_long options = DEBUG_BACKTRACE_PROVIDE_OBJECT;
+	zend_long limit = 0;
+
+	ZEND_PARSE_PARAMETERS_START(0, 2)
+	Z_PARAM_OPTIONAL
+	Z_PARAM_LONG(options)
+	Z_PARAM_LONG(limit)
+	ZEND_PARSE_PARAMETERS_END();
+
+	async_coroutine_t *coroutine = THIS_COROUTINE;
+	async_fiber_context_t *fiber_context = coroutine->fiber_context;
+
+	// Return empty array if coroutine is not suspended or has no fiber context
+	if (fiber_context == NULL ||
+		fiber_context->context.status != ZEND_FIBER_STATUS_SUSPENDED ||
+		!fiber_context->execute_data) {
+		array_init(return_value);
+		return;
+	}
+
+	// Switch to the coroutine's VM stack to generate the backtrace
+	zend_vm_stack orig_vm_stack = EG(vm_stack);
+	zend_execute_data *orig_execute_data = EG(current_execute_data);
+
+	EG(vm_stack) = fiber_context->vm_stack;
+	EG(current_execute_data) = fiber_context->execute_data;
+
+	// Generate the backtrace using Zend's built-in function
+	// skip_last = 0 (don't skip any frames)
+	zend_fetch_debug_backtrace(return_value, 0, (int)options, (int)limit);
+
+	// Restore original VM stack and execute data
+	EG(vm_stack) = orig_vm_stack;
+	EG(current_execute_data) = orig_execute_data;
 }
 
 // Location Methods
