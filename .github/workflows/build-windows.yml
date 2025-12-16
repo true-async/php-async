@@ -7,7 +7,7 @@ on:
 jobs:
   WINDOWS:
     name: WINDOWS_X64_ZTS
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 50
     env:
       PHP_BUILD_CACHE_BASE_DIR: C:\build-cache
