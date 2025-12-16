@@ -1,5 +1,5 @@
 /* This is a generated file, edit the .stub.php file instead.
- * Stub hash: 35d332163bf92ed3cad35c83017aaa67d650aa9d */
+ * Stub hash: 2469ab708f75ecce11e559548c2462562fd39c2a */
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_Coroutine_getId, 0, 0, IS_LONG, 0)
 ZEND_END_ARG_INFO()
@@ -15,7 +15,7 @@ ZEND_END_ARG_INFO()
 
 #define arginfo_class_Async_Coroutine_getException arginfo_class_Async_Coroutine_getResult
 
-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_Coroutine_getTrace, 0, 0, IS_ARRAY, 0)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_Coroutine_getTrace, 0, 0, IS_ARRAY, 1)
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, options, IS_LONG, 0, "DEBUG_BACKTRACE_PROVIDE_OBJECT")
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, limit, IS_LONG, 0, "0")
 ZEND_END_ARG_INFO()

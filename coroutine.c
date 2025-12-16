@@ -1344,13 +1344,17 @@ METHOD(getTrace)
 	ZEND_PARSE_PARAMETERS_END();
 
 	async_coroutine_t *coroutine = THIS_COROUTINE;
+
+	// Return null if coroutine is not suspended
+	if (!ZEND_COROUTINE_SUSPENDED(&coroutine->coroutine)) {
+		RETURN_NULL();
+	}
+
 	async_fiber_context_t *fiber_context = coroutine->fiber_context;
 
-	// Return empty array if coroutine is not suspended or has no fiber context
-	if (fiber_context == NULL ||
-		(fiber_context->context.status != ZEND_FIBER_STATUS_SUSPENDED || !fiber_context->execute_data)) {
-		array_init(return_value);
-		return;
+	// Additional safety check for fiber context
+	if (fiber_context == NULL || !fiber_context->execute_data) {
+		RETURN_NULL();
 	}
 
 	// Switch to the coroutine's VM stack to generate the backtrace

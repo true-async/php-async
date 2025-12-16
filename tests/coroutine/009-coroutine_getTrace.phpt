@@ -1,5 +1,5 @@
 --TEST--
-Coroutine: getTrace() - returns empty array for non-suspended coroutine
+Coroutine: getTrace() - returns null for non-suspended coroutine
 --FILE--
 <?php
 
@@ -10,30 +10,28 @@ $coroutine = spawn(function() {
     return "test";
 });
 
+// Before the coroutine starts, trace should be null
+$traceBeforeStart = $coroutine->getTrace();
+echo "Trace before start is null: " . ($traceBeforeStart === null ? "yes" : "no") . "\n";
+
 // Wait for coroutine to complete
 await($coroutine);
 
-// After completion, trace should be empty
+// After completion, trace should be null
 $trace = $coroutine->getTrace();
+echo "Trace after completion is null: " . ($trace === null ? "yes" : "no") . "\n";
 
-var_dump(is_array($trace));
-var_dump(count($trace));
-
-// Test with options parameter
+// Test with options parameter - should still return null
 $trace2 = $coroutine->getTrace(DEBUG_BACKTRACE_IGNORE_ARGS);
-var_dump(is_array($trace2));
-var_dump(count($trace2));
+echo "Trace with IGNORE_ARGS is null: " . ($trace2 === null ? "yes" : "no") . "\n";
 
-// Test with limit parameter
+// Test with limit parameter - should still return null
 $trace3 = $coroutine->getTrace(DEBUG_BACKTRACE_PROVIDE_OBJECT, 5);
-var_dump(is_array($trace3));
-var_dump(count($trace3));
+echo "Trace with limit is null: " . ($trace3 === null ? "yes" : "no") . "\n";
 
 ?>
 --EXPECT--
-bool(true)
-int(0)
-bool(true)
-int(0)
-bool(true)
-int(0)
+Trace before start is null: yes
+Trace after completion is null: yes
+Trace with IGNORE_ARGS is null: yes
+Trace with limit is null: yes
