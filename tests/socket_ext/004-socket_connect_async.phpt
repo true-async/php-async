@@ -10,7 +10,7 @@ if (!extension_loaded('sockets')) {
 <?php
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 use function Async\delay;
 
 echo "Start\n";
@@ -84,7 +84,7 @@ $client2 = spawn(function() use (&$port, &$output) {
     socket_close($socket);
 });
 
-awaitAll([$server, $client1, $client2]);
+await_all([$server, $client1, $client2]);
 
 // Sort output for deterministic results
 sort($output);

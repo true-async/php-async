@@ -4,7 +4,7 @@ Concurrent DNS lookups in async context
 <?php
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 
 echo "Starting concurrent DNS lookups\n";
 
@@ -27,7 +27,7 @@ for ($i = 5; $i < 8; $i++) {
     });
 }
 
-[$results, $exceptions] = awaitAll($coroutines);
+[$results, $exceptions] = await_all($coroutines);
 
 // Print results in deterministic order
 foreach ($results as $result) {

@@ -4,7 +4,7 @@ Full TCP client-server test with coroutine switching
 <?php
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 use function Async\delay;
 use function Async\suspend;
 
@@ -73,7 +73,7 @@ $worker = spawn(function() {
     return "worker_done";
 });
 
-[$results, $exceptions] = awaitAll([$server, $client, $worker]);
+[$results, $exceptions] = await_all([$server, $client, $worker]);
 
 // Sort output for deterministic results
 sort($output);

@@ -1,10 +1,10 @@
 --TEST--
-awaitFirstSuccess() - With an unexpected interruption of execution.
+await_first_success() - With an unexpected interruption of execution.
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitFirstSuccess;
+use function Async\await_first_success;
 use function Async\await;
 
 class TestIterator implements Iterator
@@ -53,7 +53,7 @@ $functions = [
 spawn(fn() => throw new Exception("Unexpected interruption"));
 
 $iterator = new TestIterator($functions);
-$result = awaitFirstSuccess($iterator);
+$result = await_first_success($iterator);
 
 echo "Result: {$result[0]}\n";
 echo "end\n";

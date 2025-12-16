@@ -4,7 +4,7 @@ stream_socket_client and stream_socket_server with coroutine switching
 <?php
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 use function Async\delay;
 use function Async\suspend;
 
@@ -69,7 +69,7 @@ $worker = spawn(function() {
     echo "Worker: doing work while server waits\n";
 });
 
-awaitAll([$server, $client, $worker]);
+await_all([$server, $client, $worker]);
 
 // Sort output for deterministic results
 sort($output);

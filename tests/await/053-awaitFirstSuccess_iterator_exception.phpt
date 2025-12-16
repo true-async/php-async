@@ -1,10 +1,10 @@
 --TEST--
-awaitFirstSuccess() - Exception in iterator current() should stop process immediately
+await_first_success() - Exception in iterator current() should stop process immediately
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitFirstSuccess;
+use function Async\await_first_success;
 use function Async\suspend;
 
 class ExceptionIterator implements Iterator
@@ -53,7 +53,7 @@ $functions = [
 $iterator = new ExceptionIterator($functions);
 
 try {
-    $result = awaitFirstSuccess($iterator);
+    $result = await_first_success($iterator);
     echo "This should not be reached\n";
 } catch (RuntimeException $e) {
     echo "Caught exception: " . $e->getMessage() . "\n";

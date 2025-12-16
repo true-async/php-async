@@ -15,7 +15,7 @@ require_once __DIR__ . '/inc/async_mysqli_test.inc';
 
 use function Async\spawn;
 use function Async\await;
-use function Async\awaitAllOrFail;
+use function Async\await_all_or_fail;
 
 echo "start\n";
 
@@ -105,7 +105,7 @@ $error_test4 = spawn(function() {
 });
 
 echo "waiting for all error tests\n";
-$results = awaitAllOrFail([$error_test1, $error_test2, $error_test3, $error_test4]);
+$results = await_all_or_fail([$error_test1, $error_test2, $error_test3, $error_test4]);
 
 // Sort results by type for consistent output
 usort($results, function($a, $b) {

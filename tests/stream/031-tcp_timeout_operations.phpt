@@ -4,7 +4,7 @@ TCP timeout operations with fread/fwrite in async context
 <?php
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 use function Async\delay;
 
 $output = [];
@@ -87,7 +87,7 @@ $client = spawn(function() use (&$server_address, &$output) {
     fclose($socket);
 });
 
-awaitAll([$server, $client]);
+await_all([$server, $client]);
 $output['z'] = "End TCP timeout operations test";
 
 // Sort output by keys to ensure deterministic test results

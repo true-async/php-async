@@ -5,7 +5,7 @@ Context error handling
 
 use Async\{Context};
 
-$context = Async\coroutineContext();
+$context = Async\coroutine_context();
 
 // Test invalid key types
 try {

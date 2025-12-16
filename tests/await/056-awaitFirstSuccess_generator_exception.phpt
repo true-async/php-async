@@ -1,10 +1,10 @@
 --TEST--
-awaitFirstSuccess() - Exception in generator body should stop process immediately
+await_first_success() - Exception in generator body should stop process immediately
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitFirstSuccess;
+use function Async\await_first_success;
 use function Async\suspend;
 
 function exceptionGenerator($functions) {
@@ -31,7 +31,7 @@ $functions = [
 $generator = exceptionGenerator($functions);
 
 try {
-    $result = awaitFirstSuccess($generator);
+    $result = await_first_success($generator);
     echo "This should not be reached\n";
 } catch (RuntimeException $e) {
     echo "Caught exception: " . $e->getMessage() . "\n";

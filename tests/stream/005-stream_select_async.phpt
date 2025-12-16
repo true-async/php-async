@@ -6,7 +6,7 @@ stream_select with async coroutine switching
 
 require_once __DIR__ . '/stream_helper.php';
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 
 echo "Start\n";
 
@@ -49,7 +49,7 @@ $worker = spawn(function() {
     echo "Worker: finished\n";
 });
 
-awaitAll([$selector, $writer, $worker]);
+await_all([$selector, $writer, $worker]);
 echo "End\n";
 
 ?>

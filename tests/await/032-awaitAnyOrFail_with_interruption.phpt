@@ -1,10 +1,10 @@
 --TEST--
-awaitAnyOrFail() - With an unexpected interruption of execution.
+await_any_or_fail() - With an unexpected interruption of execution.
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAnyOrFail;
+use function Async\await_any_or_fail;
 use function Async\await;
 use function Async\suspend;
 
@@ -54,7 +54,7 @@ $functions = [
 spawn(fn() => throw new Exception("Unexpected interruption"));
 
 $iterator = new TestIterator($functions);
-$result = awaitAnyOrFail($iterator);
+$result = await_any_or_fail($iterator);
 
 echo "Result: $result\n";
 echo "end\n";

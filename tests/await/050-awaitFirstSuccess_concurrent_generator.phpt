@@ -1,10 +1,10 @@
 --TEST--
-awaitFirstSuccess() - With concurrent generator using suspend() in body
+await_first_success() - With concurrent generator using suspend() in body
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitFirstSuccess;
+use function Async\await_first_success;
 use function Async\suspend;
 
 function concurrentGenerator($functions) {
@@ -25,7 +25,7 @@ $functions = [
 
 $generator = concurrentGenerator($functions);
 
-$result = awaitFirstSuccess($generator);
+$result = await_first_success($generator);
 
 echo "Result: {$result[0]}\n";
 echo "end\n";

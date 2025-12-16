@@ -89,7 +89,7 @@ PHP_FUNCTION(Async_spawn)
 	RETURN_OBJ_COPY(&coroutine->std);
 }
 
-PHP_FUNCTION(Async_spawnWith)
+PHP_FUNCTION(Async_spawn_with)
 {
 	THROW_IF_ASYNC_OFF;
 	THROW_IF_SCHEDULER_CONTEXT;
@@ -290,7 +290,7 @@ PHP_FUNCTION(Async_await)
 	zend_async_waker_clean(coroutine);
 }
 
-PHP_FUNCTION(Async_awaitAnyOrFail)
+PHP_FUNCTION(Async_await_any_or_fail)
 {
 	zval *futures;
 	zend_object *cancellation = NULL;
@@ -340,7 +340,7 @@ PHP_FUNCTION(Async_awaitAnyOrFail)
 	RETURN_ZVAL(&result, 0, 0);
 }
 
-PHP_FUNCTION(Async_awaitFirstSuccess)
+PHP_FUNCTION(Async_await_first_success)
 {
 	zval *futures;
 	zend_object *cancellation = NULL;
@@ -396,7 +396,7 @@ PHP_FUNCTION(Async_awaitFirstSuccess)
 	RETURN_ARR(return_array);
 }
 
-PHP_FUNCTION(Async_awaitAllOrFail)
+PHP_FUNCTION(Async_await_all_or_fail)
 {
 	zval *futures;
 	zend_object *cancellation = NULL;
@@ -435,7 +435,7 @@ PHP_FUNCTION(Async_awaitAllOrFail)
 	RETURN_ARR(results);
 }
 
-PHP_FUNCTION(Async_awaitAll)
+PHP_FUNCTION(Async_await_all)
 {
 	zval *futures;
 	zend_object *cancellation = NULL;
@@ -485,7 +485,7 @@ PHP_FUNCTION(Async_awaitAll)
 	RETURN_ARR(return_array);
 }
 
-PHP_FUNCTION(Async_awaitAnyOfOrFail)
+PHP_FUNCTION(Async_await_any_of_or_fail)
 {
 	zval *futures;
 	zend_object *cancellation = NULL;
@@ -528,7 +528,7 @@ PHP_FUNCTION(Async_awaitAnyOfOrFail)
 	RETURN_ARR(results);
 }
 
-PHP_FUNCTION(Async_awaitAnyOf)
+PHP_FUNCTION(Async_await_any_of)
 {
 	zval *futures;
 	zend_object *cancellation = NULL;
@@ -633,7 +633,7 @@ PHP_FUNCTION(Async_timeout)
 	RETURN_OBJ(zend_object);
 }
 
-PHP_FUNCTION(Async_currentContext)
+PHP_FUNCTION(Async_current_context)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
@@ -661,7 +661,7 @@ PHP_FUNCTION(Async_currentContext)
 	RETURN_OBJ_COPY(&context->std);
 }
 
-PHP_FUNCTION(Async_coroutineContext)
+PHP_FUNCTION(Async_coroutine_context)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
@@ -688,7 +688,7 @@ PHP_FUNCTION(Async_coroutineContext)
 	RETURN_OBJ_COPY(&context->std);
 }
 
-PHP_FUNCTION(Async_currentCoroutine)
+PHP_FUNCTION(Async_current_coroutine)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
@@ -706,7 +706,7 @@ PHP_FUNCTION(Async_currentCoroutine)
 	RETURN_OBJ_COPY(&coroutine->std);
 }
 
-PHP_FUNCTION(Async_rootContext)
+PHP_FUNCTION(Async_root_context)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
@@ -721,7 +721,7 @@ PHP_FUNCTION(Async_rootContext)
 	RETURN_OBJ_COPY(&context->std);
 }
 
-PHP_FUNCTION(Async_getCoroutines)
+PHP_FUNCTION(Async_get_coroutines)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
@@ -739,7 +739,7 @@ PHP_FUNCTION(Async_getCoroutines)
 	ZEND_HASH_FOREACH_END();
 }
 
-PHP_FUNCTION(Async_gracefulShutdown)
+PHP_FUNCTION(Async_graceful_shutdown)
 {
 	zend_object *cancellation = NULL;
 

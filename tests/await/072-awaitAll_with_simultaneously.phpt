@@ -1,10 +1,10 @@
 --TEST--
-awaitAll() - Attempt to wait for two identical objects.
+await_all() - Attempt to wait for two identical objects.
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 
 echo "start\n";
 
@@ -16,7 +16,7 @@ $coroutine2 = spawn(function() {
     return "second";
 });
 
-$result = awaitAll([$coroutine1, $coroutine2, $coroutine1, $coroutine2]);
+$result = await_all([$coroutine1, $coroutine2, $coroutine1, $coroutine2]);
 var_dump($result);
 
 echo "end\n";

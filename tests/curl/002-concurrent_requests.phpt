@@ -7,7 +7,7 @@ curl
 require_once __DIR__ . '/../common/http_server.php';
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 
 $server = async_test_server_start();
 
@@ -40,7 +40,7 @@ $coroutines = [
     spawn(fn() => make_request(3, $server)),
 ];
 
-[$results, $exceptions] = awaitAll($coroutines);
+[$results, $exceptions] = await_all($coroutines);
 
 // Collect and sort messages
 $start_messages = [];

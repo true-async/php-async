@@ -7,7 +7,7 @@ curl
 require_once __DIR__ . '/../common/http_server.php';
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 
 $server = async_test_server_start();
 
@@ -78,7 +78,7 @@ $coroutines = [
     spawn(fn() => test_not_found($server)),
 ];
 
-$results = awaitAll($coroutines);
+$results = await_all($coroutines);
 
 echo "Test end\n";
 

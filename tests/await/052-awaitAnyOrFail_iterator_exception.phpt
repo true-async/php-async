@@ -1,10 +1,10 @@
 --TEST--
-awaitAnyOrFail() - Exception in iterator current() should stop process immediately
+await_any_or_fail() - Exception in iterator current() should stop process immediately
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAnyOrFail;
+use function Async\await_any_or_fail;
 use function Async\suspend;
 
 class ExceptionIterator implements Iterator
@@ -52,7 +52,7 @@ $functions = [
 $iterator = new ExceptionIterator($functions);
 
 try {
-    $result = awaitAnyOrFail($iterator);
+    $result = await_any_or_fail($iterator);
     echo "This should not be reached\n";
 } catch (RuntimeException $e) {
     echo "Caught exception: " . $e->getMessage() . "\n";

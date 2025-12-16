@@ -15,7 +15,7 @@ $scope = new \Async\Scope()->asNotSafely();
 $coroutine_with_finally = $scope->spawn(function() {
     echo "coroutine with finally started\n";
     
-    $coroutine = \Async\currentCoroutine();
+    $coroutine = \Async\current_coroutine();
     
     $coroutine->onFinally(function() {
         echo "finally handler 1 executed\n";
@@ -42,7 +42,7 @@ $child_scope = \Async\Scope::inherit($scope);
 $child_coroutine = $child_scope->spawn(function() {
     echo "child coroutine started\n";
     
-    $coroutine = \Async\currentCoroutine();
+    $coroutine = \Async\current_coroutine();
     
     $coroutine->onFinally(function() {
         echo "child finally handler executed\n";

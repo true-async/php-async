@@ -1,10 +1,10 @@
 --TEST--
-awaitAllOrFail() - with duplicates
+await_all_or_fail() - with duplicates
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAnyOrFail;
+use function Async\await_any_or_fail;
 
 class MyIterator implements Iterator
 {
@@ -45,7 +45,7 @@ echo "start\n";
 $iterator = new MyIterator(3);
 
 try {
-    $result = awaitAnyOrFail($iterator);
+    $result = await_any_or_fail($iterator);
 } catch (RuntimeException $e) {
     echo "Caught exception: " . $e->getMessage() . "\n";
 }

@@ -3,20 +3,20 @@ Async\spawnWith: missing required parameters
 --FILE--
 <?php
 
-use function Async\spawnWith;
+use function Async\spawn_with;
 
 echo "start\n";
 
 // Test with no parameters
 try {
-    spawnWith();
+    spawn_with();
 } catch (ArgumentCountError $e) {
     echo "caught ArgumentCountError for no params: " . $e->getMessage() . "\n";
 }
 
 // Test with only provider
 try {
-    spawnWith(new Async\Scope());
+    spawn_with(new Async\Scope());
 } catch (ArgumentCountError $e) {
     echo "caught ArgumentCountError for missing callable\n";
 }

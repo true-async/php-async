@@ -1,10 +1,10 @@
 --TEST--
-awaitFirstSuccess() - basic usage with mixed success and error
+await_first_success() - basic usage with mixed success and error
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitFirstSuccess;
+use function Async\await_first_success;
 use function Async\suspend;
 
 echo "start\n";
@@ -23,7 +23,7 @@ $coroutines = [
     }),
 ];
 
-$result = awaitFirstSuccess($coroutines);
+$result = await_first_success($coroutines);
 echo "Result: {$result[0]}\n";
 echo "end\n";
 ?>

@@ -1,10 +1,10 @@
 --TEST--
-awaitAllOrFail() - basic usage with multiple coroutines
+await_all_or_fail() - basic usage with multiple coroutines
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAllOrFail;
+use function Async\await_all_or_fail;
 
 echo "start\n";
 
@@ -20,7 +20,7 @@ $coroutines = [
     }),
 ];
 
-$results = awaitAllOrFail($coroutines);
+$results = await_all_or_fail($coroutines);
 var_dump($results);
 
 echo "end\n";

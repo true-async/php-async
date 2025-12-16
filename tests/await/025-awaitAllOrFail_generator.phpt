@@ -1,10 +1,10 @@
 --TEST--
-awaitAllOrFail() - with Generator
+await_all_or_fail() - with Generator
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAllOrFail;
+use function Async\await_all_or_fail;
 use function Async\await;
 
 function createCoroutines() {
@@ -24,7 +24,7 @@ function createCoroutines() {
 echo "start\n";
 
 $generator = createCoroutines();
-$results = awaitAllOrFail($generator);
+$results = await_all_or_fail($generator);
 
 $countOfResults = count($results) == 3 ? "OK" : "FALSE: ".count($results);
 echo "Count of results: $countOfResults\n";

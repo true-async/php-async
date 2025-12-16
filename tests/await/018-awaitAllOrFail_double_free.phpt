@@ -1,10 +1,10 @@
 --TEST--
-awaitAllOrFail() - test for double free issue with many coroutines
+await_all_or_fail() - test for double free issue with many coroutines
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAllOrFail;
+use function Async\await_all_or_fail;
 
 echo "start\n";
 
@@ -17,7 +17,7 @@ for ($i = 1; $i <= 100; $i++) {
     });
 }
 
-$results = awaitAllOrFail($coroutines);
+$results = await_all_or_fail($coroutines);
 
 // Check that we got all results
 $countOfResults = count($results) == 100 ? "OK" : "FALSE: ".count($results);

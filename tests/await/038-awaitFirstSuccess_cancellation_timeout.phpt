@@ -1,10 +1,10 @@
 --TEST--
-awaitFirstSuccess() - with cancellation timeout
+await_first_success() - with cancellation timeout
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitFirstSuccess;
+use function Async\await_first_success;
 use function Async\await;
 use function Async\delay;
 use function Async\timeout;
@@ -23,7 +23,7 @@ $coroutines = [
 echo "start\n";
 
 try {
-    $result = awaitFirstSuccess($coroutines, timeout(50));
+    $result = await_first_success($coroutines, timeout(50));
     echo "Unexpected success\n";
 } catch (Async\TimeoutException $e) {
     echo "Timeout caught as expected\n";

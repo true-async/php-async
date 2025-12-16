@@ -1,10 +1,10 @@
 --TEST--
-awaitAllOrFail() - Exception in iterator next() should stop process immediately
+await_all_or_fail() - Exception in iterator next() should stop process immediately
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAllOrFail;
+use function Async\await_all_or_fail;
 
 class ExceptionNextIterator implements Iterator
 {
@@ -46,7 +46,7 @@ $values = ["first", "second", "third"];
 $iterator = new ExceptionNextIterator($values);
 
 try {
-    $results = awaitAllOrFail($iterator);
+    $results = await_all_or_fail($iterator);
     echo "This should not be reached\n";
 } catch (RuntimeException $e) {
     echo "Caught exception: " . $e->getMessage() . "\n";

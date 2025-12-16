@@ -6,7 +6,7 @@ SSL Stream: stream_socket_accept() with SSL and timeout
 <?php
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 
 echo "Start SSL accept timeout test\n";
 
@@ -54,7 +54,7 @@ $server = spawn(function() use ($cert_file, $key_file) {
     echo "SSL Server: finished\n";
 });
 
-awaitAll([$server]);
+await_all([$server]);
 
 echo "End SSL accept timeout test\n";
 

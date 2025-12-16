@@ -1,10 +1,10 @@
 --TEST--
-awaitAll() - with associative array
+await_all() - with associative array
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 use function Async\await;
 
 $coroutines = [
@@ -23,7 +23,7 @@ $coroutines = [
 
 echo "start\n";
 
-$result = awaitAll($coroutines);
+$result = await_all($coroutines);
 
 echo "Count of results: " . count($result[0]) . "\n";
 echo "Count of errors: " . count($result[1]) . "\n";

@@ -1,10 +1,10 @@
 --TEST--
-awaitFirstSuccess() - when all coroutines throw errors
+await_first_success() - when all coroutines throw errors
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitFirstSuccess;
+use function Async\await_first_success;
 use function Async\await;
 
 $coroutines = [
@@ -22,7 +22,7 @@ $coroutines = [
 ];
 
 echo "start\n";
-$result = awaitFirstSuccess($coroutines);
+$result = await_first_success($coroutines);
 $error = $result[1] ?? null;
 $errorsCount = count($result[1] ?? []);
 echo "Result: " . ($result[0] === null ? "NULL" : "FAILED") . "\n";

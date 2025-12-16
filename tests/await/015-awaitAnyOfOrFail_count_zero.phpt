@@ -1,10 +1,10 @@
 --TEST--
-awaitAnyOfOrFail() - count is zero
+await_any_of_or_fail() - count is zero
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAnyOfOrFail;
+use function Async\await_any_of_or_fail;
 
 echo "start\n";
 
@@ -17,7 +17,7 @@ $coroutines = [
     }),
 ];
 
-$results = awaitAnyOfOrFail(0, $coroutines);
+$results = await_any_of_or_fail(0, $coroutines);
 var_dump($results);
 
 echo "end\n";

@@ -3,7 +3,7 @@ Async\spawnWith: ScopeProvider returning null scope
 --FILE--
 <?php
 
-use function Async\spawnWith;
+use function Async\spawn_with;
 use function Async\await;
 use Async\ScopeProvider;
 use Async\Scope;
@@ -21,7 +21,7 @@ echo "start\n";
 
 $provider = new NullScopeProvider();
 
-$coroutine = spawnWith($provider, function() {
+$coroutine = spawn_with($provider, function() {
     echo "coroutine executed\n";
     return "null scope result";
 });

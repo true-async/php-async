@@ -5,7 +5,7 @@ Context with object keys
 
 use Async\{Context};
 
-$context = Async\coroutineContext();
+$context = Async\coroutine_context();
 
 // Test different object types as keys
 $stdObj = new stdClass();

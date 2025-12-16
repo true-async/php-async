@@ -5,7 +5,7 @@ stream_select with null timeout (infinite wait with coroutine yield)
 
 require_once __DIR__ . '/stream_helper.php';
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 
 echo "Testing stream_select with null timeout\n";
 
@@ -66,7 +66,7 @@ $worker = spawn(function() {
     return "worker completed";
 });
 
-list($results, $errors) = awaitAll([$selector, $writer, $worker]);
+list($results, $errors) = await_all([$selector, $writer, $worker]);
 
 echo "Results:\n";
 foreach ($results as $i => $result) {

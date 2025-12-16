@@ -1,9 +1,9 @@
 --TEST--
-spawnWith() - scope provider throws exception
+spawn_with() - scope provider throws exception
 --FILE--
 <?php
 
-use function Async\spawnWith;
+use function Async\spawn_with;
 
 echo "start\n";
 
@@ -16,7 +16,7 @@ class ThrowingScopeProvider implements \Async\ScopeProvider
 }
 
 try {
-    $coroutine = spawnWith(new ThrowingScopeProvider(), function() {
+    $coroutine = spawn_with(new ThrowingScopeProvider(), function() {
         return "test";
     });
     echo "ERROR: Should have thrown exception\n";

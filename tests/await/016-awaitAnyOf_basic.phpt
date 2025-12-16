@@ -1,10 +1,10 @@
 --TEST--
-awaitAnyOf() - basic usage with mixed success and error
+await_any_of() - basic usage with mixed success and error
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAnyOf;
+use function Async\await_any_of;
 use function Async\suspend;
 
 echo "start\n";
@@ -24,7 +24,7 @@ $coroutines = [
     }),
 ];
 
-$result = awaitAnyOf(2, $coroutines);
+$result = await_any_of(2, $coroutines);
 
 $countOfResults = count($result[0]) >= 2 ? "OK" : "FALSE: ".count($result[0]);
 $countOfErrors = count($result[1]) == 1 ? "OK" : "FALSE: ".count($result[1]);

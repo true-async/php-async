@@ -1,10 +1,10 @@
 --TEST--
-awaitAll() - with Iterator
+await_all() - with Iterator
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 use function Async\await;
 
 class TestIterator implements Iterator
@@ -51,7 +51,7 @@ $functions = [
 ];
 
 $iterator = new TestIterator($functions);
-$result = awaitAll($iterator);
+$result = await_all($iterator);
 
 $countOfResults = count($result[0]) == 2 ? "OK" : "FALSE: ".count($result[0]);
 $countOfErrors = count($result[1]) == 1 ? "OK" : "FALSE: ".count($result[1]);

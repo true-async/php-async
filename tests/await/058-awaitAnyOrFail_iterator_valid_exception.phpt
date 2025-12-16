@@ -1,10 +1,10 @@
 --TEST--
-awaitAnyOrFail() - Exception in iterator valid() should stop process immediately
+await_any_or_fail() - Exception in iterator valid() should stop process immediately
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAnyOrFail;
+use function Async\await_any_or_fail;
 
 class ExceptionValidIterator implements Iterator
 {
@@ -54,7 +54,7 @@ $functions = [
 $iterator = new ExceptionValidIterator($functions);
 
 try {
-    $result = awaitAnyOrFail($iterator);
+    $result = await_any_or_fail($iterator);
     echo "This should not be reached\n";
 } catch (RuntimeException $e) {
     echo "Caught exception: " . $e->getMessage() . "\n";
