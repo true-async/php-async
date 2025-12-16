@@ -1348,8 +1348,7 @@ METHOD(getTrace)
 
 	// Return empty array if coroutine is not suspended or has no fiber context
 	if (fiber_context == NULL ||
-		fiber_context->context.status != ZEND_FIBER_STATUS_SUSPENDED ||
-		!fiber_context->execute_data) {
+		(fiber_context->context.status != ZEND_FIBER_STATUS_SUSPENDED || !fiber_context->execute_data)) {
 		array_init(return_value);
 		return;
 	}
@@ -1362,7 +1361,7 @@ METHOD(getTrace)
 	EG(current_execute_data) = fiber_context->execute_data;
 
 	// Generate the backtrace using Zend's built-in function
-	// skip_last = 0 (don't skip any frames)
+	// skip_last = 0 (skip zero frames from the end of the trace)
 	zend_fetch_debug_backtrace(return_value, 0, (int)options, (int)limit);
 
 	// Restore original VM stack and execute data
