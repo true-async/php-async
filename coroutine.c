@@ -343,7 +343,10 @@ zend_coroutine_t *async_new_coroutine(zend_async_scope_t *scope)
 {
 	zend_object *object = coroutine_object_create(async_ce_coroutine);
 
-	if (UNEXPECTED(EG(exception))) {
+	if (UNEXPECTED(object == NULL || EG(exception))) {
+		if (object != NULL) {
+			zend_object_release(object);
+		}
 		return NULL;
 	}
 

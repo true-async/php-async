@@ -55,7 +55,14 @@ echo "Test completed\n";
 --EXPECTF--
 Test: Spawn first, then Fiber
 Coroutine spawned, now creating Fiber
-Error caught: Cannot create a fiber while an True Async is active
-Test completed
+Starting Fiber
 Coroutine started
+Inside Fiber - this should conflict with active scheduler
 Coroutine resumed
+Fiber suspended with: fiber suspended
+Resuming Fiber
+Fiber resumed
+Fiber completed with: fiber done
+Getting coroutine result
+Coroutine completed with: coroutine result
+Test completed

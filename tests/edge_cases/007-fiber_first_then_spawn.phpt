@@ -46,5 +46,11 @@ echo "Test completed\n";
 Test: Fiber first, then spawn
 Starting Fiber
 Inside Fiber
-Async exception caught: Cannot spawn a coroutine when async is disabled
+Fiber attempting to continue after spawn
+Inside spawned coroutine from Fiber
+Fiber suspended with: fiber suspended
+Resuming Fiber
+Coroutine completed
+Fiber resumed
+Fiber returned: fiber done
 Test completed

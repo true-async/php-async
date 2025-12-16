@@ -526,6 +526,47 @@ static bool resolve_deadlocks(void)
 		return false;
 	}
 
+	//
+	// Let’s count the number of coroutine-fibers that are in the YIELD state.
+	// This state differs from the regular Suspended state in that
+	// the Fiber has transferred control back to the parent coroutine.
+	//
+	zend_long fiber_coroutines_count = 0;
+
+	ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), value) {
+		const zend_coroutine_t *coroutine = (zend_coroutine_t *) Z_PTR_P(value);
+
+		if (ZEND_COROUTINE_IS_FIBER(coroutine)
+			&& ZEND_COROUTINE_IS_YIELD(coroutine)
+			&& coroutine->extended_data != NULL) {
+			fiber_coroutines_count++;
+		}
+	}
+	ZEND_HASH_FOREACH_END();
+
+	//
+	// If all coroutines are fiber coroutines in the SUSPENDED state,
+	// we can simply cancel them without creating a deadlock exception.
+	//
+	if (fiber_coroutines_count == real_coroutines) {
+
+		ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), value) {
+			zend_coroutine_t *coroutine = (zend_coroutine_t *) Z_PTR_P(value);
+
+			if (ZEND_COROUTINE_IS_FIBER(coroutine)
+				&& ZEND_COROUTINE_IS_YIELD(coroutine)
+				&& coroutine->extended_data != NULL) {
+					ZEND_ASYNC_CANCEL(coroutine, zend_create_graceful_exit(), true);
+
+				if (UNEXPECTED(EG(exception) != NULL)) {
+					return true;
+				}
+			}
+		}
+		ZEND_HASH_FOREACH_END();
+		return false;
+	}
+
 	// Create deadlock exception to be set as exit_exception
 	zend_object *deadlock_exception = async_new_exception(async_ce_deadlock_error, 
 		"Deadlock detected: no active coroutines, %u coroutines in waiting", real_coroutines);
@@ -552,7 +593,7 @@ static bool resolve_deadlocks(void)
 		ZEND_ASYNC_CANCEL(
 				&coroutine->coroutine, async_new_exception(async_ce_cancellation_exception, "Deadlock detected"), true);
 
-		if (EG(exception) != NULL) {
+		if (UNEXPECTED(EG(exception) != NULL)) {
 			return true;
 		}
 	}
@@ -1025,6 +1066,16 @@ bool async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine)
 				// save the filename and line number where the coroutine was created
 				zend_apply_current_filename_and_line(&coroutine->filename, &coroutine->lineno);
 
+				// Notify scope that a new coroutine has been enqueued
+				zend_async_scope_t *scope = coroutine->scope;
+
+				if (UNEXPECTED(scope == NULL)) {
+					// throw error if the coroutine has no scope
+					coroutine->waker->status = ZEND_ASYNC_WAKER_NO_STATUS;
+					async_throw_error("The coroutine has no scope assigned");
+					return false;
+				}
+
 				if (UNEXPECTED(zend_hash_index_add_ptr(&ASYNC_G(coroutines), ((async_coroutine_t *)coroutine)->std.handle, coroutine) == NULL)) {
 					coroutine->waker->status = ZEND_ASYNC_WAKER_IGNORED;
 					async_throw_error("Failed to add coroutine to the list");
@@ -1033,8 +1084,6 @@ bool async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine)
 
 				ZEND_ASYNC_INCREASE_COROUTINE_COUNT;
 
-				// Notify scope that a new coroutine has been enqueued
-				zend_async_scope_t *scope = coroutine->scope;
 				scope->after_coroutine_enqueue(coroutine, scope);
 				if (UNEXPECTED(EG(exception))) {
 					coroutine->waker->status = ZEND_ASYNC_WAKER_IGNORED;
