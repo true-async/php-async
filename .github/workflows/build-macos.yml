@@ -11,9 +11,9 @@ jobs:
       matrix:
         debug: [true, false]
         zts: [true, false]
-        os: ['13', '14'] # macOS 13 (Intel) and 14 (ARM64)
-    
-    name: "MACOS_${{ matrix.os == '13' && 'X64' || 'ARM64' }}_${{ matrix.debug && 'DEBUG' || 'RELEASE' }}_${{ matrix.zts && 'ZTS' || 'NTS' }}"
+        os: ['15-intel', '15'] # macOS 15 Intel (x86_64) and 15 (ARM64)
+
+    name: "MACOS_${{ matrix.os == '15-intel' && 'X64' || 'ARM64' }}_${{ matrix.debug && 'DEBUG' || 'RELEASE' }}_${{ matrix.zts && 'ZTS' || 'NTS' }}"
     runs-on: macos-${{ matrix.os }}
 
     steps:
@@ -155,7 +155,7 @@ jobs:
 
       - name: Test Tracing JIT
         # Skip JIT on ARM64 + ZTS due to known issues
-        if: matrix.os != '14' || !matrix.zts
+        if: matrix.os != '15' || !matrix.zts
         working-directory: php-src/ext/async
         run: |
           /usr/local/bin/php ../../run-tests.php \
@@ -185,7 +185,7 @@ jobs:
 
       - name: Test Function JIT
         # Skip JIT on ARM64 + ZTS due to known issues
-        if: matrix.os != '14' || !matrix.zts
+        if: matrix.os != '15' || !matrix.zts
         working-directory: php-src/ext/async
         run: |
           /usr/local/bin/php ../../run-tests.php \
