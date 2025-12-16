@@ -44,7 +44,7 @@ $parentCoroutine = spawn(function() use (&$childCoroutine) {
         echo "Child trace is null\n";
     }
     
-    // Resume to let child finish
+    // Yield control to allow scheduler to resume the child coroutine
     suspend();
     
     // After completion, trace should be null
