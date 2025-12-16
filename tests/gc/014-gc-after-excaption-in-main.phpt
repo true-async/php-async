@@ -1,5 +1,5 @@
 --TEST--
-Fibers in destructors 006: multiple GC runs
+Correct GC behavior when the main coroutine is destroyed due to an exception.
 --FILE--
 <?php
 
@@ -32,8 +32,10 @@ new Cycle();
 new Cycle();
 gc_collect_cycles();
 
+throw new Exception("Trigger GC");
+
 ?>
---EXPECT--
+--EXPECTF--
 0: Start destruct
 0: End destruct
 1: Start destruct
@@ -42,4 +44,9 @@ gc_collect_cycles();
 2: End destruct
 3: Start destruct
 3: End destruct
+
+Fatal error: Uncaught Exception: Trigger GC in %s:%d
+Stack trace:
+#0 {main}
+  thrown in %s on line %d
 Shutdown
