@@ -11,7 +11,9 @@ jobs:
       matrix:
         debug: [true, false]
         zts: [true, false]
-        os: ['15-intel', '14'] # macOS 15 Intel (x86_64) and 14 (ARM64)
+        # Temporarily disabled macOS x86_64 due to Clang 17 musttail compilation bug
+        # os: ['15-intel', '14'] # macOS 15 Intel (x86_64) and 14 (ARM64)
+        os: ['14'] # macOS 14 (ARM64) only
 
     name: "MACOS_${{ matrix.os == '15-intel' && 'X64' || 'ARM64' }}_${{ matrix.debug && 'DEBUG' || 'RELEASE' }}_${{ matrix.zts && 'ZTS' || 'NTS' }}"
     runs-on: macos-${{ matrix.os }}
@@ -75,11 +77,8 @@ jobs:
           export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$BREW_OPT/icu4c/lib/pkgconfig"
           sed -i -e 's/Requires.private:.*//g' "$BREW_OPT/curl/lib/pkgconfig/libcurl.pc"
 
-          # Disable JIT for macOS 15 Intel (x86_64) RELEASE builds due to Clang 17 tail call optimization bug
+          # No special JIT handling needed for ARM64-only builds
           JIT_FLAG=""
-          if [[ "${{ matrix.os }}" == "15-intel" && "${{ matrix.debug }}" == "false" ]]; then
-            JIT_FLAG="--disable-opcache-jit"
-          fi
 
           ./buildconf --force
           ./configure \
