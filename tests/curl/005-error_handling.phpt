@@ -12,62 +12,65 @@ use function Async\await_all;
 $server = async_test_server_start();
 
 function test_connection_error() {
-    echo "Testing connection error\n";
-    
+    $output = [];
+    $output[1] = "Testing connection error";
+
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, "http://127.0.0.1:99991/nonexistent"); // Wrong port
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 2);
     curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 1);
-    
+
     $response = curl_exec($ch);
     $error = curl_error($ch);
     $errno = curl_errno($ch);
-    
-    
-    echo "Connection failed as expected\n";
-    echo "Error present: " . (!empty($error) ? "yes" : "no") . "\n";
-    echo "Error number: $errno\n";
-    
-    return $response;
+
+
+    $output[4] = "Connection failed as expected";
+    $output[5] = "Error present: " . (!empty($error) ? "yes" : "no");
+    $output[6] = "Error number: $errno";
+
+    return $output;
 }
 
 function test_server_error($server) {
-    echo "Testing server error\n";
-    
+    $output = [];
+    $output[2] = "Testing server error";
+
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, "http://localhost:{$server->port}/error");
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-    
+
     $response = curl_exec($ch);
     $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $error = curl_error($ch);
-    
-    
-    echo "HTTP Code: $http_code\n";
-    echo "Error: " . ($error ?: "none") . "\n";
-    echo "Response length: " . strlen($response) . "\n";
-    
-    return $response;
+
+
+    $output[7] = "HTTP Code: $http_code";
+    $output[8] = "Error: " . ($error ?: "none");
+    $output[9] = "Response length: " . strlen($response);
+
+    return $output;
 }
 
 function test_not_found($server) {
-    echo "Testing 404 error\n";
-    
+    $output = [];
+    $output[3] = "Testing 404 error";
+
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, "http://localhost:{$server->port}/missing.html");
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-    
+
     $response = curl_exec($ch);
     $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    
-    
-    echo "HTTP Code: $http_code\n";
-    echo "Response length: " . strlen($response) . "\n";
-    
-    return $response;
+
+
+    $output[10] = "HTTP Code: $http_code";
+    $output[11] = "Response length: " . strlen($response);
+
+    return $output;
 }
 
 echo "Test start\n";
@@ -79,6 +82,18 @@ $coroutines = [
 ];
 
 $results = await_all($coroutines);
+
+// Merge all outputs and sort by key to ensure deterministic order
+$all_output = [];
+foreach ($results as $output) {
+    $all_output = array_merge($all_output, $output);
+}
+ksort($all_output);
+
+// Print in sorted order
+foreach ($all_output as $line) {
+    echo "$line\n";
+}
 
 echo "Test end\n";
 
