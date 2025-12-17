@@ -81,7 +81,7 @@ $coroutines = [
     spawn(fn() => test_not_found($server)),
 ];
 
-$results = await_all($coroutines);
+[$results, $exceptions] = await_all($coroutines);
 
 // Merge all outputs and sort by key to ensure deterministic order
 $all_output = [];
@@ -102,14 +102,14 @@ async_test_server_stop($server);
 --EXPECTF--
 Test start
 Testing connection error
-Testing server error
-Testing 404 error
 Connection failed as expected
 Error present: yes
 Error number: %d
+Testing server error
 HTTP Code: 500
 Error: none
 Response length: %d
+Testing 404 error
 HTTP Code: 404
 Response length: %d
 Test end
