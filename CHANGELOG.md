@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Comprehensive test coverage for all fiber scenarios
 - **TrueAsync API**: Added `ZEND_ASYNC_SCHEDULER_LAUNCH()` macro for scheduler initialization
 - **TrueAsync API**: Updated to version 0.8.0 with fiber support
+- **TrueAsync API**: Added customizable scheduler heartbeat handler mechanism with `zend_async_set_heartbeat_handler()` API
 
 ### Fixed
 - **Critical GC Bug**: Fixed garbage collection crash during coroutine cancellation when exception occurs in main coroutine while GC is running
