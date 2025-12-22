@@ -1125,6 +1125,8 @@ static zend_always_inline void scheduler_next_tick(void)
 	zend_object **exception_ptr = &EG(exception);
 	zend_object **prev_exception_ptr = &EG(prev_exception);
 
+	ZEND_ASYNC_SCHEDULER_HEARTBEAT;
+
 	execute_microtasks();
 	TRY_HANDLE_SUSPEND_EXCEPTION();
 
@@ -1194,8 +1196,6 @@ bool async_scheduler_coroutine_suspend(void)
 			return false;
 		}
 	}
-
-	ZEND_ASYNC_SCHEDULER_HEARTBEAT;
 
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
@@ -1330,6 +1330,7 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 	// Allocate VM stack on C stack instead of heap
 	char vm_stack_memory[ZEND_FIBER_VM_STACK_SIZE];
 	bool *in_scheduler_context = &ZEND_ASYNC_SCHEDULER_CONTEXT;
+	zend_async_heartbeat_handler_t *heartbeat_handler = &ZEND_ASYNC_G(heartbeat_handler);
 
 	zend_first_try
 	{
@@ -1380,9 +1381,12 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 
 			TRY_HANDLE_EXCEPTION();
 
-			ZEND_ASYNC_SCHEDULER_HEARTBEAT;
-
 			*in_scheduler_context = true;
+
+			//ZEND_ASYNC_SCHEDULER_HEARTBEAT;
+			if (*heartbeat_handler) {
+				(*heartbeat_handler)();
+			}
 
 			ZEND_ASSERT(circular_buffer_is_not_empty(resumed_coroutines) == 0 && "resumed_coroutines should be 0");
 
