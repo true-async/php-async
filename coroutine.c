@@ -415,6 +415,7 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 			}
 			zend_catch
 			{
+				is_bailout = true;
 				should_start_graceful_shutdown = true;
 			}
 			zend_end_try();
@@ -426,7 +427,7 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 			ZEND_ASYNC_CURRENT_COROUTINE = NULL;
 		}
 
-		return;
+		goto exit;
 	}
 
 	if (UNEXPECTED(waker->status == ZEND_ASYNC_WAKER_WAITING)) {
@@ -491,6 +492,8 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 	if (EXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == &coroutine->coroutine)) {
 		ZEND_ASYNC_CURRENT_COROUTINE = NULL;
 	}
+
+exit:
 
 	if (UNEXPECTED(should_start_graceful_shutdown)) {
 		zend_try
