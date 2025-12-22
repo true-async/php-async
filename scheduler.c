@@ -1383,12 +1383,11 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 
 			*in_scheduler_context = true;
 
-			//ZEND_ASYNC_SCHEDULER_HEARTBEAT;
+			ZEND_ASSERT(circular_buffer_is_not_empty(resumed_coroutines) == 0 && "resumed_coroutines should be 0");
+
 			if (*heartbeat_handler) {
 				(*heartbeat_handler)();
 			}
-
-			ZEND_ASSERT(circular_buffer_is_not_empty(resumed_coroutines) == 0 && "resumed_coroutines should be 0");
 
 			execute_microtasks();
 			TRY_HANDLE_EXCEPTION();
