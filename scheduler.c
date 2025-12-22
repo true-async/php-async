@@ -1125,7 +1125,10 @@ static zend_always_inline void scheduler_next_tick(void)
 	zend_object **exception_ptr = &EG(exception);
 	zend_object **prev_exception_ptr = &EG(prev_exception);
 
-	ZEND_ASYNC_SCHEDULER_HEARTBEAT;
+	if (ZEND_ASYNC_G(heartbeat_handler) != NULL) {
+		ZEND_ASYNC_G(heartbeat_handler)();
+		TRY_HANDLE_SUSPEND_EXCEPTION();
+	}
 
 	execute_microtasks();
 	TRY_HANDLE_SUSPEND_EXCEPTION();
@@ -1387,6 +1390,7 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 
 			if (*heartbeat_handler) {
 				(*heartbeat_handler)();
+				TRY_HANDLE_EXCEPTION();
 			}
 
 			execute_microtasks();
