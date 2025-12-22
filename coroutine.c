@@ -768,7 +768,18 @@ bool async_coroutine_cancel(zend_coroutine_t *zend_coroutine,
 	// In this case, nothing actually happens immediately;
 	// however, the coroutine is marked as having been cancelled,
 	// and the cancellation exception is stored as its result.
-	if (UNEXPECTED(zend_coroutine == ZEND_ASYNC_CURRENT_COROUTINE)) {
+	//
+	// `zend_coroutine->waker->status == ZEND_ASYNC_WAKER_WAITING`
+	// The condition means: exclude the coroutine if it is in a waiting state.
+	//
+	// **Explanation:**
+	// ZEND_ASYNC_CURRENT_COROUTINE may point to a coroutine that is waiting
+	// for an event but has not yet switched. Canceling such a coroutine
+	// is performed in the usual way.
+	//
+	if (UNEXPECTED(zend_coroutine == ZEND_ASYNC_CURRENT_COROUTINE
+	&& false == (zend_coroutine->waker != NULL && zend_coroutine->waker->status == ZEND_ASYNC_WAKER_WAITING)
+	)) {
 
 		ZEND_COROUTINE_SET_CANCELLED(zend_coroutine);
 
