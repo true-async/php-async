@@ -42,8 +42,8 @@ PHP_ASYNC_API extern zend_class_entry *async_ce_awaitable;
 PHP_ASYNC_API extern zend_class_entry *async_ce_timeout;
 
 #define PHP_ASYNC_NAME "true_async"
-#define PHP_ASYNC_VERSION "0.4.0"
-#define PHP_ASYNC_NAME_VERSION "true async v0.4.0"
+#define PHP_ASYNC_VERSION "0.5.0"
+#define PHP_ASYNC_NAME_VERSION "true async v0.5.0"
 
 #define REACTOR_CHECK_INTERVAL (100 * 1000000) // ms in nanoseconds
 
