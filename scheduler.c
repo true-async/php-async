@@ -694,7 +694,14 @@ static void finally_shutdown(void)
 	cancel_queued_coroutines();
 	execute_queued_coroutines();
 
+	ZEND_ASYNC_SCHEDULER_CONTEXT = true;
 	execute_microtasks();
+
+	if (circular_buffer_is_not_empty(&ASYNC_G(resumed_coroutines))) {
+		process_resumed_coroutines();
+	}
+
+	ZEND_ASYNC_SCHEDULER_CONTEXT = false;
 
 	if (UNEXPECTED(EG(exception))) {
 		if (ZEND_ASYNC_EXIT_EXCEPTION != NULL) {
@@ -1128,6 +1135,9 @@ static zend_always_inline void scheduler_next_tick(void)
 	if (ZEND_ASYNC_G(heartbeat_handler) != NULL) {
 		ZEND_ASYNC_G(heartbeat_handler)();
 		TRY_HANDLE_SUSPEND_EXCEPTION();
+		if (circular_buffer_is_not_empty(&ASYNC_G(resumed_coroutines))) {
+			process_resumed_coroutines();
+		}
 	}
 
 	execute_microtasks();
@@ -1142,7 +1152,7 @@ static zend_always_inline void scheduler_next_tick(void)
 
 		has_handles = ZEND_ASYNC_REACTOR_EXECUTE(circular_buffer_is_not_empty(queue));
 
-		if (circular_buffer_is_not_empty(&ASYNC_G(coroutine_queue))) {
+		if (circular_buffer_is_not_empty(&ASYNC_G(resumed_coroutines))) {
 			process_resumed_coroutines();
 		}
 
