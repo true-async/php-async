@@ -823,7 +823,7 @@ static void async_future_callback_handler(
 
     zval_ptr_dtor(&children_arr);
     iterator->extended_data = (zend_future_t *)event;
-    async_iterator_run_in_coroutine(iterator, 1);
+    async_iterator_run_in_coroutine(iterator, 0);
 }
 
 /**
