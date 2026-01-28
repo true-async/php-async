@@ -200,11 +200,6 @@ static zend_always_inline void transfer_current_exception(zend_fiber_transfer *t
 		return;
 	}
 
-	if (EG(prev_exception)) {
-		zend_exception_save();
-		zend_exception_restore();
-	}
-
 	zend_object *exception = EG(exception);
 	GC_ADDREF(exception);
 	zend_clear_exception();
@@ -495,12 +490,25 @@ next_coroutine:
 
 zend_always_inline static void execute_queued_coroutines(void)
 {
-	// @todo: need to refactoring
+	zend_object *saved_exception = NULL;
+
 	while (false == circular_buffer_is_empty(&ASYNC_G(coroutine_queue))) {
 		execute_next_coroutine();
 
 		if (UNEXPECTED(EG(exception))) {
-			zend_exception_save();
+			if (saved_exception) {
+				zend_exception_set_previous(EG(exception), saved_exception);
+			}
+			saved_exception = EG(exception);
+			EG(exception) = NULL;
+		}
+	}
+
+	if (UNEXPECTED(saved_exception)) {
+		if (EG(exception)) {
+			zend_exception_set_previous(EG(exception), saved_exception);
+		} else {
+			EG(exception) = saved_exception;
 		}
 	}
 }
@@ -611,7 +619,8 @@ static bool resolve_deadlocks(void)
 static void cancel_queued_coroutines(void)
 {
 	zend_object **exception = &EG(exception);
-	zend_object **prev_exception = &EG(prev_exception);
+	zend_object *prev_exception_storage = NULL;
+	zend_object **prev_exception = &prev_exception_storage;
 
 	zend_exception_save_fast(exception, prev_exception);
 
@@ -752,8 +761,6 @@ static void async_scheduler_dtor(void)
 
 	ZEND_ASYNC_GRACEFUL_SHUTDOWN = false;
 	ZEND_ASYNC_SCHEDULER_CONTEXT = false;
-
-	zend_exception_restore();
 }
 
 ///////////////////////////////////////////////////////////
@@ -1130,7 +1137,8 @@ static zend_always_inline void scheduler_next_tick(void)
 	*in_scheduler_context = true;
 
 	zend_object **exception_ptr = &EG(exception);
-	zend_object **prev_exception_ptr = &EG(prev_exception);
+	zend_object *prev_exception = NULL;
+	zend_object **prev_exception_ptr = &prev_exception;
 
 	if (ZEND_ASYNC_G(heartbeat_handler) != NULL) {
 		ZEND_ASYNC_G(heartbeat_handler)();
@@ -1196,7 +1204,8 @@ bool async_scheduler_coroutine_suspend(void)
 	// Before suspending the coroutine, we save the current exception state.
 	//
 	zend_object **exception_ptr = &EG(exception);
-	zend_object **prev_exception_ptr = &EG(prev_exception);
+	zend_object *prev_exception = NULL;
+	zend_object **prev_exception_ptr = &prev_exception;
 
 	zend_exception_save_fast(exception_ptr, prev_exception_ptr);
 
