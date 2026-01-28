@@ -740,8 +740,6 @@ static void callback_resolve_when_zombie_completed(zend_async_event_t *event,
 		}
 
 		if (UNEXPECTED(EG(exception))) {
-			zend_exception_save();
-			zend_exception_restore();
 			ZEND_ASYNC_RESUME_WITH_ERROR(coroutine, EG(exception), false);
 			zend_clear_exception();
 			return;

@@ -17,7 +17,7 @@ $completed_coroutine = spawn(function() {
 
 await($completed_coroutine);
 
-echo "coroutine finished: " . ($completed_coroutine->isFinished() ? "true" : "false") . "\n";
+echo "coroutine completed: " . ($completed_coroutine->isCompleted() ? "true" : "false") . "\n";
 
 // Try to cancel already completed coroutine
 $completed_coroutine->cancel(new \Async\CancellationError("Too late"));
@@ -41,7 +41,7 @@ try {
     $original_exception = $e;
 }
 
-echo "exception coroutine finished: " . ($exception_coroutine->isFinished() ? "true" : "false") . "\n";
+echo "exception coroutine completed: " . ($exception_coroutine->isCompleted() ? "true" : "false") . "\n";
 
 // Try to cancel coroutine that already failed
 $exception_coroutine->cancel(new \Async\CancellationError("Post-error cancel"));
@@ -67,11 +67,11 @@ echo "end\n";
 --EXPECTF--
 start
 completed coroutine executing
-coroutine finished: true
+coroutine completed: true
 attempted to cancel completed coroutine
 await completed result: already_done
 exception coroutine executing
-exception coroutine finished: true
+exception coroutine completed: true
 attempted to cancel failed coroutine
 original exception preserved: Original error
 end

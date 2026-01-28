@@ -19,7 +19,7 @@ $c = spawn(function() {
 
     if ($coro !== null) {
         echo "Has coroutine: yes\n";
-        echo "Is finished: " . ($coro->isFinished() ? "yes" : "no") . "\n";
+        echo "Is completed: " . ($coro->isCompleted() ? "yes" : "no") . "\n";
     } else {
         echo "Has coroutine: no\n";
     }
@@ -33,5 +33,5 @@ echo "OK\n";
 --EXPECTF--
 Fiber completed: done
 Has coroutine: yes
-Is finished: yes
+Is completed: yes
 OK

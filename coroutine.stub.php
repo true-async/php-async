@@ -8,7 +8,7 @@ namespace Async;
  * @strict-properties
  * @not-serializable
  */
-final class Coroutine implements Awaitable
+final class Coroutine implements Completable
 {
     /**
      * Returns the Coroutine ID.
@@ -98,9 +98,9 @@ final class Coroutine implements Awaitable
     public function isCancellationRequested(): bool {}
 
     /**
-     * Return true if the coroutine is finished.
+     * Return true if the coroutine is completed.
      */
-    public function isFinished(): bool {}
+    public function isCompleted(): bool {}
 
     /**
      * Return awaiting debug information.

@@ -11,7 +11,7 @@ This directory contains tests for the Coroutine class methods implementation.
 - `004-coroutine_getException_running.phpt` - Tests getException() throws RuntimeException for running coroutines
 
 ### Status Methods
-- `005-coroutine_status_methods.phpt` - Tests isStarted(), isFinished(), isCancelled(), isSuspended()
+- `005-coroutine_status_methods.phpt` - Tests isStarted(), isCompleted(), isCancelled(), isSuspended()
 - `013-coroutine_running_detection.phpt` - Tests isRunning() method
 
 ### Cancellation

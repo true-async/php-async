@@ -32,6 +32,7 @@
 #include "libuv_reactor.h"
 
 zend_class_entry *async_ce_awaitable = NULL;
+zend_class_entry *async_ce_completable = NULL;
 zend_class_entry *async_ce_timeout = NULL;
 
 ///////////////////////////////////////////////////////////////
@@ -208,9 +209,9 @@ PHP_FUNCTION(Async_await)
 	zend_object *cancellation = NULL;
 
 	ZEND_PARSE_PARAMETERS_START(1, 2)
-	Z_PARAM_OBJ_OF_CLASS(awaitable, async_ce_awaitable);
+	Z_PARAM_OBJ_OF_CLASS(awaitable, async_ce_completable);
 	Z_PARAM_OPTIONAL
-	Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
+	Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_completable);
 	ZEND_PARSE_PARAMETERS_END();
 
 	SCHEDULER_LAUNCH;
@@ -766,6 +767,43 @@ PHP_METHOD(Async_Timeout, __construct)
 	async_throw_error("Timeout cannot be constructed directly");
 }
 
+PHP_METHOD(Async_Timeout, cancel)
+{
+	zend_object *cancellation = NULL;
+
+	ZEND_PARSE_PARAMETERS_START(0, 1)
+	Z_PARAM_OPTIONAL
+	Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_cancellation_exception);
+	ZEND_PARSE_PARAMETERS_END();
+
+	async_timeout_object_t *timeout = ASYNC_TIMEOUT_FROM_OBJ(Z_OBJ_P(ZEND_THIS));
+
+	if (timeout->event != NULL) {
+		zend_async_timer_event_t *timer_event = timeout->event;
+		timeout->event = NULL;
+		timer_event->base.dispose(&timer_event->base);
+	}
+}
+
+PHP_METHOD(Async_Timeout, isCompleted)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	async_timeout_object_t *timeout = ASYNC_TIMEOUT_FROM_OBJ(Z_OBJ_P(ZEND_THIS));
+
+	RETURN_BOOL(timeout->event == NULL || ZEND_ASYNC_EVENT_IS_CLOSED(&timeout->event->base));
+}
+
+PHP_METHOD(Async_Timeout, isCancelled)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	/* Timeout does not track cancellation separately; it is either active or completed */
+	async_timeout_object_t *timeout = ASYNC_TIMEOUT_FROM_OBJ(Z_OBJ_P(ZEND_THIS));
+
+	RETURN_BOOL(timeout->event == NULL);
+}
+
 ///////////////////////////////////////////////////////////////
 /// Register Async Module
 ///////////////////////////////////////////////////////////////
@@ -775,6 +813,7 @@ ZEND_DECLARE_MODULE_GLOBALS(async)
 void async_register_awaitable_ce(void)
 {
 	async_ce_awaitable = register_class_Async_Awaitable();
+	async_ce_completable = register_class_Async_Completable(async_ce_awaitable);
 }
 
 static zend_object_handlers async_timeout_handlers;
@@ -871,7 +910,7 @@ static zend_object *async_timeout_create(const zend_ulong ms, const bool is_peri
 
 void async_register_timeout_ce(void)
 {
-	async_ce_timeout = register_class_Async_Timeout(async_ce_awaitable);
+	async_ce_timeout = register_class_Async_Timeout(async_ce_completable);
 
 	async_ce_timeout->create_object = NULL;
 
