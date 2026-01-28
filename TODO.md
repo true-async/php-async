@@ -33,7 +33,7 @@ final class Channel
      *
      * @throws ChannelClosedException
      */
-    public function send(mixed $value): Future {}
+    public function send(mixed $value): void {}
 
     /**
      * Receive a value from the channel.
@@ -41,11 +41,11 @@ final class Channel
      * Suspends the current coroutine until a value
      * is available.
      *
-     * @return Future<mixed>
+     * @return mixed
      *   Returns null when the channel is closed
      *   and no more values are available.
      */
-    public function recv(): Future {}
+    public function recv(): mixed {}
 
     /**
      * Close the channel.
