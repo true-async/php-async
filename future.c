@@ -93,7 +93,7 @@ static bool future_state_replay(zend_async_event_t *event, zend_async_event_call
 
 static zend_string* future_state_info(zend_async_event_t *event)
 {
-    zend_future_t *future = (zend_future_t *) event;
+    const zend_future_t *future = (zend_future_t *) event;
 
     return zend_strpprintf(0, "FutureState(%s)", ZEND_FUTURE_IS_COMPLETED(future) ? "completed" : "pending");
 }
@@ -216,8 +216,8 @@ FUTURE_STATE_METHOD(complete)
     ZEND_PARSE_PARAMETERS_START(1, 1)
         Z_PARAM_ZVAL(result)
     ZEND_PARSE_PARAMETERS_END();
-    
-    async_future_state_t *state = THIS_FUTURE_STATE;
+
+    const async_future_state_t *state = THIS_FUTURE_STATE;
 
     if (state->event == NULL) {
         async_throw_error("FutureState is already destroyed");
@@ -246,8 +246,8 @@ FUTURE_STATE_METHOD(error)
     ZEND_PARSE_PARAMETERS_START(1, 1)
         Z_PARAM_OBJECT_OF_CLASS(throwable, zend_ce_throwable)
     ZEND_PARSE_PARAMETERS_END();
-    
-    async_future_state_t *state = THIS_FUTURE_STATE;
+
+    const async_future_state_t *state = THIS_FUTURE_STATE;
     
     if (state->event == NULL) {
         async_throw_error("FutureState is already destroyed");
@@ -274,7 +274,11 @@ FUTURE_STATE_METHOD(isComplete)
     ZEND_PARSE_PARAMETERS_NONE();
 
     const async_future_state_t *state = THIS_FUTURE_STATE;
-    zend_future_t *future = (zend_future_t *)state->event;
+    const zend_future_t *future = (zend_future_t *)state->event;
+
+    if (UNEXPECTED(future == NULL)) {
+        RETURN_TRUE;
+    }
     
     RETURN_BOOL(ZEND_FUTURE_IS_COMPLETED(future));
 }
@@ -285,6 +289,11 @@ FUTURE_STATE_METHOD(ignore)
 
     const async_future_state_t *state = THIS_FUTURE_STATE;
     zend_future_t *future = (zend_future_t *)state->event;
+
+    if (UNEXPECTED(future == NULL)) {
+        async_throw_error("FutureState is already destroyed");
+        RETURN_THROWS();
+    }
     
     ZEND_FUTURE_SET_IGNORED(future);
 }
@@ -292,10 +301,22 @@ FUTURE_STATE_METHOD(ignore)
 FUTURE_STATE_METHOD(getAwaitingInfo)
 {
     ZEND_PARSE_PARAMETERS_NONE();
-    
-    async_future_state_t *state = THIS_FUTURE_STATE;
 
-    /* @TODO STATE_METHOD(getInfo) */
+    const async_future_state_t *state = THIS_FUTURE_STATE;
+    zend_future_t *future = (zend_future_t *)state->event;
+
+    if (UNEXPECTED(future == NULL)) {
+        RETURN_EMPTY_ARRAY();
+    }
+
+    zend_string *state_info = future->event.info(&future->event);
+    zval z_state_info;
+    ZVAL_STR(&z_state_info, state_info);
+    // new array zend array
+    zend_array *info = zend_new_array(0);
+    zend_hash_index_add_new(info, 0, &z_state_info);
+
+    RETURN_ARR(info);
 }
 
 ///////////////////////////////////////////////////////////
