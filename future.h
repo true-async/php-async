@@ -22,6 +22,13 @@
 typedef struct _async_future_state_s async_future_state_t;
 typedef struct _async_future_s async_future_t;
 
+/* Mapper types for Future transformations */
+typedef enum {
+    ASYNC_FUTURE_MAPPER_SUCCESS = 0,   /* map() - transforms successful result */
+    ASYNC_FUTURE_MAPPER_CATCH = 1,     /* catch() - handles errors */
+    ASYNC_FUTURE_MAPPER_FINALLY = 2    /* finally() - always executes */
+} async_future_mapper_type_t;
+
 /**
  * FutureState object structure.
  * Holds a reference to the underlying zend_future_t event.
@@ -41,6 +48,9 @@ struct _async_future_state_s {
 struct _async_future_s {
     ZEND_ASYNC_EVENT_REF_FIELDS        /* Reference to zend_future_t (same as FutureState) */
     zend_object std;                   /* Standard object */
+    HashTable *child_futures;          /* Child futures created by map/catch/finally */
+    zval mapper;                       /* Mapper callable (used when this future is a child) */
+    async_future_mapper_type_t mapper_type; /* Type of mapper transformation */
 };
 
 /* Class entry declarations */
@@ -52,6 +62,7 @@ extern zend_class_entry *async_ce_future;
 
 /* Convert zend_object to async_future_t */
 #define ASYNC_FUTURE_FROM_OBJ(obj) ((async_future_t *)((char *)(obj) - (obj)->handlers->offset))
+
 
 /* Registration function */
 void async_register_future_ce(void);

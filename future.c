@@ -22,7 +22,82 @@
 #include "zend_closures.h"
 #include "zend_common.h"
 #include "scheduler.h"
+#include "iterator.h"
 #include "zend_smart_str.h"
+
+///////////////////////////////////////////////////////////
+/// Architecture Overview
+///////////////////////////////////////////////////////////
+/*
+ * Future Module Architecture
+ * ==========================
+ *
+ * This module implements Future pattern on top of the core zend_future_t event.
+ *
+ * Core Layer (Zend/zend_async_API.h):
+ * ------------------------------------
+ * zend_future_t - Low-level event container
+ *   - Stores result/exception
+ *   - Manages event lifecycle (start/stop)
+ *   - Maintains callback list
+ *   - NO business logic, only event mechanics
+ *
+ * Module Layer (ext/async/):
+ * --------------------------
+ * FutureState (async_future_state_t) - Mutable container
+ *   - PHP object wrapper around zend_future_t
+ *   - Provides complete() and error() methods
+ *   - Owns the underlying zend_future_t
+ *
+ * Future (async_future_t) - Readonly container with transformation chain
+ *   - PHP object wrapper around the SAME zend_future_t
+ *   - Provides map(), catch(), finally(), await() methods
+ *   - Stores child_futures created by transformations
+ *   - Stores mapper callable (if this Future is a child)
+ *   - Subscribes to zend_future_t via callback mechanism
+ *
+ * Object Ownership Scheme:
+ * ------------------------
+ *
+ *   FutureState (PHP object)
+ *       │
+ *       │ owns (ref_count)
+ *       ▼
+ *   zend_future_t (core event)  ◄────┐
+ *       │                            │ references (callback subscription)
+ *       │ has callbacks              │
+ *       │                            │
+ *       ├─► callback 1               │
+ *       ├─► callback 2               │
+ *       └─► Future callback ─────────┘
+ *               │
+ *               │ when triggered
+ *               ▼
+ *           Future (PHP object)
+ *               │
+ *               │ owns
+ *               ▼
+ *           child_futures[] ──► [Future2, Future3, ...]
+ *
+ * Event Flow:
+ * -----------
+ * 1. FutureState->complete() called
+ *    └─► zend_future_t->stop() triggered (core)
+ *        └─► ZEND_ASYNC_CALLBACKS_NOTIFY() (core - simple iteration)
+ *            └─► Future callback handler invoked (module)
+ *                └─► async_iterator_run_in_coroutine() (module)
+ *                    └─► Process each child future in SEPARATE coroutine
+ *                        └─► Call mapper callable
+ *                            └─► Resolve child future
+ *
+ * Key Design Principles:
+ * ----------------------
+ * - Core (zend_future_t) has NO knowledge of Future/FutureState
+ * - Core only manages event lifecycle and callback notification
+ * - Module implements business logic via callback subscription
+ * - Child futures are processed in separate coroutine (NOT synchronously!)
+ * - Iterator ensures proper async execution without blocking
+ */
 
 #define FUTURE_METHOD(name) PHP_METHOD(Async_Future, name)
 #define FUTURE_STATE_METHOD(name) PHP_METHOD(Async_FutureState, name)
@@ -42,6 +117,26 @@ static zend_object_handlers async_future_state_handlers;
 static zend_object_handlers async_future_handlers;
 
 ///////////////////////////////////////////////////////////
+/// Future callback structure
+///////////////////////////////////////////////////////////
+
+/**
+ * Callback structure for Future object.
+ * When parent future completes, this callback processes child futures.
+ */
+typedef struct {
+    zend_async_event_callback_t base;
+    async_future_t *future_obj;
+} async_future_callback_t;
+
+/* Forward declarations */
+static zend_result future_mappers_handler(async_iterator_t *iterator, zval *current, zval *key);
+static void async_future_callback_handler(zend_async_event_t *event, zend_async_event_callback_t *callback, void *result, zend_object *exception);
+static void async_future_callback_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event);
+static void async_future_create_mapper(INTERNAL_FUNCTION_PARAMETERS, async_future_mapper_type_t mapper_type);
+static async_future_t *async_future_create_direct(void);
+
+///////////////////////////////////////////////////////////
 /// FutureState event functions (like coroutine)
 ///////////////////////////////////////////////////////////
 
@@ -53,16 +148,15 @@ static bool future_state_event_start(zend_async_event_t *event)
 
 static bool future_state_event_stop(zend_async_event_t *event)
 {
-    /* Mark event as closed and notify callbacks */
     if (ZEND_ASYNC_EVENT_IS_CLOSED(event)) {
         return true;
     }
-    
+
     ZEND_ASYNC_EVENT_SET_CLOSED(event);
-    
+
     zend_future_t *future = (zend_future_t *)event;
     ZEND_ASYNC_CALLBACKS_NOTIFY(event, &future->result, future->exception);
-    
+
     return true;
 }
 
@@ -118,7 +212,7 @@ static bool future_state_dispose(zend_async_event_t *event)
         zend_string_release(future->completed_filename);
         future->completed_filename = NULL;
     }
-    
+
     zend_async_callbacks_free(event);
     
     efree(future);
@@ -178,6 +272,12 @@ static zend_object *async_future_object_create(zend_class_entry *ce)
 {
     async_future_t *future = zend_object_alloc(sizeof(async_future_t), ce);
 
+    ZEND_ASYNC_EVENT_REF_SET(future, XtOffsetOf(async_future_t, std), NULL);
+
+    future->child_futures = NULL;
+    ZVAL_UNDEF(&future->mapper);
+    future->mapper_type = ASYNC_FUTURE_MAPPER_SUCCESS;
+
     zend_object_std_init(&future->std, ce);
     object_properties_init(&future->std, ce);
 
@@ -187,6 +287,13 @@ static zend_object *async_future_object_create(zend_class_entry *ce)
 static void async_future_object_free(zend_object *object)
 {
     async_future_t *future = ASYNC_FUTURE_FROM_OBJ(object);
+
+    if (future->child_futures != NULL) {
+        zend_array_destroy(future->child_futures);
+        future->child_futures = NULL;
+    }
+
+    zval_ptr_dtor(&future->mapper);
 
     zend_future_t *zend_future = (zend_future_t *)future->event;
     future->event = NULL;
@@ -336,10 +443,14 @@ FUTURE_METHOD(__construct)
     async_future_t *future = THIS_FUTURE;
     const async_future_state_t *state = ASYNC_FUTURE_STATE_FROM_OBJ(Z_OBJ_P(state_obj));
 
-    // Both Future and FutureState reference the same event
+    if (UNEXPECTED(state->event == NULL)) {
+        async_throw_error("FutureState is already destroyed");
+        RETURN_THROWS();
+    }
+
     future->event = state->event;
     ZEND_ASYNC_EVENT_ADD_REF(state->event);
-    
+
     ZEND_ASYNC_EVENT_REF_SET(future, XtOffsetOf(async_future_t, std), state->event);
 }
 
@@ -591,23 +702,270 @@ FUTURE_METHOD(await)
     zend_async_waker_destroy(coroutine);
 }
 
-/* TODO: Implement map, catch, finally methods */
+///////////////////////////////////////////////////////////
+/// Mapper implementation
+///////////////////////////////////////////////////////////
+
+/**
+ * Iterator handler that processes child futures when parent resolves.
+ * Called once for each child future (from map/catch/finally).
+ */
+static zend_result future_mappers_handler(async_iterator_t *iterator, zval *current, zval *key)
+{
+	zend_future_t *parent_future = (zend_future_t *)iterator->extended_data;
+	async_future_t *child_future_obj = ASYNC_FUTURE_FROM_OBJ(Z_OBJ_P(current));
+	zend_future_t *child_future = (zend_future_t *)child_future_obj->event;
+
+	if (UNEXPECTED(child_future == NULL || ZEND_FUTURE_IS_COMPLETED(child_future))) {
+		return SUCCESS;
+	}
+
+	zval retval;
+	ZVAL_UNDEF(&retval);
+
+	switch (child_future_obj->mapper_type) {
+		case ASYNC_FUTURE_MAPPER_SUCCESS:
+			if (parent_future->exception != NULL) {
+				ZEND_FUTURE_REJECT(child_future, parent_future->exception);
+			} else {
+				zval args[1];
+				ZVAL_COPY(&args[0], &parent_future->result);
+
+				if (UNEXPECTED(call_user_function(NULL, NULL, &child_future_obj->mapper, &retval, 1, args) != SUCCESS)) {
+					zval_ptr_dtor(&args[0]);
+					if (UNEXPECTED(EG(exception) != NULL)) {
+						ZEND_FUTURE_REJECT(child_future, EG(exception));
+						zend_clear_exception();
+					} else {
+						zend_object *error = async_new_exception(async_ce_async_exception, "Failed to call map() callback");
+						ZEND_FUTURE_REJECT(child_future, error);
+						OBJ_RELEASE(error);
+					}
+					return SUCCESS;
+				}
+
+				zval_ptr_dtor(&args[0]);
+
+				if (UNEXPECTED(EG(exception) != NULL)) {
+					ZEND_FUTURE_REJECT(child_future, EG(exception));
+					zend_clear_exception();
+				} else if (Z_TYPE(retval) != IS_UNDEF) {
+					ZEND_FUTURE_COMPLETE(child_future, &retval);
+				} else {
+					zval null_val;
+					ZVAL_NULL(&null_val);
+					ZEND_FUTURE_COMPLETE(child_future, &null_val);
+				}
+			}
+			break;
+
+		case ASYNC_FUTURE_MAPPER_CATCH:
+			if (parent_future->exception == NULL) {
+				ZEND_FUTURE_COMPLETE(child_future, &parent_future->result);
+			} else {
+				zval args[1];
+				ZVAL_OBJ(&args[0], parent_future->exception);
+
+				if (UNEXPECTED(call_user_function(NULL, NULL, &child_future_obj->mapper, &retval, 1, args) != SUCCESS)) {
+					if (UNEXPECTED(EG(exception) != NULL)) {
+						ZEND_FUTURE_REJECT(child_future, EG(exception));
+						zend_clear_exception();
+					} else {
+						ZEND_FUTURE_REJECT(child_future, parent_future->exception);
+					}
+					return SUCCESS;
+				}
+
+				if (UNEXPECTED(EG(exception) != NULL)) {
+					ZEND_FUTURE_REJECT(child_future, EG(exception));
+					zend_clear_exception();
+				} else if (Z_TYPE(retval) != IS_UNDEF) {
+					ZEND_FUTURE_COMPLETE(child_future, &retval);
+				} else {
+					zval null_val;
+					ZVAL_NULL(&null_val);
+					ZEND_FUTURE_COMPLETE(child_future, &null_val);
+				}
+			}
+			break;
+
+		case ASYNC_FUTURE_MAPPER_FINALLY:
+			if (UNEXPECTED(call_user_function(NULL, NULL, &child_future_obj->mapper, &retval, 0, NULL) != SUCCESS)) {
+				if (UNEXPECTED(EG(exception) != NULL)) {
+					ZEND_FUTURE_REJECT(child_future, EG(exception));
+					zend_clear_exception();
+				} else {
+					zend_object *error = async_new_exception(async_ce_async_exception, "Failed to call finally() callback");
+					ZEND_FUTURE_REJECT(child_future, error);
+					OBJ_RELEASE(error);
+				}
+				return SUCCESS;
+			}
+
+			if (UNEXPECTED(EG(exception) != NULL)) {
+				ZEND_FUTURE_REJECT(child_future, EG(exception));
+				zend_clear_exception();
+			} else if (parent_future->exception != NULL) {
+				ZEND_FUTURE_REJECT(child_future, parent_future->exception);
+			} else {
+				ZEND_FUTURE_COMPLETE(child_future, &parent_future->result);
+			}
+			break;
+	}
+
+	zval_ptr_dtor(&retval);
+	return SUCCESS;
+}
+
+///////////////////////////////////////////////////////////
+/// Future callback implementation
+///////////////////////////////////////////////////////////
+
+/**
+ * Callback handler invoked when parent future completes.
+ * Processes all child futures by running iterator in separate coroutine.
+ */
+static void async_future_callback_handler(
+    zend_async_event_t *event,
+    zend_async_event_callback_t *callback,
+    void *result,
+    zend_object *exception
+) {
+    async_future_callback_t *future_callback = (async_future_callback_t *)callback;
+    async_future_t *future_obj = future_callback->future_obj;
+
+    if (future_obj->child_futures == NULL || zend_hash_num_elements(future_obj->child_futures) == 0) {
+        return;
+    }
+
+    zval children_arr;
+    ZVAL_ARR(&children_arr, future_obj->child_futures);
+
+    async_iterator_t *iterator = async_iterator_new(
+        &children_arr,
+        NULL,
+        NULL,
+        future_mappers_handler,
+        ZEND_ASYNC_CURRENT_SCOPE,
+        0,
+        1,
+        0
+    );
+
+    if (UNEXPECTED(iterator == NULL)) {
+        zval_ptr_dtor(&children_arr);
+        return;
+    }
+
+    zval_ptr_dtor(&children_arr);
+    iterator->extended_data = (zend_future_t *)event;
+    async_iterator_run_in_coroutine(iterator, 1);
+}
+
+/**
+ * Cleanup callback when it's removed from event.
+ */
+static void async_future_callback_dispose(
+    zend_async_event_callback_t *callback,
+    zend_async_event_t *event
+) {
+    async_future_callback_t *future_callback = (async_future_callback_t *)callback;
+
+    if (future_callback->future_obj != NULL) {
+        OBJ_RELEASE(&future_callback->future_obj->std);
+        future_callback->future_obj = NULL;
+    }
+
+    efree(future_callback);
+}
+
+static void async_future_create_mapper(
+    INTERNAL_FUNCTION_PARAMETERS,
+    async_future_mapper_type_t mapper_type
+) {
+    zval *callable;
+
+    ZEND_PARSE_PARAMETERS_START(1, 1)
+        Z_PARAM_ZVAL(callable)
+    ZEND_PARSE_PARAMETERS_END();
+
+    if (UNEXPECTED(!zend_is_callable(callable, 0, NULL))) {
+        async_throw_error("Argument must be a valid callable");
+        RETURN_THROWS();
+    }
+
+    async_future_t *source = (async_future_t *)THIS_FUTURE;
+
+    if (UNEXPECTED(source->event == NULL)) {
+        async_throw_error("Future has no state");
+        RETURN_THROWS();
+    }
+
+    async_future_t *target_future_obj = async_future_create_direct();
+    if (UNEXPECTED(target_future_obj == NULL)) {
+        RETURN_THROWS();
+    }
+
+    ZVAL_COPY(&target_future_obj->mapper, callable);
+    target_future_obj->mapper_type = mapper_type;
+
+    if (mapper_type == ASYNC_FUTURE_MAPPER_CATCH) {
+        ZEND_ASYNC_EVENT_SET_EXC_CAUGHT(source->event);
+    }
+    ZEND_ASYNC_EVENT_SET_RESULT_USED(source->event);
+
+    if (source->child_futures == NULL) {
+        source->child_futures = zend_new_array(4);
+
+        async_future_callback_t *callback = ecalloc(1, sizeof(async_future_callback_t));
+        callback->base.ref_count = 1;
+        callback->base.callback = async_future_callback_handler;
+        callback->base.dispose = async_future_callback_dispose;
+        callback->future_obj = source;
+        GC_ADDREF(&source->std);
+
+        if (UNEXPECTED(!zend_async_callbacks_push(source->event, &callback->base))) {
+            ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&callback->base);
+            OBJ_RELEASE(&target_future_obj->std);
+            async_throw_error("Failed to subscribe to source future");
+            RETURN_THROWS();
+        }
+    }
+
+    zval child_zval;
+    ZVAL_OBJ(&child_zval, &target_future_obj->std);
+    GC_ADDREF(&target_future_obj->std);
+    zend_hash_next_index_insert(source->child_futures, &child_zval);
+
+    ZVAL_OBJ(return_value, &target_future_obj->std);
+}
+
+///////////////////////////////////////////////////////////
+/// Future transformation methods
+///////////////////////////////////////////////////////////
+
 FUTURE_METHOD(map)
 {
-    async_throw_error("Future::map() not yet implemented");
-    RETURN_THROWS();
+    async_future_create_mapper(
+        INTERNAL_FUNCTION_PARAM_PASSTHRU,
+        ASYNC_FUTURE_MAPPER_SUCCESS
+    );
 }
 
 FUTURE_METHOD(catch)
 {
-    async_throw_error("Future::catch() not yet implemented");
-    RETURN_THROWS();
+    async_future_create_mapper(
+        INTERNAL_FUNCTION_PARAM_PASSTHRU,
+        ASYNC_FUTURE_MAPPER_CATCH
+    );
 }
 
 FUTURE_METHOD(finally)
 {
-    async_throw_error("Future::finally() not yet implemented");
-    RETURN_THROWS();
+    async_future_create_mapper(
+        INTERNAL_FUNCTION_PARAM_PASSTHRU,
+        ASYNC_FUTURE_MAPPER_FINALLY
+    );
 }
 
 FUTURE_METHOD(getAwaitingInfo)
@@ -641,6 +999,40 @@ async_future_state_t *async_future_state_create(void)
     return ASYNC_FUTURE_STATE_FROM_OBJ(obj);
 }
 
+/**
+ * Create a Future object directly without FutureState wrapper.
+ * More memory efficient for internal use (map/catch/finally).
+ */
+static async_future_t *async_future_create_direct(void)
+{
+    zend_future_t *future = ecalloc(1, sizeof(zend_future_t));
+    zend_async_event_t *event = &future->event;
+
+    ZVAL_UNDEF(&future->result);
+
+    event->start = future_state_event_start;
+    event->stop = future_state_event_stop;
+    event->add_callback = future_state_add_callback;
+    event->del_callback = future_state_del_callback;
+    event->replay = future_state_replay;
+    event->info = future_state_info;
+    event->dispose = future_state_dispose;
+    event->ref_count = 1;
+
+    async_future_t *future_obj = (async_future_t *)zend_object_alloc(sizeof(async_future_t), async_ce_future);
+
+    ZEND_ASYNC_EVENT_REF_SET(future_obj, XtOffsetOf(async_future_t, std), event);
+
+    future_obj->child_futures = NULL;
+    ZVAL_UNDEF(&future_obj->mapper);
+    future_obj->mapper_type = ASYNC_FUTURE_MAPPER_SUCCESS;
+
+    zend_object_std_init(&future_obj->std, async_ce_future);
+    object_properties_init(&future_obj->std, async_ce_future);
+
+    return future_obj;
+}
+
 ///////////////////////////////////////////////////////////
 /// API function implementations
 ///////////////////////////////////////////////////////////
@@ -658,7 +1050,8 @@ void async_register_future_ce(void)
     memcpy(&async_future_state_handlers, &std_object_handlers, sizeof(zend_object_handlers));
     async_future_state_handlers.offset = XtOffsetOf(async_future_state_t, std);
     async_future_state_handlers.free_obj = async_future_state_object_free;
-    
+    async_ce_future_state->default_object_handlers = &async_future_state_handlers;
+
     /* Register Future class using generated registration */
     async_ce_future = register_class_Async_Future(async_ce_completable);
     async_ce_future->create_object = async_future_object_create;
@@ -666,4 +1059,5 @@ void async_register_future_ce(void)
     memcpy(&async_future_handlers, &std_object_handlers, sizeof(zend_object_handlers));
     async_future_handlers.offset = XtOffsetOf(async_future_t, std);
     async_future_handlers.free_obj = async_future_object_free;
+    async_ce_future->default_object_handlers = &async_future_handlers;
 }
