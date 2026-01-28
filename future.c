@@ -269,7 +269,7 @@ FUTURE_STATE_METHOD(error)
     ZEND_FUTURE_REJECT(future, Z_OBJ_P(throwable));
 }
 
-FUTURE_STATE_METHOD(isComplete)
+FUTURE_STATE_METHOD(isCompleted)
 {
     ZEND_PARSE_PARAMETERS_NONE();
 
@@ -418,7 +418,7 @@ FUTURE_METHOD(failed)
     zval_ptr_dtor(&args[0]);
 }
 
-FUTURE_METHOD(isComplete)
+FUTURE_METHOD(isCompleted)
 {
     ZEND_PARSE_PARAMETERS_NONE();
     
@@ -433,12 +433,60 @@ FUTURE_METHOD(isComplete)
     RETURN_BOOL(ZEND_FUTURE_IS_COMPLETED(state));
 }
 
+FUTURE_METHOD(isCancelled)
+{
+    ZEND_PARSE_PARAMETERS_NONE();
+
+    async_future_t *future = THIS_FUTURE;
+
+    if (future->event == NULL) {
+        RETURN_FALSE;
+    }
+
+    zend_future_t *state = (zend_future_t *)future->event;
+
+    RETURN_BOOL(ZEND_FUTURE_IS_COMPLETED(state) && state->exception != NULL
+        && instanceof_function(state->exception->ce, async_ce_cancellation_exception));
+}
+
+FUTURE_METHOD(cancel)
+{
+    zend_object *cancellation = NULL;
+
+    ZEND_PARSE_PARAMETERS_START(0, 1)
+        Z_PARAM_OPTIONAL
+        Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_cancellation_exception)
+    ZEND_PARSE_PARAMETERS_END();
+
+    async_future_t *future = THIS_FUTURE;
+
+    if (future->event == NULL) {
+        async_throw_error("Future has no state");
+        RETURN_THROWS();
+    }
+
+    zend_future_t *state = (zend_future_t *)future->event;
+
+    if (ZEND_FUTURE_IS_COMPLETED(state)) {
+        return;
+    }
+
+    if (cancellation == NULL) {
+        cancellation = async_new_exception(async_ce_cancellation_exception, "Future has been cancelled");
+    } else {
+        GC_ADDREF(cancellation);
+    }
+
+    ZEND_FUTURE_REJECT(state, cancellation);
+    OBJ_RELEASE(cancellation);
+}
+
 FUTURE_METHOD(ignore)
 {
     ZEND_PARSE_PARAMETERS_NONE();
-    
+
     async_future_t *future = THIS_FUTURE;
-    
+
     if (future->event != NULL) {
         zend_future_t *state = (zend_future_t *)future->event;
         ZEND_FUTURE_SET_IGNORED(state);
@@ -453,7 +501,7 @@ FUTURE_METHOD(await)
     
     ZEND_PARSE_PARAMETERS_START(0, 1)
         Z_PARAM_OPTIONAL
-        Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable)
+        Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_completable)
     ZEND_PARSE_PARAMETERS_END();
 
     SCHEDULER_LAUNCH;
@@ -562,6 +610,27 @@ FUTURE_METHOD(finally)
     RETURN_THROWS();
 }
 
+FUTURE_METHOD(getAwaitingInfo)
+{
+    ZEND_PARSE_PARAMETERS_NONE();
+
+    const async_future_t *future = THIS_FUTURE;
+
+    if (future->event == NULL) {
+        RETURN_EMPTY_ARRAY();
+    }
+
+    zend_future_t *state = (zend_future_t *)future->event;
+    zend_string *state_info = state->event.info(&state->event);
+    zval z_state_info;
+    ZVAL_STR(&z_state_info, state_info);
+
+    zend_array *info = zend_new_array(0);
+    zend_hash_index_add_new(info, 0, &z_state_info);
+
+    RETURN_ARR(info);
+}
+
 ///////////////////////////////////////////////////////////
 /// Helper functions
 ///////////////////////////////////////////////////////////
@@ -591,13 +660,10 @@ void async_register_future_ce(void)
     async_future_state_handlers.free_obj = async_future_state_object_free;
     
     /* Register Future class using generated registration */
-    async_ce_future = register_class_Async_Future();
+    async_ce_future = register_class_Async_Future(async_ce_completable);
     async_ce_future->create_object = async_future_object_create;
-    
+
     memcpy(&async_future_handlers, &std_object_handlers, sizeof(zend_object_handlers));
     async_future_handlers.offset = XtOffsetOf(async_future_t, std);
     async_future_handlers.free_obj = async_future_object_free;
-    
-    /* Make Future implement Awaitable */
-    zend_class_implements(async_ce_future, 1, async_ce_awaitable);
 }

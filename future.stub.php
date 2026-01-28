@@ -34,7 +34,7 @@ final class FutureState
     /**
      * @return bool True if the operation has completed.
      */
-    public function isComplete(): bool {}
+    public function isCompleted(): bool {}
 
     /**
      * Suppress the exception thrown to the loop error handler if and operation error is not handled by a callback.
@@ -50,7 +50,7 @@ final class FutureState
 /**
  * @template-covariant T
  */
-final class Future implements FutureLike
+final class Future implements Completable
 {
     /**
      * @template Tv
@@ -74,7 +74,17 @@ final class Future implements FutureLike
     /**
      * @return bool True if the operation has completed.
      */
-    public function isComplete(): bool {}
+    public function isCompleted(): bool {}
+
+    /**
+     * Return true if the future is cancelled.
+     */
+    public function isCancelled(): bool {}
+
+    /**
+     * Cancel the future.
+     */
+    public function cancel(?CancellationError $cancellation = null): void {}
 
     /**
      * Do not forward unhandled errors to the event loop handler.
@@ -127,7 +137,7 @@ final class Future implements FutureLike
      *
      * @return T
      */
-    public function await(?Awaitable $cancellation = null): mixed {}
+    public function await(?Completable $cancellation = null): mixed {}
 
     /**
      * Return awaiting debug information.

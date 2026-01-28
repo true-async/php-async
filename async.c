@@ -967,7 +967,7 @@ ZEND_MINIT_FUNCTION(async)
 	// async_register_handlers_ce();
 	// async_register_channel_ce();
 	// async_register_iterator_ce();
-	// async_register_future_ce();
+	async_register_future_ce();
 
 	async_scheduler_startup();
 	async_api_register();
