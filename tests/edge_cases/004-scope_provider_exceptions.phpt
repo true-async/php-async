@@ -3,7 +3,7 @@ ScopeProvider - exception handling with different exception types
 --FILE--
 <?php
 
-use function Async\spawnWith;
+use function Async\spawn_with;
 
 echo "start\n";
 
@@ -39,7 +39,7 @@ $exceptionTypes = ['runtime', 'cancellation', 'invalid_argument', 'logic', 'gene
 
 foreach ($exceptionTypes as $type) {
     try {
-        $coroutine = spawnWith(new ThrowingScopeProvider($type), function() {
+        $coroutine = spawn_with(new ThrowingScopeProvider($type), function() {
             return "test";
         });
         echo "ERROR: Should have thrown exception for {$type}\n";

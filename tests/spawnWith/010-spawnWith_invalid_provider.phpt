@@ -3,27 +3,27 @@ Async\spawnWith: invalid provider parameter
 --FILE--
 <?php
 
-use function Async\spawnWith;
+use function Async\spawn_with;
 
 echo "start\n";
 
 // Test with non-ScopeProvider parameter
 try {
-    spawnWith("not a provider", function() {});
+    spawn_with("not a provider", function() {});
 } catch (TypeError $e) {
     echo "caught TypeError for string: " . $e->getMessage() . "\n";
 }
 
 // Test with array
 try {
-    spawnWith([], function() {});
+    spawn_with([], function() {});
 } catch (TypeError $e) {
     echo "caught TypeError for array\n";
 }
 
 // Test with stdClass
 try {
-    spawnWith(new stdClass(), function() {});
+    spawn_with(new stdClass(), function() {});
 } catch (TypeError $e) {
     echo "caught TypeError for stdClass\n";
 }

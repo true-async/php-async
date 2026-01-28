@@ -1,10 +1,10 @@
 --TEST--
-awaitAll() - with Generator
+await_all() - with Generator
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 use function Async\await;
 
 function createCoroutines() {
@@ -24,7 +24,7 @@ function createCoroutines() {
 echo "start\n";
 
 $generator = createCoroutines();
-$result = awaitAll($generator);
+$result = await_all($generator);
 
 $countOfResults = count($result[0]) == 2 ? "OK" : "FALSE: ".count($result[0]);
 $countOfErrors = count($result[1]) == 1 ? "OK" : "FALSE: ".count($result[1]);

@@ -1,10 +1,10 @@
 --TEST--
-awaitAll() - with fillNull parameter
+await_all() - with fillNull parameter
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 use function Async\await;
 
 $coroutines = [
@@ -24,7 +24,7 @@ $coroutines = [
 echo "start\n";
 
 // Test with fillNull = true
-$result = awaitAll($coroutines, null, fillNull:true);
+$result = await_all($coroutines, null, fillNull:true);
 
 echo "Count of results: " . count($result[0]) . "\n";
 echo "Count of errors: " . count($result[1]) . "\n";

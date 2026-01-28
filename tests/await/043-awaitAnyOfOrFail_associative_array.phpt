@@ -1,10 +1,10 @@
 --TEST--
-awaitAnyOfOrFail() - with associative array
+await_any_of_or_fail() - with associative array
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAnyOfOrFail;
+use function Async\await_any_of_or_fail;
 use function Async\await;
 use function Async\suspend;
 
@@ -30,7 +30,7 @@ $coroutines = [
 
 echo "start\n";
 
-$results = awaitAnyOfOrFail(3, $coroutines);
+$results = await_any_of_or_fail(3, $coroutines);
 
 echo "Keys preserved: " . (count(array_intersect(array_keys($results), ['slow', 'fast', 'medium', 'very_slow'])) == count($results) ? "YES" : "NO") . "\n";
 

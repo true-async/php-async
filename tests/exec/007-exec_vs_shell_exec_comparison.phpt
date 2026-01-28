@@ -10,7 +10,7 @@ if (!function_exists("exec") || !function_exists("shell_exec")) {
 <?php
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 
 echo "Starting comparison test\n";
 
@@ -54,7 +54,7 @@ $tasks = [
 echo "Comparison test completed\n";
 
 // Wait for all tasks to complete
-awaitAll($tasks);
+await_all($tasks);
 
 // Sort and output results
 sort($results);

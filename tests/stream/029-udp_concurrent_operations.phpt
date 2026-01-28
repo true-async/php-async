@@ -4,7 +4,7 @@ Concurrent UDP operations with multiple servers and clients in async context
 <?php
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 use function Async\delay;
 
 $output = [];
@@ -134,7 +134,7 @@ $client2 = spawn(function() use (&$server2_address, &$output) {
     fclose($socket);
 });
 
-awaitAll([$server1, $server2, $client1, $client2]);
+await_all([$server1, $server2, $client1, $client2]);
 $output['z'] = "End concurrent UDP operations test";
 
 // Sort output by keys to ensure deterministic test results

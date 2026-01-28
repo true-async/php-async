@@ -1,10 +1,10 @@
 --TEST--
-awaitAnyOrFail() - with Generator
+await_any_or_fail() - with Generator
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAnyOrFail;
+use function Async\await_any_or_fail;
 use function Async\await;
 use function Async\suspend;
 
@@ -26,7 +26,7 @@ function createCoroutines() {
 echo "start\n";
 
 $generator = createCoroutines();
-$result = awaitAnyOrFail($generator);
+$result = await_any_or_fail($generator);
 
 echo "Result: $result\n";
 echo "end\n";

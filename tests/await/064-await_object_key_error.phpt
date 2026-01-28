@@ -1,10 +1,10 @@
 --TEST--
-awaitAll() - iterator with object keys error
+await_all() - iterator with object keys error
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 
 echo "start\n";
 
@@ -44,7 +44,7 @@ class ObjectKeyIterator implements Iterator
 }
 
 try {
-    $result = awaitAll(new ObjectKeyIterator());
+    $result = await_all(new ObjectKeyIterator());
     echo "ERROR: Should have failed with object keys\n";
 } catch (Async\AsyncException $e) {
     echo "Caught object key error: " . $e->getMessage() . "\n";

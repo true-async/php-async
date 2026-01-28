@@ -4,7 +4,7 @@ UDP timeout operations with stream_socket_recvfrom in async context
 <?php
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 use function Async\delay;
 
 $output = [];
@@ -46,7 +46,7 @@ $server = spawn(function() use (&$server_address, &$output) {
     return $server_address;
 });
 
-awaitAll([$server]);
+await_all([$server]);
 $output['z'] = "End UDP timeout operations test";
 
 // Sort output by keys to ensure deterministic test results

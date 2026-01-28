@@ -6,7 +6,7 @@ SSL Stream: full SSL client-server async communication
 <?php
 
 use function Async\spawn;
-use function Async\awaitAllOrFail;
+use function Async\await_all_or_fail;
 use function Async\delay;
 
 echo "Start SSL client-server test\n";
@@ -101,7 +101,7 @@ $client = spawn(function() use (&$address, &$output) {
     fclose($sock);
 });
 
-awaitAllOrFail([$server, $client]);
+await_all_or_fail([$server, $client]);
 
 // Sort output for deterministic results
 sort($output);

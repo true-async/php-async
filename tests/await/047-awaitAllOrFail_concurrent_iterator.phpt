@@ -1,10 +1,10 @@
 --TEST--
-awaitAllOrFail() - With concurrent iterator using suspend() in current()
+await_all_or_fail() - With concurrent iterator using suspend() in current()
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAllOrFail;
+use function Async\await_all_or_fail;
 use function Async\suspend;
 
 class ConcurrentIterator implements Iterator
@@ -54,7 +54,7 @@ spawn(function() {
     }
 });
 
-$results = awaitAllOrFail($iterator);
+$results = await_all_or_fail($iterator);
 
 echo "Results: " . implode(", ", $results) . "\n";
 echo "Count: " . count($results) . "\n";

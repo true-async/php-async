@@ -7,7 +7,7 @@ Poll2 async: Concurrent socket operations
 require_once __DIR__ . '/stream_helper.php';
 use function Async\spawn;
 use function Async\delay;
-use function Async\awaitAll;
+use function Async\await_all;
 use function Async\suspend;
 
 echo "Testing concurrent socket operations\n";
@@ -63,7 +63,7 @@ $producer = spawn(function() use ($write_sock, &$output) {
     fclose($write_sock);
 });
 
-awaitAll([$producer, $consumer]);
+await_all([$producer, $consumer]);
 
 // Sort and output results
 sort($output);

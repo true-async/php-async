@@ -1,10 +1,10 @@
 --TEST--
-awaitAllOrFail() - Exception in generator body should stop process immediately
+await_all_or_fail() - Exception in generator body should stop process immediately
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAllOrFail;
+use function Async\await_all_or_fail;
 use function Async\suspend;
 
 function exceptionGenerator($values) {
@@ -26,7 +26,7 @@ $values = ["first", "second", "third"];
 $generator = exceptionGenerator($values);
 
 try {
-    $results = awaitAllOrFail($generator);
+    $results = await_all_or_fail($generator);
     echo "This should not be reached\n";
 } catch (RuntimeException $e) {
     echo "Caught exception: " . $e->getMessage() . "\n";

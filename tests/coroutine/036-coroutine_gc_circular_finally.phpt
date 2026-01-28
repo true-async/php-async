@@ -5,7 +5,7 @@ Coroutine: Circular references between coroutines and finally handlers
 
 use function Async\spawn;
 use function Async\suspend;
-use function Async\currentCoroutine;
+use function Async\current_coroutine;
 use function Async\await;
 
 echo "start\n";
@@ -13,7 +13,7 @@ echo "start\n";
 $circular_finally_coroutine = spawn(function() {
     echo "circular finally coroutine started\n";
     
-    $coroutine = \Async\currentCoroutine();
+    $coroutine = \Async\current_coroutine();
     $data = new \stdClass();
     $data->coroutine = $coroutine;
     

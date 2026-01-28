@@ -1,10 +1,10 @@
 --TEST--
-awaitAnyOfOrFail() - edge cases with count parameter
+await_any_of_or_fail() - edge cases with count parameter
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAnyOfOrFail;
+use function Async\await_any_of_or_fail;
 use function Async\await;
 
 $coroutines = [
@@ -21,7 +21,7 @@ echo "start\n";
 
 // Test requesting more than available
 try {
-    $results = awaitAnyOfOrFail(5, $coroutines);
+    $results = await_any_of_or_fail(5, $coroutines);
     echo "Count when requesting more than available: " . count($results) . "\n";
 } catch (Exception $e) {
     echo "Exception when requesting more: " . get_class($e) . "\n";
@@ -29,7 +29,7 @@ try {
 
 // Test requesting zero
 try {
-    $results = awaitAnyOfOrFail(0, $coroutines);
+    $results = await_any_of_or_fail(0, $coroutines);
     echo "Count when requesting zero: " . count($results) . "\n";
 } catch (Exception $e) {
     echo "Exception when requesting zero: " . get_class($e) . "\n";

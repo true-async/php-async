@@ -17,6 +17,7 @@
 #define COROUTINE_H
 
 #include "php_async_api.h"
+#include <Zend/zend_fibers.h>
 #include <Zend/zend_async_API.h>
 
 /* Fiber context structure for pooling */

@@ -7,11 +7,11 @@ use Async\{Context, Coroutine};
 
 // Test coroutine with context
 $coroutine = Async\spawn(function() {
-    $context = Async\coroutineContext();
+    $context = Async\coroutine_context();
     $context->set('test_key', 'test_value');
     
     // Get context from coroutine
-    $currentCoroutine = Async\currentCoroutine();
+    $currentCoroutine = Async\current_coroutine();
     $contextFromCoroutine = $currentCoroutine->getContext();
     
     if ($contextFromCoroutine !== null) {

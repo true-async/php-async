@@ -1,10 +1,10 @@
 --TEST--
-awaitAnyOrFail() - With concurrent iterator using suspend() in current()
+await_any_or_fail() - With concurrent iterator using suspend() in current()
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAnyOrFail;
+use function Async\await_any_or_fail;
 use function Async\suspend;
 
 class ConcurrentIterator implements Iterator
@@ -58,7 +58,7 @@ spawn(function() {
     }
 });
 
-$result = awaitAnyOrFail($iterator);
+$result = await_any_or_fail($iterator);
 
 echo "Result: $result\n";
 echo "end\n";

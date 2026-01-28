@@ -3,14 +3,14 @@ Async\spawnWith: returns Coroutine instance
 --FILE--
 <?php
 
-use function Async\spawnWith;
+use function Async\spawn_with;
 use function Async\await;
 use Async\Scope;
 use Async\Coroutine;
 
 $scope = new Scope();
 
-$coroutine = spawnWith($scope, function() {
+$coroutine = spawn_with($scope, function() {
     return "test";
 });
 

@@ -6,7 +6,7 @@ Concurrent scope cancellation and race conditions
 use function Async\spawn;
 use function Async\suspend;
 use function Async\await;
-use function Async\awaitAll;
+use function Async\await_all;
 
 echo "start\n";
 
@@ -65,7 +65,7 @@ $canceller3 = spawn(function() use ($scope3) {
 
 echo "cancellers spawned\n";
 
-awaitAll([$canceller1, $canceller2, $canceller3]);
+await_all([$canceller1, $canceller2, $canceller3]);
 
 echo "all cancellers completed\n";
 

@@ -32,6 +32,7 @@
 #include "zend_exceptions.h"
 #include "zend_generators.h"
 #include "zend_ini.h"
+#include "zend_builtin_functions.h"
 
 #define METHOD(name) PHP_METHOD(Async_Coroutine, name)
 #define THIS_COROUTINE ((async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(Z_OBJ_P(ZEND_THIS)))
@@ -343,7 +344,10 @@ zend_coroutine_t *async_new_coroutine(zend_async_scope_t *scope)
 {
 	zend_object *object = coroutine_object_create(async_ce_coroutine);
 
-	if (UNEXPECTED(EG(exception))) {
+	if (UNEXPECTED(object == NULL || EG(exception))) {
+		if (object != NULL) {
+			zend_object_release(object);
+		}
 		return NULL;
 	}
 
@@ -411,6 +415,7 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 			}
 			zend_catch
 			{
+				is_bailout = true;
 				should_start_graceful_shutdown = true;
 			}
 			zend_end_try();
@@ -422,7 +427,7 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 			ZEND_ASYNC_CURRENT_COROUTINE = NULL;
 		}
 
-		return;
+		goto exit;
 	}
 
 	if (UNEXPECTED(waker->status == ZEND_ASYNC_WAKER_WAITING)) {
@@ -487,6 +492,8 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 	if (EXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == &coroutine->coroutine)) {
 		ZEND_ASYNC_CURRENT_COROUTINE = NULL;
 	}
+
+exit:
 
 	if (UNEXPECTED(should_start_graceful_shutdown)) {
 		zend_try
@@ -764,7 +771,18 @@ bool async_coroutine_cancel(zend_coroutine_t *zend_coroutine,
 	// In this case, nothing actually happens immediately;
 	// however, the coroutine is marked as having been cancelled,
 	// and the cancellation exception is stored as its result.
-	if (UNEXPECTED(zend_coroutine == ZEND_ASYNC_CURRENT_COROUTINE)) {
+	//
+	// `zend_coroutine->waker->status == ZEND_ASYNC_WAKER_WAITING`
+	// The condition means: exclude the coroutine if it is in a waiting state.
+	//
+	// **Explanation:**
+	// ZEND_ASYNC_CURRENT_COROUTINE may point to a coroutine that is waiting
+	// for an event but has not yet switched. Canceling such a coroutine
+	// is performed in the usual way.
+	//
+	if (UNEXPECTED(zend_coroutine == ZEND_ASYNC_CURRENT_COROUTINE
+	&& false == (zend_coroutine->waker != NULL && zend_coroutine->waker->status == ZEND_ASYNC_WAKER_WAITING)
+	)) {
 
 		ZEND_COROUTINE_SET_CANCELLED(zend_coroutine);
 
@@ -1330,9 +1348,43 @@ METHOD(getException)
 
 METHOD(getTrace)
 {
-	// TODO: Implement debug trace collection
-	// This would require fiber stack trace functionality
-	array_init(return_value);
+	zend_long options = DEBUG_BACKTRACE_PROVIDE_OBJECT;
+	zend_long limit = 0;
+
+	ZEND_PARSE_PARAMETERS_START(0, 2)
+	Z_PARAM_OPTIONAL
+	Z_PARAM_LONG(options)
+	Z_PARAM_LONG(limit)
+	ZEND_PARSE_PARAMETERS_END();
+
+	async_coroutine_t *coroutine = THIS_COROUTINE;
+
+	// Return null if coroutine is not suspended
+	if (!ZEND_COROUTINE_SUSPENDED(&coroutine->coroutine)) {
+		RETURN_NULL();
+	}
+
+	async_fiber_context_t *fiber_context = coroutine->fiber_context;
+
+	// Additional safety check for fiber context
+	if (fiber_context == NULL || !fiber_context->execute_data) {
+		RETURN_NULL();
+	}
+
+	// Switch to the coroutine's VM stack to generate the backtrace
+	zend_vm_stack orig_vm_stack = EG(vm_stack);
+	zend_execute_data *orig_execute_data = EG(current_execute_data);
+
+	EG(vm_stack) = fiber_context->vm_stack;
+	EG(current_execute_data) = fiber_context->execute_data;
+
+	// Generate the backtrace using Zend's built-in function
+	// skip_last = 0 (skip zero frames from the end of the trace)
+	zend_fetch_debug_backtrace(return_value, 0, (int)options, (int)limit);
+
+	// Restore original VM stack and execute data
+	EG(vm_stack) = orig_vm_stack;
+	EG(current_execute_data) = orig_execute_data;
 }
 
 // Location Methods

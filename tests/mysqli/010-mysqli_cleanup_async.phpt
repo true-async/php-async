@@ -15,7 +15,7 @@ require_once __DIR__ . '/inc/async_mysqli_test.inc';
 
 use function Async\spawn;
 use function Async\await;
-use function Async\awaitAllOrFail;
+use function Async\await_all_or_fail;
 
 echo "start\n";
 
@@ -147,7 +147,7 @@ $cleanup_coroutines[] = spawn(function() {
 });
 
 echo "waiting for all cleanup tests\n";
-$results = awaitAllOrFail($cleanup_coroutines);
+$results = await_all_or_fail($cleanup_coroutines);
 
 // Sort results by id for consistent output
 usort($results, function($a, $b) {

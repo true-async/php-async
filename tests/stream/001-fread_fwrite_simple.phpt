@@ -14,7 +14,7 @@ if (PHP_OS_FAMILY !== 'Windows') {
 require_once __DIR__ . '/stream_helper.php';
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 
 echo "Start\n";
 
@@ -35,7 +35,7 @@ $reader = spawn(function() use ($sock2) {
     fclose($sock2);
 });
 
-awaitAll([$writer, $reader]);
+await_all([$writer, $reader]);
 echo "End\n";
 
 ?>

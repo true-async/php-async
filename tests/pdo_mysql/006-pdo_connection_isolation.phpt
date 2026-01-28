@@ -15,7 +15,7 @@ require_once __DIR__ . '/inc/async_pdo_mysql_test.inc';
 
 use function Async\spawn;
 use function Async\await;
-use function Async\awaitAllOrFail;
+use function Async\await_all_or_fail;
 
 echo "start\n";
 
@@ -61,7 +61,7 @@ $coroutines = [
     })
 ];
 
-$results = awaitAllOrFail($coroutines);
+$results = await_all_or_fail($coroutines);
 
 // Sort results by type for deterministic output
 usort($results, function($a, $b) {

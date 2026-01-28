@@ -4,7 +4,7 @@ DNS memory stress test with many concurrent lookups
 <?php
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 
 echo "DNS memory stress test\n";
 
@@ -31,7 +31,7 @@ for ($i = 0; $i < $lookup_count; $i++) {
     });
 }
 
-[$results, $exceptions] = awaitAll($coroutines);
+[$results, $exceptions] = await_all($coroutines);
 
 $end_memory = memory_get_usage();
 echo "Ending memory usage: " . number_format($end_memory) . " bytes\n";

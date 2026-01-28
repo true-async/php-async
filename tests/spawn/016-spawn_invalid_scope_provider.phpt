@@ -1,9 +1,9 @@
 --TEST--
-spawnWith() - invalid scope provider type error
+spawn_with() - invalid scope provider type error
 --FILE--
 <?php
 
-use function Async\spawnWith;
+use function Async\spawn_with;
 
 echo "start\n";
 
@@ -16,7 +16,7 @@ class InvalidTypeScopeProvider implements \Async\ScopeProvider
 }
 
 try {
-    $coroutine = spawnWith(new InvalidTypeScopeProvider(), function() {
+    $coroutine = spawn_with(new InvalidTypeScopeProvider(), function() {
         return "test";
     });
     echo "ERROR: Should have thrown exception\n";

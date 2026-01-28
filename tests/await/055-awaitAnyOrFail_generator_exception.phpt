@@ -1,10 +1,10 @@
 --TEST--
-awaitAnyOrFail() - Exception in generator body should stop process immediately
+await_any_or_fail() - Exception in generator body should stop process immediately
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAnyOrFail;
+use function Async\await_any_or_fail;
 use function Async\suspend;
 
 function exceptionGenerator($functions) {
@@ -30,7 +30,7 @@ $functions = [
 $generator = exceptionGenerator($functions);
 
 try {
-    $result = awaitAnyOrFail($generator);
+    $result = await_any_or_fail($generator);
     echo "This should not be reached\n";
 } catch (RuntimeException $e) {
     echo "Caught exception: " . $e->getMessage() . "\n";

@@ -1,10 +1,10 @@
 --TEST--
-awaitAll() - iterator exception in valid() method
+await_all() - iterator exception in valid() method
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 
 echo "start\n";
 
@@ -40,7 +40,7 @@ class FailingValidIterator implements Iterator
 }
 
 try {
-    $results = awaitAll(new FailingValidIterator());
+    $results = await_all(new FailingValidIterator());
     echo "ERROR: Should have thrown exception\n";
 } catch (\RuntimeException $e) {
     echo "Caught valid() exception: " . $e->getMessage() . "\n";

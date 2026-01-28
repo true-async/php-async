@@ -1,10 +1,10 @@
 --TEST--
-awaitAnyOfOrFail() - with Generator
+await_any_of_or_fail() - with Generator
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAnyOfOrFail;
+use function Async\await_any_of_or_fail;
 use function Async\await;
 
 function createCoroutines() {
@@ -28,7 +28,7 @@ function createCoroutines() {
 echo "start\n";
 
 $generator = createCoroutines();
-$results = awaitAnyOfOrFail(2, $generator);
+$results = await_any_of_or_fail(2, $generator);
 
 $countOfResults = count($results) >= 2 ? "OK" : "FALSE: ".count($results);
 echo "Count of results: $countOfResults\n";

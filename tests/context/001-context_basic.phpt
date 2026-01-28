@@ -6,7 +6,7 @@ Context basic functionality
 use Async\{Context};
 
 // Test basic context creation and storage
-$context = Async\coroutineContext();
+$context = Async\coroutine_context();
 
 // Test string key storage
 $context->set('user_id', 123);

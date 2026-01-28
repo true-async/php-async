@@ -1,10 +1,10 @@
 --TEST--
-awaitAllOrFail() - with fillNull parameter
+await_all_or_fail() - with fillNull parameter
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAllOrFail;
+use function Async\await_all_or_fail;
 use function Async\await;
 use function Async\suspend;
 
@@ -25,7 +25,7 @@ $coroutines = [
 
 echo "start\n";
 
-$results = awaitAllOrFail($coroutines, null, false);
+$results = await_all_or_fail($coroutines, null, false);
 $expectedResults = [
     "success1",
     "success2",

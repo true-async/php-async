@@ -1,10 +1,10 @@
 --TEST--
-awaitAnyOfOrFail() - basic usage with count parameter
+await_any_of_or_fail() - basic usage with count parameter
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAnyOfOrFail;
+use function Async\await_any_of_or_fail;
 
 echo "start\n";
 
@@ -23,7 +23,7 @@ $coroutines = [
     }),
 ];
 
-$results = awaitAnyOfOrFail(2, $coroutines);
+$results = await_any_of_or_fail(2, $coroutines);
 
 $countOfResults = count($results) >= 2 ? "OK" : "FALSE: ".count($results);
 echo "Count of results: $countOfResults\n";

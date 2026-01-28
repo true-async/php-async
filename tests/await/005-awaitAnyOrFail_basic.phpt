@@ -1,10 +1,10 @@
 --TEST--
-awaitAnyOrFail() - basic usage with multiple coroutines
+await_any_or_fail() - basic usage with multiple coroutines
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAnyOrFail;
+use function Async\await_any_or_fail;
 use function Async\delay;
 use function Async\suspend;
 
@@ -24,7 +24,7 @@ $coroutines = [
     }),
 ];
 
-$result = awaitAnyOrFail($coroutines);
+$result = await_any_or_fail($coroutines);
 echo "first completed: $result\n";
 
 echo "end\n";

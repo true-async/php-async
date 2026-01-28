@@ -1,13 +1,13 @@
 --TEST--
-awaitAnyOrFail() - empty iterable
+await_any_or_fail() - empty iterable
 --FILE--
 <?php
 
-use function Async\awaitAnyOrFail;
+use function Async\await_any_or_fail;
 
 echo "start\n";
 
-$result = awaitAnyOrFail([]);
+$result = await_any_or_fail([]);
 
 $resultCheck = $result === null ? "OK" : "FALSE: " . var_export($result, true);
 echo "Result is null: $resultCheck\n";

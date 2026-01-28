@@ -1,10 +1,10 @@
 --TEST--
-awaitAll() - all coroutines succeed
+await_all() - all coroutines succeed
 --FILE--
 <?php
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 
 echo "start\n";
 
@@ -20,7 +20,7 @@ $coroutines = [
     }),
 ];
 
-$result = awaitAll($coroutines);
+$result = await_all($coroutines);
 var_dump($result);
 
 echo "end\n";

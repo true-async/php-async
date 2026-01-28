@@ -4,9 +4,9 @@ Scheduler: shutdown functionality and cleanup
 <?php
 
 use function Async\spawn;
-use function Async\gracefulShutdown;
+use function Async\graceful_shutdown;
 use function Async\suspend;
-use function Async\awaitAll;
+use function Async\await_all;
 
 echo "start\n";
 
@@ -29,7 +29,7 @@ echo "coroutines spawned\n";
 
 // Trigger graceful shutdown
 try {
-    awaitAll([$coroutine1, $coroutine2]);
+    await_all([$coroutine1, $coroutine2]);
 } catch (Throwable $e) {
     echo "shutdown exception: " . $e->getMessage() . "\n";
 }

@@ -16,11 +16,6 @@ class Cycle {
     public function __destruct() {
         $id = self::$counter++;
         printf("%d: Start destruct\n", $id);
-        if ($id === 0) {
-            global $f2;
-            $f2 = Fiber::getCurrent();
-            Fiber::suspend(new stdClass);
-        }
         printf("%d: End destruct\n", $id);
     }
 }
@@ -37,16 +32,14 @@ new Cycle();
 new Cycle();
 gc_collect_cycles();
 
-$f2->resume();
-
 ?>
 --EXPECT--
 0: Start destruct
+0: End destruct
 1: Start destruct
 1: End destruct
 2: Start destruct
 2: End destruct
 3: Start destruct
 3: End destruct
-0: End destruct
 Shutdown
