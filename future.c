@@ -720,100 +720,64 @@ static zend_result future_mappers_handler(async_iterator_t *iterator, zval *curr
 		return SUCCESS;
 	}
 
-	zval retval;
-	ZVAL_UNDEF(&retval);
+	zval result_value;
+	ZVAL_UNDEF(&result_value);
+	zend_object *fallback_exception = NULL;
+	zval args[1];
+	uint32_t arg_count = 0;
+	bool should_call = true;
 
 	switch (child_future_obj->mapper_type) {
 		case ASYNC_FUTURE_MAPPER_SUCCESS:
 			if (parent_future->exception != NULL) {
-				ZEND_FUTURE_REJECT(child_future, parent_future->exception);
+				fallback_exception = parent_future->exception;
+				should_call = false;
 			} else {
-				zval args[1];
 				ZVAL_COPY(&args[0], &parent_future->result);
-
-				if (UNEXPECTED(call_user_function(NULL, NULL, &child_future_obj->mapper, &retval, 1, args) != SUCCESS)) {
-					zval_ptr_dtor(&args[0]);
-					if (UNEXPECTED(EG(exception) != NULL)) {
-						ZEND_FUTURE_REJECT(child_future, EG(exception));
-						zend_clear_exception();
-					} else {
-						zend_object *error = async_new_exception(async_ce_async_exception, "Failed to call map() callback");
-						ZEND_FUTURE_REJECT(child_future, error);
-						OBJ_RELEASE(error);
-					}
-					return SUCCESS;
-				}
-
-				zval_ptr_dtor(&args[0]);
-
-				if (UNEXPECTED(EG(exception) != NULL)) {
-					ZEND_FUTURE_REJECT(child_future, EG(exception));
-					zend_clear_exception();
-				} else if (Z_TYPE(retval) != IS_UNDEF) {
-					ZEND_FUTURE_COMPLETE(child_future, &retval);
-				} else {
-					zval null_val;
-					ZVAL_NULL(&null_val);
-					ZEND_FUTURE_COMPLETE(child_future, &null_val);
-				}
+				arg_count = 1;
 			}
 			break;
 
 		case ASYNC_FUTURE_MAPPER_CATCH:
 			if (parent_future->exception == NULL) {
-				ZEND_FUTURE_COMPLETE(child_future, &parent_future->result);
+				result_value = parent_future->result;
+				should_call = false;
 			} else {
-				zval args[1];
 				ZVAL_OBJ(&args[0], parent_future->exception);
-
-				if (UNEXPECTED(call_user_function(NULL, NULL, &child_future_obj->mapper, &retval, 1, args) != SUCCESS)) {
-					if (UNEXPECTED(EG(exception) != NULL)) {
-						ZEND_FUTURE_REJECT(child_future, EG(exception));
-						zend_clear_exception();
-					} else {
-						ZEND_FUTURE_REJECT(child_future, parent_future->exception);
-					}
-					return SUCCESS;
-				}
-
-				if (UNEXPECTED(EG(exception) != NULL)) {
-					ZEND_FUTURE_REJECT(child_future, EG(exception));
-					zend_clear_exception();
-				} else if (Z_TYPE(retval) != IS_UNDEF) {
-					ZEND_FUTURE_COMPLETE(child_future, &retval);
-				} else {
-					zval null_val;
-					ZVAL_NULL(&null_val);
-					ZEND_FUTURE_COMPLETE(child_future, &null_val);
-				}
+				arg_count = 1;
 			}
 			break;
 
 		case ASYNC_FUTURE_MAPPER_FINALLY:
-			if (UNEXPECTED(call_user_function(NULL, NULL, &child_future_obj->mapper, &retval, 0, NULL) != SUCCESS)) {
-				if (UNEXPECTED(EG(exception) != NULL)) {
-					ZEND_FUTURE_REJECT(child_future, EG(exception));
-					zend_clear_exception();
-				} else {
-					zend_object *error = async_new_exception(async_ce_async_exception, "Failed to call finally() callback");
-					ZEND_FUTURE_REJECT(child_future, error);
-					OBJ_RELEASE(error);
-				}
-				return SUCCESS;
-			}
-
-			if (UNEXPECTED(EG(exception) != NULL)) {
-				ZEND_FUTURE_REJECT(child_future, EG(exception));
-				zend_clear_exception();
-			} else if (parent_future->exception != NULL) {
-				ZEND_FUTURE_REJECT(child_future, parent_future->exception);
-			} else {
-				ZEND_FUTURE_COMPLETE(child_future, &parent_future->result);
-			}
+			arg_count = 0;
+			result_value = parent_future->result;
+			fallback_exception = parent_future->exception;
 			break;
 	}
 
-	zval_ptr_dtor(&retval);
+	/* Single callback invocation */
+	if (should_call) {
+		call_user_function(NULL, NULL, &child_future_obj->mapper, &result_value, arg_count, arg_count > 0 ? args : NULL);
+		if (arg_count > 0) {
+			zval_ptr_dtor(&args[0]);
+		}
+	}
+
+	/* Unified result processing */
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		ZEND_FUTURE_REJECT(child_future, EG(exception));
+		zend_clear_exception();
+	} else if (fallback_exception != NULL) {
+		ZEND_FUTURE_REJECT(child_future, fallback_exception);
+	} else if (Z_TYPE(result_value) != IS_UNDEF) {
+		ZEND_FUTURE_COMPLETE(child_future, &result_value);
+	} else {
+		zval null_val;
+		ZVAL_NULL(&null_val);
+		ZEND_FUTURE_COMPLETE(child_future, &null_val);
+	}
+
+	zval_ptr_dtor(&result_value);
 	return SUCCESS;
 }
 
