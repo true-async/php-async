@@ -1,5 +1,5 @@
 --TEST--
-Coroutine: status methods - isStarted, isFinished, isCancelled, isSuspended
+Coroutine: status methods - isStarted, isCompleted, isCancelled, isSuspended
 --FILE--
 <?php
 
@@ -12,14 +12,14 @@ $coroutine = spawn(function() {
 
 echo "After spawn:\n";
 var_dump($coroutine->isStarted());
-var_dump($coroutine->isFinished());
+var_dump($coroutine->isCompleted());
 var_dump($coroutine->isCancelled());
 
 await($coroutine);
 
 echo "After completion:\n";
 var_dump($coroutine->isStarted());
-var_dump($coroutine->isFinished());
+var_dump($coroutine->isCompleted());
 var_dump($coroutine->isCancelled());
 
 ?>

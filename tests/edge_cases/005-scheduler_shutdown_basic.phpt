@@ -35,8 +35,8 @@ try {
 }
 
 // Check coroutine states after shutdown
-echo "coroutine1 finished: " . ($coroutine1->isFinished() ? "true" : "false") . "\n";
-echo "coroutine2 finished: " . ($coroutine2->isFinished() ? "true" : "false") . "\n";
+echo "coroutine1 completed: " . ($coroutine1->isCompleted() ? "true" : "false") . "\n";
+echo "coroutine2 completed: " . ($coroutine2->isCompleted() ? "true" : "false") . "\n";
 
 echo "end\n";
 
@@ -48,6 +48,6 @@ coroutine1 running
 coroutine2 running
 coroutine1 after suspend
 coroutine2 after suspend
-coroutine1 finished: true
-coroutine2 finished: true
+coroutine1 completed: true
+coroutine2 completed: true
 end

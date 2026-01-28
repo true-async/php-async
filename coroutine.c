@@ -370,7 +370,7 @@ zend_coroutine_t *async_new_coroutine(zend_async_scope_t *scope)
 
 void async_register_coroutine_ce(void)
 {
-	async_ce_coroutine = register_class_Async_Coroutine(async_ce_awaitable);
+	async_ce_coroutine = register_class_Async_Coroutine(async_ce_completable);
 
 	async_ce_coroutine->create_object = coroutine_object_create;
 
@@ -1505,7 +1505,7 @@ METHOD(isCancellationRequested)
 				coroutine->deferred_cancellation != NULL);
 }
 
-METHOD(isFinished)
+METHOD(isCompleted)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 

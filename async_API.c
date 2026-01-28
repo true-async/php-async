@@ -243,6 +243,8 @@ zend_array *get_awaiting_info(zend_coroutine_t *coroutine)
 static zend_class_entry *async_get_class_ce(zend_async_class type)
 {
 	switch (type) {
+		case ZEND_ASYNC_CLASS_COMPLETABLE:
+			return async_ce_completable;
 		case ZEND_ASYNC_CLASS_COROUTINE:
 			return async_ce_coroutine;
 		case ZEND_ASYNC_CLASS_SCOPE:
