@@ -146,6 +146,10 @@ static bool future_state_event_start(zend_async_event_t *event)
     return true;
 }
 
+/**
+ * The method that is called when the Future completes.
+ * This method must be triggered only once.
+ */
 static bool future_state_event_stop(zend_async_event_t *event)
 {
     if (ZEND_ASYNC_EVENT_IS_CLOSED(event)) {
@@ -155,6 +159,10 @@ static bool future_state_event_stop(zend_async_event_t *event)
     ZEND_ASYNC_EVENT_SET_CLOSED(event);
 
     zend_future_t *future = (zend_future_t *)event;
+
+    // Invocation of internal handlers.
+    // Attention: these handlers must not call user-land PHP functions,
+    // as this would violate the rule that PHP code must run only inside coroutines.
     ZEND_ASYNC_CALLBACKS_NOTIFY(event, &future->result, future->exception);
 
     return true;
@@ -227,7 +235,8 @@ static bool future_state_dispose(zend_async_event_t *event)
 static zend_object *async_future_state_object_create(zend_class_entry *ce)
 {
     async_future_state_t *state = zend_object_alloc(sizeof(async_future_state_t), ce);
-    
+
+    // Internal future object
     zend_future_t *future = ecalloc(1, sizeof(zend_future_t));
     zend_async_event_t *event = &future->event;
     ZVAL_UNDEF(&future->result);
@@ -748,7 +757,6 @@ static zend_result future_mappers_handler(async_iterator_t *iterator, zval *curr
 			break;
 	}
 
-	/* Single callback invocation */
 	if (should_call) {
 		call_user_function(NULL, NULL, &child_future_obj->mapper, &result_value, arg_count, arg_count > 0 ? args : NULL);
 		if (arg_count > 0) {
@@ -756,7 +764,6 @@ static zend_result future_mappers_handler(async_iterator_t *iterator, zval *curr
 		}
 	}
 
-	/* Unified result processing */
 	if (UNEXPECTED(EG(exception) != NULL)) {
 		ZEND_FUTURE_REJECT(child_future, EG(exception));
 		zend_clear_exception();
@@ -804,9 +811,9 @@ static void async_future_callback_handler(
         NULL,
         future_mappers_handler,
         ZEND_ASYNC_CURRENT_SCOPE,
-        0,
-        1,
-        0
+        0, /* concurrency: default */
+        0, /* priority: default */
+        0 /* iterator size: default */
     );
 
     if (UNEXPECTED(iterator == NULL)) {
@@ -872,7 +879,7 @@ static void async_future_create_mapper(
     ZEND_ASYNC_EVENT_SET_RESULT_USED(source->event);
 
     if (source->child_futures == NULL) {
-        source->child_futures = zend_new_array(4);
+        source->child_futures = zend_new_array(0);
         if (UNEXPECTED(source->child_futures == NULL)) {
             OBJ_RELEASE(&target_future_obj->std);
             async_throw_error("Failed to create child futures array");
