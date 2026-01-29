@@ -129,12 +129,24 @@ typedef struct {
     async_future_t *future_obj;
 } async_future_callback_t;
 
+/**
+ * Context structure for processing a single mapper in a coroutine.
+ * Used when source future is already completed.
+ */
+typedef struct {
+    async_future_t *child_future_obj;
+    zend_future_t *parent_future;
+} future_mapper_context_t;
+
 /* Forward declarations */
+static void process_future_mapper(zend_future_t *parent_future, async_future_t *child_future_obj);
 static zend_result future_mappers_handler(async_iterator_t *iterator, zval *current, zval *key);
 static void async_future_callback_handler(zend_async_event_t *event, zend_async_event_callback_t *callback, void *result, zend_object *exception);
 static void async_future_callback_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event);
 static void async_future_create_mapper(INTERNAL_FUNCTION_PARAMETERS, async_future_mapper_type_t mapper_type);
 static async_future_t *async_future_create_internal(void);
+static void future_mapper_coroutine_entry(void);
+static void future_mapper_context_dispose(zend_coroutine_t *coroutine);
 
 ///////////////////////////////////////////////////////////
 /// FutureState event functions (like coroutine)
@@ -729,17 +741,18 @@ FUTURE_METHOD(await)
 ///////////////////////////////////////////////////////////
 
 /**
- * Iterator handler that processes child futures when parent resolves.
- * Called once for each child future (from map/catch/finally).
+ * Common function to process a single mapper.
+ * Calls the mapper callback and completes the child future with the result.
+ *
+ * @param parent_future The parent future that has completed
+ * @param child_future_obj The child future object to be completed
  */
-static zend_result future_mappers_handler(async_iterator_t *iterator, zval *current, zval *key)
+static void process_future_mapper(zend_future_t *parent_future, async_future_t *child_future_obj)
 {
-	zend_future_t *parent_future = (zend_future_t *)iterator->extended_data;
-	async_future_t *child_future_obj = ASYNC_FUTURE_FROM_OBJ(Z_OBJ_P(current));
 	zend_future_t *child_future = (zend_future_t *)child_future_obj->event;
 
 	if (UNEXPECTED(child_future == NULL || ZEND_FUTURE_IS_COMPLETED(child_future))) {
-		return SUCCESS;
+		return;
 	}
 
 	zval result_value;
@@ -799,6 +812,19 @@ static zend_result future_mappers_handler(async_iterator_t *iterator, zval *curr
 	}
 
 	zval_ptr_dtor(&result_value);
+}
+
+/**
+ * Iterator handler that processes child futures when parent resolves.
+ * Called once for each child future (from map/catch/finally).
+ */
+static zend_result future_mappers_handler(async_iterator_t *iterator, zval *current, zval *key)
+{
+	zend_future_t *parent_future = (zend_future_t *)iterator->extended_data;
+	async_future_t *child_future_obj = ASYNC_FUTURE_FROM_OBJ(Z_OBJ_P(current));
+
+	process_future_mapper(parent_future, child_future_obj);
+
 	return SUCCESS;
 }
 
@@ -865,6 +891,51 @@ static void async_future_callback_dispose(
     efree(future_callback);
 }
 
+///////////////////////////////////////////////////////////
+/// Single mapper coroutine (for already completed futures)
+///////////////////////////////////////////////////////////
+
+/**
+ * Dispose function for mapper context.
+ */
+static void future_mapper_context_dispose(zend_coroutine_t *coroutine)
+{
+    if (coroutine->extended_data == NULL) {
+        return;
+    }
+
+    future_mapper_context_t *context = coroutine->extended_data;
+    coroutine->extended_data = NULL;
+
+    if (context->child_future_obj != NULL) {
+        OBJ_RELEASE(&context->child_future_obj->std);
+        context->child_future_obj = NULL;
+    }
+
+    if (context->parent_future != NULL) {
+        ZEND_ASYNC_EVENT_RELEASE(&context->parent_future->event);
+        context->parent_future = NULL;
+    }
+
+    efree(context);
+}
+
+/**
+ * Coroutine entry point for processing a single mapper.
+ * This runs when source future is already completed.
+ */
+static void future_mapper_coroutine_entry(void)
+{
+    if (UNEXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == NULL || ZEND_ASYNC_CURRENT_COROUTINE->extended_data == NULL)) {
+        async_throw_error("Invalid coroutine context for future mapper");
+        return;
+    }
+
+    future_mapper_context_t *context = ZEND_ASYNC_CURRENT_COROUTINE->extended_data;
+    process_future_mapper(context->parent_future, context->child_future_obj);
+    future_mapper_context_dispose(ZEND_ASYNC_CURRENT_COROUTINE);
+}
+
 static void async_future_create_mapper(
     INTERNAL_FUNCTION_PARAMETERS,
     async_future_mapper_type_t mapper_type
@@ -894,6 +965,35 @@ static void async_future_create_mapper(
 
     ZVAL_COPY(&target_future_obj->mapper, callable);
     target_future_obj->mapper_type = mapper_type;
+
+    // If source future is already completed, process mapper immediately in a new coroutine
+    zend_future_t *source_future = (zend_future_t *)source->event;
+    if (ZEND_FUTURE_IS_COMPLETED(source_future)) {
+
+        // Spawn coroutine to process the mapper
+        zend_coroutine_t *coroutine = ZEND_ASYNC_SPAWN();
+        if (UNEXPECTED(coroutine == NULL)) {
+            OBJ_RELEASE(&target_future_obj->std);
+            RETURN_THROWS();
+        }
+
+        // Create context for the mapper coroutine
+        future_mapper_context_t *context = emalloc(sizeof(future_mapper_context_t));
+        context->child_future_obj = target_future_obj;
+        context->parent_future = source_future;
+
+        // Add refs so they don't get freed while coroutine is running
+        ZEND_ASYNC_EVENT_ADD_REF(&source_future->event);
+
+        coroutine->extended_data = context;
+        coroutine->internal_entry = future_mapper_coroutine_entry;
+        coroutine->extended_dispose = future_mapper_context_dispose;
+
+        // Return the child future immediately
+        ZVAL_OBJ(return_value, &target_future_obj->std);
+        GC_ADDREF(&target_future_obj->std);
+        return;
+    }
 
     if (source->child_futures == NULL) {
         source->child_futures = zend_new_array(0);
