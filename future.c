@@ -481,18 +481,14 @@ FUTURE_METHOD(completed)
         ZEND_FUTURE_COMPLETE(future, &null_val);
     }
     
-    // Create Future object wrapping this state
-    zval state_zval;
-    ZVAL_OBJ(&state_zval, &state->std);
-    
     object_init_ex(return_value, async_ce_future);
-    
+
     zval args[1];
-    ZVAL_COPY(&args[0], &state_zval);
-    
+    ZVAL_OBJ(&args[0], &state->std);
+
     zend_call_method_with_1_params(Z_OBJ_P(return_value), async_ce_future, NULL, "__construct", NULL, &args[0]);
-    
-    zval_ptr_dtor(&args[0]);
+
+    OBJ_RELEASE(&state->std);
 }
 
 FUTURE_METHOD(failed)
@@ -515,18 +511,14 @@ FUTURE_METHOD(failed)
     // Reject it immediately
     ZEND_FUTURE_REJECT(future, Z_OBJ_P(throwable));
     
-    // Create Future object wrapping this state
-    zval state_zval;
-    ZVAL_OBJ(&state_zval, &state->std);
-    
     object_init_ex(return_value, async_ce_future);
-    
+
     zval args[1];
-    ZVAL_COPY(&args[0], &state_zval);
-    
+    ZVAL_OBJ(&args[0], &state->std);
+
     zend_call_method_with_1_params(Z_OBJ_P(return_value), async_ce_future, NULL, "__construct", NULL, &args[0]);
-    
-    zval_ptr_dtor(&args[0]);
+
+    OBJ_RELEASE(&state->std);
 }
 
 FUTURE_METHOD(isCompleted)
@@ -744,6 +736,7 @@ static zend_result future_mappers_handler(async_iterator_t *iterator, zval *curr
 				should_call = false;
 			} else {
 				ZVAL_OBJ(&args[0], parent_future->exception);
+				GC_ADDREF(parent_future->exception);
 				arg_count = 1;
 			}
 			break;
@@ -880,6 +873,11 @@ static void async_future_create_mapper(
 
     if (source->child_futures == NULL) {
         source->child_futures = zend_new_array(4);
+        if (UNEXPECTED(source->child_futures == NULL)) {
+            OBJ_RELEASE(&target_future_obj->std);
+            async_throw_error("Failed to create child futures array");
+            RETURN_THROWS();
+        }
 
         async_future_callback_t *callback = ecalloc(1, sizeof(async_future_callback_t));
         callback->base.ref_count = 1;
@@ -899,7 +897,13 @@ static void async_future_create_mapper(
     zval child_zval;
     ZVAL_OBJ(&child_zval, &target_future_obj->std);
     GC_ADDREF(&target_future_obj->std);
-    zend_hash_next_index_insert(source->child_futures, &child_zval);
+
+    if (UNEXPECTED(zend_hash_next_index_insert(source->child_futures, &child_zval) == NULL)) {
+        GC_DELREF(&target_future_obj->std);
+        OBJ_RELEASE(&target_future_obj->std);
+        async_throw_error("Failed to add child future to array");
+        RETURN_THROWS();
+    }
 
     ZVAL_OBJ(return_value, &target_future_obj->std);
 }
