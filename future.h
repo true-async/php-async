@@ -47,10 +47,10 @@ struct _async_future_state_s {
  */
 struct _async_future_s {
     ZEND_ASYNC_EVENT_REF_FIELDS        /* Reference to zend_future_t (same as FutureState) */
-    zend_object std;                   /* Standard object */
     HashTable *child_futures;          /* Child futures created by map/catch/finally */
     zval mapper;                       /* Mapper callable (used when this future is a child) */
     async_future_mapper_type_t mapper_type; /* Type of mapper transformation */
+    zend_object std;                   /* Standard object - MUST BE LAST! */
 };
 
 /* Class entry declarations */

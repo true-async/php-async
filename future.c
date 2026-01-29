@@ -188,6 +188,21 @@ static bool future_state_replay(zend_async_event_t *event, zend_async_event_call
 
     if (callback != NULL) {
         callback->callback(event, callback, &future->result, future->exception);
+    } else if (result != NULL) {
+        // Extract result for await
+        if (future->exception != NULL) {
+            if (exception != NULL) {
+                *exception = future->exception;
+                GC_ADDREF(future->exception);
+            } else {
+                zval ex;
+                ZVAL_OBJ(&ex, future->exception);
+                GC_ADDREF(future->exception);
+                zend_throw_exception_object(&ex);
+            }
+        } else {
+            ZVAL_COPY(result, &future->result);
+        }
     }
 
 	return EG(exception) == NULL;
@@ -252,6 +267,7 @@ static zend_object *async_future_state_object_create(zend_class_entry *ce)
     event->ref_count = 1;
 
     ZEND_ASYNC_EVENT_REF_SET(state, XtOffsetOf(async_future_state_t, std), event);
+    ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(state->event);
 
     zend_object_std_init(&state->std, ce);
     object_properties_init(&state->std, ce);
@@ -804,6 +820,7 @@ static void async_future_callback_handler(
 
     zval children_arr;
     ZVAL_ARR(&children_arr, future_obj->child_futures);
+    future_obj->child_futures = NULL;
 
     async_iterator_t *iterator = async_iterator_new(
         &children_arr,
@@ -836,7 +853,7 @@ static void async_future_callback_dispose(
     async_future_callback_t *future_callback = (async_future_callback_t *)callback;
 
     if (future_callback->future_obj != NULL) {
-        OBJ_RELEASE(&future_callback->future_obj->std);
+        // No OBJ_RELEASE(&future_callback->future_obj->std);
         future_callback->future_obj = NULL;
     }
 
@@ -873,11 +890,6 @@ static void async_future_create_mapper(
     ZVAL_COPY(&target_future_obj->mapper, callable);
     target_future_obj->mapper_type = mapper_type;
 
-    if (mapper_type == ASYNC_FUTURE_MAPPER_CATCH) {
-        ZEND_ASYNC_EVENT_SET_EXC_CAUGHT(source->event);
-    }
-    ZEND_ASYNC_EVENT_SET_RESULT_USED(source->event);
-
     if (source->child_futures == NULL) {
         source->child_futures = zend_new_array(0);
         if (UNEXPECTED(source->child_futures == NULL)) {
@@ -891,7 +903,8 @@ static void async_future_create_mapper(
         callback->base.callback = async_future_callback_handler;
         callback->base.dispose = async_future_callback_dispose;
         callback->future_obj = source;
-        GC_ADDREF(&source->std);
+        // We do not increment the object's reference count because this is a “weak reference”.
+        // No GC_ADDREF(&source->std);
 
         if (UNEXPECTED(!zend_async_callbacks_push(source->event, &callback->base))) {
             ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&callback->base);
@@ -903,16 +916,15 @@ static void async_future_create_mapper(
 
     zval child_zval;
     ZVAL_OBJ(&child_zval, &target_future_obj->std);
-    GC_ADDREF(&target_future_obj->std);
 
     if (UNEXPECTED(zend_hash_next_index_insert(source->child_futures, &child_zval) == NULL)) {
-        GC_DELREF(&target_future_obj->std);
         OBJ_RELEASE(&target_future_obj->std);
         async_throw_error("Failed to add child future to array");
         RETURN_THROWS();
     }
 
     ZVAL_OBJ(return_value, &target_future_obj->std);
+    GC_ADDREF(&target_future_obj->std);
 }
 
 ///////////////////////////////////////////////////////////
@@ -993,6 +1005,9 @@ static async_future_t *async_future_create_direct(void)
     event->info = future_state_info;
     event->dispose = future_state_dispose;
     event->ref_count = 1;
+
+    ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(event);
+    ZEND_ASYNC_EVENT_SET_EXC_CAUGHT(event);
 
     async_future_t *future_obj = (async_future_t *)zend_object_alloc(sizeof(async_future_t), async_ce_future);
 
