@@ -134,7 +134,7 @@ static zend_result future_mappers_handler(async_iterator_t *iterator, zval *curr
 static void async_future_callback_handler(zend_async_event_t *event, zend_async_event_callback_t *callback, void *result, zend_object *exception);
 static void async_future_callback_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event);
 static void async_future_create_mapper(INTERNAL_FUNCTION_PARAMETERS, async_future_mapper_type_t mapper_type);
-static async_future_t *async_future_create_direct(void);
+static async_future_t *async_future_create_internal(void);
 
 ///////////////////////////////////////////////////////////
 /// FutureState event functions (like coroutine)
@@ -243,6 +243,18 @@ static bool future_state_dispose(zend_async_event_t *event)
     return true;
 }
 
+static zend_always_inline void init_future_state_event(zend_async_event_t *event)
+{
+    event->start = future_state_event_start;
+    event->stop = future_state_event_stop;
+    event->add_callback = future_state_add_callback;
+    event->del_callback = future_state_del_callback;
+    event->replay = future_state_replay;
+    event->info = future_state_info;
+    event->dispose = future_state_dispose;
+    event->ref_count = 1;
+}
+
 ///////////////////////////////////////////////////////////
 /// FutureState object lifecycle
 ///////////////////////////////////////////////////////////
@@ -257,14 +269,7 @@ static zend_object *async_future_state_object_create(zend_class_entry *ce)
     ZVAL_UNDEF(&future->result);
 
     /* Set event handlers */
-    event->start = future_state_event_start;
-    event->stop = future_state_event_stop;
-    event->add_callback = future_state_add_callback;
-    event->del_callback = future_state_del_callback;
-    event->replay = future_state_replay;
-    event->info = future_state_info;
-    event->dispose = future_state_dispose;
-    event->ref_count = 1;
+    init_future_state_event(event);
 
     ZEND_ASYNC_EVENT_REF_SET(state, XtOffsetOf(async_future_state_t, std), event);
     ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(state->event);
@@ -882,7 +887,7 @@ static void async_future_create_mapper(
         RETURN_THROWS();
     }
 
-    async_future_t *target_future_obj = async_future_create_direct();
+    async_future_t *target_future_obj = async_future_create_internal();
     if (UNEXPECTED(target_future_obj == NULL)) {
         RETURN_THROWS();
     }
@@ -990,24 +995,16 @@ async_future_state_t *async_future_state_create(void)
  * Create a Future object directly without FutureState wrapper.
  * More memory efficient for internal use (map/catch/finally).
  */
-static async_future_t *async_future_create_direct(void)
+static async_future_t *async_future_create_internal(void)
 {
     zend_future_t *future = ecalloc(1, sizeof(zend_future_t));
     zend_async_event_t *event = &future->event;
 
     ZVAL_UNDEF(&future->result);
 
-    event->start = future_state_event_start;
-    event->stop = future_state_event_stop;
-    event->add_callback = future_state_add_callback;
-    event->del_callback = future_state_del_callback;
-    event->replay = future_state_replay;
-    event->info = future_state_info;
-    event->dispose = future_state_dispose;
-    event->ref_count = 1;
+    init_future_state_event(event);
 
     ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(event);
-    ZEND_ASYNC_EVENT_SET_EXC_CAUGHT(event);
 
     async_future_t *future_obj = (async_future_t *)zend_object_alloc(sizeof(async_future_t), async_ce_future);
 
