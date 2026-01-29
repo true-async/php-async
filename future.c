@@ -798,11 +798,28 @@ static void process_future_mapper(zend_future_t *parent_future, async_future_t *
 		}
 	}
 
-	if (UNEXPECTED(EG(exception) != NULL)) {
-		ZEND_FUTURE_REJECT(child_future, EG(exception));
-		zend_clear_exception();
-	} else if (fallback_exception != NULL) {
+    if (UNEXPECTED(EG(exception) != NULL)) {
+
+        if (fallback_exception) {
+            zend_exception_set_previous(EG(exception), fallback_exception);
+        }
+
+        fallback_exception = EG(exception);
+        GC_ADDREF(fallback_exception);
+        zend_clear_exception();
+    }
+
+	if (fallback_exception != NULL) {
+	    ZEND_ASYNC_EVENT_CLR_EXCEPTION_HANDLED(&child_future->event);
 		ZEND_FUTURE_REJECT(child_future, fallback_exception);
+
+	    if (UNEXPECTED(EG(exception) != NULL)) {
+	        zend_exception_set_previous(EG(exception), fallback_exception);
+	    } else if (UNEXPECTED(false == ZEND_ASYNC_EVENT_IS_EXCEPTION_HANDLED(&child_future->event))) {
+	        // We throw the fallback_exception only if it was not handled by anyone.
+	        EG(exception) = fallback_exception;
+	    }
+
 	} else if (Z_TYPE(result_value) != IS_UNDEF) {
 		ZEND_FUTURE_COMPLETE(child_future, &result_value);
 	} else {
