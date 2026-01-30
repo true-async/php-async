@@ -159,10 +159,11 @@ static bool future_state_event_start(zend_async_event_t *event)
 }
 
 /**
- * The method that is called when the Future completes.
+ * The method that is called to resolve the Future (complete or reject).
  * This method must be triggered only once.
+ * This is the proper method for completing futures, NOT stop().
  */
-static bool future_state_event_stop(zend_async_event_t *event)
+static bool future_state_resolve(zend_async_event_t *event)
 {
     if (ZEND_ASYNC_EVENT_IS_CLOSED(event)) {
         return true;
@@ -177,6 +178,15 @@ static bool future_state_event_stop(zend_async_event_t *event)
     // as this would violate the rule that PHP code must run only inside coroutines.
     ZEND_ASYNC_CALLBACKS_NOTIFY(event, &future->result, future->exception);
 
+    return true;
+}
+
+/**
+ * Standard event stop method.
+ * For futures, this does nothing - all completion logic is in resolve().
+ */
+static bool future_state_event_stop(zend_async_event_t *event)
+{
     return true;
 }
 
@@ -257,6 +267,8 @@ static bool future_state_dispose(zend_async_event_t *event)
 
 static zend_always_inline void init_future_state_event(zend_async_event_t *event)
 {
+    zend_future_t *future = (zend_future_t *)event;
+
     event->start = future_state_event_start;
     event->stop = future_state_event_stop;
     event->add_callback = future_state_add_callback;
@@ -265,6 +277,9 @@ static zend_always_inline void init_future_state_event(zend_async_event_t *event
     event->info = future_state_info;
     event->dispose = future_state_dispose;
     event->ref_count = 1;
+
+    /* Set the resolve method for completing the future */
+    future->resolve = future_state_resolve;
 }
 
 ///////////////////////////////////////////////////////////
