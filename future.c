@@ -892,7 +892,7 @@ static void async_future_callback_handler(
         future_mappers_handler,
         ZEND_ASYNC_CURRENT_SCOPE,
         0, /* concurrency: default */
-        0, /* priority: default */
+        ZEND_COROUTINE_NORMAL, /* priority: default */
         0 /* iterator size: default */
     );
 
