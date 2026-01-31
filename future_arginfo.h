@@ -1,5 +1,5 @@
 /* This is a generated file, edit future.stub.php instead.
- * Stub hash: 974e1a9ec1ee12dfd68916f8da43624ce7dc32f1 */
+ * Stub hash: 8cb54d0ce1804e21443634c3bde6d07c6ebdd754 */
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Async_FutureState___construct, 0, 0, 0)
 ZEND_END_ARG_INFO()
@@ -20,6 +20,15 @@ ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_FutureState_getAwaitingInfo, 0, 0, IS_ARRAY, 0)
 ZEND_END_ARG_INFO()
+
+#define arginfo_class_Async_FutureState_getCreatedFileAndLine arginfo_class_Async_FutureState_getAwaitingInfo
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_FutureState_getCreatedLocation, 0, 0, IS_STRING, 0)
+ZEND_END_ARG_INFO()
+
+#define arginfo_class_Async_FutureState_getCompletedFileAndLine arginfo_class_Async_FutureState_getAwaitingInfo
+
+#define arginfo_class_Async_FutureState_getCompletedLocation arginfo_class_Async_FutureState_getCreatedLocation
 
 ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_class_Async_Future_completed, 0, 0, Async\\Future, 0)
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, value, IS_MIXED, 0, "null")
@@ -62,12 +71,24 @@ ZEND_END_ARG_INFO()
 
 #define arginfo_class_Async_Future_getAwaitingInfo arginfo_class_Async_FutureState_getAwaitingInfo
 
+#define arginfo_class_Async_Future_getCreatedFileAndLine arginfo_class_Async_FutureState_getAwaitingInfo
+
+#define arginfo_class_Async_Future_getCreatedLocation arginfo_class_Async_FutureState_getCreatedLocation
+
+#define arginfo_class_Async_Future_getCompletedFileAndLine arginfo_class_Async_FutureState_getAwaitingInfo
+
+#define arginfo_class_Async_Future_getCompletedLocation arginfo_class_Async_FutureState_getCreatedLocation
+
 ZEND_METHOD(Async_FutureState, __construct);
 ZEND_METHOD(Async_FutureState, complete);
 ZEND_METHOD(Async_FutureState, error);
 ZEND_METHOD(Async_FutureState, isCompleted);
 ZEND_METHOD(Async_FutureState, ignore);
 ZEND_METHOD(Async_FutureState, getAwaitingInfo);
+ZEND_METHOD(Async_FutureState, getCreatedFileAndLine);
+ZEND_METHOD(Async_FutureState, getCreatedLocation);
+ZEND_METHOD(Async_FutureState, getCompletedFileAndLine);
+ZEND_METHOD(Async_FutureState, getCompletedLocation);
 ZEND_METHOD(Async_Future, completed);
 ZEND_METHOD(Async_Future, failed);
 ZEND_METHOD(Async_Future, __construct);
@@ -80,6 +101,10 @@ ZEND_METHOD(Async_Future, catch);
 ZEND_METHOD(Async_Future, finally);
 ZEND_METHOD(Async_Future, await);
 ZEND_METHOD(Async_Future, getAwaitingInfo);
+ZEND_METHOD(Async_Future, getCreatedFileAndLine);
+ZEND_METHOD(Async_Future, getCreatedLocation);
+ZEND_METHOD(Async_Future, getCompletedFileAndLine);
+ZEND_METHOD(Async_Future, getCompletedLocation);
 
 static const zend_function_entry class_Async_FutureState_methods[] = {
 	ZEND_ME(Async_FutureState, __construct, arginfo_class_Async_FutureState___construct, ZEND_ACC_PUBLIC)
@@ -88,6 +113,10 @@ static const zend_function_entry class_Async_FutureState_methods[] = {
 	ZEND_ME(Async_FutureState, isCompleted, arginfo_class_Async_FutureState_isCompleted, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_FutureState, ignore, arginfo_class_Async_FutureState_ignore, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_FutureState, getAwaitingInfo, arginfo_class_Async_FutureState_getAwaitingInfo, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_FutureState, getCreatedFileAndLine, arginfo_class_Async_FutureState_getCreatedFileAndLine, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_FutureState, getCreatedLocation, arginfo_class_Async_FutureState_getCreatedLocation, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_FutureState, getCompletedFileAndLine, arginfo_class_Async_FutureState_getCompletedFileAndLine, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_FutureState, getCompletedLocation, arginfo_class_Async_FutureState_getCompletedLocation, ZEND_ACC_PUBLIC)
 	ZEND_FE_END
 };
 
@@ -104,6 +133,10 @@ static const zend_function_entry class_Async_Future_methods[] = {
 	ZEND_ME(Async_Future, finally, arginfo_class_Async_Future_finally, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_Future, await, arginfo_class_Async_Future_await, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_Future, getAwaitingInfo, arginfo_class_Async_Future_getAwaitingInfo, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_Future, getCreatedFileAndLine, arginfo_class_Async_Future_getCreatedFileAndLine, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_Future, getCreatedLocation, arginfo_class_Async_Future_getCreatedLocation, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_Future, getCompletedFileAndLine, arginfo_class_Async_Future_getCompletedFileAndLine, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_Future, getCompletedLocation, arginfo_class_Async_Future_getCompletedLocation, ZEND_ACC_PUBLIC)
 	ZEND_FE_END
 };
 

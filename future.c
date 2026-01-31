@@ -808,6 +808,70 @@ FUTURE_STATE_METHOD(getAwaitingInfo)
     RETURN_ARR(info);
 }
 
+FUTURE_STATE_METHOD(getCreatedFileAndLine)
+{
+    ZEND_PARSE_PARAMETERS_NONE();
+
+    const async_future_state_t *state = THIS_FUTURE_STATE;
+    zend_future_t *future = (zend_future_t *)state->event;
+
+    array_init(return_value);
+
+    if (future != NULL && future->filename != NULL) {
+        add_next_index_str(return_value, zend_string_copy(future->filename));
+    } else {
+        add_next_index_null(return_value);
+    }
+
+    add_next_index_long(return_value, future != NULL ? future->lineno : 0);
+}
+
+FUTURE_STATE_METHOD(getCreatedLocation)
+{
+    ZEND_PARSE_PARAMETERS_NONE();
+
+    const async_future_state_t *state = THIS_FUTURE_STATE;
+    zend_future_t *future = (zend_future_t *)state->event;
+
+    if (future != NULL && future->filename != NULL) {
+        RETURN_STR(zend_strpprintf(0, "%s:%d", ZSTR_VAL(future->filename), future->lineno));
+    } else {
+        RETURN_STRING("unknown");
+    }
+}
+
+FUTURE_STATE_METHOD(getCompletedFileAndLine)
+{
+    ZEND_PARSE_PARAMETERS_NONE();
+
+    const async_future_state_t *state = THIS_FUTURE_STATE;
+    zend_future_t *future = (zend_future_t *)state->event;
+
+    array_init(return_value);
+
+    if (future != NULL && future->completed_filename != NULL) {
+        add_next_index_str(return_value, zend_string_copy(future->completed_filename));
+    } else {
+        add_next_index_null(return_value);
+    }
+
+    add_next_index_long(return_value, future != NULL ? future->completed_lineno : 0);
+}
+
+FUTURE_STATE_METHOD(getCompletedLocation)
+{
+    ZEND_PARSE_PARAMETERS_NONE();
+
+    const async_future_state_t *state = THIS_FUTURE_STATE;
+    zend_future_t *future = (zend_future_t *)state->event;
+
+    if (future != NULL && future->completed_filename != NULL) {
+        RETURN_STR(zend_strpprintf(0, "%s:%d", ZSTR_VAL(future->completed_filename), future->completed_lineno));
+    } else {
+        RETURN_STRING("unknown");
+    }
+}
+
 ///////////////////////////////////////////////////////////
 /// Future methods
 ///////////////////////////////////////////////////////////
@@ -1499,6 +1563,70 @@ FUTURE_METHOD(getAwaitingInfo)
     zend_hash_index_add_new(info, 0, &z_state_info);
 
     RETURN_ARR(info);
+}
+
+FUTURE_METHOD(getCreatedFileAndLine)
+{
+    ZEND_PARSE_PARAMETERS_NONE();
+
+    const async_future_t *future_obj = THIS_FUTURE;
+    zend_future_t *future = (zend_future_t *)future_obj->event;
+
+    array_init(return_value);
+
+    if (future != NULL && future->filename != NULL) {
+        add_next_index_str(return_value, zend_string_copy(future->filename));
+    } else {
+        add_next_index_null(return_value);
+    }
+
+    add_next_index_long(return_value, future != NULL ? future->lineno : 0);
+}
+
+FUTURE_METHOD(getCreatedLocation)
+{
+    ZEND_PARSE_PARAMETERS_NONE();
+
+    const async_future_t *future_obj = THIS_FUTURE;
+    zend_future_t *future = (zend_future_t *)future_obj->event;
+
+    if (future != NULL && future->filename != NULL) {
+        RETURN_STR(zend_strpprintf(0, "%s:%d", ZSTR_VAL(future->filename), future->lineno));
+    } else {
+        RETURN_STRING("unknown");
+    }
+}
+
+FUTURE_METHOD(getCompletedFileAndLine)
+{
+    ZEND_PARSE_PARAMETERS_NONE();
+
+    const async_future_t *future_obj = THIS_FUTURE;
+    zend_future_t *future = (zend_future_t *)future_obj->event;
+
+    array_init(return_value);
+
+    if (future != NULL && future->completed_filename != NULL) {
+        add_next_index_str(return_value, zend_string_copy(future->completed_filename));
+    } else {
+        add_next_index_null(return_value);
+    }
+
+    add_next_index_long(return_value, future != NULL ? future->completed_lineno : 0);
+}
+
+FUTURE_METHOD(getCompletedLocation)
+{
+    ZEND_PARSE_PARAMETERS_NONE();
+
+    const async_future_t *future_obj = THIS_FUTURE;
+    zend_future_t *future = (zend_future_t *)future_obj->event;
+
+    if (future != NULL && future->completed_filename != NULL) {
+        RETURN_STR(zend_strpprintf(0, "%s:%d", ZSTR_VAL(future->completed_filename), future->completed_lineno));
+    } else {
+        RETURN_STRING("unknown");
+    }
 }
 
 ///////////////////////////////////////////////////////////

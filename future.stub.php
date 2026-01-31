@@ -45,6 +45,26 @@ final class FutureState
      * Return awaiting debug information.
      */
     public function getAwaitingInfo(): array {}
+
+    /**
+     * Return the file and line number where the FutureState was created.
+     */
+    public function getCreatedFileAndLine(): array {}
+
+    /**
+     * Return the location where the FutureState was created as string.
+     */
+    public function getCreatedLocation(): string {}
+
+    /**
+     * Return the file and line number where the FutureState was completed.
+     */
+    public function getCompletedFileAndLine(): array {}
+
+    /**
+     * Return the location where the FutureState was completed as string.
+     */
+    public function getCompletedLocation(): string {}
 }
 
 /**
@@ -143,4 +163,24 @@ final class Future implements Completable
      * Return awaiting debug information.
      */
     public function getAwaitingInfo(): array {}
+
+    /**
+     * Return the file and line number where the Future was created.
+     */
+    public function getCreatedFileAndLine(): array {}
+
+    /**
+     * Return the location where the Future was created as string.
+     */
+    public function getCreatedLocation(): string {}
+
+    /**
+     * Return the file and line number where the Future was completed.
+     */
+    public function getCompletedFileAndLine(): array {}
+
+    /**
+     * Return the location where the Future was completed as string.
+     */
+    public function getCompletedLocation(): string {}
 }
