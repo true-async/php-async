@@ -550,19 +550,60 @@ static zend_string* zend_future_info(zend_async_event_t *event)
 static bool zend_future_dispose(zend_async_event_t *event)
 {
     zend_future_t *future = (zend_future_t *) event;
-    
+
+    // Check for unused future (strict mode)
+    if (!ZEND_FUTURE_IS_IGNORED(future) && !ZEND_FUTURE_IS_USED(future)) {
+        if (future->filename != NULL) {
+            async_warning("Future was never used; "
+                "call await(), map(), catch(), finally() or ignore() to suppress this warning. "
+                "Created at %s:%d",
+                ZSTR_VAL(future->filename), future->lineno);
+        } else {
+            async_warning("Future was never used; "
+                "call await(), map(), catch(), finally() or ignore() to suppress this warning");
+        }
+    }
+
+    // Check for unhandled exception
+    if (future->exception != NULL && !ZEND_FUTURE_IS_EXCEPTION_CAUGHT(future) && !ZEND_FUTURE_IS_IGNORED(future)) {
+        // Get exception message
+        zval rv;
+        zval *message = zend_read_property_ex(future->exception->ce, future->exception,
+            ZSTR_KNOWN(ZEND_STR_MESSAGE), 1, &rv);
+        const char *msg_str = (message != NULL && Z_TYPE_P(message) == IS_STRING) ? Z_STRVAL_P(message) : "Unknown error";
+
+        if (future->filename != NULL && future->completed_filename != NULL) {
+            async_warning("Unhandled exception in Future: %s; "
+                "use catch() or ignore() to handle. "
+                "Created at %s:%d, completed at %s:%d",
+                msg_str,
+                ZSTR_VAL(future->filename), future->lineno,
+                ZSTR_VAL(future->completed_filename), future->completed_lineno);
+        } else if (future->filename != NULL) {
+            async_warning("Unhandled exception in Future: %s; "
+                "use catch() or ignore() to handle. "
+                "Created at %s:%d",
+                msg_str,
+                ZSTR_VAL(future->filename), future->lineno);
+        } else {
+            async_warning("Unhandled exception in Future: %s; "
+                "use catch() or ignore() to handle",
+                msg_str);
+        }
+    }
+
     zval_ptr_dtor(&future->result);
-    
+
     if (future->exception != NULL) {
         OBJ_RELEASE(future->exception);
         future->exception = NULL;
     }
-    
+
     if (future->filename != NULL) {
         zend_string_release(future->filename);
         future->filename = NULL;
     }
-    
+
     if (future->completed_filename != NULL) {
         zend_string_release(future->completed_filename);
         future->completed_filename = NULL;
@@ -1062,11 +1103,14 @@ FUTURE_METHOD(await)
     }
 
     const async_future_t *future = THIS_FUTURE;
-    
+
     if (future->event == NULL) {
         async_throw_error("Future has no state");
         RETURN_THROWS();
     }
+
+    zend_future_t *state = (zend_future_t *)future->event;
+    ZEND_FUTURE_SET_USED(state);
 
     zend_async_event_t *event = future->event;
 
@@ -1187,6 +1231,8 @@ static void process_future_mapper(zend_future_t *parent_future, async_future_t *
 			    // fallback_exception is passed as a function parameter.
 				ZVAL_OBJ(&args[0], fallback_exception);
 			    fallback_exception = NULL;
+			    // Mark that exception was caught by catch handler
+			    ZEND_FUTURE_SET_EXCEPTION_CAUGHT(parent_future);
 			} else {
 			    // Not called in case of success.
 			    should_call = false;
@@ -1451,6 +1497,9 @@ static void async_future_create_mapper(
 
     // If source future is already completed, process mapper immediately in a new coroutine
     zend_future_t *source_future = (zend_future_t *)source->event;
+
+    // Mark source future as used (someone subscribed via map/catch/finally)
+    ZEND_FUTURE_SET_USED(source_future);
     if (ZEND_FUTURE_IS_COMPLETED(source_future)) {
 
         // Spawn coroutine to process the mapper
