@@ -1122,7 +1122,10 @@ static void process_future_mapper(zend_future_t *parent_future, async_future_t *
 	        if (fallback_exception != NULL) {
                 // fallback_exception is passed as a function parameter.
                 ZVAL_OBJ(&args[0], fallback_exception);
-                fallback_exception = NULL;
+	            GC_ADDREF(fallback_exception);
+                // The finally method, unlike catch, does not swallow the exception,
+                // and it continues further down the chain.
+	            // So fallback_exception != NULL
             }
 
 			break;
@@ -1136,6 +1139,14 @@ static void process_future_mapper(zend_future_t *parent_future, async_future_t *
 	}
 
     zval_ptr_dtor(&args[0]);
+
+    if (child_future_obj->mapper_type == ASYNC_FUTURE_MAPPER_FINALLY) {
+        zval_ptr_dtor(&retval);
+
+        if (!Z_ISUNDEF(parent_future->result)) {
+            ZVAL_COPY(&retval, &parent_future->result);
+        }
+    }
 
     if (UNEXPECTED(EG(exception) != NULL)) {
 
