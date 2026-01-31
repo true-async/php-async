@@ -138,8 +138,311 @@ typedef struct {
     zend_future_t *parent_future;
 } future_mapper_context_t;
 
+///////////////////////////////////////////////////////////
+/// Future Iterator (zend_object_iterator)
+///////////////////////////////////////////////////////////
+
+/**
+ * Custom zend_object_iterator for efficient future chain traversal.
+ * Instead of creating a new async_iterator for each future level,
+ * this iterator maintains a queue of futures and iterates through
+ * their children in a flat manner.
+ *
+ * Flow:
+ * 1. Parent future resolves, adds itself to future_queue
+ * 2. Iterator picks parent from queue, iterates its child_futures
+ * 3. When child resolves and has its own children, child is added to queue
+ * 4. Single iterator processes entire future tree
+ */
+typedef struct {
+    zend_object_iterator it;
+
+    /* Queue of futures to process (FIFO) */
+    zend_array *future_queue;
+    uint32_t queue_hash_iter;
+    HashPosition queue_pos;
+
+    /* Current parent future being processed */
+    async_future_t *current_parent;
+
+    /* Position in current_parent->child_futures */
+    uint32_t child_hash_iter;
+    HashPosition child_pos;
+
+    /* Current child for get_current_data() */
+    zval current_child;
+} future_iterator_t;
+
+/* Forward declarations for future_iterator functions */
+static void future_iterator_dtor(zend_object_iterator *iter);
+static zend_result future_iterator_valid(zend_object_iterator *iter);
+static zval *future_iterator_get_current_data(zend_object_iterator *iter);
+static void future_iterator_get_current_key(zend_object_iterator *iter, zval *key);
+static void future_iterator_move_forward(zend_object_iterator *iter);
+static void future_iterator_rewind(zend_object_iterator *iter);
+
+static const zend_object_iterator_funcs future_iterator_funcs = {
+    .dtor = future_iterator_dtor,
+    .valid = future_iterator_valid,
+    .get_current_data = future_iterator_get_current_data,
+    .get_current_key = future_iterator_get_current_key,
+    .move_forward = future_iterator_move_forward,
+    .rewind = future_iterator_rewind,
+    .invalidate_current = NULL,
+    .get_gc = NULL,
+};
+
+/**
+ * Create a new future_iterator_t.
+ */
+static future_iterator_t *future_iterator_create(async_future_t *first_future)
+{
+    future_iterator_t *iterator = ecalloc(1, sizeof(future_iterator_t));
+
+    zend_iterator_init(&iterator->it);
+    iterator->it.funcs = &future_iterator_funcs;
+
+    /* Create queue and add first future */
+    iterator->future_queue = zend_new_array(4);
+    iterator->queue_hash_iter = (uint32_t)-1;
+
+    zval first;
+    ZVAL_OBJ(&first, &first_future->std);
+    Z_ADDREF(first);
+    zend_hash_next_index_insert(iterator->future_queue, &first);
+
+    iterator->current_parent = NULL;
+    iterator->child_hash_iter = (uint32_t)-1;
+    ZVAL_UNDEF(&iterator->current_child);
+
+    return iterator;
+}
+
+/**
+ * Destructor for future_iterator_t.
+ */
+static void future_iterator_dtor(zend_object_iterator *iter)
+{
+    future_iterator_t *iterator = (future_iterator_t *)iter;
+
+    if (iterator->queue_hash_iter != (uint32_t)-1) {
+        zend_hash_iterator_del(iterator->queue_hash_iter);
+        iterator->queue_hash_iter = (uint32_t)-1;
+    }
+
+    if (iterator->child_hash_iter != (uint32_t)-1) {
+        zend_hash_iterator_del(iterator->child_hash_iter);
+        iterator->child_hash_iter = (uint32_t)-1;
+    }
+
+    if (iterator->future_queue != NULL) {
+        zend_array_destroy(iterator->future_queue);
+        iterator->future_queue = NULL;
+    }
+
+    zval_ptr_dtor(&iterator->current_child);
+    ZVAL_UNDEF(&iterator->current_child);
+
+    iterator->current_parent = NULL;
+
+    // Note: don't efree here - zend_objects_store handles the memory
+}
+
+/**
+ * Extended destructor for async_iterator_t.
+ * Called from iterator_dtor to properly clean up the zend_iterator.
+ */
+static void future_async_iterator_dtor(zend_async_iterator_t *async_iter)
+{
+    async_iterator_t *iterator = (async_iterator_t *)async_iter;
+
+    // Clear extended_data since zend_iterator_dtor will free the memory
+    iterator->extended_data = NULL;
+
+    if (iterator->zend_iterator != NULL) {
+        zend_object_iterator *zend_iter = iterator->zend_iterator;
+        iterator->zend_iterator = NULL;
+        zend_iterator_dtor(zend_iter);
+    }
+}
+
+/**
+ * Move to next parent from the queue.
+ * Returns true if a new parent was found, false if queue is empty.
+ */
+static bool future_iterator_next_parent(future_iterator_t *iterator)
+{
+    if (iterator->child_hash_iter != (uint32_t)-1) {
+        zend_hash_iterator_del(iterator->child_hash_iter);
+        iterator->child_hash_iter = (uint32_t)-1;
+    }
+
+    iterator->current_parent = NULL;
+
+    if (iterator->future_queue == NULL || zend_hash_num_elements(iterator->future_queue) == 0) {
+        return false;
+    }
+
+    /* Get next future from queue */
+    if (iterator->queue_hash_iter == (uint32_t)-1) {
+        zend_hash_internal_pointer_reset_ex(iterator->future_queue, &iterator->queue_pos);
+        iterator->queue_hash_iter = zend_hash_iterator_add(iterator->future_queue, iterator->queue_pos);
+    } else {
+        iterator->queue_pos = zend_hash_iterator_pos(iterator->queue_hash_iter, iterator->future_queue);
+        zend_hash_move_forward_ex(iterator->future_queue, &iterator->queue_pos);
+        EG(ht_iterators)[iterator->queue_hash_iter].pos = iterator->queue_pos;
+    }
+
+    zval *next_future_zval = zend_hash_get_current_data_ex(iterator->future_queue, &iterator->queue_pos);
+    if (next_future_zval == NULL) {
+        return false;
+    }
+
+    iterator->current_parent = ASYNC_FUTURE_FROM_OBJ(Z_OBJ_P(next_future_zval));
+
+    /* Initialize child iteration if parent has children */
+    if (iterator->current_parent->child_futures != NULL &&
+        zend_hash_num_elements(iterator->current_parent->child_futures) > 0) {
+
+        zend_hash_internal_pointer_reset_ex(iterator->current_parent->child_futures, &iterator->child_pos);
+        iterator->child_hash_iter = zend_hash_iterator_add(
+            iterator->current_parent->child_futures, iterator->child_pos);
+
+        return true;
+    }
+
+    /* Parent has no children, try next parent */
+    return future_iterator_next_parent(iterator);
+}
+
+/**
+ * Check if iteration is valid.
+ * If current parent has no more children, switches to next parent from queue.
+ */
+static zend_result future_iterator_valid(zend_object_iterator *iter)
+{
+    future_iterator_t *iterator = (future_iterator_t *)iter;
+
+    while (true) {
+        if (iterator->current_parent == NULL) {
+            /* Try to get next parent from queue */
+            if (!future_iterator_next_parent(iterator)) {
+                return FAILURE;
+            }
+            continue;
+        }
+
+        if (iterator->current_parent->child_futures == NULL) {
+            /* Parent has no children, try next */
+            if (!future_iterator_next_parent(iterator)) {
+                return FAILURE;
+            }
+            continue;
+        }
+
+        zval *current = zend_hash_get_current_data_ex(
+            iterator->current_parent->child_futures, &iterator->child_pos);
+
+        if (current != NULL) {
+            return SUCCESS;
+        }
+
+        /* No more children, try next parent */
+        if (!future_iterator_next_parent(iterator)) {
+            return FAILURE;
+        }
+    }
+}
+
+/**
+ * Get current child future.
+ */
+static zval *future_iterator_get_current_data(zend_object_iterator *iter)
+{
+    future_iterator_t *iterator = (future_iterator_t *)iter;
+
+    if (iterator->current_parent == NULL || iterator->current_parent->child_futures == NULL) {
+        return NULL;
+    }
+
+    zval *current = zend_hash_get_current_data_ex(
+        iterator->current_parent->child_futures, &iterator->child_pos);
+
+    if (current != NULL) {
+        zval_ptr_dtor(&iterator->current_child);
+        ZVAL_COPY(&iterator->current_child, current);
+        return &iterator->current_child;
+    }
+
+    return NULL;
+}
+
+/**
+ * Get current key (numeric index).
+ */
+static void future_iterator_get_current_key(zend_object_iterator *iter, zval *key)
+{
+    ZVAL_LONG(key, iter->index);
+}
+
+/**
+ * Move to next child or next parent.
+ *
+ * IMPORTANT: move_forward is called BEFORE the handler in PHP's iterate() loop.
+ * We must NOT reset current_parent here because the handler still needs it
+ * to process the current element. Instead, we just move the position forward.
+ * The actual parent switch happens in valid() when we detect no more children.
+ */
+static void future_iterator_move_forward(zend_object_iterator *iter)
+{
+    future_iterator_t *iterator = (future_iterator_t *)iter;
+
+    iter->index++;
+
+    if (iterator->current_parent == NULL || iterator->current_parent->child_futures == NULL) {
+        /* Will be handled by valid() */
+        return;
+    }
+
+    /* Move to next child */
+    zend_hash_move_forward_ex(iterator->current_parent->child_futures, &iterator->child_pos);
+
+    if (iterator->child_hash_iter != (uint32_t)-1) {
+        EG(ht_iterators)[iterator->child_hash_iter].pos = iterator->child_pos;
+    }
+
+    /* Don't call future_iterator_next_parent here!
+     * valid() will detect there are no more children and switch parent. */
+}
+
+/**
+ * Rewind to start.
+ */
+static void future_iterator_rewind(zend_object_iterator *iter)
+{
+    future_iterator_t *iterator = (future_iterator_t *)iter;
+
+    iter->index = 0;
+
+    /* Reset queue position */
+    if (iterator->queue_hash_iter != (uint32_t)-1) {
+        zend_hash_iterator_del(iterator->queue_hash_iter);
+        iterator->queue_hash_iter = (uint32_t)-1;
+    }
+
+    if (iterator->child_hash_iter != (uint32_t)-1) {
+        zend_hash_iterator_del(iterator->child_hash_iter);
+        iterator->child_hash_iter = (uint32_t)-1;
+    }
+
+    iterator->current_parent = NULL;
+
+    /* Start from first parent in queue */
+    future_iterator_next_parent(iterator);
+}
+
 /* Forward declarations */
-static void process_future_mapper(zend_future_t *parent_future, async_future_t *child_future_obj);
+static void process_future_mapper(zend_future_t *parent_future, async_future_t *child_future_obj, future_iterator_t *iterator);
 static zend_result future_mappers_handler(async_iterator_t *iterator, zval *current, zval *key);
 static void async_future_callback_handler(zend_async_event_t *event, zend_async_event_callback_t *callback, void *result, zend_object *exception);
 static void async_future_callback_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event);
@@ -149,12 +452,12 @@ static void future_mapper_coroutine_entry(void);
 static void future_mapper_context_dispose(zend_coroutine_t *coroutine);
 
 ///////////////////////////////////////////////////////////
-/// FutureState event functions (like coroutine)
+/// zend_future_t event handlers
 ///////////////////////////////////////////////////////////
 
-static bool future_state_event_start(zend_async_event_t *event)
+static bool zend_future_event_start(zend_async_event_t *event)
 {
-    /* Nothing to start for FutureState */
+    /* Nothing to start for zend_future_t */
     return true;
 }
 
@@ -162,8 +465,11 @@ static bool future_state_event_start(zend_async_event_t *event)
  * The method that is called to resolve the Future (complete or reject).
  * This method must be triggered only once.
  * This is the proper method for completing futures, NOT stop().
+ *
+ * @param event The future event
+ * @param iterator If not NULL, the future_iterator_t to add children to
  */
-static bool future_state_resolve(zend_async_event_t *event)
+static bool zend_future_resolve(zend_async_event_t *event, void *iterator)
 {
     if (ZEND_ASYNC_EVENT_IS_CLOSED(event)) {
         return true;
@@ -173,10 +479,11 @@ static bool future_state_resolve(zend_async_event_t *event)
 
     zend_future_t *future = (zend_future_t *)event;
 
-    // Invocation of internal handlers.
-    // Attention: these handlers must not call user-land PHP functions,
-    // as this would violate the rule that PHP code must run only inside coroutines.
+    // Notify regular callbacks (awaiters) with result/exception
     ZEND_ASYNC_CALLBACKS_NOTIFY(event, &future->result, future->exception);
+
+    // Notify resolve_callbacks (map/catch/finally chains) with iterator
+    zend_async_callbacks_vector_notify(&future->resolve_callbacks, event, iterator);
 
     return true;
 }
@@ -185,22 +492,22 @@ static bool future_state_resolve(zend_async_event_t *event)
  * Standard event stop method.
  * For futures, this does nothing - all completion logic is in resolve().
  */
-static bool future_state_event_stop(zend_async_event_t *event)
+static bool zend_future_event_stop(zend_async_event_t *event)
 {
     return true;
 }
 
-static bool future_state_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
+static bool zend_future_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
 {
     return zend_async_callbacks_push(event, callback);
 }
 
-static bool future_state_del_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
+static bool zend_future_del_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
 {
     return zend_async_callbacks_remove(event, callback);
 }
 
-static bool future_state_replay(zend_async_event_t *event, zend_async_event_callback_t *callback, zval *result, zend_object **exception)
+static bool zend_future_replay(zend_async_event_t *event, zend_async_event_callback_t *callback, zval *result, zend_object **exception)
 {
     zend_future_t *future = (zend_future_t *) event;
 
@@ -230,14 +537,14 @@ static bool future_state_replay(zend_async_event_t *event, zend_async_event_call
 	return EG(exception) == NULL;
 }
 
-static zend_string* future_state_info(zend_async_event_t *event)
+static zend_string* zend_future_info(zend_async_event_t *event)
 {
     const zend_future_t *future = (zend_future_t *) event;
 
     return zend_strpprintf(0, "FutureState(%s)", ZEND_FUTURE_IS_COMPLETED(future) ? "completed" : "pending");
 }
 
-static bool future_state_dispose(zend_async_event_t *event)
+static bool zend_future_dispose(zend_async_event_t *event)
 {
     zend_future_t *future = (zend_future_t *) event;
     
@@ -259,27 +566,33 @@ static bool future_state_dispose(zend_async_event_t *event)
     }
 
     zend_async_callbacks_free(event);
-    
+    zend_async_callbacks_vector_free(&future->resolve_callbacks, event);
+
     efree(future);
-    
+
     return true;
 }
 
-static zend_always_inline void init_future_state_event(zend_async_event_t *event)
+static zend_always_inline void init_zend_future(zend_async_event_t *event)
 {
     zend_future_t *future = (zend_future_t *)event;
 
-    event->start = future_state_event_start;
-    event->stop = future_state_event_stop;
-    event->add_callback = future_state_add_callback;
-    event->del_callback = future_state_del_callback;
-    event->replay = future_state_replay;
-    event->info = future_state_info;
-    event->dispose = future_state_dispose;
+    event->start = zend_future_event_start;
+    event->stop = zend_future_event_stop;
+    event->add_callback = zend_future_add_callback;
+    event->del_callback = zend_future_del_callback;
+    event->replay = zend_future_replay;
+    event->info = zend_future_info;
+    event->dispose = zend_future_dispose;
     event->ref_count = 1;
 
     /* Set the resolve method for completing the future */
-    future->resolve = future_state_resolve;
+    future->resolve = zend_future_resolve;
+
+    /* Initialize resolve_callbacks vector (for map/catch/finally chains) */
+    future->resolve_callbacks.data = NULL;
+    future->resolve_callbacks.length = 0;
+    future->resolve_callbacks.capacity = 0;
 }
 
 ///////////////////////////////////////////////////////////
@@ -296,7 +609,7 @@ static zend_object *async_future_state_object_create(zend_class_entry *ce)
     ZVAL_UNDEF(&future->result);
 
     /* Set event handlers */
-    init_future_state_event(event);
+    init_zend_future(event);
 
     ZEND_ASYNC_EVENT_REF_SET(state, XtOffsetOf(async_future_state_t, std), event);
     ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(state->event);
@@ -761,8 +1074,9 @@ FUTURE_METHOD(await)
  *
  * @param parent_future The parent future that has completed
  * @param child_future_obj The child future object to be completed
+ * @param iterator The future iterator (for chained resolution)
  */
-static void process_future_mapper(zend_future_t *parent_future, async_future_t *child_future_obj)
+static void process_future_mapper(zend_future_t *parent_future, async_future_t *child_future_obj, future_iterator_t *iterator)
 {
 	zend_future_t *child_future = (zend_future_t *)child_future_obj->event;
 
@@ -835,22 +1149,31 @@ static void process_future_mapper(zend_future_t *parent_future, async_future_t *
     }
 
 	if (fallback_exception != NULL) {
-		ZEND_FUTURE_REJECT(child_future, fallback_exception);
+		ZEND_FUTURE_REJECT_WITH_ITERATOR(child_future, fallback_exception, iterator);
 
 	    if (UNEXPECTED(EG(exception) != NULL)) {
 	        zend_exception_set_previous(EG(exception), fallback_exception);
 	    } else if (UNEXPECTED(false == ZEND_ASYNC_EVENT_IS_EXCEPTION_HANDLED(&child_future->event))) {
 	        // We throw the fallback_exception only if it was not handled by anyone.
 	        EG(exception) = fallback_exception;
+	    } else {
+	        // Exception was handled, release our reference
+	        OBJ_RELEASE(fallback_exception);
+	        fallback_exception = NULL;
 	    }
 
 	} else {
 
-	    if (Z_TYPE(retval) != IS_UNDEF) {
-	        ZVAL_NULL(&retval);
+	    if (Z_TYPE(retval) == IS_UNDEF) {
+	        // Callback was not called - pass through parent result
+	        if (!Z_ISUNDEF(parent_future->result)) {
+	            ZVAL_COPY(&retval, &parent_future->result);
+	        } else {
+	            ZVAL_NULL(&retval);
+	        }
 	    }
 
-	    ZEND_FUTURE_COMPLETE(child_future, &retval);
+	    ZEND_FUTURE_COMPLETE_WITH_ITERATOR(child_future, &retval, iterator);
 	}
 
     zval_ptr_dtor(&retval);
@@ -860,12 +1183,20 @@ static void process_future_mapper(zend_future_t *parent_future, async_future_t *
  * Iterator handler that processes child futures when parent resolves.
  * Called once for each child future (from map/catch/finally).
  */
-static zend_result future_mappers_handler(async_iterator_t *iterator, zval *current, zval *key)
+static zend_result future_mappers_handler(async_iterator_t *async_iter, zval *current, zval *key)
 {
-	zend_future_t *parent_future = (zend_future_t *)iterator->extended_data;
+	future_iterator_t *iterator = (future_iterator_t *)async_iter->extended_data;
+
+	if (UNEXPECTED(iterator == NULL || iterator->current_parent == NULL)) {
+		return FAILURE;
+	}
+
 	async_future_t *child_future_obj = ASYNC_FUTURE_FROM_OBJ(Z_OBJ_P(current));
 
-	process_future_mapper(parent_future, child_future_obj);
+	// Get parent future from the iterator's current_parent
+	zend_future_t *parent_future = (zend_future_t *)iterator->current_parent->event;
+
+	process_future_mapper(parent_future, child_future_obj, iterator);
 
 	return SUCCESS;
 }
@@ -876,7 +1207,10 @@ static zend_result future_mappers_handler(async_iterator_t *iterator, zval *curr
 
 /**
  * Callback handler invoked when parent future completes.
- * Processes all child futures by running iterator in separate coroutine.
+ *
+ * If result (iterator) is not NULL, we add this future to the existing
+ * iterator's queue. Otherwise, we create a new future_iterator_t and
+ * start processing.
  */
 static void async_future_callback_handler(
     zend_async_event_t *event,
@@ -894,13 +1228,28 @@ static void async_future_callback_handler(
     // We mark that the exceptions have been handled.
     ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
 
-    zval children_arr;
-    ZVAL_ARR(&children_arr, future_obj->child_futures);
-    future_obj->child_futures = NULL;
+    future_iterator_t *existing_iterator = (future_iterator_t *)result;
 
-    async_iterator_t *iterator = async_iterator_new(
-        &children_arr,
+    if (existing_iterator != NULL) {
+        // Iterator already exists - add this future to its queue
+        zval self;
+        ZVAL_OBJ(&self, &future_obj->std);
+        Z_ADDREF(self);
+        zend_hash_next_index_insert(existing_iterator->future_queue, &self);
+        return;
+    }
+
+    // First level - create new future_iterator_t
+    future_iterator_t *new_iterator = future_iterator_create(future_obj);
+
+    if (UNEXPECTED(new_iterator == NULL)) {
+        return;
+    }
+
+    // Create async_iterator with our zend_object_iterator
+    async_iterator_t *async_iter = async_iterator_new(
         NULL,
+        &new_iterator->it,
         NULL,
         future_mappers_handler,
         ZEND_ASYNC_CURRENT_SCOPE,
@@ -909,14 +1258,15 @@ static void async_future_callback_handler(
         0 /* iterator size: default */
     );
 
-    if (UNEXPECTED(iterator == NULL)) {
-        zval_ptr_dtor(&children_arr);
+    if (UNEXPECTED(async_iter == NULL)) {
+        zend_iterator_dtor(&new_iterator->it);
         return;
     }
 
-    zval_ptr_dtor(&children_arr);
-    iterator->extended_data = (zend_future_t *)event;
-    async_iterator_run_in_coroutine(iterator, 0, true);
+    // Store iterator in extended_data so handler can access it
+    async_iter->extended_data = new_iterator;
+    async_iter->extended_dtor = future_async_iterator_dtor;
+    async_iterator_run_in_coroutine(async_iter, 0, true);
 }
 
 /**
@@ -977,7 +1327,7 @@ static void future_mapper_coroutine_entry(void)
     }
 
     future_mapper_context_t *context = ZEND_ASYNC_CURRENT_COROUTINE->extended_data;
-    process_future_mapper(context->parent_future, context->child_future_obj);
+    process_future_mapper(context->parent_future, context->child_future_obj, NULL);
     future_mapper_context_dispose(ZEND_ASYNC_CURRENT_COROUTINE);
 }
 
@@ -1053,10 +1403,11 @@ static void async_future_create_mapper(
         callback->base.callback = async_future_callback_handler;
         callback->base.dispose = async_future_callback_dispose;
         callback->future_obj = source;
-        // We do not increment the object's reference count because this is a “weak reference”.
+        // We do not increment the object's reference count because this is a "weak reference".
         // No GC_ADDREF(&source->std);
 
-        if (UNEXPECTED(!zend_async_callbacks_push(source->event, &callback->base))) {
+        // Add to resolve_callbacks (not regular callbacks) for chain processing
+        if (UNEXPECTED(!zend_async_callbacks_vector_push(&source_future->resolve_callbacks, &callback->base))) {
             ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&callback->base);
             OBJ_RELEASE(&target_future_obj->std);
             async_throw_error("Failed to subscribe to source future");
@@ -1147,7 +1498,7 @@ static async_future_t *async_future_create_internal(void)
 
     ZVAL_UNDEF(&future->result);
 
-    init_future_state_event(event);
+    init_zend_future(event);
 
     ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(event);
 
