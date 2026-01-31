@@ -479,6 +479,9 @@ static bool zend_future_resolve(zend_async_event_t *event, void *iterator)
 
     zend_future_t *future = (zend_future_t *)event;
 
+    /* Record where the Future was completed */
+    zend_apply_current_filename_and_line(&future->completed_filename, &future->completed_lineno);
+
     // Notify regular callbacks (awaiters) with result/exception
     ZEND_ASYNC_CALLBACKS_NOTIFY(event, &future->result, future->exception);
 
@@ -593,6 +596,12 @@ static zend_always_inline void init_zend_future(zend_async_event_t *event)
     future->resolve_callbacks.data = NULL;
     future->resolve_callbacks.length = 0;
     future->resolve_callbacks.capacity = 0;
+
+    /* Initialize file/line tracking fields */
+    future->filename = NULL;
+    future->lineno = 0;
+    future->completed_filename = NULL;
+    future->completed_lineno = 0;
 }
 
 ///////////////////////////////////////////////////////////
@@ -611,12 +620,15 @@ static zend_object *async_future_state_object_create(zend_class_entry *ce)
     /* Set event handlers */
     init_zend_future(event);
 
+    /* Record where the Future was created */
+    zend_apply_current_filename_and_line(&future->filename, &future->lineno);
+
     ZEND_ASYNC_EVENT_REF_SET(state, XtOffsetOf(async_future_state_t, std), event);
     ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(state->event);
 
     zend_object_std_init(&state->std, ce);
     object_properties_init(&state->std, ce);
-    
+
     return &state->std;
 }
 
@@ -1140,6 +1152,7 @@ static void process_future_mapper(zend_future_t *parent_future, async_future_t *
 
     zval_ptr_dtor(&args[0]);
 
+    // For finally, the result of the parent future is passed to the child unchanged.
     if (child_future_obj->mapper_type == ASYNC_FUTURE_MAPPER_FINALLY) {
         zval_ptr_dtor(&retval);
 
@@ -1510,6 +1523,9 @@ static async_future_t *async_future_create_internal(void)
     ZVAL_UNDEF(&future->result);
 
     init_zend_future(event);
+
+    /* Record where the Future was created */
+    zend_apply_current_filename_and_line(&future->filename, &future->lineno);
 
     ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(event);
 
