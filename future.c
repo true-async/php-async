@@ -770,48 +770,58 @@ static void process_future_mapper(zend_future_t *parent_future, async_future_t *
 		return;
 	}
 
-	zval result_value;
-	ZVAL_UNDEF(&result_value);
 	zend_object *fallback_exception = NULL;
 	zval args[1];
-	uint32_t arg_count = 0;
+    ZVAL_NULL(&args[0]);
 	bool should_call = true;
+
+    if (EXPECTED(parent_future->exception == NULL)) {
+        if (!Z_ISUNDEF(parent_future->result)) {
+            ZVAL_COPY(&args[0], &parent_future->result);
+        }
+    } else {
+        fallback_exception = parent_future->exception;
+        GC_ADDREF(fallback_exception);
+    }
 
 	switch (child_future_obj->mapper_type) {
 		case ASYNC_FUTURE_MAPPER_SUCCESS:
-			if (parent_future->exception != NULL) {
-				fallback_exception = parent_future->exception;
-				should_call = false;
-			} else {
-				ZVAL_COPY(&args[0], &parent_future->result);
-				arg_count = 1;
+			if (UNEXPECTED(parent_future->exception != NULL)) {
+		        // Called only on success, when there are no exceptions.
+			    should_call = false;
 			}
 			break;
 
 		case ASYNC_FUTURE_MAPPER_CATCH:
-			if (parent_future->exception == NULL) {
-				result_value = parent_future->result;
-				should_call = false;
+			if (fallback_exception != NULL) {
+			    // fallback_exception is passed as a function parameter.
+				ZVAL_OBJ(&args[0], fallback_exception);
+			    fallback_exception = NULL;
 			} else {
-				ZVAL_OBJ(&args[0], parent_future->exception);
-				GC_ADDREF(parent_future->exception);
-				arg_count = 1;
+			    // Not called in case of success.
+			    should_call = false;
 			}
 			break;
 
 		case ASYNC_FUTURE_MAPPER_FINALLY:
-			arg_count = 0;
-			result_value = parent_future->result;
-			fallback_exception = parent_future->exception;
+	        // Always call
+	        if (fallback_exception != NULL) {
+                // fallback_exception is passed as a function parameter.
+                ZVAL_OBJ(&args[0], fallback_exception);
+                fallback_exception = NULL;
+            }
+
 			break;
 	}
 
+    zval retval;
+    ZVAL_UNDEF(&retval);
+
 	if (should_call) {
-		call_user_function(NULL, NULL, &child_future_obj->mapper, &result_value, arg_count, arg_count > 0 ? args : NULL);
-		if (arg_count > 0) {
-			zval_ptr_dtor(&args[0]);
-		}
+		call_user_function(NULL, NULL, &child_future_obj->mapper, &retval, 1, args);
 	}
+
+    zval_ptr_dtor(&args[0]);
 
     if (UNEXPECTED(EG(exception) != NULL)) {
 
@@ -825,7 +835,6 @@ static void process_future_mapper(zend_future_t *parent_future, async_future_t *
     }
 
 	if (fallback_exception != NULL) {
-	    ZEND_ASYNC_EVENT_CLR_EXCEPTION_HANDLED(&child_future->event);
 		ZEND_FUTURE_REJECT(child_future, fallback_exception);
 
 	    if (UNEXPECTED(EG(exception) != NULL)) {
@@ -835,15 +844,16 @@ static void process_future_mapper(zend_future_t *parent_future, async_future_t *
 	        EG(exception) = fallback_exception;
 	    }
 
-	} else if (Z_TYPE(result_value) != IS_UNDEF) {
-		ZEND_FUTURE_COMPLETE(child_future, &result_value);
 	} else {
-		zval null_val;
-		ZVAL_NULL(&null_val);
-		ZEND_FUTURE_COMPLETE(child_future, &null_val);
+
+	    if (Z_TYPE(retval) != IS_UNDEF) {
+	        ZVAL_NULL(&retval);
+	    }
+
+	    ZEND_FUTURE_COMPLETE(child_future, &retval);
 	}
 
-	zval_ptr_dtor(&result_value);
+    zval_ptr_dtor(&retval);
 }
 
 /**
@@ -880,6 +890,9 @@ static void async_future_callback_handler(
     if (future_obj->child_futures == NULL || zend_hash_num_elements(future_obj->child_futures) == 0) {
         return;
     }
+
+    // We mark that the exceptions have been handled.
+    ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
 
     zval children_arr;
     ZVAL_ARR(&children_arr, future_obj->child_futures);
