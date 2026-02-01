@@ -1183,7 +1183,7 @@ bool async_call_finally_handlers(HashTable *finally_handlers, finally_handlers_c
 	context->composite_exception = NULL;
 	iterator->extended_data = context;
 	iterator->extended_dtor = finally_handlers_iterator_dtor;
-	async_iterator_run_in_coroutine(iterator, priority);
+	async_iterator_run_in_coroutine(iterator, priority, false);
 
 	//
 	// We retain ownership of the Scope in order to be able to handle exceptions from the Finally handlers.

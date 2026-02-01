@@ -44,7 +44,7 @@ async_iterator_t *async_iterator_new(zval *array,
 #define ASYNC_ITERATOR_DTOR zend_async_iterator_method_t
 
 void async_iterator_run(async_iterator_t *iterator);
-void async_iterator_run_in_coroutine(async_iterator_t *iterator, int32_t priority);
+void async_iterator_run_in_coroutine(async_iterator_t *iterator, int32_t priority, bool throw_exception);
 void async_iterator_apply_exception(async_iterator_t *iterator);
 
 struct _async_iterator_t
