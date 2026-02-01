@@ -225,6 +225,10 @@ PHP_FUNCTION(Async_await)
 	zend_async_event_t *awaitable_event = ZEND_ASYNC_OBJECT_TO_EVENT(awaitable);
 	zend_async_event_t *cancellation_event = cancellation != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation) : NULL;
 
+	// Mark that result will be used and exception will be caught
+	ZEND_ASYNC_EVENT_SET_RESULT_USED(awaitable_event);
+	ZEND_ASYNC_EVENT_SET_EXC_CAUGHT(awaitable_event);
+
 	// If the awaitable is the same as the cancellation event, we can skip the cancellation check.
 	if (awaitable_event == cancellation_event) {
 		cancellation_event = NULL;

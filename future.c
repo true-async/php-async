@@ -1311,6 +1311,11 @@ static void process_future_mapper(zend_future_t *parent_future, async_future_t *
 	}
 
     zval_ptr_dtor(&retval);
+
+    // Propagate flags from child to parent
+    if (ZEND_FUTURE_IS_EXCEPTION_CAUGHT(child_future)) {
+        ZEND_FUTURE_SET_EXCEPTION_CAUGHT(parent_future);
+    }
 }
 
 /**

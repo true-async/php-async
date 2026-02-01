@@ -15,6 +15,8 @@ var_dump($createdFileAndLine[1] === $line);
 var_dump(str_contains($completedFileAndLine[0], basename(__FILE__)));
 var_dump($completedFileAndLine[1] === $line);
 
+$future->ignore();
+
 ?>
 --EXPECT--
 bool(true)

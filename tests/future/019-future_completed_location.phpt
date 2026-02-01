@@ -27,6 +27,8 @@ var_dump(str_contains($fileAndLine[0], basename(__FILE__)));
 var_dump($fileAndLine[1] === $line);
 var_dump(str_contains($location, (string)$line));
 
+$future->ignore();
+
 ?>
 --EXPECT--
 bool(true)
