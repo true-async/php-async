@@ -26,6 +26,7 @@
 #include "exceptions.h"
 #include "scope.h"
 #include "context.h"
+#include "future.h"
 #include "async_API.h"
 #include "async_arginfo.h"
 #include "zend_interfaces.h"
