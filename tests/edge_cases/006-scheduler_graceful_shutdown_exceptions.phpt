@@ -38,8 +38,8 @@ try {
 }
 
 // Check states after shutdown
-echo "error coroutine finished: " . ($error_coroutine->isFinished() ? "true" : "false") . "\n";
-echo "cleanup coroutine finished: " . ($cleanup_coroutine->isFinished() ? "true" : "false") . "\n";
+echo "error coroutine completed: " . ($error_coroutine->isCompleted() ? "true" : "false") . "\n";
+echo "cleanup coroutine completed: " . ($cleanup_coroutine->isCompleted() ? "true" : "false") . "\n";
 
 echo "end\n";
 
@@ -51,6 +51,6 @@ error coroutine started
 cleanup coroutine started
 cleanup coroutine running
 graceful shutdown with custom cancellation completed
-error coroutine finished: true
-cleanup coroutine finished: true
+error coroutine completed: true
+cleanup coroutine completed: true
 end

@@ -6,9 +6,21 @@ namespace Async;
 
 interface Awaitable {}
 
-final class Timeout implements Awaitable
+interface Completable extends Awaitable {
+    public function cancel(?CancellationError $cancellation = null): void;
+    public function isCompleted(): bool;
+    public function isCancelled(): bool;
+}
+
+final class Timeout implements Completable
 {
     private function __construct() {}
+
+    public function cancel(?CancellationError $cancellation = null): void {}
+
+    public function isCompleted(): bool {}
+
+    public function isCancelled(): bool {}
 }
 
 /**
@@ -35,7 +47,7 @@ function suspend(): void {}
  */
 function protect(\Closure $closure): mixed {}
 
-function await(Awaitable $awaitable, ?Awaitable $cancellation = null): mixed {}
+function await(Completable $awaitable, ?Completable $cancellation = null): mixed {}
 
 function await_any_or_fail(iterable $triggers, ?Awaitable $cancellation = null): mixed {}
 

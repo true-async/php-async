@@ -18,7 +18,7 @@ $coroutine1 = spawn(function() {
 // Wait for completion
 suspend();
 
-echo "coroutine1 finished: " . ($coroutine1->isFinished() ? "true" : "false") . "\n";
+echo "coroutine1 completed: " . ($coroutine1->isCompleted() ? "true" : "false") . "\n";
 
 $result1 = await($coroutine1);
 echo "await result: $result1\n";
@@ -37,7 +37,7 @@ try {
     echo "suspend error: " . $e->getMessage() . "\n";
 }
 
-echo "coroutine2 finished: " . ($coroutine2->isFinished() ? "true" : "false") . "\n";
+echo "coroutine2 completed: " . ($coroutine2->isCompleted() ? "true" : "false") . "\n";
 
 try {
     $result2 = await($coroutine2);
@@ -66,11 +66,11 @@ echo "end\n";
 --EXPECTF--
 start
 coroutine1 executing
-coroutine1 finished: true
+coroutine1 completed: true
 await result: success_result
 coroutine2 executing
 suspend error: Coroutine error
-coroutine2 finished: true
+coroutine2 completed: true
 caught exception: Coroutine error
 coroutine3 executing
 await null result: null

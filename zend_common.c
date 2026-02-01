@@ -109,7 +109,8 @@ uint32_t zend_current_exception_get_line(void)
 zend_object *zend_exception_merge(zend_object *exception, bool to_previous, bool transfer_error)
 {
 	zend_object **exception_ptr = &EG(exception);
-	zend_object **prev_exception_ptr = &EG(prev_exception);
+	zend_object *prev_exception = NULL;
+	zend_object **prev_exception_ptr = &prev_exception;
 
 	zend_exception_save_fast(exception_ptr, prev_exception_ptr);
 	zend_exception_restore_fast(exception_ptr, prev_exception_ptr);

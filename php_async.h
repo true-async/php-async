@@ -39,6 +39,7 @@ extern zend_module_entry async_module_entry;
 #include "php_async_api.h"
 
 PHP_ASYNC_API extern zend_class_entry *async_ce_awaitable;
+PHP_ASYNC_API extern zend_class_entry *async_ce_completable;
 PHP_ASYNC_API extern zend_class_entry *async_ce_timeout;
 
 #define PHP_ASYNC_NAME "true_async"

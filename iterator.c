@@ -33,6 +33,26 @@ void coroutine_extended_dispose(zend_coroutine_t *coroutine)
 	iterator->microtask.dtor(&iterator->microtask);
 }
 
+/**
+ * Coroutine destructor that rethrows the iterator exception before disposal.
+ */
+static void coroutine_extended_dispose_with_exception(zend_coroutine_t *coroutine)
+{
+	if (coroutine->extended_data == NULL) {
+		return;
+	}
+
+	async_iterator_t *iterator = coroutine->extended_data;
+
+	if (iterator->exception != NULL) {
+		zend_object *exception = iterator->exception;
+		iterator->exception = NULL;
+		async_rethrow_exception(exception);
+	}
+
+	coroutine_extended_dispose(coroutine);
+}
+
 static void coroutine_entry(void);
 
 void iterator_microtask(zend_async_microtask_t *microtask)
@@ -149,7 +169,7 @@ async_iterator_t *async_iterator_new(zval *array,
 	iterator->microtask.ref_count = 1;
 
 	iterator->run = (void (*)(zend_async_iterator_t *)) async_iterator_run;
-	iterator->run_in_coroutine = (void (*)(zend_async_iterator_t *, int32_t)) async_iterator_run_in_coroutine;
+	iterator->run_in_coroutine = (void (*)(zend_async_iterator_t *, int32_t, bool)) async_iterator_run_in_coroutine;
 
 	iterator->state = ASYNC_ITERATOR_INIT;
 
@@ -453,8 +473,10 @@ void async_iterator_run(async_iterator_t *iterator)
 /**
  * Starts the iterator in a separate coroutine.
  * @param iterator
+ * @param priority
+ * @param throw_exception If true, rethrow the iterator exception on dispose
  */
-void async_iterator_run_in_coroutine(async_iterator_t *iterator, int32_t priority)
+void async_iterator_run_in_coroutine(async_iterator_t *iterator, int32_t priority, bool throw_exception)
 {
 	if (iterator->scope == NULL) {
 		iterator->scope = ZEND_ASYNC_CURRENT_SCOPE;
@@ -467,7 +489,9 @@ void async_iterator_run_in_coroutine(async_iterator_t *iterator, int32_t priorit
 
 	iterator_coroutine->extended_data = iterator;
 	iterator_coroutine->internal_entry = coroutine_entry;
-	iterator_coroutine->extended_dispose = coroutine_extended_dispose;
+	iterator_coroutine->extended_dispose = throw_exception
+		? coroutine_extended_dispose_with_exception
+		: coroutine_extended_dispose;
 }
 
 void async_iterator_apply_exception(async_iterator_t *iterator)

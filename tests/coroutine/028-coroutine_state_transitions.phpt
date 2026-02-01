@@ -35,7 +35,7 @@ $running_coroutine = spawn(function() {
 
 suspend(); // Let it start and suspend
 
-echo "suspended state - isFinished: " . ($running_coroutine->isFinished() ? "true" : "false") . "\n";
+echo "suspended state - isCompleted: " . ($running_coroutine->isCompleted() ? "true" : "false") . "\n";
 
 try {
     $result = $running_coroutine->getResult();
@@ -112,7 +112,7 @@ after start - isQueued: true
 after start - isStarted: true
 after start - isSuspended: true
 running coroutine started
-suspended state - isFinished: false
+suspended state - isCompleted: false
 getResult: NULL
 running coroutine continuing
 exception coroutine started

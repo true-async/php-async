@@ -370,7 +370,7 @@ zend_coroutine_t *async_new_coroutine(zend_async_scope_t *scope)
 
 void async_register_coroutine_ce(void)
 {
-	async_ce_coroutine = register_class_Async_Coroutine(async_ce_awaitable);
+	async_ce_coroutine = register_class_Async_Coroutine(async_ce_completable);
 
 	async_ce_coroutine->create_object = coroutine_object_create;
 
@@ -532,7 +532,8 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 
 	bool do_bailout = false;
 	zend_object **exception_ptr = &EG(exception);
-	zend_object **prev_exception_ptr = &EG(prev_exception);
+	zend_object *prev_exception = NULL;
+	zend_object **prev_exception_ptr = &prev_exception;
 
 	zend_try
 	{
@@ -1054,7 +1055,8 @@ static zend_result finally_handlers_iterator_handler(async_iterator_t *iterator,
 
 	// Check for exceptions after handler execution
 	if (UNEXPECTED(*exception_ptr)) {
-		zend_object **prev_exception_ptr = &EG(prev_exception);
+		zend_object *prev_exception = NULL;
+		zend_object **prev_exception_ptr = &prev_exception;
 		zend_exception_save_fast(exception_ptr, prev_exception_ptr);
 		zend_exception_restore_fast(exception_ptr, prev_exception_ptr);
 		zend_object *current_exception = *exception_ptr;
@@ -1181,7 +1183,7 @@ bool async_call_finally_handlers(HashTable *finally_handlers, finally_handlers_c
 	context->composite_exception = NULL;
 	iterator->extended_data = context;
 	iterator->extended_dtor = finally_handlers_iterator_dtor;
-	async_iterator_run_in_coroutine(iterator, priority);
+	async_iterator_run_in_coroutine(iterator, priority, false);
 
 	//
 	// We retain ownership of the Scope in order to be able to handle exceptions from the Finally handlers.
@@ -1505,7 +1507,7 @@ METHOD(isCancellationRequested)
 				coroutine->deferred_cancellation != NULL);
 }
 
-METHOD(isFinished)
+METHOD(isCompleted)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 

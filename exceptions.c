@@ -309,10 +309,6 @@ bool async_spawn_and_throw(zend_object *exception, zend_async_scope_t *scope, in
  */
 zend_object *async_extract_exception(void)
 {
-	zend_object **exception_ptr = &EG(exception);
-	zend_object **prev_exception_ptr = &EG(prev_exception);
-	zend_exception_save_fast(exception_ptr, prev_exception_ptr);
-	zend_exception_restore_fast(exception_ptr, prev_exception_ptr);
 	zend_object *exception = EG(exception);
 	GC_ADDREF(exception);
 	zend_clear_exception();
