@@ -447,7 +447,7 @@ static zend_result future_mappers_handler(async_iterator_t *iterator, zval *curr
 static void async_future_callback_handler(zend_async_event_t *event, zend_async_event_callback_t *callback, void *result, zend_object *exception);
 static void async_future_callback_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event);
 static void async_future_create_mapper(INTERNAL_FUNCTION_PARAMETERS, async_future_mapper_type_t mapper_type);
-static async_future_t *async_future_create_internal(void);
+async_future_t *async_future_obj_create(void);
 static void future_mapper_coroutine_entry(void);
 static void future_mapper_context_dispose(zend_coroutine_t *coroutine);
 
@@ -1115,8 +1115,14 @@ FUTURE_METHOD(await)
     zend_async_event_t *event = future->event;
 
     if (ZEND_ASYNC_EVENT_IS_CLOSED(event)) {
+        zend_object *exception = NULL;
 
-        if (ZEND_ASYNC_EVENT_EXTRACT_RESULT(event, return_value)) {
+        if (ZEND_ASYNC_EVENT_EXTRACT_RESULT_OR_ERROR(event, return_value, &exception)) {
+            if (exception != NULL) {
+                ZEND_FUTURE_SET_EXCEPTION_CAUGHT(state);
+                async_rethrow_exception(exception);
+                RETURN_THROWS();
+            }
             return;
         }
 
@@ -1492,7 +1498,7 @@ static void async_future_create_mapper(
         RETURN_THROWS();
     }
 
-    async_future_t *target_future_obj = async_future_create_internal();
+    async_future_t *target_future_obj = async_future_obj_create();
     if (UNEXPECTED(target_future_obj == NULL)) {
         RETURN_THROWS();
     }
@@ -1697,9 +1703,25 @@ async_future_state_t *async_future_state_create(void)
  * Create a Future object directly without FutureState wrapper.
  * More memory efficient for internal use (map/catch/finally).
  */
-static async_future_t *async_future_create_internal(void)
+async_future_t *async_future_obj_create(void)
 {
-    zend_future_t *future = ecalloc(1, sizeof(zend_future_t));
+    zend_future_t *future = async_new_future(false, 0);
+    zend_object *obj = async_new_future_obj(future);
+    return ASYNC_FUTURE_FROM_OBJ(obj);
+}
+
+///////////////////////////////////////////////////////////
+/// API function implementations
+///////////////////////////////////////////////////////////
+
+/**
+ * Create a new zend_future_t event.
+ * This is the low-level API for creating futures without a PHP object wrapper.
+ * Used by ZEND_ASYNC_NEW_FUTURE macro.
+ */
+zend_future_t *async_new_future(bool thread_safe, size_t extra_size)
+{
+    zend_future_t *future = ecalloc(1, sizeof(zend_future_t) + extra_size);
     zend_async_event_t *event = &future->event;
 
     ZVAL_UNDEF(&future->result);
@@ -1711,9 +1733,22 @@ static async_future_t *async_future_create_internal(void)
 
     ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(event);
 
+    return future;
+}
+
+/**
+ * Create a PHP Future object wrapping an existing zend_future_t.
+ * Used by ZEND_ASYNC_NEW_FUTURE_OBJ macro.
+ */
+zend_object *async_new_future_obj(zend_future_t *future)
+{
+    if (future == NULL) {
+        return NULL;
+    }
+
     async_future_t *future_obj = (async_future_t *)zend_object_alloc(sizeof(async_future_t), async_ce_future);
 
-    ZEND_ASYNC_EVENT_REF_SET(future_obj, XtOffsetOf(async_future_t, std), event);
+    ZEND_ASYNC_EVENT_REF_SET(future_obj, XtOffsetOf(async_future_t, std), &future->event);
 
     future_obj->child_futures = NULL;
     ZVAL_UNDEF(&future_obj->mapper);
@@ -1722,12 +1757,8 @@ static async_future_t *async_future_create_internal(void)
     zend_object_std_init(&future_obj->std, async_ce_future);
     object_properties_init(&future_obj->std, async_ce_future);
 
-    return future_obj;
+    return &future_obj->std;
 }
-
-///////////////////////////////////////////////////////////
-/// API function implementations
-///////////////////////////////////////////////////////////
 
 ///////////////////////////////////////////////////////////
 /// Class registration

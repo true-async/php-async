@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Future Support**: Full Future/FutureState implementation with `map()`, `catch()`, `finally()` chains and proper flag propagation
+- **Channel**: CSP-style message passing between coroutines with buffered/unbuffered modes, timeout support, and iterator interface
 
 ## [0.5.0] - 2025-12-24
 

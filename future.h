@@ -69,6 +69,8 @@ void async_register_future_ce(void);
 
 /* API function implementations */
 zend_future_t *async_future_create(void);
+zend_future_t *async_new_future(bool thread_safe, size_t extra_size);
+zend_object *async_new_future_obj(zend_future_t *future);
 /* Internal helper functions */
 async_future_state_t *async_future_state_create(void);
 
