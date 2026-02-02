@@ -36,9 +36,11 @@ final class Channel implements Awaitable, \IteratorAggregate, \Countable
      * Suspends the current coroutine until the value
      * is received (unbuffered) or buffered.
      *
+     * @param int $timeoutMs Timeout in milliseconds, 0 for no timeout
      * @throws ChannelException if channel is closed
+     * @throws TimeoutException if timeout expires
      */
-    public function send(mixed $value): void {}
+    public function send(mixed $value, int $timeoutMs = 0): void {}
 
     /**
      * Try to send a value without blocking.
@@ -52,9 +54,11 @@ final class Channel implements Awaitable, \IteratorAggregate, \Countable
      *
      * Suspends the current coroutine until a value is available.
      *
+     * @param int $timeoutMs Timeout in milliseconds, 0 for no timeout
      * @throws ChannelException if channel is closed and empty
+     * @throws TimeoutException if timeout expires
      */
-    public function recv(): mixed {}
+    public function recv(int $timeoutMs = 0): mixed {}
 
     /**
      * Receive a value without blocking, returns Future.

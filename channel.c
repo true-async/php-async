@@ -137,6 +137,7 @@ static void channel_queue_push(zend_async_callbacks_vector_t *queue, channel_wai
 		queue->data = erealloc(queue->data, new_capacity * sizeof(void *));
 		queue->capacity = new_capacity;
 	}
+	waiter->base.ref_count++;
 	queue->data[queue->length++] = (zend_async_event_callback_t *)waiter;
 }
 
@@ -153,6 +154,18 @@ static channel_waiter_t *channel_queue_pop(zend_async_callbacks_vector_t *queue)
 	return waiter;
 }
 
+static bool channel_queue_remove(zend_async_callbacks_vector_t *queue, channel_waiter_t *waiter)
+{
+	for (uint32_t i = 0; i < queue->length; i++) {
+		if (queue->data[i] == (zend_async_event_callback_t *)waiter) {
+			queue->length--;
+			queue->data[i] = queue->data[queue->length];
+			return true;
+		}
+	}
+	return false;
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // Wake operations
 ///////////////////////////////////////////////////////////////////////////////
@@ -166,7 +179,7 @@ static bool channel_wake_receiver(async_channel_t *channel)
 
 	channel->channel.event.del_callback(&channel->channel.event, &waiter->base);
 	waiter->base.callback(&channel->channel.event, &waiter->base, NULL, NULL);
-	efree(waiter);
+	ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->base);
 	return true;
 }
 
@@ -179,7 +192,7 @@ static bool channel_wake_sender(async_channel_t *channel)
 
 	channel->channel.event.del_callback(&channel->channel.event, &waiter->base);
 	waiter->base.callback(&channel->channel.event, &waiter->base, NULL, NULL);
-	efree(waiter);
+	ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->base);
 	return true;
 }
 
@@ -190,13 +203,13 @@ static void channel_wake_all(async_channel_t *channel, zend_object *exception)
 	while ((waiter = channel_queue_pop(&channel->waiting_receivers)) != NULL) {
 		channel->channel.event.del_callback(&channel->channel.event, &waiter->base);
 		waiter->base.callback(&channel->channel.event, &waiter->base, NULL, exception);
-		efree(waiter);
+		ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->base);
 	}
 
 	while ((waiter = channel_queue_pop(&channel->waiting_senders)) != NULL) {
 		channel->channel.event.del_callback(&channel->channel.event, &waiter->base);
 		waiter->base.callback(&channel->channel.event, &waiter->base, NULL, exception);
-		efree(waiter);
+		ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->base);
 	}
 
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&channel->channel.event, NULL, exception);
@@ -206,7 +219,7 @@ static void channel_wake_all(async_channel_t *channel, zend_object *exception)
 // Wait operations
 ///////////////////////////////////////////////////////////////////////////////
 
-static void channel_wait_for_data(async_channel_t *channel)
+static void channel_wait_for(async_channel_t *channel, zend_async_callbacks_vector_t *queue, zend_long timeoutMs)
 {
 	channel_waiter_t *waiter = ecalloc(1, sizeof(channel_waiter_t));
 	waiter->base.callback = zend_async_waker_callback_resolve;
@@ -214,29 +227,33 @@ static void channel_wait_for_data(async_channel_t *channel)
 	waiter->coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 	waiter->event = &channel->channel.event;
 
-	channel_queue_push(&channel->waiting_receivers, waiter);
+	channel_queue_push(queue, waiter);
 
 	zend_async_resume_when(ZEND_ASYNC_CURRENT_COROUTINE, &channel->channel.event,
 		false, zend_async_waker_callback_resolve, waiter);
 
-	ZEND_ASYNC_SUSPEND();
-}
-
-static void channel_wait_for_space(async_channel_t *channel)
-{
-	channel_waiter_t *waiter = ecalloc(1, sizeof(channel_waiter_t));
-	waiter->base.callback = zend_async_waker_callback_resolve;
-	waiter->base.ref_count = 1;
-	waiter->coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
-	waiter->event = &channel->channel.event;
-
-	channel_queue_push(&channel->waiting_senders, waiter);
-
-	zend_async_resume_when(ZEND_ASYNC_CURRENT_COROUTINE, &channel->channel.event,
-		false, zend_async_waker_callback_resolve, waiter);
+	if (timeoutMs > 0) {
+		zend_async_resume_when(ZEND_ASYNC_CURRENT_COROUTINE,
+			&ZEND_ASYNC_NEW_TIMER_EVENT(timeoutMs, false)->base,
+			true, zend_async_waker_callback_timeout, NULL);
+	}
 
 	ZEND_ASYNC_SUSPEND();
+
+	/* Cleanup after waking up */
+	if (channel_queue_remove(queue, waiter)) {
+		/* Was still in queue (timeout/close case) - release queue's ref */
+		ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->base);
+	}
+	/* Release our initial ref */
+	ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->base);
 }
+
+#define CHANNEL_WAIT_FOR_DATA(channel, timeoutMs) \
+	channel_wait_for((channel), &(channel)->waiting_receivers, (timeoutMs))
+
+#define CHANNEL_WAIT_FOR_SPACE(channel, timeoutMs) \
+	channel_wait_for((channel), &(channel)->waiting_senders, (timeoutMs))
 
 ///////////////////////////////////////////////////////////////////////////////
 // Event handlers (for Awaitable interface)
@@ -419,7 +436,7 @@ retry:
 		return;
 	}
 
-	channel_wait_for_data(channel);
+	CHANNEL_WAIT_FOR_DATA(channel, 0);
 
 	if (EG(exception)) {
 		iterator->valid = false;
@@ -501,9 +518,12 @@ METHOD(__construct)
 METHOD(send)
 {
 	zval *value;
+	zend_long timeoutMs = 0;
 
-	ZEND_PARSE_PARAMETERS_START(1, 1)
+	ZEND_PARSE_PARAMETERS_START(1, 2)
 		Z_PARAM_ZVAL(value)
+		Z_PARAM_OPTIONAL
+		Z_PARAM_LONG(timeoutMs)
 	ZEND_PARSE_PARAMETERS_END();
 
 	ENSURE_COROUTINE_CONTEXT
@@ -528,7 +548,7 @@ retry:
 		}
 	}
 
-	channel_wait_for_space(channel);
+	CHANNEL_WAIT_FOR_SPACE(channel, timeoutMs);
 
 	if (EG(exception)) {
 		RETURN_THROWS();
@@ -572,7 +592,12 @@ METHOD(sendAsync)
 
 METHOD(recv)
 {
-	ZEND_PARSE_PARAMETERS_NONE();
+	zend_long timeoutMs = 0;
+
+	ZEND_PARSE_PARAMETERS_START(0, 1)
+		Z_PARAM_OPTIONAL
+		Z_PARAM_LONG(timeoutMs)
+	ZEND_PARSE_PARAMETERS_END();
 
 	ENSURE_COROUTINE_CONTEXT
 
@@ -594,7 +619,7 @@ retry:
 
 	THROW_IF_CLOSED(channel)
 
-	channel_wait_for_data(channel);
+	CHANNEL_WAIT_FOR_DATA(channel, timeoutMs);
 
 	if (EG(exception)) {
 		RETURN_THROWS();
