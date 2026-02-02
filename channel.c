@@ -60,7 +60,10 @@ static zend_object_handlers async_channel_handlers;
 // Waiter
 ///////////////////////////////////////////////////////////////////////////////
 
-typedef zend_coroutine_event_callback_t channel_waiter_t;
+typedef struct {
+	zend_coroutine_event_callback_t callback;  /* inherits from coroutine callback */
+	zend_future_t *future;                      /* NULL for coroutine waiter */
+} channel_waiter_t;
 
 ///////////////////////////////////////////////////////////////////////////////
 // Helpers
@@ -137,7 +140,7 @@ static void channel_queue_push(zend_async_callbacks_vector_t *queue, channel_wai
 		queue->data = erealloc(queue->data, new_capacity * sizeof(void *));
 		queue->capacity = new_capacity;
 	}
-	waiter->base.ref_count++;
+	waiter->callback.base.ref_count++;
 	queue->data[queue->length++] = (zend_async_event_callback_t *)waiter;
 }
 
@@ -148,9 +151,8 @@ static channel_waiter_t *channel_queue_pop(zend_async_callbacks_vector_t *queue)
 	}
 	channel_waiter_t *waiter = (channel_waiter_t *)queue->data[0];
 	queue->length--;
-	if (queue->length > 0) {
-		memmove(queue->data, queue->data + 1, queue->length * sizeof(void *));
-	}
+	/* Swap with last element - O(1) instead of memmove O(n) */
+	queue->data[0] = queue->data[queue->length];
 	return waiter;
 }
 
@@ -170,6 +172,9 @@ static bool channel_queue_remove(zend_async_callbacks_vector_t *queue, channel_w
 // Wake operations
 ///////////////////////////////////////////////////////////////////////////////
 
+/* Forward declarations */
+static bool channel_wake_sender(async_channel_t *channel);
+
 static bool channel_wake_receiver(async_channel_t *channel)
 {
 	channel_waiter_t *waiter = channel_queue_pop(&channel->waiting_receivers);
@@ -177,9 +182,28 @@ static bool channel_wake_receiver(async_channel_t *channel)
 		return false;
 	}
 
-	channel->channel.event.del_callback(&channel->channel.event, &waiter->base);
-	waiter->base.callback(&channel->channel.event, &waiter->base, NULL, NULL);
-	ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->base);
+	channel->channel.event.del_callback(&channel->channel.event, &waiter->callback.base);
+
+	if (waiter->future != NULL) {
+		/* Future waiter: take value from channel and complete future */
+		zval value;
+		if (channel_is_buffered(channel)) {
+			zval_circular_buffer_pop(&channel->buffer, &value);
+		} else {
+			ZVAL_COPY(&value, &channel->rendezvous_value);
+			zval_ptr_dtor(&channel->rendezvous_value);
+			ZVAL_UNDEF(&channel->rendezvous_value);
+			channel->rendezvous_has_value = false;
+		}
+		ZEND_FUTURE_COMPLETE(waiter->future, &value);
+		zval_ptr_dtor(&value);
+		channel_wake_sender(channel);
+	} else {
+		/* Coroutine waiter: just wake up */
+		waiter->callback.base.callback(&channel->channel.event, &waiter->callback.base, NULL, NULL);
+	}
+
+	ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
 	return true;
 }
 
@@ -190,9 +214,9 @@ static bool channel_wake_sender(async_channel_t *channel)
 		return false;
 	}
 
-	channel->channel.event.del_callback(&channel->channel.event, &waiter->base);
-	waiter->base.callback(&channel->channel.event, &waiter->base, NULL, NULL);
-	ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->base);
+	channel->channel.event.del_callback(&channel->channel.event, &waiter->callback.base);
+	waiter->callback.base.callback(&channel->channel.event, &waiter->callback.base, NULL, NULL);
+	ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
 	return true;
 }
 
@@ -201,15 +225,19 @@ static void channel_wake_all(async_channel_t *channel, zend_object *exception)
 	channel_waiter_t *waiter;
 
 	while ((waiter = channel_queue_pop(&channel->waiting_receivers)) != NULL) {
-		channel->channel.event.del_callback(&channel->channel.event, &waiter->base);
-		waiter->base.callback(&channel->channel.event, &waiter->base, NULL, exception);
-		ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->base);
+		channel->channel.event.del_callback(&channel->channel.event, &waiter->callback.base);
+		if (waiter->future != NULL) {
+			ZEND_FUTURE_REJECT(waiter->future, exception);
+		} else {
+			waiter->callback.base.callback(&channel->channel.event, &waiter->callback.base, NULL, exception);
+		}
+		ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
 	}
 
 	while ((waiter = channel_queue_pop(&channel->waiting_senders)) != NULL) {
-		channel->channel.event.del_callback(&channel->channel.event, &waiter->base);
-		waiter->base.callback(&channel->channel.event, &waiter->base, NULL, exception);
-		ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->base);
+		channel->channel.event.del_callback(&channel->channel.event, &waiter->callback.base);
+		waiter->callback.base.callback(&channel->channel.event, &waiter->callback.base, NULL, exception);
+		ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
 	}
 
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&channel->channel.event, NULL, exception);
@@ -222,15 +250,16 @@ static void channel_wake_all(async_channel_t *channel, zend_object *exception)
 static void channel_wait_for(async_channel_t *channel, zend_async_callbacks_vector_t *queue, zend_long timeoutMs)
 {
 	channel_waiter_t *waiter = ecalloc(1, sizeof(channel_waiter_t));
-	waiter->base.callback = zend_async_waker_callback_resolve;
-	waiter->base.ref_count = 1;
-	waiter->coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
-	waiter->event = &channel->channel.event;
+	waiter->callback.base.callback = zend_async_waker_callback_resolve;
+	waiter->callback.base.ref_count = 1;
+	waiter->callback.coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	waiter->callback.event = &channel->channel.event;
+	waiter->future = NULL;
 
 	channel_queue_push(queue, waiter);
 
 	zend_async_resume_when(ZEND_ASYNC_CURRENT_COROUTINE, &channel->channel.event,
-		false, zend_async_waker_callback_resolve, waiter);
+		false, zend_async_waker_callback_resolve, &waiter->callback);
 
 	if (timeoutMs > 0) {
 		zend_async_resume_when(ZEND_ASYNC_CURRENT_COROUTINE,
@@ -243,10 +272,10 @@ static void channel_wait_for(async_channel_t *channel, zend_async_callbacks_vect
 	/* Cleanup after waking up */
 	if (channel_queue_remove(queue, waiter)) {
 		/* Was still in queue (timeout/close case) - release queue's ref */
-		ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->base);
+		ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
 	}
 	/* Release our initial ref */
-	ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->base);
+	ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
 }
 
 #define CHANNEL_WAIT_FOR_DATA(channel, timeoutMs) \
@@ -656,8 +685,18 @@ METHOD(recvAsync)
 		zend_object *ex = async_new_exception(async_ce_channel_exception, "Channel is closed");
 		ZEND_FUTURE_REJECT(future, ex);
 		OBJ_RELEASE(ex);
+	} else {
+		/* Channel is empty but open - register pending future waiter */
+		channel_waiter_t *waiter = ecalloc(1, sizeof(channel_waiter_t));
+		waiter->callback.base.callback = NULL;  /* Not used for future waiters */
+		waiter->callback.base.ref_count = 1;
+		waiter->callback.coroutine = NULL;
+		waiter->callback.event = &channel->channel.event;
+		waiter->future = future;
+
+		channel_queue_push(&channel->waiting_receivers, waiter);
+		ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);  /* Release our ref, queue holds one */
 	}
-	/* TODO: pending future - connect to channel */
 
 	RETURN_OBJ(ZEND_ASYNC_NEW_FUTURE_OBJ(future));
 }
