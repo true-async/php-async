@@ -1091,18 +1091,8 @@ void async_await_futures(zval *iterable,
 	await_context->dtor(await_context);
 }
 
-static zend_future_t *async_new_future_stub(bool thread_safe, size_t extra_size)
-{
-	return NULL;
-}
-
 static zend_async_channel_t *
 async_new_channel_stub(size_t buffer_size, bool resizable, bool thread_safe, size_t extra_size)
-{
-	return NULL;
-}
-
-static zend_object *async_new_future_obj_stub(zend_future_t *future)
 {
 	return NULL;
 }
