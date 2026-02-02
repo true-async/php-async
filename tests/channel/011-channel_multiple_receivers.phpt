@@ -46,11 +46,11 @@ echo "Main: done\n";
 --EXPECTF--
 Main: done
 Sender: sending 1
-Receiver %s: got 1
 Sender: sending 2
-Receiver %s: got 2
+Receiver %s: got 1
 Sender: sending 3
-Receiver %s: got 3
+Receiver %s: got 2
 Sender: closed
+Receiver %s: got 3
 Receiver %s: channel closed
 Receiver %s: channel closed

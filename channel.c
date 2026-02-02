@@ -267,6 +267,16 @@ static bool channel_dispose(zend_async_event_t *event)
 	return true;
 }
 
+static bool channel_start(zend_async_event_t *event)
+{
+	return true;
+}
+
+static bool channel_stop(zend_async_event_t *event)
+{
+	return true;
+}
+
 static void channel_event_init(async_channel_t *channel)
 {
 	zend_async_event_t *event = &channel->channel.event;
@@ -276,6 +286,8 @@ static void channel_event_init(async_channel_t *channel)
 	event->zend_object_offset = XtOffsetOf(async_channel_t, std);
 	event->add_callback = channel_add_callback;
 	event->del_callback = channel_del_callback;
+	event->start = channel_start;
+	event->stop = channel_stop;
 	event->dispose = channel_dispose;
 }
 

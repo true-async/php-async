@@ -26,6 +26,6 @@ echo "Main: done\n";
 --EXPECT--
 Main: done
 Sender: about to send
+Sender: send completed
 Receiver: about to recv
 Receiver: got hello
-Sender: send completed
