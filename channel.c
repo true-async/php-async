@@ -98,16 +98,6 @@ static zend_always_inline size_t channel_count(async_channel_t *channel)
 	return channel->rendezvous_has_value ? 1 : 0;
 }
 
-static zend_always_inline bool channel_has_waiting_receivers(async_channel_t *channel)
-{
-	return channel->waiting_receivers.length > 0;
-}
-
-static zend_always_inline bool channel_has_waiting_senders(async_channel_t *channel)
-{
-	return channel->waiting_senders.length > 0;
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 // Queue operations
 ///////////////////////////////////////////////////////////////////////////////
