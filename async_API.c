@@ -17,6 +17,7 @@
 
 #include "context.h"
 #include "exceptions.h"
+#include "future.h"
 #include "iterator.h"
 #include "php_async.h"
 #include "scheduler.h"
@@ -1136,9 +1137,9 @@ void async_api_register(void)
 								  get_awaiting_info,
 								  async_get_class_ce,
 								  (zend_async_new_iterator_t) async_iterator_new,
-								  async_new_future_stub,
+								  async_new_future,
 								  async_new_channel_stub,
-								  async_new_future_obj_stub,
+								  async_new_future_obj,
 								  async_new_channel_obj_stub,
 								  async_new_group_stub,
 								  engine_shutdown);
