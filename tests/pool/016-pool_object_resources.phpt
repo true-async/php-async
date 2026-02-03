@@ -1,7 +1,5 @@
 --TEST--
 Pool: object resources
---XFAIL--
-Memory leak with object resources needs investigation
 --FILE--
 <?php
 
