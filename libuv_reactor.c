@@ -307,7 +307,7 @@ static bool libuv_poll_start(zend_async_event_t *event)
 	}
 
 	event->loop_ref_count++;
-	ZEND_ASYNC_INCREASE_EVENT_COUNT;
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(event);
 	return true;
 }
 
@@ -323,7 +323,7 @@ static bool libuv_poll_stop(zend_async_event_t *event)
 	const int error = uv_poll_stop(&poll->uv_handle);
 
 	event->loop_ref_count = 0;
-	ZEND_ASYNC_DECREASE_EVENT_COUNT;
+	ZEND_ASYNC_DECREASE_EVENT_COUNT(event);
 
 	if (error < 0) {
 		async_throw_error("Failed to stop poll handle: %s", uv_strerror(error));
@@ -468,7 +468,7 @@ static bool libuv_poll_proxy_start(zend_async_event_t *event)
 		}
 	}
 
-	ZEND_ASYNC_INCREASE_EVENT_COUNT;
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(event);
 	event->loop_ref_count = 1;
 	return true;
 }
@@ -502,7 +502,7 @@ static bool libuv_poll_proxy_stop(zend_async_event_t *event)
 	}
 
 	event->loop_ref_count = 0;
-	ZEND_ASYNC_DECREASE_EVENT_COUNT;
+	ZEND_ASYNC_DECREASE_EVENT_COUNT(event);
 	return true;
 }
 
@@ -666,7 +666,7 @@ static bool libuv_timer_start(zend_async_event_t *event)
 	}
 
 	event->loop_ref_count++;
-	ZEND_ASYNC_INCREASE_EVENT_COUNT;
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(event);
 	return true;
 }
 
@@ -682,7 +682,7 @@ static bool libuv_timer_stop(zend_async_event_t *event)
 	const int error = uv_timer_stop(&timer->uv_handle);
 
 	event->loop_ref_count = 0;
-	ZEND_ASYNC_DECREASE_EVENT_COUNT;
+	ZEND_ASYNC_DECREASE_EVENT_COUNT(event);
 
 	if (error < 0) {
 		async_throw_error("Failed to stop timer handle: %s", uv_strerror(error));
@@ -775,7 +775,7 @@ static bool libuv_signal_start(zend_async_event_t *event)
 	libuv_add_signal_event(signal->event.signal, event);
 
 	event->loop_ref_count++;
-	ZEND_ASYNC_INCREASE_EVENT_COUNT;
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(event);
 	return true;
 }
 
@@ -791,7 +791,7 @@ static bool libuv_signal_stop(zend_async_event_t *event)
 	libuv_remove_signal_event(signal->event.signal, event);
 
 	event->loop_ref_count = 0;
-	ZEND_ASYNC_DECREASE_EVENT_COUNT;
+	ZEND_ASYNC_DECREASE_EVENT_COUNT(event);
 	return true;
 }
 
@@ -1446,7 +1446,7 @@ static bool libuv_process_event_start(zend_async_event_t *event)
 	}
 
 	event->loop_ref_count++;
-	ZEND_ASYNC_INCREASE_EVENT_COUNT;
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(event);
 	LIBUV_REACTOR->countWaitingDescriptors++;
 	return true;
 }
@@ -1467,7 +1467,7 @@ static bool libuv_process_event_stop(zend_async_event_t *event)
 		process->hJob = NULL;
 	}
 
-	ZEND_ASYNC_DECREASE_EVENT_COUNT;
+	ZEND_ASYNC_DECREASE_EVENT_COUNT(event);
 	return true;
 }
 
@@ -1505,7 +1505,7 @@ static bool libuv_process_event_start(zend_async_event_t *event)
 	} else if (result == 0) {
 		// Process still running, wait for SIGCHLD
 		event->loop_ref_count = 1;
-		ZEND_ASYNC_INCREASE_EVENT_COUNT;
+		ZEND_ASYNC_INCREASE_EVENT_COUNT(event);
 		return true;
 	} else {
 		// Error: process doesn't exist or already reaped
@@ -1527,7 +1527,7 @@ static bool libuv_process_event_stop(zend_async_event_t *event)
 	libuv_remove_process_event(event);
 
 	event->loop_ref_count = 0;
-	ZEND_ASYNC_DECREASE_EVENT_COUNT;
+	ZEND_ASYNC_DECREASE_EVENT_COUNT(event);
 	return true;
 }
 #endif
@@ -1679,7 +1679,7 @@ static bool libuv_filesystem_start(zend_async_event_t *event)
 	}
 
 	event->loop_ref_count++;
-	ZEND_ASYNC_INCREASE_EVENT_COUNT;
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(event);
 	return true;
 }
 
@@ -1695,7 +1695,7 @@ static bool libuv_filesystem_stop(zend_async_event_t *event)
 	const int error = uv_fs_event_stop(&fs_event->uv_handle);
 
 	event->loop_ref_count = 0;
-	ZEND_ASYNC_DECREASE_EVENT_COUNT;
+	ZEND_ASYNC_DECREASE_EVENT_COUNT(event);
 
 	if (error < 0) {
 		async_throw_error("Failed to stop filesystem handle: %s", uv_strerror(error));
@@ -1824,7 +1824,7 @@ static bool libuv_dns_nameinfo_start(zend_async_event_t *event)
 	EVENT_START_PROLOGUE(event);
 
 	event->loop_ref_count++;
-	ZEND_ASYNC_INCREASE_EVENT_COUNT;
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(event);
 	return true;
 }
 
@@ -1836,7 +1836,7 @@ static bool libuv_dns_nameinfo_stop(zend_async_event_t *event)
 	EVENT_STOP_PROLOGUE(event);
 
 	event->loop_ref_count = 0;
-	ZEND_ASYNC_DECREASE_EVENT_COUNT;
+	ZEND_ASYNC_DECREASE_EVENT_COUNT(event);
 	return true;
 }
 
@@ -1940,7 +1940,7 @@ static bool libuv_dns_getaddrinfo_start(zend_async_event_t *event)
 	EVENT_START_PROLOGUE(event);
 
 	event->loop_ref_count++;
-	ZEND_ASYNC_INCREASE_EVENT_COUNT;
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(event);
 	return true;
 }
 
@@ -1952,7 +1952,7 @@ static bool libuv_dns_getaddrinfo_stop(zend_async_event_t *event)
 	EVENT_STOP_PROLOGUE(event);
 
 	event->loop_ref_count = 0;
-	ZEND_ASYNC_DECREASE_EVENT_COUNT;
+	ZEND_ASYNC_DECREASE_EVENT_COUNT(event);
 	return true;
 }
 
@@ -2046,7 +2046,7 @@ static void exec_on_exit(uv_process_t *process, const int64_t exit_status, int t
 
 	if (exec->event.terminated != true) {
 		exec->event.terminated = true;
-		ZEND_ASYNC_DECREASE_EVENT_COUNT;
+		ZEND_ASYNC_DECREASE_EVENT_COUNT(&exec->event.base);
 		ZEND_ASYNC_CALLBACKS_NOTIFY(&exec->event.base, NULL, NULL);
 	}
 }
@@ -2135,7 +2135,7 @@ static void exec_read_cb(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf
 
 		if (exec->terminated != true) {
 			exec->terminated = true;
-			ZEND_ASYNC_DECREASE_EVENT_COUNT;
+			ZEND_ASYNC_DECREASE_EVENT_COUNT(&event->event.base);
 			ZEND_ASYNC_CALLBACKS_NOTIFY(&event->event.base, NULL, NULL);
 		}
 	}
@@ -2192,7 +2192,7 @@ static bool libuv_exec_start(zend_async_event_t *event)
 	}
 
 	event->loop_ref_count++;
-	ZEND_ASYNC_INCREASE_EVENT_COUNT;
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(event);
 	return true;
 }
 
@@ -2206,7 +2206,7 @@ static bool libuv_exec_stop(zend_async_event_t *event)
 	async_exec_event_t *exec = (async_exec_event_t *) (event);
 
 	event->loop_ref_count = 0;
-	ZEND_ASYNC_DECREASE_EVENT_COUNT;
+	ZEND_ASYNC_DECREASE_EVENT_COUNT(event);
 
 	if (exec->process != NULL) {
 		uv_process_kill(exec->process, ZEND_ASYNC_SIGTERM);
@@ -2358,7 +2358,7 @@ static zend_async_exec_event_t *libuv_new_exec_event(zend_async_exec_mode exec_m
 	uv_read_start((uv_stream_t *) exec->stdout_pipe, exec_alloc_cb, exec_read_cb);
 	uv_read_start((uv_stream_t *) exec->stderr_pipe, exec_std_err_alloc_cb, exec_std_err_read_cb);
 
-	ZEND_ASYNC_INCREASE_EVENT_COUNT;
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(&exec->event.base);
 
 	exec->event.base.ref_count = 1;
 
@@ -2472,7 +2472,7 @@ static bool libuv_trigger_event_start(zend_async_event_t *event)
 	EVENT_START_PROLOGUE(event);
 
 	event->loop_ref_count++;
-	ZEND_ASYNC_INCREASE_EVENT_COUNT;
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(event);
 	return true;
 }
 
@@ -2484,7 +2484,7 @@ static bool libuv_trigger_event_stop(zend_async_event_t *event)
 	EVENT_STOP_PROLOGUE(event);
 
 	event->loop_ref_count = 0;
-	ZEND_ASYNC_DECREASE_EVENT_COUNT;
+	ZEND_ASYNC_DECREASE_EVENT_COUNT(event);
 	return true;
 }
 
@@ -2622,7 +2622,7 @@ static bool libuv_listen_start(zend_async_event_t *event)
 	}
 
 	event->loop_ref_count++;
-	ZEND_ASYNC_INCREASE_EVENT_COUNT;
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(event);
 	return true;
 }
 
@@ -2635,7 +2635,7 @@ static bool libuv_listen_stop(zend_async_event_t *event)
 
 	// uv_listen doesn't have a stop function, we close the handle
 	event->loop_ref_count = 0;
-	ZEND_ASYNC_DECREASE_EVENT_COUNT;
+	ZEND_ASYNC_DECREASE_EVENT_COUNT(event);
 	return true;
 }
 
