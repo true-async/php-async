@@ -422,6 +422,7 @@ static void pool_healthcheck_timer_callback(
 		if (is_healthy) {
 			/* Resource is healthy - return to buffer */
 			zval_circular_buffer_push(&pool->idle, &resource, false);
+			zval_ptr_dtor(&resource);
 		} else {
 			/* Resource is dead - destroy it */
 			pool_destroy_resource(pool, &resource);
@@ -432,6 +433,7 @@ static void pool_healthcheck_timer_callback(
 				zval new_resource;
 				if (pool_create_resource(pool, &new_resource)) {
 					zval_circular_buffer_push(&pool->idle, &new_resource, false);
+					zval_ptr_dtor(&new_resource);
 				}
 			}
 		}
@@ -511,6 +513,7 @@ zend_async_pool_t *zend_async_pool_create(
 		zval resource;
 		if (pool_create_resource(pool, &resource)) {
 			zval_circular_buffer_push(&pool->idle, &resource, false);
+			zval_ptr_dtor(&resource);
 		} else if (EG(exception)) {
 			/* Stop on first error */
 			break;
