@@ -266,6 +266,8 @@ static zend_class_entry *async_get_class_ce(zend_async_class type)
 			return async_ce_dns_exception;
 		case ZEND_ASYNC_EXCEPTION_DEADLOCK:
 			return async_ce_deadlock_error;
+		case ZEND_ASYNC_EXCEPTION_SERVICE_UNAVAILABLE:
+			return async_ce_service_unavailable_exception;
 		default:
 			return NULL;
 	}

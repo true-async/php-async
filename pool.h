@@ -21,33 +21,27 @@
 #include "internal/circular_buffer.h"
 
 ///////////////////////////////////////////////////////////////////////////////
-// Internal pool structure (all logic here)
+// Internal pool implementation
+// Note: Base types (zend_async_pool_t, zend_async_circuit_state_t,
+//       handler function types, strategy struct) are in zend_async_API.h
 ///////////////////////////////////////////////////////////////////////////////
-
-typedef struct _zend_async_pool_s zend_async_pool_t;
 
 /* Pool waiter - coroutine waiting for resource */
 typedef struct {
 	zend_coroutine_event_callback_t callback;
 } zend_async_pool_waiter_t;
 
-struct _zend_async_pool_s {
-	zend_async_event_t event;           /* for callbacks/waiters */
-
-	/* Callbacks */
-	zend_fcall_t *factory;              /* create resource (required) */
-	zend_fcall_t *destructor;           /* destroy resource (nullable) */
-	zend_fcall_t *healthcheck;          /* background health check (nullable) */
-	zend_fcall_t *before_acquire;       /* check before acquire (nullable) */
-	zend_fcall_t *before_release;       /* action on release (nullable) */
+/**
+ * Extended pool structure with implementation details.
+ * Contains zend_async_pool_t as first member for ABI compatibility.
+ */
+typedef struct _async_pool_s {
+	/* ABI structure (must be first) */
+	zend_async_pool_t base;
 
 	/* Storage */
 	circular_buffer_t idle;             /* idle resources (zval) */
 	uint32_t active_count;              /* resources currently in use */
-
-	/* Config */
-	uint32_t min_size;
-	uint32_t max_size;
 
 	/* Waiters queue - like waiting_receivers in channel */
 	zend_async_callbacks_vector_t waiters;
@@ -55,21 +49,21 @@ struct _zend_async_pool_s {
 	/* Healthcheck timer */
 	zend_async_timer_event_t *healthcheck_timer;
 	uint32_t healthcheck_interval_ms;
-};
+} async_pool_t;
 
 /* Helper macros */
-#define ZEND_ASYNC_POOL_TOTAL(pool) \
+#define ASYNC_POOL_TOTAL(pool) \
 	(circular_buffer_count(&(pool)->idle) + (pool)->active_count)
 
 #define ZEND_ASYNC_POOL_IS_CLOSED(pool) \
-	ZEND_ASYNC_EVENT_IS_CLOSED(&(pool)->event)
+	ZEND_ASYNC_EVENT_IS_CLOSED(&(pool)->base.event)
 
 ///////////////////////////////////////////////////////////////////////////////
 // C API functions
 ///////////////////////////////////////////////////////////////////////////////
 
-/* Create a new pool */
-zend_async_pool_t *zend_async_pool_create(
+/* Create a new pool with PHP callables */
+async_pool_t *zend_async_pool_create(
 	zend_fcall_t *factory,
 	zend_fcall_t *destructor,
 	zend_fcall_t *healthcheck,
@@ -80,54 +74,64 @@ zend_async_pool_t *zend_async_pool_create(
 	uint32_t healthcheck_interval_ms
 );
 
+/* Create a new pool with internal C handlers */
+async_pool_t *zend_async_pool_create_internal(
+	zend_async_pool_factory_fn factory,
+	zend_async_pool_destructor_fn destructor,
+	zend_async_pool_healthcheck_fn healthcheck,
+	zend_async_pool_before_acquire_fn before_acquire,
+	zend_async_pool_before_release_fn before_release,
+	uint32_t min_size,
+	uint32_t max_size,
+	uint32_t healthcheck_interval_ms
+);
+
 /* Acquire resource (blocking) */
 bool zend_async_pool_acquire(
-	zend_async_pool_t *pool,
+	async_pool_t *pool,
 	zval *result,
 	zend_long timeout_ms
 );
 
 /* Try to acquire resource (non-blocking) */
 bool zend_async_pool_try_acquire(
-	zend_async_pool_t *pool,
+	async_pool_t *pool,
 	zval *result
 );
 
 /* Release resource back to pool */
 void zend_async_pool_release(
-	zend_async_pool_t *pool,
+	async_pool_t *pool,
 	zval *resource
 );
 
 /* Close pool (wake waiters with exception) */
-void zend_async_pool_close(zend_async_pool_t *pool);
+void zend_async_pool_close(async_pool_t *pool);
 
 /* Destroy pool (free memory) */
-void zend_async_pool_destroy(zend_async_pool_t *pool);
+void zend_async_pool_destroy(async_pool_t *pool);
 
 /* Statistics */
-uint32_t zend_async_pool_count(zend_async_pool_t *pool);
-uint32_t zend_async_pool_idle_count(zend_async_pool_t *pool);
-uint32_t zend_async_pool_active_count(zend_async_pool_t *pool);
+uint32_t zend_async_pool_count(async_pool_t *pool);
+uint32_t zend_async_pool_idle_count(async_pool_t *pool);
+uint32_t zend_async_pool_active_count(async_pool_t *pool);
 
 ///////////////////////////////////////////////////////////////////////////////
 // PHP object wrapper
 ///////////////////////////////////////////////////////////////////////////////
 
-typedef struct _async_pool_s async_pool_t;
-
-struct _async_pool_s {
-	zend_async_pool_t *pool;    /* pointer to internal pool */
+typedef struct _async_pool_obj_s {
+	async_pool_t *pool;         /* pointer to internal pool */
 	zend_object std;            /* PHP object (must be last) */
-};
+} async_pool_obj_t;
 
 /* Class entries */
 extern zend_class_entry *async_ce_pool;
 extern zend_class_entry *async_ce_pool_exception;
 
 /* Convert macros */
-#define ASYNC_POOL_FROM_OBJ(obj) \
-	((async_pool_t *)((char *)(obj) - XtOffsetOf(async_pool_t, std)))
+#define ASYNC_POOL_OBJ_FROM_OBJ(obj) \
+	((async_pool_obj_t *)((char *)(obj) - XtOffsetOf(async_pool_obj_t, std)))
 
 /* Registration function */
 void async_register_pool_ce(void);

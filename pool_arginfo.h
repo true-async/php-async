@@ -1,5 +1,5 @@
 /* This is a generated file, edit pool.stub.php instead.
- * Stub hash: 045e6bf0bee4e241db74abdc7188f6594d75625d */
+ * Stub hash: 4932099dff0084988155d4c1a1a2ef6be1beddeb */
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Async_Pool___construct, 0, 0, 1)
 	ZEND_ARG_TYPE_INFO(0, factory, IS_CALLABLE, 0)
@@ -36,6 +36,19 @@ ZEND_END_ARG_INFO()
 
 #define arginfo_class_Async_Pool_activeCount arginfo_class_Async_Pool_count
 
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_Pool_setCircuitBreakerStrategy, 0, 1, IS_VOID, 0)
+	ZEND_ARG_OBJ_INFO(0, strategy, Async\\CircuitBreakerStrategy, 1)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_class_Async_Pool_getState, 0, 0, Async\\CircuitBreakerState, 0)
+ZEND_END_ARG_INFO()
+
+#define arginfo_class_Async_Pool_activate arginfo_class_Async_Pool_close
+
+#define arginfo_class_Async_Pool_deactivate arginfo_class_Async_Pool_close
+
+#define arginfo_class_Async_Pool_recover arginfo_class_Async_Pool_close
+
 ZEND_METHOD(Async_Pool, __construct);
 ZEND_METHOD(Async_Pool, acquire);
 ZEND_METHOD(Async_Pool, tryAcquire);
@@ -45,6 +58,11 @@ ZEND_METHOD(Async_Pool, isClosed);
 ZEND_METHOD(Async_Pool, count);
 ZEND_METHOD(Async_Pool, idleCount);
 ZEND_METHOD(Async_Pool, activeCount);
+ZEND_METHOD(Async_Pool, setCircuitBreakerStrategy);
+ZEND_METHOD(Async_Pool, getState);
+ZEND_METHOD(Async_Pool, activate);
+ZEND_METHOD(Async_Pool, deactivate);
+ZEND_METHOD(Async_Pool, recover);
 
 static const zend_function_entry class_Async_Pool_methods[] = {
 	ZEND_ME(Async_Pool, __construct, arginfo_class_Async_Pool___construct, ZEND_ACC_PUBLIC)
@@ -56,6 +74,11 @@ static const zend_function_entry class_Async_Pool_methods[] = {
 	ZEND_ME(Async_Pool, count, arginfo_class_Async_Pool_count, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_Pool, idleCount, arginfo_class_Async_Pool_idleCount, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_Pool, activeCount, arginfo_class_Async_Pool_activeCount, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_Pool, setCircuitBreakerStrategy, arginfo_class_Async_Pool_setCircuitBreakerStrategy, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_Pool, getState, arginfo_class_Async_Pool_getState, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_Pool, activate, arginfo_class_Async_Pool_activate, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_Pool, deactivate, arginfo_class_Async_Pool_deactivate, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_Pool, recover, arginfo_class_Async_Pool_recover, ZEND_ACC_PUBLIC)
 	ZEND_FE_END
 };
 
@@ -69,13 +92,13 @@ static zend_class_entry *register_class_Async_PoolException(zend_class_entry *cl
 	return class_entry;
 }
 
-static zend_class_entry *register_class_Async_Pool(zend_class_entry *class_entry_Countable)
+static zend_class_entry *register_class_Async_Pool(zend_class_entry *class_entry_Countable, zend_class_entry *class_entry_Async_CircuitBreaker)
 {
 	zend_class_entry ce, *class_entry;
 
 	INIT_NS_CLASS_ENTRY(ce, "Async", "Pool", class_Async_Pool_methods);
 	class_entry = zend_register_internal_class_with_flags(&ce, NULL, ZEND_ACC_FINAL);
-	zend_class_implements(class_entry, 1, class_entry_Countable);
+	zend_class_implements(class_entry, 2, class_entry_Countable, class_entry_Async_CircuitBreaker);
 
 	return class_entry;
 }

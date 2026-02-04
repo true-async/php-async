@@ -31,6 +31,7 @@ zend_class_entry *async_ce_poll_exception = NULL;
 zend_class_entry *async_ce_dns_exception = NULL;
 zend_class_entry *async_ce_deadlock_error = NULL;
 zend_class_entry *async_ce_composite_exception = NULL;
+zend_class_entry *async_ce_service_unavailable_exception = NULL;
 
 PHP_METHOD(Async_CompositeException, addException)
 {
@@ -69,6 +70,7 @@ void async_register_exceptions_ce(void)
 	async_ce_dns_exception = register_class_Async_DnsException(zend_ce_exception);
 	async_ce_deadlock_error = register_class_Async_DeadlockError(zend_ce_error);
 	async_ce_composite_exception = register_class_Async_CompositeException(zend_ce_exception);
+	async_ce_service_unavailable_exception = register_class_Async_ServiceUnavailableException(async_ce_async_exception);
 }
 
 PHP_ASYNC_API zend_object *async_new_exception(zend_class_entry *exception_ce, const char *format, ...)
@@ -209,6 +211,26 @@ PHP_ASYNC_API ZEND_COLD zend_object *async_throw_deadlock(const char *format, ..
 		obj = zend_throw_exception_ex(async_ce_deadlock_error, 0, format, args);
 	} else {
 		obj = async_new_exception(async_ce_deadlock_error, format, args);
+		async_apply_exception_to_context(obj);
+	}
+
+	va_end(args);
+	return obj;
+}
+
+PHP_ASYNC_API ZEND_COLD zend_object *async_throw_service_unavailable(const char *format, ...)
+{
+	format = format ? format : "Service is unavailable";
+
+	va_list args;
+	va_start(args, format);
+
+	zend_object *obj = NULL;
+
+	if (EXPECTED(EG(current_execute_data))) {
+		obj = zend_throw_exception_ex(async_ce_service_unavailable_exception, 0, format, args);
+	} else {
+		obj = async_new_exception(async_ce_service_unavailable_exception, format, args);
 		async_apply_exception_to_context(obj);
 	}
 

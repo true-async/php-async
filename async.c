@@ -30,6 +30,7 @@
 #include "channel.h"
 #include "pool.h"
 #include "async_API.h"
+#include "zend_enum.h"
 #include "async_arginfo.h"
 #include "zend_interfaces.h"
 #include "libuv_reactor.h"
@@ -37,6 +38,9 @@
 zend_class_entry *async_ce_awaitable = NULL;
 zend_class_entry *async_ce_completable = NULL;
 zend_class_entry *async_ce_timeout = NULL;
+zend_class_entry *async_ce_circuit_breaker_state = NULL;
+zend_class_entry *async_ce_circuit_breaker = NULL;
+zend_class_entry *async_ce_circuit_breaker_strategy = NULL;
 
 ///////////////////////////////////////////////////////////////
 /// Module functions
@@ -823,6 +827,13 @@ void async_register_awaitable_ce(void)
 	async_ce_completable = register_class_Async_Completable(async_ce_awaitable);
 }
 
+void async_register_circuit_breaker_ce(void)
+{
+	async_ce_circuit_breaker_state = register_class_Async_CircuitBreakerState();
+	async_ce_circuit_breaker = register_class_Async_CircuitBreaker();
+	async_ce_circuit_breaker_strategy = register_class_Async_CircuitBreakerStrategy();
+}
+
 static zend_object_handlers async_timeout_handlers;
 
 static void async_timeout_destroy_object(zend_object *object)
@@ -971,6 +982,7 @@ ZEND_MINIT_FUNCTION(async)
 	async_register_context_ce();
 	async_register_exceptions_ce();
 	async_register_channel_ce();
+	async_register_circuit_breaker_ce();
 	async_register_pool_ce();
 	async_register_future_ce();
 

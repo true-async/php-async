@@ -109,3 +109,89 @@ function exec(
     bool $returnAll     = false
 ): Future {}
 */
+
+/**
+ * Circuit breaker states.
+ */
+enum CircuitBreakerState
+{
+    /**
+     * Service is working normally.
+     * All requests are allowed through.
+     */
+    case ACTIVE;
+
+    /**
+     * Service is unavailable.
+     * All requests are rejected immediately.
+     */
+    case INACTIVE;
+
+    /**
+     * Testing if service has recovered.
+     * Limited requests are allowed through.
+     */
+    case RECOVERING;
+}
+
+/**
+ * Circuit breaker state machine.
+ *
+ * Manages state transitions for service availability.
+ * This interface defines HOW to transition between states.
+ * Use CircuitBreakerStrategy to define WHEN to transition.
+ */
+interface CircuitBreaker
+{
+    /**
+     * Get current state.
+     */
+    public function getState(): CircuitBreakerState;
+
+    /**
+     * Transition to ACTIVE state.
+     */
+    public function activate(): void;
+
+    /**
+     * Transition to INACTIVE state.
+     */
+    public function deactivate(): void;
+
+    /**
+     * Transition to RECOVERING state.
+     */
+    public function recover(): void;
+}
+
+/**
+ * Circuit breaker strategy interface.
+ *
+ * Defines WHEN to transition between circuit breaker states.
+ * Implement this interface to create custom failure detection logic.
+ */
+interface CircuitBreakerStrategy
+{
+    /**
+     * Called when an operation succeeds.
+     *
+     * @param mixed $source The object reporting the event (e.g., Pool)
+     */
+    public function reportSuccess(mixed $source): void;
+
+    /**
+     * Called when an operation fails.
+     *
+     * @param mixed $source The object reporting the event (e.g., Pool)
+     * @param \Throwable $error The error that occurred
+     */
+    public function reportFailure(mixed $source, \Throwable $error): void;
+
+    /**
+     * Check if circuit should attempt recovery.
+     *
+     * Called periodically when circuit is INACTIVE to determine
+     * if it should transition to RECOVERING state.
+     */
+    public function shouldRecover(): bool;
+}

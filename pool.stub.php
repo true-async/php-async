@@ -13,8 +13,10 @@ class PoolException extends AsyncException {}
  *
  * Similar to channel but resources are reusable - they circulate
  * between idle buffer and active usage.
+ *
+ * Implements CircuitBreaker for service availability control.
  */
-final class Pool implements \Countable
+final class Pool implements \Countable, CircuitBreaker
 {
     /**
      * Create a new resource pool.
@@ -96,4 +98,33 @@ final class Pool implements \Countable
      * Get active (in-use) resource count.
      */
     public function activeCount(): int {}
+
+    /**
+     * Set circuit breaker strategy.
+     *
+     * When set, the strategy controls service availability:
+     * - isAvailable() checked before acquire
+     * - reportSuccess()/reportFailure() called based on release status
+     */
+    public function setCircuitBreakerStrategy(?CircuitBreakerStrategy $strategy): void {}
+
+    /**
+     * Get current circuit breaker state.
+     */
+    public function getState(): CircuitBreakerState {}
+
+    /**
+     * Transition to ACTIVE state.
+     */
+    public function activate(): void {}
+
+    /**
+     * Transition to INACTIVE state.
+     */
+    public function deactivate(): void {}
+
+    /**
+     * Transition to RECOVERING state.
+     */
+    public function recover(): void {}
 }

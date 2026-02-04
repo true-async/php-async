@@ -42,6 +42,12 @@ class PollException extends \Exception {}
 class DeadlockError extends \Error {}
 
 /**
+ * Exception thrown when a service is unavailable.
+ * Used by circuit breaker when the circuit is open (INACTIVE state).
+ */
+class ServiceUnavailableException extends AsyncException {}
+
+/**
  * Exception that can contain multiple exceptions.
  * Used when multiple exceptions occur in finally handlers.
  * @strict-properties

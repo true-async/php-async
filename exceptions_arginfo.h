@@ -1,5 +1,5 @@
-/* This is a generated file, edit the .stub.php file instead.
- * Stub hash: f06ce54277b0830aebcbd112c67238db6dca4d9b */
+/* This is a generated file, edit exceptions.stub.php instead.
+ * Stub hash: f74a2005b4886f0327c16e1a536d1a4e84a04855 */
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_CompositeException_addException, 0, 1, IS_VOID, 0)
 	ZEND_ARG_OBJ_INFO(0, exception, Throwable, 0)
@@ -87,6 +87,16 @@ static zend_class_entry *register_class_Async_DeadlockError(zend_class_entry *cl
 	return class_entry;
 }
 
+static zend_class_entry *register_class_Async_ServiceUnavailableException(zend_class_entry *class_entry_Async_AsyncException)
+{
+	zend_class_entry ce, *class_entry;
+
+	INIT_NS_CLASS_ENTRY(ce, "Async", "ServiceUnavailableException", NULL);
+	class_entry = zend_register_internal_class_with_flags(&ce, class_entry_Async_AsyncException, 0);
+
+	return class_entry;
+}
+
 static zend_class_entry *register_class_Async_CompositeException(zend_class_entry *class_entry_Exception)
 {
 	zend_class_entry ce, *class_entry;
@@ -96,9 +106,9 @@ static zend_class_entry *register_class_Async_CompositeException(zend_class_entr
 
 	zval property_exceptions_default_value;
 	ZVAL_UNDEF(&property_exceptions_default_value);
-	zend_string *property_exceptions_name = zend_string_init("exceptions", sizeof("exceptions") - 1, 1);
+	zend_string *property_exceptions_name = zend_string_init("exceptions", sizeof("exceptions") - 1, true);
 	zend_declare_typed_property(class_entry, property_exceptions_name, &property_exceptions_default_value, ZEND_ACC_PRIVATE, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_ARRAY));
-	zend_string_release(property_exceptions_name);
+	zend_string_release_ex(property_exceptions_name, true);
 
 	return class_entry;
 }
