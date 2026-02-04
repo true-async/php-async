@@ -988,6 +988,7 @@ ZEND_MINIT_FUNCTION(async)
 
 	async_scheduler_startup();
 	async_api_register();
+	async_pool_api_register();
 	async_libuv_reactor_register();
 
 	return SUCCESS;

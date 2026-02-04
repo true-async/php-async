@@ -133,6 +133,9 @@ extern zend_class_entry *async_ce_pool_exception;
 #define ASYNC_POOL_OBJ_FROM_OBJ(obj) \
 	((async_pool_obj_t *)((char *)(obj) - XtOffsetOf(async_pool_obj_t, std)))
 
+/* Create PHP object wrapper for existing pool */
+zend_object *async_pool_create_object_for_pool(async_pool_t *pool);
+
 /* Registration function */
 void async_register_pool_ce(void);
 

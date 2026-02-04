@@ -993,6 +993,19 @@ static zend_object *async_pool_create_object(zend_class_entry *ce)
 	return &obj->std;
 }
 
+/* Create PHP object wrapper for existing pool (for C API) */
+zend_object *async_pool_create_object_for_pool(async_pool_t *pool)
+{
+	zend_object *obj = async_pool_create_object(async_ce_pool);
+	async_pool_obj_t *pool_obj = ASYNC_POOL_OBJ_FROM_OBJ(obj);
+	pool_obj->pool = pool;
+
+	/* Set wrapper reference for strategy callbacks */
+	pool->base.wrapper = obj;
+
+	return obj;
+}
+
 static void async_pool_free_object(zend_object *object)
 {
 	async_pool_obj_t *obj = ASYNC_POOL_OBJ_FROM_OBJ(object);
