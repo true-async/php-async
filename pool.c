@@ -473,6 +473,45 @@ static bool pool_del_callback(zend_async_event_t *event, zend_async_event_callba
 
 static bool pool_dispose(zend_async_event_t *event)
 {
+	async_pool_t *pool = (async_pool_t *) event;
+	zend_async_pool_t *base = &pool->base;
+
+	/* Close if not already closed */
+	if (!ZEND_ASYNC_POOL_IS_CLOSED(pool)) {
+		zend_async_pool_close(pool);
+	}
+
+	/* Free callbacks */
+	zend_async_callbacks_free(&base->event);
+	pool_queue_free(&pool->waiters);
+
+	/* Free circular buffer */
+	circular_buffer_dtor(&pool->idle);
+
+	/* Free fcall structures (only if not internal handlers) */
+	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_FACTORY_INTERNAL) && base->factory.fcall) {
+		pool_fcall_release(base->factory.fcall);
+	}
+	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_DESTRUCTOR_INTERNAL) && base->destructor.fcall) {
+		pool_fcall_release(base->destructor.fcall);
+	}
+	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_HEALTHCHECK_INTERNAL) && base->healthcheck.fcall) {
+		pool_fcall_release(base->healthcheck.fcall);
+	}
+	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_BEFORE_ACQUIRE_INTERNAL) && base->before_acquire.fcall) {
+		pool_fcall_release(base->before_acquire.fcall);
+	}
+	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_BEFORE_RELEASE_INTERNAL) && base->before_release.fcall) {
+		pool_fcall_release(base->before_release.fcall);
+	}
+
+	/* Release strategy object */
+	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_STRATEGY_INTERNAL) && base->strategy.object) {
+		OBJ_RELEASE(base->strategy.object);
+		base->strategy.object = NULL;
+	}
+
+	efree(pool);
 	return true;
 }
 
@@ -491,6 +530,7 @@ static void pool_event_init(async_pool_t *pool)
 	zend_async_event_t *event = &pool->base.event;
 	memset(event, 0, sizeof(zend_async_event_t));
 
+	event->ref_count = 1;
 	event->add_callback = pool_add_callback;
 	event->del_callback = pool_del_callback;
 	event->start = pool_start;
@@ -1000,6 +1040,9 @@ zend_object *async_pool_create_object_for_pool(async_pool_t *pool)
 	async_pool_obj_t *pool_obj = ASYNC_POOL_OBJ_FROM_OBJ(obj);
 	pool_obj->pool = pool;
 
+	/* Wrapper holds a reference to the pool */
+	ZEND_ASYNC_EVENT_ADD_REF(&pool->base.event);
+
 	/* Set wrapper reference for strategy callbacks */
 	pool->base.wrapper = obj;
 
@@ -1011,7 +1054,7 @@ static void async_pool_free_object(zend_object *object)
 	async_pool_obj_t *obj = ASYNC_POOL_OBJ_FROM_OBJ(object);
 
 	if (obj->pool != NULL) {
-		zend_async_pool_destroy(obj->pool);
+		ZEND_ASYNC_EVENT_RELEASE(&obj->pool->base.event);
 		obj->pool = NULL;
 	}
 
