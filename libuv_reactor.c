@@ -2550,6 +2550,560 @@ zend_async_trigger_event_t *libuv_new_trigger_event(size_t extra_size)
 /* }}} */
 
 /////////////////////////////////////////////////////////////////////////////////
+/// Async IO API
+/////////////////////////////////////////////////////////////////////////////////
+
+static void io_pipe_close_cb(uv_handle_t *pipe_handle);
+
+/* {{{ IO event methods */
+static bool libuv_io_event_start(zend_async_event_t *event)
+{
+	EVENT_START_PROLOGUE(event);
+
+	event->loop_ref_count++;
+	ZEND_ASYNC_INCREASE_EVENT_COUNT;
+	return true;
+}
+
+static bool libuv_io_event_stop(zend_async_event_t *event)
+{
+	EVENT_STOP_PROLOGUE(event);
+
+	event->loop_ref_count = 0;
+	ZEND_ASYNC_DECREASE_EVENT_COUNT;
+	return true;
+}
+
+static bool libuv_io_event_dispose(zend_async_event_t *event)
+{
+	if (ZEND_ASYNC_EVENT_REFCOUNT(event) > 1) {
+		ZEND_ASYNC_EVENT_DEL_REF(event);
+		return true;
+	}
+
+	if (event->loop_ref_count > 0) {
+		event->loop_ref_count = 1;
+		event->stop(event);
+	}
+
+	zend_async_callbacks_free(event);
+
+	async_io_t *io = (async_io_t *) event;
+
+	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE
+			&& !(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
+		io->base.state |= ZEND_ASYNC_IO_CLOSED;
+		io->handle.pipe.data = io;
+		uv_close((uv_handle_t *) &io->handle.pipe, io_pipe_close_cb);
+	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_FILE) {
+		pefree(io, 0);
+	}
+
+	return true;
+}
+
+/* }}} */
+
+/* {{{ IO request dispose */
+static void libuv_io_req_dispose(zend_async_io_req_t *base_req)
+{
+	async_io_req_t *req = (async_io_req_t *) base_req;
+
+	if (req->base.buf != NULL) {
+		pefree(req->base.buf, 0);
+	}
+
+	if (req->base.exception != NULL) {
+		zend_object_release(req->base.exception);
+	}
+
+	pefree(req, 0);
+}
+
+/* }}} */
+
+/* {{{ IO pipe callbacks */
+static void io_pipe_alloc_cb(uv_handle_t *pipe_handle, size_t suggested_size, uv_buf_t *output)
+{
+	const async_io_t *io = (async_io_t *) pipe_handle->data;
+	async_io_req_t *req = io->active_req;
+
+	if (UNEXPECTED(req == NULL || req->base.buf == NULL)) {
+		output->base = NULL;
+		output->len = 0;
+		return;
+	}
+
+	output->base = req->base.buf;
+	output->len = (unsigned int) req->max_size;
+}
+
+static void io_pipe_read_cb(uv_stream_t *pipe_stream, ssize_t bytes_read, const uv_buf_t *buffer)
+{
+	async_io_t *io = (async_io_t *) pipe_stream->data;
+	async_io_req_t *req = io->active_req;
+
+	if (bytes_read == 0) {
+		return;
+	}
+
+	uv_read_stop(pipe_stream);
+	io->active_req = NULL;
+
+	if (UNEXPECTED(req == NULL)) {
+		return;
+	}
+
+	if (bytes_read > 0) {
+		req->base.transferred = bytes_read;
+	} else if (bytes_read == UV_EOF) {
+		req->base.transferred = 0;
+		io->base.state |= ZEND_ASYNC_IO_EOF;
+	} else {
+		req->base.transferred = -1;
+		req->base.exception = async_new_exception(
+				async_ce_input_output_exception,
+				"Pipe read error: %s", uv_strerror((int) bytes_read));
+	}
+
+	req->base.completed = true;
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
+	IF_EXCEPTION_STOP_REACTOR;
+}
+
+static void io_pipe_write_cb(uv_write_t *write_request, int status)
+{
+	async_io_req_t *req = (async_io_req_t *) write_request->data;
+	async_io_t *io = req->io;
+
+	if (status == 0) {
+		req->base.transferred = (ssize_t) req->max_size;
+	} else {
+		req->base.transferred = -1;
+		req->base.exception = async_new_exception(
+				async_ce_input_output_exception,
+				"Pipe write error: %s", uv_strerror(status));
+	}
+
+	req->base.completed = true;
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
+	IF_EXCEPTION_STOP_REACTOR;
+}
+
+static void io_pipe_close_cb(uv_handle_t *pipe_handle)
+{
+	pefree(pipe_handle->data, 0);
+}
+
+/* }}} */
+
+/* {{{ IO file callbacks */
+static void io_file_read_cb(uv_fs_t *fs_request)
+{
+	async_io_req_t *req = (async_io_req_t *) fs_request->data;
+	async_io_t *io = req->io;
+
+	if (fs_request->result >= 0) {
+		req->base.transferred = (ssize_t) fs_request->result;
+		if (fs_request->result == 0) {
+			io->base.state |= ZEND_ASYNC_IO_EOF;
+		} else {
+			io->handle.file.offset += fs_request->result;
+		}
+	} else {
+		req->base.transferred = -1;
+		req->base.exception = async_new_exception(
+				async_ce_input_output_exception,
+				"File read error: %s", uv_strerror((int) fs_request->result));
+	}
+
+	req->base.completed = true;
+	uv_fs_req_cleanup(fs_request);
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
+	IF_EXCEPTION_STOP_REACTOR;
+}
+
+static void io_file_write_cb(uv_fs_t *fs_request)
+{
+	async_io_req_t *req = (async_io_req_t *) fs_request->data;
+	async_io_t *io = req->io;
+
+	if (fs_request->result >= 0) {
+		req->base.transferred = (ssize_t) fs_request->result;
+		io->handle.file.offset += fs_request->result;
+	} else {
+		req->base.transferred = -1;
+		req->base.exception = async_new_exception(
+				async_ce_input_output_exception,
+				"File write error: %s", uv_strerror((int) fs_request->result));
+	}
+
+	req->base.completed = true;
+	uv_fs_req_cleanup(fs_request);
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
+	IF_EXCEPTION_STOP_REACTOR;
+}
+
+static void io_file_flush_cb(uv_fs_t *fs_request)
+{
+	async_io_req_t *req = (async_io_req_t *) fs_request->data;
+	async_io_t *io = req->io;
+
+	if (fs_request->result == 0) {
+		req->base.result = 0;
+	} else {
+		req->base.result = -1;
+		req->base.exception = async_new_exception(
+				async_ce_input_output_exception,
+				"File flush error: %s", uv_strerror((int) fs_request->result));
+	}
+
+	req->base.completed = true;
+	uv_fs_req_cleanup(fs_request);
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
+	IF_EXCEPTION_STOP_REACTOR;
+}
+
+static void io_file_stat_cb(uv_fs_t *fs_request)
+{
+	async_io_req_t *req = (async_io_req_t *) fs_request->data;
+	async_io_t *io = req->io;
+
+	if (fs_request->result == 0) {
+		req->base.result = 0;
+		/* Write stat data to caller's buffer, then clear ptr (not owned by req) */
+		uv_stat_to_zend_stat(&fs_request->statbuf, (zend_stat_t *) req->base.buf);
+		req->base.buf = NULL;
+	} else {
+		req->base.result = -1;
+		req->base.buf = NULL;
+		req->base.exception = async_new_exception(
+				async_ce_input_output_exception,
+				"File stat error: %s", uv_strerror((int) fs_request->result));
+	}
+
+	req->base.completed = true;
+	uv_fs_req_cleanup(fs_request);
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
+	IF_EXCEPTION_STOP_REACTOR;
+}
+
+/* }}} */
+
+/* {{{ libuv_io_create */
+static zend_async_io_t *libuv_io_create(
+		const zend_file_descriptor_t fd, const zend_async_io_type type, const uint32_t state)
+{
+	START_REACTOR_OR_RETURN_NULL;
+
+	async_io_t *io = pecalloc(1, sizeof(async_io_t), 0);
+
+	io->base.fd = fd;
+	io->base.type = type;
+	io->base.state = state;
+
+#ifdef PHP_WIN32
+	io->crt_fd = (int)(intptr_t) fd;
+#else
+	io->crt_fd = (int) fd;
+#endif
+
+	io->base.event.ref_count = 1;
+	io->base.event.add_callback = libuv_add_callback;
+	io->base.event.del_callback = libuv_remove_callback;
+	io->base.event.start = libuv_io_event_start;
+	io->base.event.stop = libuv_io_event_stop;
+	io->base.event.dispose = libuv_io_event_dispose;
+
+	if (type == ZEND_ASYNC_IO_TYPE_PIPE) {
+		int error = uv_pipe_init(UVLOOP, &io->handle.pipe, 0);
+
+		if (UNEXPECTED(error < 0)) {
+			async_throw_error("Failed to initialize pipe handle: %s", uv_strerror(error));
+			pefree(io, 0);
+			return NULL;
+		}
+
+		error = uv_pipe_open(&io->handle.pipe, io->crt_fd);
+
+		if (UNEXPECTED(error < 0)) {
+			async_throw_error("Failed to open pipe handle: %s", uv_strerror(error));
+			io->handle.pipe.data = io;
+			uv_close((uv_handle_t *) &io->handle.pipe, io_pipe_close_cb);
+			return NULL;
+		}
+
+		io->handle.pipe.data = io;
+	} else {
+		const zend_off_t pos = zend_lseek(io->crt_fd, 0, SEEK_CUR);
+		io->handle.file.offset = (pos >= 0) ? pos : 0;
+	}
+
+	return &io->base;
+}
+
+/* }}} */
+
+/* {{{ libuv_io_read */
+static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, const size_t max_size)
+{
+	async_io_t *io = (async_io_t *) io_base;
+
+	if (UNEXPECTED(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
+		async_throw_error("Cannot read from closed IO handle");
+		return NULL;
+	}
+
+	async_io_req_t *req = pecalloc(1, sizeof(async_io_req_t), 0);
+	req->base.dispose = libuv_io_req_dispose;
+	req->io = io;
+	req->max_size = max_size;
+
+	if (UNEXPECTED(io->base.state & ZEND_ASYNC_IO_EOF)) {
+		req->base.transferred = 0;
+		req->base.completed = true;
+		return &req->base;
+	}
+
+	req->base.buf = pemalloc(max_size, 0);
+
+	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE) {
+		io->active_req = req;
+
+		const int error = uv_read_start(
+				(uv_stream_t *) &io->handle.pipe, io_pipe_alloc_cb, io_pipe_read_cb);
+
+		if (UNEXPECTED(error < 0)) {
+			io->active_req = NULL;
+			async_throw_error("Failed to start pipe read: %s", uv_strerror(error));
+			libuv_io_req_dispose(&req->base);
+			return NULL;
+		}
+
+		return &req->base;
+	}
+
+	/* FILE path */
+	const uv_buf_t read_buffer = uv_buf_init(req->base.buf, (unsigned int) max_size);
+	req->fs_req.data = req;
+
+	const int error = uv_fs_read(UVLOOP, &req->fs_req, io->crt_fd,
+			&read_buffer, 1, io->handle.file.offset, io_file_read_cb);
+
+	if (UNEXPECTED(error < 0)) {
+		async_throw_error("Failed to start file read: %s", uv_strerror(error));
+		libuv_io_req_dispose(&req->base);
+		return NULL;
+	}
+
+	return &req->base;
+}
+
+/* }}} */
+
+/* {{{ libuv_io_write */
+static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char *buf, const size_t count)
+{
+	async_io_t *io = (async_io_t *) io_base;
+
+	if (UNEXPECTED(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
+		async_throw_error("Cannot write to closed IO handle");
+		return NULL;
+	}
+
+	async_io_req_t *req = pecalloc(1, sizeof(async_io_req_t), 0);
+	req->base.dispose = libuv_io_req_dispose;
+	req->io = io;
+	req->max_size = count;
+
+	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE) {
+		const uv_buf_t write_buffer = uv_buf_init((char *) buf, (unsigned int) count);
+		req->write_req.data = req;
+
+		const int error = uv_write(
+				&req->write_req, (uv_stream_t *) &io->handle.pipe, &write_buffer, 1, io_pipe_write_cb);
+
+		if (UNEXPECTED(error < 0)) {
+			async_throw_error("Failed to start pipe write: %s", uv_strerror(error));
+			libuv_io_req_dispose(&req->base);
+			return NULL;
+		}
+
+		return &req->base;
+	}
+
+	/* FILE path */
+	const uv_buf_t write_buffer = uv_buf_init((char *) buf, (unsigned int) count);
+	req->fs_req.data = req;
+
+	const int error = uv_fs_write(UVLOOP, &req->fs_req, io->crt_fd,
+			&write_buffer, 1, io->handle.file.offset, io_file_write_cb);
+
+	if (UNEXPECTED(error < 0)) {
+		async_throw_error("Failed to start file write: %s", uv_strerror(error));
+		libuv_io_req_dispose(&req->base);
+		return NULL;
+	}
+
+	return &req->base;
+}
+
+/* }}} */
+
+/* {{{ libuv_io_close */
+static int libuv_io_close(zend_async_io_t *io_base)
+{
+	async_io_t *io = (async_io_t *) io_base;
+
+	if (io->base.state & ZEND_ASYNC_IO_CLOSED) {
+		return 0;
+	}
+
+	io->base.state |= ZEND_ASYNC_IO_CLOSED;
+
+	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE) {
+		uv_read_stop((uv_stream_t *) &io->handle.pipe);
+		zend_async_callbacks_free(&io->base.event);
+		io->handle.pipe.data = io;
+		uv_close((uv_handle_t *) &io->handle.pipe, io_pipe_close_cb);
+		return 1;
+	}
+
+	/* FILE: libuv does not own the fd */
+	zend_async_callbacks_free(&io->base.event);
+	pefree(io, 0);
+	return 0;
+}
+
+/* }}} */
+
+/* {{{ libuv_io_await */
+static int libuv_io_await(zend_async_io_t *io_base, const uint32_t events, struct timeval *timeout)
+{
+	const async_io_t *io = (const async_io_t *) io_base;
+
+	if (UNEXPECTED(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
+		return -1;
+	}
+
+	/* Files are always ready for I/O (actual async happens in thread pool) */
+	/* Pipes: full poll-based await to be implemented later */
+	return 0;
+}
+
+/* }}} */
+
+/* {{{ libuv_io_flush */
+static zend_async_io_req_t *libuv_io_flush(zend_async_io_t *io_base)
+{
+	async_io_t *io = (async_io_t *) io_base;
+
+	if (UNEXPECTED(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
+		async_throw_error("Cannot flush closed IO handle");
+		return NULL;
+	}
+
+	/* Pipes have no disk buffer to flush — return instant success */
+	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE) {
+		async_io_req_t *req = pecalloc(1, sizeof(async_io_req_t), 0);
+		req->base.dispose = libuv_io_req_dispose;
+		req->io = io;
+		req->base.result = 0;
+		req->base.completed = true;
+		return &req->base;
+	}
+
+	async_io_req_t *req = pecalloc(1, sizeof(async_io_req_t), 0);
+	req->base.dispose = libuv_io_req_dispose;
+	req->io = io;
+	req->fs_req.data = req;
+
+	const int error = uv_fs_fsync(UVLOOP, &req->fs_req, io->crt_fd, io_file_flush_cb);
+
+	if (UNEXPECTED(error < 0)) {
+		async_throw_error("Failed to start file flush: %s", uv_strerror(error));
+		libuv_io_req_dispose(&req->base);
+		return NULL;
+	}
+
+	return &req->base;
+}
+
+/* }}} */
+
+/* {{{ uv_stat_to_zend_stat */
+static void uv_stat_to_zend_stat(const uv_stat_t *uv_statbuf, zend_stat_t *zend_statbuf)
+{
+	memset(zend_statbuf, 0, sizeof(zend_stat_t));
+	zend_statbuf->st_dev = (dev_t) uv_statbuf->st_dev;
+	zend_statbuf->st_ino = (ino_t) uv_statbuf->st_ino;
+	zend_statbuf->st_mode = (unsigned short) uv_statbuf->st_mode;
+	zend_statbuf->st_nlink = (short) uv_statbuf->st_nlink;
+	zend_statbuf->st_uid = (short) uv_statbuf->st_uid;
+	zend_statbuf->st_gid = (short) uv_statbuf->st_gid;
+	zend_statbuf->st_rdev = (dev_t) uv_statbuf->st_rdev;
+	zend_statbuf->st_size = (zend_off_t) uv_statbuf->st_size;
+#ifdef PHP_WIN32
+	zend_statbuf->st_atime = (time_t) uv_statbuf->st_atim.tv_sec;
+	zend_statbuf->st_mtime = (time_t) uv_statbuf->st_mtim.tv_sec;
+	zend_statbuf->st_ctime = (time_t) uv_statbuf->st_ctim.tv_sec;
+#else
+	zend_statbuf->st_atime = (time_t) uv_statbuf->st_atim.tv_sec;
+	zend_statbuf->st_mtime = (time_t) uv_statbuf->st_mtim.tv_sec;
+	zend_statbuf->st_ctime = (time_t) uv_statbuf->st_ctim.tv_sec;
+	zend_statbuf->st_blksize = (blksize_t) uv_statbuf->st_blksize;
+	zend_statbuf->st_blocks = (blkcnt_t) uv_statbuf->st_blocks;
+#endif
+}
+
+/* }}} */
+
+/* {{{ libuv_io_stat */
+static zend_async_io_req_t *libuv_io_stat(zend_async_io_t *io_base, zend_stat_t *stat_buffer)
+{
+	async_io_t *io = (async_io_t *) io_base;
+
+	if (UNEXPECTED(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
+		async_throw_error("Cannot stat closed IO handle");
+		return NULL;
+	}
+
+	/* Pipes: synchronous fstat — return instant result */
+	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE) {
+		async_io_req_t *req = pecalloc(1, sizeof(async_io_req_t), 0);
+		req->base.dispose = libuv_io_req_dispose;
+		req->io = io;
+		req->base.result = zend_fstat(io->crt_fd, stat_buffer);
+		req->base.completed = true;
+		if (UNEXPECTED(req->base.result != 0)) {
+			req->base.exception = async_new_exception(
+					async_ce_input_output_exception,
+					"Pipe stat error: fstat failed");
+		}
+		return &req->base;
+	}
+
+	async_io_req_t *req = pecalloc(1, sizeof(async_io_req_t), 0);
+	req->base.dispose = libuv_io_req_dispose;
+	req->io = io;
+	req->base.buf = (char *) stat_buffer;
+	req->fs_req.data = req;
+
+	const int error = uv_fs_fstat(UVLOOP, &req->fs_req, io->crt_fd, io_file_stat_cb);
+
+	if (UNEXPECTED(error < 0)) {
+		async_throw_error("Failed to start file stat: %s", uv_strerror(error));
+		req->base.buf = NULL;
+		libuv_io_req_dispose(&req->base);
+		return NULL;
+	}
+
+	return &req->base;
+}
+
+/* }}} */
+
+/////////////////////////////////////////////////////////////////////////////////
 /// Socket Listening API
 /////////////////////////////////////////////////////////////////////////////////
 
@@ -2804,4 +3358,8 @@ void async_libuv_reactor_register(void)
 								libuv_new_trigger_event);
 
 	zend_async_socket_listening_register(LIBUV_REACTOR_NAME, false, libuv_socket_listen);
+
+	zend_async_io_register(LIBUV_REACTOR_NAME, false,
+			libuv_io_create, libuv_io_read, libuv_io_write,
+			libuv_io_close, libuv_io_await, libuv_io_flush, libuv_io_stat);
 }
