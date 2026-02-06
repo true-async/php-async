@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added `zend_async_circuit_state_t` enum and strategy types
   - Added Pool API function pointers and registration mechanism
   - Added `ZEND_ASYNC_CLASS_POOL` and `ZEND_ASYNC_EXCEPTION_SERVICE_UNAVAILABLE` to class enum
+- **PDO Connection Pooling**: Transparent connection pooling for PDO with per-coroutine dispatch and automatic lifecycle management
+- **PDO PgSQL**: Non-blocking query execution for PostgreSQL PDO driver
+- **PostgreSQL**: Concurrent `pg_*` query execution with separate connections per async context
 
 ### Changed
 - **Hidden Events**: Added `ZEND_ASYNC_EVENT_F_HIDDEN` flag for events excluded from deadlock detection
