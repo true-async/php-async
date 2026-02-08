@@ -31,6 +31,7 @@ PHP_ASYNC_API extern zend_class_entry *async_ce_poll_exception;
 PHP_ASYNC_API extern zend_class_entry *async_ce_dns_exception;
 PHP_ASYNC_API extern zend_class_entry *async_ce_deadlock_error;
 PHP_ASYNC_API extern zend_class_entry *async_ce_composite_exception;
+PHP_ASYNC_API extern zend_class_entry *async_ce_service_unavailable_exception;
 
 void async_register_exceptions_ce(void);
 PHP_ASYNC_API ZEND_COLD zend_object *async_new_exception(zend_class_entry *exception_ce, const char *format, ...);
@@ -40,6 +41,7 @@ PHP_ASYNC_API ZEND_COLD zend_object *async_throw_input_output(const char *format
 PHP_ASYNC_API ZEND_COLD zend_object *async_throw_timeout(const char *format, const zend_long timeout);
 PHP_ASYNC_API ZEND_COLD zend_object *async_throw_poll(const char *format, ...);
 PHP_ASYNC_API ZEND_COLD zend_object *async_throw_deadlock(const char *format, ...);
+PHP_ASYNC_API ZEND_COLD zend_object *async_throw_service_unavailable(const char *format, ...);
 PHP_ASYNC_API ZEND_COLD zend_object *async_new_composite_exception(void);
 PHP_ASYNC_API void
 async_composite_exception_add_exception(zend_object *composite, zend_object *exception, bool transfer);
