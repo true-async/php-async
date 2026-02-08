@@ -266,10 +266,34 @@ static void on_poll_event(uv_poll_t *handle, int status, int events)
 	// the connection while the descriptor is still present in the EventLoop.
 	// For POLL events, we handle this by ignoring the situation
 	// so that the coroutine receives the ASYNC_DISCONNECT flag.
-	// This code can be considered “incorrect”; however, this solution is acceptable.
+	// This code can be considered "incorrect"; however, this solution is acceptable.
 	//
 	if (UNEXPECTED(status == UV_EBADF)) {
 		events = ASYNC_DISCONNECT;
+	}
+
+	/* Filter spurious READABLE events on sockets.
+	 * libuv uv_poll may signal readable when no data is actually available.
+	 * Use recv(MSG_PEEK) to verify; if WOULDBLOCK — remove the flag. */
+	if (status >= 0 && poll->event.is_socket && (events & ASYNC_READABLE)) {
+		char peek_buf;
+		const int peek_ret = recv(poll->event.socket, &peek_buf, 1, MSG_PEEK);
+
+		if (peek_ret < 0) {
+#ifdef PHP_WIN32
+			const int err = WSAGetLastError();
+			if (err == WSAEWOULDBLOCK) {
+				events &= ~ASYNC_READABLE;
+			}
+#else
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				events &= ~ASYNC_READABLE;
+			}
+#endif
+			if (events == 0) {
+				return;
+			}
+		}
 	}
 
 	poll->event.triggered_events = events;
