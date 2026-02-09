@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.6.0]
 
 ### Added
+- **Async File and Pipe I/O**: Non-blocking `fread`/`fwrite` support for plain files and pipes via `php_stdiop_read`/`php_stdiop_write` async IO path
 - **Future Support**: Full Future/FutureState implementation with `map()`, `catch()`, `finally()` chains and proper flag propagation
 - **Channel**: CSP-style message passing between coroutines with buffered/unbuffered modes, timeout support, and iterator interface
 - **Pool**: Resource pool implementation with CircuitBreaker pattern support

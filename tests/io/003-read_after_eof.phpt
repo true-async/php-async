@@ -1,9 +1,11 @@
 --TEST--
 Read after EOF returns zero immediately (sync completion)
+--SKIPIF--
+<?php
+if (!function_exists("proc_open")) echo "skip proc_open() is not available";
+?>
 --FILE--
 <?php
-
-require_once __DIR__ . '/../stream/stream_helper.php';
 
 use function Async\spawn;
 use function Async\await;
@@ -11,11 +13,23 @@ use function Async\await;
 echo "Start\n";
 
 $coroutine = spawn(function() {
-    $sockets = create_socket_pair();
-    list($writer, $reader) = $sockets;
+    $php = getenv('TEST_PHP_EXECUTABLE');
+    if ($php === false) {
+        die("skip no php executable defined");
+    }
 
-    fwrite($writer, "data");
-    fclose($writer);
+    $process = proc_open(
+        [$php, "-r", "echo 'data';"],
+        [1 => ["pipe", "w"]],
+        $pipes
+    );
+
+    if (!is_resource($process)) {
+        echo "Failed to create process\n";
+        return "fail";
+    }
+
+    $reader = $pipes[1];
 
     $first = fread($reader, 1024);
     echo "First read: '$first'\n";
@@ -33,6 +47,7 @@ $coroutine = spawn(function() {
     echo "Third read length: " . strlen($third) . "\n";
 
     fclose($reader);
+    proc_close($process);
     return "done";
 });
 
