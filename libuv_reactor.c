@@ -2899,7 +2899,7 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, const size_t
 		return &req->base;
 	}
 
-	req->base.buf = pemalloc(max_size, 0);
+	req->base.buf = pecalloc(1, max_size, 0);
 
 	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE) {
 		io->active_req = req;
