@@ -46,7 +46,7 @@ docker run --rm true-async-php php -m | grep true_async
 
 ### Requirements
 
-- **PHP 8.5.0+**
+- **PHP 8.6.0+**
 - **LibUV ≥ 1.45.0** (required) - Fixes critical `UV_RUN_ONCE` busy loop issue that could cause high CPU usage
 
 ### Why LibUV 1.45.0+ is Required
@@ -177,9 +177,19 @@ Please see the [LibUV installation guide](https://github.com/libuv/libuv) for mo
 - **PDO MySQL** - async-compatible PDO operations
   - `PDO::__construct()`, `PDO::prepare()`, `PDO::exec()` - non-blocking
   - `PDOStatement::execute()`, `PDOStatement::fetch()` - async data access
-- **MySQLi** - async-compatible MySQLi operations  
+- **PDO PgSQL** - non-blocking PostgreSQL PDO driver
+  - `PDO::__construct()`, `PDO::prepare()`, `PDO::exec()` - non-blocking query execution
+  - `PDOStatement::execute()`, `PDOStatement::fetch()` - async result fetching
+- **PDO Connection Pooling** - transparent connection pooling for PDO
+  - `Async\Pool` integration with per-coroutine connection dispatch
+  - Automatic connection lifecycle management and health checks
+- **MySQLi** - async-compatible MySQLi operations
   - `mysqli_connect()`, `mysqli_query()`, `mysqli_prepare()` - non-blocking
   - `mysqli_stmt_execute()`, `mysqli_fetch_*()` - async result fetching
+- **PostgreSQL (pg_\*)** - concurrent native PostgreSQL operations
+  - `pg_connect()`, `pg_query()`, `pg_prepare()` - non-blocking
+  - `pg_execute()`, `pg_fetch_*()` - async result fetching
+  - Separate connections per async context for safe concurrency
 
 ### CURL Functions  
 - `curl_exec()` - execute cURL request
@@ -196,14 +206,32 @@ Please see the [LibUV installation guide](https://github.com/libuv/libuv) for mo
 - `socket_bind()`, `socket_listen()` - server operations
 - `socket_select()` - monitor socket activity
 
-### Stream Functions
-- `file_get_contents()` - get file/URL contents
-- `fread()`, `fwrite()` - file I/O operations
-- `fopen()`, `fclose()` - file handle management
+### File and Pipe I/O Functions
+- `fread()`, `fwrite()` - non-blocking read/write for plain files and pipes
+- `fopen()`, `fclose()` - file handle management with async IO lifecycle
+- `fseek()`, `ftell()`, `rewind()` - file position operations with async offset sync
+- `fgets()`, `fgetc()` - line/character reading
+- `fgetcsv()`, `fputcsv()` - CSV read/write
+- `ftruncate()` - file truncation
+- `fflush()` - flush file buffers
+- `fscanf()` - formatted file reading
+- `file_get_contents()`, `file_put_contents()` - complete file read/write
+- `file()` - read file into array
+- `copy()` - file copy
+- `tmpfile()` - temporary file creation
+- `readfile()`, `fpassthru()` - direct output from file
+- `stream_get_contents()` - read remaining stream data
+- `stream_copy_to_stream()` - stream-to-stream copy
+
+### Stream Socket Functions
 - `stream_socket_client()`, `stream_socket_server()` - socket streams
 - `stream_socket_accept()` - accept stream connections
 - `stream_select()` - monitor stream activity
 - `stream_context_create()` - async-aware context creation
+
+### Known Limitations
+
+- **`stream_select()` with pipes on Windows** — async poll for pipe streams (e.g. from `proc_open()`) is not supported on Windows. `stream_select()` will automatically fall back to the regular (synchronous) `select()` implementation. On Linux/macOS, pipe polling works natively through the event loop.
 
 ### Process Execution Functions
 - `proc_open()` - open process with pipes

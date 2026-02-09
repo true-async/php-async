@@ -41,6 +41,8 @@ typedef struct _async_dns_nameinfo_t async_dns_nameinfo_t;
 typedef struct _async_dns_addrinfo_t async_dns_addrinfo_t;
 
 typedef struct _async_exec_event_t async_exec_event_t;
+typedef struct _async_io_t async_io_t;
+typedef struct _async_io_req_t async_io_req_t;
 
 struct _async_poll_event_t
 {
@@ -112,6 +114,30 @@ struct _async_trigger_event_t
 {
 	zend_async_trigger_event_t event;
 	uv_async_t uv_handle;
+};
+
+struct _async_io_t
+{
+	zend_async_io_t base;
+	int crt_fd;
+	async_io_req_t *active_req;
+	union {
+		uv_pipe_t pipe;
+		struct {
+			zend_off_t offset;
+		} file;
+	} handle;
+};
+
+struct _async_io_req_t
+{
+	zend_async_io_req_t base;
+	async_io_t *io;
+	size_t max_size;
+	union {
+		uv_write_t write_req;
+		uv_fs_t fs_req;
+	};
 };
 
 void async_libuv_reactor_register(void);
