@@ -229,6 +229,10 @@ Please see the [LibUV installation guide](https://github.com/libuv/libuv) for mo
 - `stream_select()` - monitor stream activity
 - `stream_context_create()` - async-aware context creation
 
+### Known Limitations
+
+- **`stream_select()` with pipes on Windows** — async poll for pipe streams (e.g. from `proc_open()`) is not supported on Windows. `stream_select()` will automatically fall back to the regular (synchronous) `select()` implementation. On Linux/macOS, pipe polling works natively through the event loop.
+
 ### Process Execution Functions
 - `proc_open()` - open process with pipes
 - `exec()` - execute external command
