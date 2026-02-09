@@ -44,6 +44,7 @@ static void libuv_signal_close_cb(uv_handle_t *handle);
 static void libuv_cleanup_signal_handlers(void);
 static void libuv_cleanup_signal_events(void);
 static void libuv_cleanup_process_events(void);
+static void uv_stat_to_zend_stat(const uv_stat_t *uv_statbuf, zend_stat_t *zend_statbuf);
 
 #define UVLOOP (&ASYNC_G(uvloop))
 #define LIBUV_REACTOR ((zend_async_globals *) ASYNC_GLOBALS)
@@ -2589,7 +2590,7 @@ static bool libuv_io_event_start(zend_async_event_t *event)
 	EVENT_START_PROLOGUE(event);
 
 	event->loop_ref_count++;
-	ZEND_ASYNC_INCREASE_EVENT_COUNT;
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(event);
 	return true;
 }
 
@@ -2598,7 +2599,7 @@ static bool libuv_io_event_stop(zend_async_event_t *event)
 	EVENT_STOP_PROLOGUE(event);
 
 	event->loop_ref_count = 0;
-	ZEND_ASYNC_DECREASE_EVENT_COUNT;
+	ZEND_ASYNC_DECREASE_EVENT_COUNT(event);
 	return true;
 }
 
