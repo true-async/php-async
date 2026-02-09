@@ -1,36 +1,53 @@
 --TEST--
 Concurrent pipe read/write between coroutines
+--SKIPIF--
+<?php
+if (!function_exists("proc_open")) echo "skip proc_open() is not available";
+?>
 --FILE--
 <?php
-
-require_once __DIR__ . '/../stream/stream_helper.php';
 
 use function Async\spawn;
 use function Async\await_all;
 
 echo "Start\n";
 
-$sockets = create_socket_pair();
-list($sock1, $sock2) = $sockets;
+$php = getenv('TEST_PHP_EXECUTABLE');
+if ($php === false) {
+    die("skip no php executable defined");
+}
 
-$writer = spawn(function() use ($sock1) {
-    fwrite($sock1, "message-one");
-    fwrite($sock1, "|message-two");
-    fwrite($sock1, "|message-three");
-    fclose($sock1);
+$process = proc_open(
+    [$php, "-r", "echo stream_get_contents(STDIN);"],
+    [
+        0 => ["pipe", "r"],
+        1 => ["pipe", "w"],
+    ],
+    $pipes
+);
+
+if (!is_resource($process)) {
+    die("Failed to create process");
+}
+
+$writer = spawn(function() use ($pipes) {
+    fwrite($pipes[0], "message-one");
+    fwrite($pipes[0], "|message-two");
+    fwrite($pipes[0], "|message-three");
+    fclose($pipes[0]);
     return "writer done";
 });
 
-$reader = spawn(function() use ($sock2) {
+$reader = spawn(function() use ($pipes) {
     $all = '';
-    while (!feof($sock2)) {
-        $chunk = fread($sock2, 1024);
+    while (!feof($pipes[1])) {
+        $chunk = fread($pipes[1], 1024);
         if ($chunk === '' || $chunk === false) {
             break;
         }
         $all .= $chunk;
     }
-    fclose($sock2);
+    fclose($pipes[1]);
     return $all;
 });
 
@@ -38,6 +55,8 @@ $reader = spawn(function() use ($sock2) {
 
 echo "Writer: " . $results[0] . "\n";
 echo "Reader: " . $results[1] . "\n";
+
+proc_close($process);
 echo "End\n";
 
 ?>

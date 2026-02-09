@@ -1,5 +1,5 @@
 --TEST--
-Pipe close during IO and error handling
+Write to child process stdin pipe and read stdout
 --SKIPIF--
 <?php
 if (!function_exists("proc_open")) echo "skip proc_open() is not available";
@@ -18,9 +18,8 @@ $coroutine = spawn(function() {
         die("skip no php executable defined");
     }
 
-    // Child echoes stdin back, then exits when stdin closes
     $process = proc_open(
-        [$php, "-r", "echo stream_get_contents(STDIN);"],
+        [$php, "-r", "echo strtoupper(fgets(STDIN));"],
         [
             0 => ["pipe", "r"],
             1 => ["pipe", "w"],
@@ -29,27 +28,22 @@ $coroutine = spawn(function() {
     );
 
     if (!is_resource($process)) {
+        echo "Failed to create process\n";
         return "fail";
     }
 
-    // Write data and close the writer pipe
-    fwrite($pipes[0], "hello");
+    // Write to child stdin
+    fwrite($pipes[0], "hello async world\n");
     fclose($pipes[0]);
 
-    // Read the echoed data
-    $data = '';
-    while (!feof($pipes[1])) {
-        $chunk = fread($pipes[1], 1024);
-        if ($chunk === '' || $chunk === false) {
-            break;
-        }
-        $data .= $chunk;
-    }
-    echo "Read data: '$data'\n";
-    echo "EOF: " . (feof($pipes[1]) ? "yes" : "no") . "\n";
+    // Read from child stdout
+    $output = fread($pipes[1], 1024);
+    echo "Output: '$output'\n";
 
     fclose($pipes[1]);
-    proc_close($process);
+    $exit = proc_close($process);
+    echo "Exit: $exit\n";
+
     return "done";
 });
 
@@ -60,7 +54,8 @@ echo "End\n";
 ?>
 --EXPECT--
 Start
-Read data: 'hello'
-EOF: yes
+Output: 'HELLO ASYNC WORLD
+'
+Exit: 0
 Result: done
 End

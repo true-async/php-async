@@ -1,9 +1,11 @@
 --TEST--
 Concurrent file and pipe IO operations
+--SKIPIF--
+<?php
+if (!function_exists("proc_open")) echo "skip proc_open() is not available";
+?>
 --FILE--
 <?php
-
-require_once __DIR__ . '/../stream/stream_helper.php';
 
 use function Async\spawn;
 use function Async\await_all;
@@ -12,8 +14,23 @@ echo "Start\n";
 
 $tmpfile = tempnam(sys_get_temp_dir(), 'async_io_test_');
 
-$sockets = create_socket_pair();
-list($sock1, $sock2) = $sockets;
+$php = getenv('TEST_PHP_EXECUTABLE');
+if ($php === false) {
+    die("skip no php executable defined");
+}
+
+$process = proc_open(
+    [$php, "-r", "echo stream_get_contents(STDIN);"],
+    [
+        0 => ["pipe", "r"],
+        1 => ["pipe", "w"],
+    ],
+    $pipes
+);
+
+if (!is_resource($process)) {
+    die("Failed to create process");
+}
 
 $output = [];
 
@@ -30,14 +47,21 @@ $file_worker = spawn(function() use ($tmpfile, &$output) {
     return "file done";
 });
 
-$pipe_worker = spawn(function() use ($sock1, $sock2, &$output) {
-    fwrite($sock1, "pipe data from coroutine");
-    $data = fread($sock2, 1024);
+$pipe_worker = spawn(function() use ($pipes, &$output) {
+    fwrite($pipes[0], "pipe data from coroutine");
+    fclose($pipes[0]);
+
+    $data = '';
+    while (!feof($pipes[1])) {
+        $chunk = fread($pipes[1], 1024);
+        if ($chunk === '' || $chunk === false) {
+            break;
+        }
+        $data .= $chunk;
+    }
+    fclose($pipes[1]);
 
     $output[] = "Pipe: '$data'";
-
-    fclose($sock1);
-    fclose($sock2);
     return "pipe done";
 });
 
@@ -50,6 +74,7 @@ foreach ($output as $line) {
 
 echo "Results: " . $results[0] . ", " . $results[1] . "\n";
 
+proc_close($process);
 unlink($tmpfile);
 echo "End\n";
 

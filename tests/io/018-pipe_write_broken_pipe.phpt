@@ -1,5 +1,5 @@
 --TEST--
-Pipe close during IO and error handling
+Write to pipe after reader closed handles error gracefully
 --SKIPIF--
 <?php
 if (!function_exists("proc_open")) echo "skip proc_open() is not available";
@@ -18,9 +18,9 @@ $coroutine = spawn(function() {
         die("skip no php executable defined");
     }
 
-    // Child echoes stdin back, then exits when stdin closes
+    // Child exits immediately without reading stdin
     $process = proc_open(
-        [$php, "-r", "echo stream_get_contents(STDIN);"],
+        [$php, "-r", "exit(0);"],
         [
             0 => ["pipe", "r"],
             1 => ["pipe", "w"],
@@ -29,27 +29,21 @@ $coroutine = spawn(function() {
     );
 
     if (!is_resource($process)) {
+        echo "Failed to create process\n";
         return "fail";
     }
 
-    // Write data and close the writer pipe
-    fwrite($pipes[0], "hello");
-    fclose($pipes[0]);
-
-    // Read the echoed data
-    $data = '';
-    while (!feof($pipes[1])) {
-        $chunk = fread($pipes[1], 1024);
-        if ($chunk === '' || $chunk === false) {
-            break;
-        }
-        $data .= $chunk;
-    }
-    echo "Read data: '$data'\n";
-    echo "EOF: " . (feof($pipes[1]) ? "yes" : "no") . "\n";
-
+    // Wait for child to exit
+    $output = fread($pipes[1], 1024);
     fclose($pipes[1]);
+
+    // Now try writing to stdin of dead process — should not fatal
+    $result = @fwrite($pipes[0], str_repeat("X", 4096));
+    echo "Write to dead pipe: " . var_export($result, true) . "\n";
+
+    fclose($pipes[0]);
     proc_close($process);
+
     return "done";
 });
 
@@ -58,9 +52,8 @@ echo "Result: $result\n";
 echo "End\n";
 
 ?>
---EXPECT--
+--EXPECTF--
 Start
-Read data: 'hello'
-EOF: yes
+Write to dead pipe: %s
 Result: done
 End

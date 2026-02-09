@@ -2864,8 +2864,13 @@ static zend_async_io_t *libuv_io_create(
 
 		io->handle.pipe.data = io;
 	} else {
-		const zend_off_t pos = zend_lseek(io->crt_fd, 0, SEEK_CUR);
-		io->handle.file.offset = (pos >= 0) ? pos : 0;
+		if (state & ZEND_ASYNC_IO_APPEND) {
+			const zend_off_t end = zend_lseek(io->crt_fd, 0, SEEK_END);
+			io->handle.file.offset = (end >= 0) ? end : 0;
+		} else {
+			const zend_off_t pos = zend_lseek(io->crt_fd, 0, SEEK_CUR);
+			io->handle.file.offset = (pos >= 0) ? pos : 0;
+		}
 	}
 
 	return &io->base;
@@ -3056,6 +3061,19 @@ static zend_async_io_req_t *libuv_io_flush(zend_async_io_t *io_base)
 	}
 
 	return &req->base;
+}
+
+/* }}} */
+
+/* {{{ libuv_io_seek */
+static void libuv_io_seek(zend_async_io_t *io_base, const zend_off_t offset)
+{
+	async_io_t *io = (async_io_t *) io_base;
+
+	if (io->base.type == ZEND_ASYNC_IO_TYPE_FILE) {
+		io->handle.file.offset = offset;
+		io->base.state &= ~ZEND_ASYNC_IO_EOF;
+	}
 }
 
 /* }}} */
@@ -3390,5 +3408,6 @@ void async_libuv_reactor_register(void)
 
 	zend_async_io_register(LIBUV_REACTOR_NAME, false,
 			libuv_io_create, libuv_io_read, libuv_io_write,
-			libuv_io_close, libuv_io_await, libuv_io_flush, libuv_io_stat);
+			libuv_io_close, libuv_io_await, libuv_io_flush, libuv_io_stat,
+			libuv_io_seek);
 }

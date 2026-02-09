@@ -1,5 +1,5 @@
 --TEST--
-Pipe close during IO and error handling
+Large bidirectional pipe IO with proc_open in async context
 --SKIPIF--
 <?php
 if (!function_exists("proc_open")) echo "skip proc_open() is not available";
@@ -18,9 +18,11 @@ $coroutine = spawn(function() {
         die("skip no php executable defined");
     }
 
-    // Child echoes stdin back, then exits when stdin closes
+    // Child reads stdin, reverses each line, writes to stdout
+    $code = 'while (($line = fgets(STDIN)) !== false) { echo strrev(rtrim($line, "\n")) . "\n"; }';
+
     $process = proc_open(
-        [$php, "-r", "echo stream_get_contents(STDIN);"],
+        [$php, "-r", $code],
         [
             0 => ["pipe", "r"],
             1 => ["pipe", "w"],
@@ -32,24 +34,25 @@ $coroutine = spawn(function() {
         return "fail";
     }
 
-    // Write data and close the writer pipe
-    fwrite($pipes[0], "hello");
+    // Write multiple lines
+    fwrite($pipes[0], "hello\n");
+    fwrite($pipes[0], "world\n");
+    fwrite($pipes[0], "async\n");
     fclose($pipes[0]);
 
-    // Read the echoed data
-    $data = '';
+    // Read all output
+    $output = '';
     while (!feof($pipes[1])) {
         $chunk = fread($pipes[1], 1024);
-        if ($chunk === '' || $chunk === false) {
-            break;
-        }
-        $data .= $chunk;
+        if ($chunk === '' || $chunk === false) break;
+        $output .= $chunk;
     }
-    echo "Read data: '$data'\n";
-    echo "EOF: " . (feof($pipes[1]) ? "yes" : "no") . "\n";
-
     fclose($pipes[1]);
-    proc_close($process);
+
+    $exit = proc_close($process);
+    echo "Output: " . rtrim($output) . "\n";
+    echo "Exit: $exit\n";
+
     return "done";
 });
 
@@ -60,7 +63,9 @@ echo "End\n";
 ?>
 --EXPECT--
 Start
-Read data: 'hello'
-EOF: yes
+Output: olleh
+dlrow
+cnysa
+Exit: 0
 Result: done
 End

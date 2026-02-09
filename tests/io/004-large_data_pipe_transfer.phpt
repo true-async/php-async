@@ -1,46 +1,63 @@
 --TEST--
 Large data transfer through pipes in coroutines
+--SKIPIF--
+<?php
+if (!function_exists("proc_open")) echo "skip proc_open() is not available";
+?>
 --FILE--
 <?php
-
-require_once __DIR__ . '/../stream/stream_helper.php';
 
 use function Async\spawn;
 use function Async\await_all;
 
 echo "Start\n";
 
-$sockets = create_socket_pair();
-list($sock1, $sock2) = $sockets;
+$php = getenv('TEST_PHP_EXECUTABLE');
+if ($php === false) {
+    die("skip no php executable defined");
+}
+
+$process = proc_open(
+    [$php, "-r", "echo stream_get_contents(STDIN);"],
+    [
+        0 => ["pipe", "r"],
+        1 => ["pipe", "w"],
+    ],
+    $pipes
+);
+
+if (!is_resource($process)) {
+    die("Failed to create process");
+}
 
 $size = 64 * 1024;
 $payload = str_repeat('X', $size);
 
-$writer = spawn(function() use ($sock1, $payload) {
+$writer = spawn(function() use ($pipes, $payload) {
     $written = 0;
     $len = strlen($payload);
     while ($written < $len) {
         $chunk = substr($payload, $written, 8192);
-        $result = fwrite($sock1, $chunk);
+        $result = fwrite($pipes[0], $chunk);
         if ($result === false || $result === 0) {
             break;
         }
         $written += $result;
     }
-    fclose($sock1);
+    fclose($pipes[0]);
     return $written;
 });
 
-$reader = spawn(function() use ($sock2) {
+$reader = spawn(function() use ($pipes) {
     $received = '';
-    while (!feof($sock2)) {
-        $chunk = fread($sock2, 8192);
+    while (!feof($pipes[1])) {
+        $chunk = fread($pipes[1], 8192);
         if ($chunk === '' || $chunk === false) {
             break;
         }
         $received .= $chunk;
     }
-    fclose($sock2);
+    fclose($pipes[1]);
     return strlen($received);
 });
 
@@ -52,6 +69,8 @@ $read = $results[1];
 echo "Written: $written\n";
 echo "Read: $read\n";
 echo "Match: " . ($written === $read ? "yes" : "no") . "\n";
+
+proc_close($process);
 echo "End\n";
 
 ?>
