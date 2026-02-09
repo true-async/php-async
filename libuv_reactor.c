@@ -286,7 +286,11 @@ static void on_poll_event(uv_poll_t *handle, int status, int events)
 				events &= ~ASYNC_READABLE;
 			}
 #else
-			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+			if (errno == EAGAIN
+#if EAGAIN != EWOULDBLOCK
+				|| errno == EWOULDBLOCK
+#endif
+			) {
 				events &= ~ASYNC_READABLE;
 			}
 #endif

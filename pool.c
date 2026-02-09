@@ -901,8 +901,6 @@ retry:
 
 void zend_async_pool_release(async_pool_t *pool, zval *resource)
 {
-	zend_async_pool_t *base = &pool->base;
-
 	pool->active_count--;
 
 	/* beforeRelease callback (if set) */
