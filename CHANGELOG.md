@@ -10,6 +10,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Future Support**: Full Future/FutureState implementation with `map()`, `catch()`, `finally()` chains and proper flag propagation
 - **Channel**: CSP-style message passing between coroutines with buffered/unbuffered modes, timeout support, and iterator interface
+- **Pool**: Resource pool implementation with CircuitBreaker pattern support
+  - `Async\Pool` class for managing reusable resources (connections, handles, etc.)
+  - Configurable min/max pool size with automatic pre-warming
+  - `acquire()` / `tryAcquire()` / `release()` methods for resource management
+  - Blocking acquire with timeout support in coroutine context
+  - Callbacks: `factory`, `destructor`, `healthcheck`, `beforeAcquire`, `beforeRelease`
+  - `CircuitBreakerInterface` implementation with state management (ACTIVE/INACTIVE/RECOVERING)
+  - `CircuitBreakerStrategyInterface` for custom recovery strategies
+  - `ServiceUnavailableException` when circuit breaker is INACTIVE
+  - C API: `ZEND_ASYNC_NEW_POOL()`, `ZEND_ASYNC_POOL_ACQUIRE()`, etc. macros for internal use
+- **TrueAsync ABI**: Extended `zend_async_API.h` with Pool support
+  - Added `zend_async_pool_t` structure with CircuitBreaker state
+  - Added `zend_async_circuit_state_t` enum and strategy types
+  - Added Pool API function pointers and registration mechanism
+  - Added `ZEND_ASYNC_CLASS_POOL` and `ZEND_ASYNC_EXCEPTION_SERVICE_UNAVAILABLE` to class enum
+- **PDO Connection Pooling**: Transparent connection pooling for PDO with per-coroutine dispatch and automatic lifecycle management
+- **PDO PgSQL**: Non-blocking query execution for PostgreSQL PDO driver
+- **PostgreSQL**: Concurrent `pg_*` query execution with separate connections per async context
+
+### Changed
+- **Hidden Events**: Added `ZEND_ASYNC_EVENT_F_HIDDEN` flag for events excluded from deadlock detection
 
 ## [0.5.0] - 2025-12-24
 

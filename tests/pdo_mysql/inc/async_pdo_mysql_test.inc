@@ -38,7 +38,7 @@ class AsyncPDOMySQLTest {
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         ];
         
-        $options = array_merge($defaultOptions, $options);
+        $options = $options + $defaultOptions;
         
         return new PDO($dsn, $user, $pass, $options);
     }
@@ -70,7 +70,7 @@ class AsyncPDOMySQLTest {
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         ];
         
-        $options = array_merge($defaultOptions, $options);
+        $options = $options + $defaultOptions;
         
         return new PDO($dsn, $user, $pass, $options);
     }

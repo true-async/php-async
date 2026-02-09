@@ -84,6 +84,7 @@ typedef struct
 } async_await_iterator_iterator_t;
 
 void async_api_register(void);
+void async_pool_api_register(void);
 
 void async_await_futures(zval *iterable,
 						 int count,
