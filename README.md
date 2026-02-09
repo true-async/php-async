@@ -177,9 +177,19 @@ Please see the [LibUV installation guide](https://github.com/libuv/libuv) for mo
 - **PDO MySQL** - async-compatible PDO operations
   - `PDO::__construct()`, `PDO::prepare()`, `PDO::exec()` - non-blocking
   - `PDOStatement::execute()`, `PDOStatement::fetch()` - async data access
-- **MySQLi** - async-compatible MySQLi operations  
+- **PDO PgSQL** - non-blocking PostgreSQL PDO driver
+  - `PDO::__construct()`, `PDO::prepare()`, `PDO::exec()` - non-blocking query execution
+  - `PDOStatement::execute()`, `PDOStatement::fetch()` - async result fetching
+- **PDO Connection Pooling** - transparent connection pooling for PDO
+  - `Async\Pool` integration with per-coroutine connection dispatch
+  - Automatic connection lifecycle management and health checks
+- **MySQLi** - async-compatible MySQLi operations
   - `mysqli_connect()`, `mysqli_query()`, `mysqli_prepare()` - non-blocking
   - `mysqli_stmt_execute()`, `mysqli_fetch_*()` - async result fetching
+- **PostgreSQL (pg_\*)** - concurrent native PostgreSQL operations
+  - `pg_connect()`, `pg_query()`, `pg_prepare()` - non-blocking
+  - `pg_execute()`, `pg_fetch_*()` - async result fetching
+  - Separate connections per async context for safe concurrency
 
 ### CURL Functions  
 - `curl_exec()` - execute cURL request
