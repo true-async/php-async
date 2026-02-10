@@ -3556,7 +3556,7 @@ static void udp_send_cb(uv_udp_send_t *send_req, int status)
 	async_udp_req_t *req = (async_udp_req_t *) send_req->data;
 
 	if (status < 0) {
-		req->base.exception = async_throw_exception("UDP send failed: %s", uv_strerror(status));
+		req->base.exception = async_throw_input_output("UDP send failed: %s", uv_strerror(status));
 	} else {
 		req->base.transferred = (ssize_t) req->max_size;
 	}
@@ -3594,7 +3594,7 @@ static void udp_recv_cb(uv_udp_t *udp_handle, ssize_t nread, const uv_buf_t *buf
 	io->active_req = NULL;
 
 	if (nread < 0) {
-		req->base.exception = async_throw_exception("UDP recv failed: %s", uv_strerror((int) nread));
+		req->base.exception = async_throw_input_output("UDP recv failed: %s", uv_strerror((int) nread));
 	} else if (nread == 0) {
 		/* Empty datagram or EAGAIN */
 		return;
