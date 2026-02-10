@@ -116,6 +116,11 @@ struct _async_trigger_event_t
 	uv_async_t uv_handle;
 };
 
+typedef struct _libuv_work_wrapper_s {
+	uv_work_t uv_req;
+	zend_async_task_t *task;
+} libuv_work_wrapper_t;
+
 struct _async_io_t
 {
 	zend_async_io_t base;

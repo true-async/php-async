@@ -1658,6 +1658,142 @@ zend_async_thread_event_t *libuv_new_thread_event(zend_async_thread_entry_t entr
 /* }}} */
 
 /////////////////////////////////////////////////////////////////////////////////
+/// Thread Pool API
+/////////////////////////////////////////////////////////////////////////////////
+
+/* {{{ libuv_task_work_cb - runs in thread pool worker thread */
+static void libuv_task_work_cb(uv_work_t *req)
+{
+	libuv_work_wrapper_t *wrapper = (libuv_work_wrapper_t *) req;
+
+	/* Execute the task's run function in the worker thread.
+	 * No PHP/Zend API access is allowed here. */
+	wrapper->task->run(wrapper->task);
+}
+
+/* }}} */
+
+/* {{{ libuv_task_after_work_cb - runs on event loop thread */
+static void libuv_task_after_work_cb(uv_work_t *req, int status)
+{
+	libuv_work_wrapper_t *wrapper = (libuv_work_wrapper_t *) req;
+	zend_async_task_t *task = wrapper->task;
+	zend_object *exception = NULL;
+
+	close_event(&task->base);
+
+	if (status == UV_ECANCELED) {
+		exception = async_new_exception(
+				async_ce_cancellation_exception, "Thread pool task was cancelled");
+	}
+
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&task->base, NULL, exception);
+
+	if (exception != NULL) {
+		OBJ_RELEASE(exception);
+	}
+
+	IF_EXCEPTION_STOP_REACTOR;
+
+	/* Free only the wrapper, not the task */
+	pefree(wrapper, 0);
+}
+
+/* }}} */
+
+/* {{{ libuv_task_start */
+static bool libuv_task_start(zend_async_event_t *event)
+{
+	EVENT_START_PROLOGUE(event);
+
+	event->loop_ref_count++;
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(event);
+	return true;
+}
+
+/* }}} */
+
+/* {{{ libuv_task_stop */
+static bool libuv_task_stop(zend_async_event_t *event)
+{
+	EVENT_STOP_PROLOGUE(event);
+
+	event->loop_ref_count = 0;
+	ZEND_ASYNC_DECREASE_EVENT_COUNT(event);
+	return true;
+}
+
+/* }}} */
+
+/* {{{ libuv_task_dispose */
+static bool libuv_task_dispose(zend_async_event_t *event)
+{
+	if (ZEND_ASYNC_EVENT_REFCOUNT(event) > 1) {
+		ZEND_ASYNC_EVENT_DEL_REF(event);
+		return true;
+	}
+
+	if (event->loop_ref_count > 0) {
+		event->loop_ref_count = 1;
+		event->stop(event);
+	}
+
+	zend_async_callbacks_free(event);
+	pefree(event, 0);
+	return true;
+}
+
+/* }}} */
+
+/* {{{ libuv_queue_task */
+static bool libuv_queue_task(zend_async_task_t *task)
+{
+	if (UNEXPECTED(task == NULL)) {
+		async_throw_error("Cannot queue a NULL task");
+		return false;
+	}
+
+	if (UNEXPECTED(task->run == NULL)) {
+		async_throw_error("Cannot queue a task without a run function");
+		return false;
+	}
+
+	if (UNEXPECTED(ASYNC_G(reactor_started) == false)) {
+		libuv_reactor_startup();
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			return false;
+		}
+	}
+
+	/* Initialize the event methods on the task */
+	zend_async_event_t *event = &task->base;
+	event->ref_count = 1;
+	event->add_callback = libuv_add_callback;
+	event->del_callback = libuv_remove_callback;
+	event->start = libuv_task_start;
+	event->stop = libuv_task_stop;
+	event->dispose = libuv_task_dispose;
+
+	/* Allocate the libuv work wrapper */
+	libuv_work_wrapper_t *wrapper = pecalloc(1, sizeof(libuv_work_wrapper_t), 0);
+	wrapper->task = task;
+
+	/* Queue the work to libuv's thread pool */
+	int error = uv_queue_work(UVLOOP, &wrapper->uv_req,
+	                          libuv_task_work_cb, libuv_task_after_work_cb);
+
+	if (error < 0) {
+		pefree(wrapper, 0);
+		async_throw_error("Failed to queue thread pool task: %s", uv_strerror(error));
+		return false;
+	}
+
+	return true;
+}
+
+/* }}} */
+
+/////////////////////////////////////////////////////////////////////////////////
 /// File System API
 /////////////////////////////////////////////////////////////////////////////////
 
@@ -3786,4 +3922,8 @@ void async_libuv_reactor_register(void)
 			libuv_io_close, libuv_io_await, libuv_io_flush, libuv_io_stat,
 			libuv_io_seek, libuv_udp_sendto, libuv_udp_recvfrom,
 			libuv_io_set_option, libuv_udp_set_membership);
+
+	zend_string *tp_module = zend_string_init(LIBUV_REACTOR_NAME, sizeof(LIBUV_REACTOR_NAME) - 1, 1);
+	zend_async_thread_pool_register(tp_module, false, libuv_queue_task);
+	zend_string_release(tp_module);
 }
