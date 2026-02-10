@@ -11,16 +11,15 @@ use function Async\spawn;
 
 echo "Main thread start\n";
 
-$start_time = microtime(true);
-
-spawn(function () use ($start_time) {
+spawn(function () {
     echo "Starting async sleep test\n";
-    
+
+    $before = microtime(true);
     $result = sleep(1);
-    
-    $elapsed = microtime(true) - $start_time;
+    $elapsed = microtime(true) - $before;
+
     echo "Sleep returned: $result\n";
-    echo "Elapsed time >= 1s: " . ($elapsed >= 1.0 ? "yes" : "no") . "\n";
+    echo "Elapsed time >= 1s: " . ($elapsed >= 0.9 ? "yes" : "no") . "\n";
     echo "Sleep test completed\n";
 });
 

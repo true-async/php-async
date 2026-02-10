@@ -2880,6 +2880,17 @@ static zend_async_io_t *libuv_io_create(
 
 /* }}} */
 
+/* {{{ libuv_can_use_sync_io
+ * Returns true when there is at most one coroutine and no active events
+ * in the reactor, meaning async I/O would only add overhead with no
+ * concurrency benefit. */
+static inline bool libuv_can_use_sync_io(void)
+{
+	return zend_hash_num_elements(&ASYNC_G(coroutines)) <= 1
+		&& !libuv_reactor_loop_alive();
+}
+/* }}} */
+
 /* {{{ libuv_io_read */
 static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, const size_t max_size)
 {
@@ -2903,7 +2914,43 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, const size_t
 
 	req->base.buf = pemalloc(max_size, 0);
 
+#ifndef PHP_WIN32
+	/* Sync fallback: use blocking I/O when there is at most one coroutine
+	 * and no active events in the reactor. */
+	const bool sync_io = libuv_can_use_sync_io();
+#else
+	const bool sync_io = false;
+#endif
+
 	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE) {
+#ifndef PHP_WIN32
+		if (sync_io) {
+			ssize_t result;
+			do {
+				result = read(io->crt_fd, req->base.buf, max_size);
+			} while (result == -1 && errno == EINTR);
+
+			if (result > 0) {
+				req->base.transferred = result;
+				req->base.completed = true;
+				return &req->base;
+			} else if (result == 0) {
+				req->base.transferred = 0;
+				io->base.state |= ZEND_ASYNC_IO_EOF;
+				req->base.completed = true;
+				return &req->base;
+			} else if (errno != EAGAIN) {
+				req->base.transferred = -1;
+				req->base.exception = async_new_exception(
+						async_ce_input_output_exception,
+						"Pipe read error: %s", strerror(errno));
+				req->base.completed = true;
+				return &req->base;
+			}
+
+		}
+#endif
+
 		io->active_req = req;
 
 		const int error = uv_read_start(
@@ -2920,6 +2967,31 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, const size_t
 	}
 
 	/* FILE path */
+#ifndef PHP_WIN32
+	if (sync_io) {
+		ssize_t result;
+		do {
+			result = pread(io->crt_fd, req->base.buf, max_size, io->handle.file.offset);
+		} while (result == -1 && errno == EINTR);
+
+		if (result > 0) {
+			req->base.transferred = result;
+			io->handle.file.offset += result;
+		} else if (result == 0) {
+			req->base.transferred = 0;
+			io->base.state |= ZEND_ASYNC_IO_EOF;
+		} else {
+			req->base.transferred = -1;
+			req->base.exception = async_new_exception(
+					async_ce_input_output_exception,
+					"File read error: %s", strerror(errno));
+		}
+
+		req->base.completed = true;
+		return &req->base;
+	}
+#endif
+
 	const uv_buf_t read_buffer = uv_buf_init(req->base.buf, (unsigned int) max_size);
 	req->fs_req.data = req;
 
@@ -2952,7 +3024,38 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 	req->io = io;
 	req->max_size = count;
 
+#ifndef PHP_WIN32
+	/* Sync fallback: use blocking I/O when there is at most one coroutine
+	 * and no active events in the reactor. */
+	const bool sync_io = libuv_can_use_sync_io();
+#else
+	const bool sync_io = false;
+#endif
+
 	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE) {
+#ifndef PHP_WIN32
+		if (sync_io) {
+			ssize_t result;
+			do {
+				result = write(io->crt_fd, buf, count);
+			} while (result == -1 && errno == EINTR);
+
+			if (result >= 0 || errno != EAGAIN) {
+				if (result >= 0) {
+					req->base.transferred = result;
+				} else {
+					req->base.transferred = -1;
+					req->base.exception = async_new_exception(
+							async_ce_input_output_exception,
+							"Pipe write error: %s", strerror(errno));
+				}
+				req->base.completed = true;
+				return &req->base;
+			}
+			/* EAGAIN/EWOULDBLOCK on non-blocking pipe: fall through to async path */
+		}
+#endif
+
 		const uv_buf_t write_buffer = uv_buf_init((char *) buf, (unsigned int) count);
 		req->write_req.data = req;
 
@@ -2969,6 +3072,28 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 	}
 
 	/* FILE path */
+#ifndef PHP_WIN32
+	if (sync_io) {
+		ssize_t result;
+		do {
+			result = pwrite(io->crt_fd, buf, count, io->handle.file.offset);
+		} while (result == -1 && errno == EINTR);
+
+		if (result >= 0) {
+			req->base.transferred = result;
+			io->handle.file.offset += result;
+		} else {
+			req->base.transferred = -1;
+			req->base.exception = async_new_exception(
+					async_ce_input_output_exception,
+					"File write error: %s", strerror(errno));
+		}
+
+		req->base.completed = true;
+		return &req->base;
+	}
+#endif
+
 	const uv_buf_t write_buffer = uv_buf_init((char *) buf, (unsigned int) count);
 	req->fs_req.data = req;
 
