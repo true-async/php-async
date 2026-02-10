@@ -14,103 +14,93 @@ use function Async\await_all;
 $server = async_test_server_start();
 echo "Test server started on localhost:{$server->port}\n";
 
-function test_basic_get($server) {
-    echo "Starting basic GET test\n";
-    
+function test_basic_get($server, &$output) {
+    $output[1] = "Starting basic GET test";
+
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, "http://localhost:{$server->port}/");
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 5);
     curl_setopt($ch, CURLOPT_USERAGENT, "AsyncTest/1.0");
-    
-    $start_time = microtime(true);
+
     $response = curl_exec($ch);
-    $end_time = microtime(true);
-    
+
     $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $content_type = curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
-    $total_time = curl_getinfo($ch, CURLINFO_TOTAL_TIME);
     $error = curl_error($ch);
-    
-    
-    $duration = round(($end_time - $start_time) * 1000, 2);
-    
-    echo "HTTP Code: $http_code\n";
-    echo "Content-Type: $content_type\n";
-    echo "Error: " . ($error ?: "none") . "\n";
-    echo "Duration: {$duration}ms\n";
-    echo "Response: $response\n";
-    
-    // Validate response
+
+    $output[2] = "HTTP Code: $http_code";
+    $output[3] = "Content-Type: $content_type";
+    $output[4] = "Error: " . ($error ?: "none");
+    $output[5] = "Response: $response";
+
     if ($http_code !== 200) {
         throw new Exception("Expected HTTP 200, got $http_code");
     }
     if ($response !== "Hello World") {
         throw new Exception("Unexpected response: $response");
     }
-    
-    return $response;
 }
 
-function test_json_endpoint($server) {
-    echo "Testing JSON endpoint\n";
-    
+function test_json_endpoint($server, &$output) {
+    $output[6] = "Testing JSON endpoint";
+
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, "http://localhost:{$server->port}/json");
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-    
+
     $response = curl_exec($ch);
     $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $content_type = curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
-    
-    
-    echo "JSON HTTP Code: $http_code\n";
-    echo "JSON Content-Type: $content_type\n";
-    
+
+    $output[7] = "JSON HTTP Code: $http_code";
+    $output[8] = "JSON Content-Type: $content_type";
+
     $data = json_decode($response, true);
     if ($data === null) {
         throw new Exception("Invalid JSON response");
     }
-    
-    echo "JSON Message: {$data['message']}\n";
-    echo "JSON Status: {$data['status']}\n";
-    
-    return $data;
+
+    $output[9] = "JSON Message: {$data['message']}";
+    $output[10] = "JSON Status: {$data['status']}";
 }
 
-function test_error_handling($server) {
-    echo "Testing error handling\n";
-    
+function test_error_handling($server, &$output) {
+    $output[11] = "Testing error handling";
+
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, "http://localhost:{$server->port}/error");
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-    
+
     $response = curl_exec($ch);
     $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    
-    
-    echo "Error HTTP Code: $http_code\n";
-    echo "Error Response: $response\n";
-    
+
+    $output[12] = "Error HTTP Code: $http_code";
+    $output[13] = "Error Response: $response";
+
     if ($http_code !== 500) {
         throw new Exception("Expected HTTP 500, got $http_code");
     }
-    
-    return $http_code;
 }
 
 echo "Test start\n";
 
-// Run multiple async tests concurrently
+$output = [];
+
 $coroutines = [
-    spawn(fn() => test_basic_get($server)),
-    spawn(fn() => test_json_endpoint($server)),
-    spawn(fn() => test_error_handling($server))
+    spawn(function() use ($server, &$output) { test_basic_get($server, $output); }),
+    spawn(function() use ($server, &$output) { test_json_endpoint($server, $output); }),
+    spawn(function() use ($server, &$output) { test_error_handling($server, $output); }),
 ];
 
-$results = await_all($coroutines);
+await_all($coroutines);
+
+ksort($output);
+foreach ($output as $line) {
+    echo "$line\n";
+}
 
 echo "All tests completed successfully\n";
 echo "Test end\n";
@@ -122,17 +112,16 @@ async_test_server_stop($server);
 Test server started on localhost:%d
 Test start
 Starting basic GET test
-Testing JSON endpoint
-Testing error handling
 HTTP Code: 200
 Content-Type: text/html; charset=UTF-8
 Error: none
-Duration: %fms
 Response: Hello World
+Testing JSON endpoint
 JSON HTTP Code: 200
 JSON Content-Type: application/json
 JSON Message: Hello JSON
 JSON Status: ok
+Testing error handling
 Error HTTP Code: 500
 Error Response: Internal Server Error
 All tests completed successfully
