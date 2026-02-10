@@ -16,8 +16,8 @@
 #ifndef LIBUV_REACTOR_H
 #define LIBUV_REACTOR_H
 
-#define LIBUV_REACTOR_VERSION "0.5.0"
-#define LIBUV_REACTOR_NAME "Libuv Reactor 0.5.0"
+#define LIBUV_REACTOR_VERSION "0.8.0"
+#define LIBUV_REACTOR_NAME "Libuv Reactor 0.8.0"
 #include <Zend/zend_async_API.h>
 
 #ifdef PHP_WIN32
@@ -123,6 +123,8 @@ struct _async_io_t
 	async_io_req_t *active_req;
 	union {
 		uv_pipe_t pipe;
+ 		uv_tcp_t tcp;
+		uv_udp_t udp;
 		struct {
 			zend_off_t offset;
 		} file;
@@ -138,6 +140,16 @@ struct _async_io_req_t
 		uv_write_t write_req;
 		uv_fs_t fs_req;
 	};
+};
+
+typedef struct _async_udp_req_t async_udp_req_t;
+
+struct _async_udp_req_t
+{
+	zend_async_udp_req_t base;
+	async_io_t *io;
+	size_t max_size;
+	uv_udp_send_t send_req;
 };
 
 void async_libuv_reactor_register(void);
