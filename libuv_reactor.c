@@ -2135,6 +2135,7 @@ static void exec_read_cb(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf
 					zend_string *string = Z_STR_P(exec->result_buffer);
 					string = zend_string_extend(string, ZSTR_LEN(string) + nread, 0);
 					memcpy(ZSTR_VAL(string) + ZSTR_LEN(string) - nread, buf->base, nread);
+					ZSTR_VAL(string)[ZSTR_LEN(string)] = '\0';
 					ZVAL_STR(exec->result_buffer, string);
 				}
 
@@ -2190,6 +2191,7 @@ static void exec_std_err_read_cb(uv_stream_t *stream, ssize_t nread, const uv_bu
 				zend_string *string = Z_STR_P(exec->std_error);
 				string = zend_string_extend(string, ZSTR_LEN(string) + nread, 0);
 				memcpy(ZSTR_VAL(string) + ZSTR_LEN(string) - nread, buf->base, nread);
+				ZSTR_VAL(string)[ZSTR_LEN(string)] = '\0';
 				ZVAL_STR(exec->std_error, string);
 			}
 		}
