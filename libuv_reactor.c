@@ -2827,7 +2827,7 @@ static zend_async_io_t *libuv_io_create(
 
 	async_io_t *io = pecalloc(1, sizeof(async_io_t), 0);
 
-	io->base.fd = fd;
+	io->base.descriptor.fd = fd;
 	io->base.type = type;
 	io->base.state = state;
 
@@ -3409,5 +3409,5 @@ void async_libuv_reactor_register(void)
 	zend_async_io_register(LIBUV_REACTOR_NAME, false,
 			libuv_io_create, libuv_io_read, libuv_io_write,
 			libuv_io_close, libuv_io_await, libuv_io_flush, libuv_io_stat,
-			libuv_io_seek);
+			libuv_io_seek, NULL, NULL, NULL, NULL);
 }
