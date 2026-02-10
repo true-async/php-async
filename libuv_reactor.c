@@ -2582,7 +2582,7 @@ zend_async_trigger_event_t *libuv_new_trigger_event(size_t extra_size)
 /// Async IO API
 /////////////////////////////////////////////////////////////////////////////////
 
-static void io_pipe_close_cb(uv_handle_t *pipe_handle);
+static void io_close_cb(uv_handle_t *pipe_handle);
 
 /* {{{ IO event methods */
 static bool libuv_io_event_start(zend_async_event_t *event)
@@ -2623,7 +2623,17 @@ static bool libuv_io_event_dispose(zend_async_event_t *event)
 			&& !(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
 		io->base.state |= ZEND_ASYNC_IO_CLOSED;
 		io->handle.pipe.data = io;
-		uv_close((uv_handle_t *) &io->handle.pipe, io_pipe_close_cb);
+		uv_close((uv_handle_t *) &io->handle.pipe, io_close_cb);
+	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_TCP
+			&& !(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
+		io->base.state |= ZEND_ASYNC_IO_CLOSED;
+		io->handle.tcp.data = io;
+		uv_close((uv_handle_t *) &io->handle.tcp, io_close_cb);
+	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_UDP
+			&& !(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
+		io->base.state |= ZEND_ASYNC_IO_CLOSED;
+		io->handle.udp.data = io;
+		uv_close((uv_handle_t *) &io->handle.udp, io_close_cb);
 	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_FILE) {
 		pefree(io, 0);
 	}
@@ -2719,7 +2729,7 @@ static void io_pipe_write_cb(uv_write_t *write_request, int status)
 	IF_EXCEPTION_STOP_REACTOR;
 }
 
-static void io_pipe_close_cb(uv_handle_t *pipe_handle)
+static void io_close_cb(uv_handle_t *pipe_handle)
 {
 	pefree(pipe_handle->data, 0);
 }
@@ -2827,15 +2837,25 @@ static zend_async_io_t *libuv_io_create(
 
 	async_io_t *io = pecalloc(1, sizeof(async_io_t), 0);
 
-	io->base.fd = fd;
+	/* Set descriptor based on type */
+	if (type == ZEND_ASYNC_IO_TYPE_TCP || type == ZEND_ASYNC_IO_TYPE_UDP) {
+		io->base.descriptor.socket = (zend_socket_t) fd;
+#ifdef PHP_WIN32
+		io->crt_fd = (int)(intptr_t) fd;
+#else
+		io->crt_fd = (int) fd;
+#endif
+	} else {
+		io->base.descriptor.fd = fd;
+#ifdef PHP_WIN32
+		io->crt_fd = (int)(intptr_t) fd;
+#else
+		io->crt_fd = (int) fd;
+#endif
+	}
+
 	io->base.type = type;
 	io->base.state = state;
-
-#ifdef PHP_WIN32
-	io->crt_fd = (int)(intptr_t) fd;
-#else
-	io->crt_fd = (int) fd;
-#endif
 
 	io->base.event.ref_count = 1;
 	io->base.event.add_callback = libuv_add_callback;
@@ -2858,12 +2878,33 @@ static zend_async_io_t *libuv_io_create(
 		if (UNEXPECTED(error < 0)) {
 			async_throw_error("Failed to open pipe handle: %s", uv_strerror(error));
 			io->handle.pipe.data = io;
-			uv_close((uv_handle_t *) &io->handle.pipe, io_pipe_close_cb);
+			uv_close((uv_handle_t *) &io->handle.pipe, io_close_cb);
 			return NULL;
 		}
 
 		io->handle.pipe.data = io;
+	} else if (type == ZEND_ASYNC_IO_TYPE_TCP) {
+		int error = uv_tcp_init(UVLOOP, &io->handle.tcp);
+
+		if (UNEXPECTED(error < 0)) {
+			async_throw_error("Failed to initialize TCP handle: %s", uv_strerror(error));
+			pefree(io, 0);
+			return NULL;
+		}
+
+		io->handle.tcp.data = io;
+	} else if (type == ZEND_ASYNC_IO_TYPE_UDP) {
+		int error = uv_udp_init(UVLOOP, &io->handle.udp);
+
+		if (UNEXPECTED(error < 0)) {
+			async_throw_error("Failed to initialize UDP handle: %s", uv_strerror(error));
+			pefree(io, 0);
+			return NULL;
+		}
+
+		io->handle.udp.data = io;
 	} else {
+		/* FILE type */
 		if (state & ZEND_ASYNC_IO_APPEND) {
 			const zend_off_t end = zend_lseek(io->crt_fd, 0, SEEK_END);
 			io->handle.file.offset = (end >= 0) ? end : 0;
@@ -2999,7 +3040,7 @@ static int libuv_io_close(zend_async_io_t *io_base)
 		uv_read_stop((uv_stream_t *) &io->handle.pipe);
 		zend_async_callbacks_free(&io->base.event);
 		io->handle.pipe.data = io;
-		uv_close((uv_handle_t *) &io->handle.pipe, io_pipe_close_cb);
+		uv_close((uv_handle_t *) &io->handle.pipe, io_close_cb);
 		return 1;
 	}
 
@@ -3381,6 +3422,213 @@ zend_async_listen_event_t *libuv_socket_listen(const char *host, int port, int b
 
 /* }}} */
 
+/* {{{ UDP callbacks and functions */
+
+static void udp_send_cb(uv_udp_send_t *send_req, int status)
+{
+	async_udp_req_t *req = (async_udp_req_t *) send_req->data;
+
+	if (status < 0) {
+		req->base.exception = async_throw_exception("UDP send failed: %s", uv_strerror(status));
+	} else {
+		req->base.transferred = (ssize_t) req->max_size;
+	}
+
+	req->base.completed = true;
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&req->io->base.event, &req->base, req->base.exception);
+}
+
+static void udp_recv_alloc_cb(uv_handle_t *udp_handle, size_t suggested_size, uv_buf_t *output)
+{
+	const async_io_t *io = (async_io_t *) udp_handle->data;
+	async_udp_req_t *req = (async_udp_req_t *) io->active_req;
+
+	if (UNEXPECTED(req == NULL || req->base.buf == NULL)) {
+		output->base = NULL;
+		output->len = 0;
+		return;
+	}
+
+	output->base = req->base.buf;
+	output->len = (unsigned int) req->max_size;
+}
+
+static void udp_recv_cb(uv_udp_t *udp_handle, ssize_t nread, const uv_buf_t *buf,
+		const struct sockaddr *addr, unsigned flags)
+{
+	async_io_t *io = (async_io_t *) udp_handle->data;
+	async_udp_req_t *req = (async_udp_req_t *) io->active_req;
+
+	if (UNEXPECTED(req == NULL)) {
+		return;
+	}
+
+	uv_udp_recv_stop(udp_handle);
+	io->active_req = NULL;
+
+	if (nread < 0) {
+		req->base.exception = async_throw_exception("UDP recv failed: %s", uv_strerror((int) nread));
+	} else if (nread == 0) {
+		/* Empty datagram or EAGAIN */
+		return;
+	} else {
+		req->base.transferred = nread;
+		if (addr != NULL) {
+			memcpy(&req->base.addr, addr, sizeof(struct sockaddr_storage));
+			req->base.addr_len = (addr->sa_family == AF_INET) ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
+		}
+	}
+
+	req->base.completed = true;
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
+}
+
+static void udp_req_dispose(zend_async_udp_req_t *base_req)
+{
+	async_udp_req_t *req = (async_udp_req_t *) base_req;
+
+	if (req->base.buf != NULL) {
+		pefree(req->base.buf, 0);
+	}
+
+	if (req->base.exception != NULL) {
+		zend_object_release(req->base.exception);
+	}
+
+	pefree(req, 0);
+}
+
+static zend_async_udp_req_t *libuv_udp_sendto(zend_async_io_t *io_base, const char *buf,
+		size_t count, const struct sockaddr *addr, socklen_t addr_len)
+{
+	async_io_t *io = (async_io_t *) io_base;
+
+	if (UNEXPECTED(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
+		async_throw_error("Cannot send to closed UDP socket");
+		return NULL;
+	}
+
+	if (UNEXPECTED(io->base.type != ZEND_ASYNC_IO_TYPE_UDP)) {
+		async_throw_error("IO handle is not UDP type");
+		return NULL;
+	}
+
+	async_udp_req_t *req = pecalloc(1, sizeof(async_udp_req_t), 0);
+	req->base.dispose = udp_req_dispose;
+	req->io = io;
+	req->max_size = count;
+
+	/* Copy address to request */
+	memcpy(&req->base.addr, addr, addr_len);
+	req->base.addr_len = addr_len;
+
+	/* Prepare buffer */
+	uv_buf_t uv_buf = uv_buf_init((char *) buf, (unsigned int) count);
+
+	req->send_req.data = req;
+	const int error = uv_udp_send(&req->send_req, &io->handle.udp, &uv_buf, 1, addr, udp_send_cb);
+
+	if (UNEXPECTED(error < 0)) {
+		async_throw_error("Failed to start UDP send: %s", uv_strerror(error));
+		udp_req_dispose(&req->base);
+		return NULL;
+	}
+
+	return &req->base;
+}
+
+static zend_async_udp_req_t *libuv_udp_recvfrom(zend_async_io_t *io_base, size_t max_size)
+{
+	async_io_t *io = (async_io_t *) io_base;
+
+	if (UNEXPECTED(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
+		async_throw_error("Cannot receive from closed UDP socket");
+		return NULL;
+	}
+
+	if (UNEXPECTED(io->base.type != ZEND_ASYNC_IO_TYPE_UDP)) {
+		async_throw_error("IO handle is not UDP type");
+		return NULL;
+	}
+
+	async_udp_req_t *req = pecalloc(1, sizeof(async_udp_req_t), 0);
+	req->base.dispose = udp_req_dispose;
+	req->io = io;
+	req->max_size = max_size;
+	req->base.buf = pemalloc(max_size, 0);
+
+	io->active_req = (async_io_req_t *) req;
+
+	const int error = uv_udp_recv_start(&io->handle.udp, udp_recv_alloc_cb, udp_recv_cb);
+
+	if (UNEXPECTED(error < 0)) {
+		io->active_req = NULL;
+		async_throw_error("Failed to start UDP recv: %s", uv_strerror(error));
+		udp_req_dispose(&req->base);
+		return NULL;
+	}
+
+	return &req->base;
+}
+
+static int libuv_io_set_option(zend_async_io_t *io_base, zend_async_socket_option_t option, int value)
+{
+	async_io_t *io = (async_io_t *) io_base;
+	int result = 0;
+
+	switch (option) {
+		case ZEND_ASYNC_SOCKET_OPT_BROADCAST:
+			if (io->base.type == ZEND_ASYNC_IO_TYPE_UDP) {
+				result = uv_udp_set_broadcast(&io->handle.udp, value);
+			}
+			break;
+		case ZEND_ASYNC_SOCKET_OPT_MULTICAST_LOOP:
+			if (io->base.type == ZEND_ASYNC_IO_TYPE_UDP) {
+				result = uv_udp_set_multicast_loop(&io->handle.udp, value);
+			}
+			break;
+		case ZEND_ASYNC_SOCKET_OPT_MULTICAST_TTL:
+			if (io->base.type == ZEND_ASYNC_IO_TYPE_UDP) {
+				result = uv_udp_set_multicast_ttl(&io->handle.udp, value);
+			}
+			break;
+		case ZEND_ASYNC_SOCKET_OPT_TTL:
+			if (io->base.type == ZEND_ASYNC_IO_TYPE_UDP) {
+				result = uv_udp_set_ttl(&io->handle.udp, value);
+			}
+			break;
+		case ZEND_ASYNC_SOCKET_OPT_NODELAY:
+			if (io->base.type == ZEND_ASYNC_IO_TYPE_TCP) {
+				result = uv_tcp_nodelay(&io->handle.tcp, value);
+			}
+			break;
+		case ZEND_ASYNC_SOCKET_OPT_KEEPALIVE:
+			if (io->base.type == ZEND_ASYNC_IO_TYPE_TCP) {
+				result = uv_tcp_keepalive(&io->handle.tcp, value, 60);
+			}
+			break;
+		default:
+			return -1;
+	}
+
+	return result;
+}
+
+static int libuv_udp_set_membership(zend_async_io_t *io_base, const char *multicast_addr,
+		const char *interface_addr, bool join)
+{
+	async_io_t *io = (async_io_t *) io_base;
+
+	if (io->base.type != ZEND_ASYNC_IO_TYPE_UDP) {
+		return -1;
+	}
+
+	uv_membership membership = join ? UV_JOIN_GROUP : UV_LEAVE_GROUP;
+	return uv_udp_set_membership(&io->handle.udp, multicast_addr, interface_addr, membership);
+}
+
+/* }}} */
+
 void async_libuv_reactor_register(void)
 {
 	zend_async_reactor_register(LIBUV_REACTOR_NAME,
@@ -3409,5 +3657,6 @@ void async_libuv_reactor_register(void)
 	zend_async_io_register(LIBUV_REACTOR_NAME, false,
 			libuv_io_create, libuv_io_read, libuv_io_write,
 			libuv_io_close, libuv_io_await, libuv_io_flush, libuv_io_stat,
-			libuv_io_seek);
+			libuv_io_seek, libuv_udp_sendto, libuv_udp_recvfrom,
+			libuv_io_set_option, libuv_udp_set_membership);
 }
