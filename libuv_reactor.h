@@ -127,8 +127,10 @@ struct _async_io_t
 	int crt_fd;
 	async_io_req_t *active_req;
 	union {
+		uv_stream_t stream;
 		uv_pipe_t pipe;
- 		uv_tcp_t tcp;
+		uv_tty_t tty;
+		uv_tcp_t tcp;
 		uv_udp_t udp;
 		struct {
 			zend_off_t offset;

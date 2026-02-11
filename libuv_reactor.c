@@ -2762,6 +2762,11 @@ static bool libuv_io_event_dispose(zend_async_event_t *event)
 		io->base.state |= ZEND_ASYNC_IO_CLOSED;
 		io->handle.pipe.data = io;
 		uv_close((uv_handle_t *) &io->handle.pipe, io_close_cb);
+	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_TTY
+			&& !(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
+		io->base.state |= ZEND_ASYNC_IO_CLOSED;
+		io->handle.tty.data = io;
+		uv_close((uv_handle_t *) &io->handle.tty, io_close_cb);
 	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_TCP
 			&& !(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
 		io->base.state |= ZEND_ASYNC_IO_CLOSED;
@@ -3021,6 +3026,17 @@ static zend_async_io_t *libuv_io_create(
 		}
 
 		io->handle.pipe.data = io;
+	} else if (type == ZEND_ASYNC_IO_TYPE_TTY) {
+		int readable = (state & ZEND_ASYNC_IO_READABLE) ? 1 : 0;
+		int error = uv_tty_init(UVLOOP, &io->handle.tty, io->crt_fd, readable);
+
+		if (UNEXPECTED(error < 0)) {
+			async_throw_error("Failed to initialize TTY handle: %s", uv_strerror(error));
+			pefree(io, 0);
+			return NULL;
+		}
+
+		io->handle.tty.data = io;
 	} else if (type == ZEND_ASYNC_IO_TYPE_TCP) {
 		int error = uv_tcp_init(UVLOOP, &io->handle.tcp);
 
@@ -3099,7 +3115,7 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, const size_t
 	const bool sync_io = false;
 #endif
 
-	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE) {
+	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE || io->base.type == ZEND_ASYNC_IO_TYPE_TTY) {
 #ifndef PHP_WIN32
 		if (sync_io) {
 			ssize_t result;
@@ -3120,7 +3136,7 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, const size_t
 				req->base.transferred = -1;
 				req->base.exception = async_new_exception(
 						async_ce_input_output_exception,
-						"Pipe read error: %s", strerror(errno));
+						"Stream read error: %s", strerror(errno));
 				req->base.completed = true;
 				return &req->base;
 			}
@@ -3131,7 +3147,7 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, const size_t
 		io->active_req = req;
 
 		const int error = uv_read_start(
-				(uv_stream_t *) &io->handle.pipe, io_pipe_alloc_cb, io_pipe_read_cb);
+				&io->handle.stream, io_pipe_alloc_cb, io_pipe_read_cb);
 
 		if (UNEXPECTED(error < 0)) {
 			io->active_req = NULL;
@@ -3209,7 +3225,7 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 	const bool sync_io = false;
 #endif
 
-	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE) {
+	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE || io->base.type == ZEND_ASYNC_IO_TYPE_TTY) {
 #ifndef PHP_WIN32
 		if (sync_io) {
 			ssize_t result;
@@ -3224,12 +3240,12 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 					req->base.transferred = -1;
 					req->base.exception = async_new_exception(
 							async_ce_input_output_exception,
-							"Pipe write error: %s", strerror(errno));
+							"Stream write error: %s", strerror(errno));
 				}
 				req->base.completed = true;
 				return &req->base;
 			}
-			/* EAGAIN/EWOULDBLOCK on non-blocking pipe: fall through to async path */
+			/* EAGAIN/EWOULDBLOCK on non-blocking fd: fall through to async path */
 		}
 #endif
 
@@ -3237,10 +3253,10 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 		req->write_req.data = req;
 
 		const int error = uv_write(
-				&req->write_req, (uv_stream_t *) &io->handle.pipe, &write_buffer, 1, io_pipe_write_cb);
+				&req->write_req, &io->handle.stream, &write_buffer, 1, io_pipe_write_cb);
 
 		if (UNEXPECTED(error < 0)) {
-			async_throw_error("Failed to start pipe write: %s", uv_strerror(error));
+			async_throw_error("Failed to start stream write: %s", uv_strerror(error));
 			libuv_io_req_dispose(&req->base);
 			return NULL;
 		}
@@ -3299,11 +3315,11 @@ static int libuv_io_close(zend_async_io_t *io_base)
 
 	io->base.state |= ZEND_ASYNC_IO_CLOSED;
 
-	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE) {
-		uv_read_stop((uv_stream_t *) &io->handle.pipe);
+	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE || io->base.type == ZEND_ASYNC_IO_TYPE_TTY) {
+		uv_read_stop(&io->handle.stream);
 		zend_async_callbacks_free(&io->base.event);
-		io->handle.pipe.data = io;
-		uv_close((uv_handle_t *) &io->handle.pipe, io_close_cb);
+		io->handle.stream.data = io;
+		uv_close((uv_handle_t *) &io->handle.stream, io_close_cb);
 		return 1;
 	}
 
@@ -3341,8 +3357,8 @@ static zend_async_io_req_t *libuv_io_flush(zend_async_io_t *io_base)
 		return NULL;
 	}
 
-	/* Pipes have no disk buffer to flush — return instant success */
-	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE) {
+	/* Pipes and TTYs have no disk buffer to flush — return instant success */
+	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE || io->base.type == ZEND_ASYNC_IO_TYPE_TTY) {
 		async_io_req_t *req = pecalloc(1, sizeof(async_io_req_t), 0);
 		req->base.dispose = libuv_io_req_dispose;
 		req->io = io;
@@ -3419,8 +3435,8 @@ static zend_async_io_req_t *libuv_io_stat(zend_async_io_t *io_base, zend_stat_t 
 		return NULL;
 	}
 
-	/* Pipes: synchronous fstat — return instant result */
-	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE) {
+	/* Pipes and TTYs: synchronous fstat — return instant result */
+	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE || io->base.type == ZEND_ASYNC_IO_TYPE_TTY) {
 		async_io_req_t *req = pecalloc(1, sizeof(async_io_req_t), 0);
 		req->base.dispose = libuv_io_req_dispose;
 		req->io = io;
