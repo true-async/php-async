@@ -214,12 +214,8 @@ static void libuv_close_poll_handle_cb(uv_handle_t *handle)
 			close(poll->event.socket);
 #endif
 		} else if (!poll->event.is_socket && poll->event.file != ZEND_FD_NULL) {
-			/* File descriptor cleanup */
-#ifdef PHP_WIN32
-			CloseHandle((HANDLE) poll->event.file);
-#else
+			/* File descriptor cleanup — zend_file_descriptor_t is CRT fd on all platforms */
 			close(poll->event.file);
-#endif
 		}
 	}
 
@@ -2980,21 +2976,14 @@ static zend_async_io_t *libuv_io_create(
 
 	async_io_t *io = pecalloc(1, sizeof(async_io_t), 0);
 
-	/* Set descriptor based on type */
+	/* Set descriptor based on type.
+	 * zend_file_descriptor_t is always a CRT fd (int) on all platforms. */
 	if (type == ZEND_ASYNC_IO_TYPE_TCP || type == ZEND_ASYNC_IO_TYPE_UDP) {
 		io->base.descriptor.socket = (zend_socket_t) fd;
-#ifdef PHP_WIN32
-		io->crt_fd = (int)(intptr_t) fd;
-#else
-		io->crt_fd = (int) fd;
-#endif
+		io->crt_fd = fd;
 	} else {
 		io->base.descriptor.fd = fd;
-#ifdef PHP_WIN32
-		io->crt_fd = (int)(intptr_t) fd;
-#else
-		io->crt_fd = (int) fd;
-#endif
+		io->crt_fd = fd;
 	}
 
 	io->base.type = type;
