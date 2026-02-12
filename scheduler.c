@@ -557,7 +557,7 @@ static bool resolve_deadlocks(void)
 	// we can simply cancel them without creating a deadlock exception.
 	//
 	if (fiber_coroutines_count == real_coroutines) {
-
+		ZEND_ASYNC_SCHEDULER_CONTEXT = true;
 		ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), value)
 		{
 			zend_coroutine_t *coroutine = (zend_coroutine_t *) Z_PTR_P(value);
@@ -567,11 +567,15 @@ static bool resolve_deadlocks(void)
 				ZEND_ASYNC_CANCEL(coroutine, zend_create_graceful_exit(), true);
 
 				if (UNEXPECTED(EG(exception) != NULL)) {
+					process_resumed_coroutines();
+					ZEND_ASYNC_SCHEDULER_CONTEXT = false;
 					return true;
 				}
 			}
 		}
 		ZEND_HASH_FOREACH_END();
+		process_resumed_coroutines();
+		ZEND_ASYNC_SCHEDULER_CONTEXT = false;
 		return false;
 	}
 
@@ -590,6 +594,8 @@ static bool resolve_deadlocks(void)
 		ZEND_ASYNC_EXIT_EXCEPTION = deadlock_exception;
 	}
 
+	ZEND_ASYNC_SCHEDULER_CONTEXT = true;
+
 	ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), value)
 	{
 		async_coroutine_t *coroutine = (async_coroutine_t *) Z_PTR_P(value);
@@ -605,11 +611,15 @@ static bool resolve_deadlocks(void)
 				&coroutine->coroutine, async_new_exception(async_ce_cancellation_exception, "Deadlock detected"), true);
 
 		if (UNEXPECTED(EG(exception) != NULL)) {
+			process_resumed_coroutines();
+			ZEND_ASYNC_SCHEDULER_CONTEXT = false;
 			return true;
 		}
 	}
 	ZEND_HASH_FOREACH_END();
 
+	process_resumed_coroutines();
+	ZEND_ASYNC_SCHEDULER_CONTEXT = false;
 	return false;
 }
 
@@ -1160,14 +1170,14 @@ static zend_always_inline void scheduler_next_tick(void)
 
 		has_handles = ZEND_ASYNC_REACTOR_EXECUTE(circular_buffer_is_not_empty(queue));
 
-		if (circular_buffer_is_not_empty(&ASYNC_G(resumed_coroutines))) {
-			process_resumed_coroutines();
-		}
-
 		TRY_HANDLE_SUSPEND_EXCEPTION();
 	}
 
 	*in_scheduler_context = false;
+
+	if (circular_buffer_is_not_empty(&ASYNC_G(resumed_coroutines))) {
+		process_resumed_coroutines();
+	}
 
 	// Fast return path without context switching...
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;

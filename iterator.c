@@ -160,24 +160,15 @@ void iterator_dtor(zend_async_microtask_t *microtask)
 		zval_ptr_dtor(&iterator->array);
 	}
 
-	// Free fcall structure if it exists
 	if (iterator->fcall != NULL) {
-		// Free any remaining parameter copies
-		if (iterator->fcall->fci.params != NULL) {
-			for (uint32_t i = 0; i < iterator->fcall->fci.param_count; i++) {
-				if (Z_TYPE(iterator->fcall->fci.params[i]) != IS_UNDEF) {
-					zval_ptr_dtor(&iterator->fcall->fci.params[i]);
-				}
-			}
-			efree(iterator->fcall->fci.params);
-		}
-
+		zend_fcall_release(iterator->fcall);
 		iterator->fcall = NULL;
 	}
 
 	if (iterator->completion_event != NULL) {
 		zend_async_event_t *event = iterator->completion_event;
 		iterator->completion_event = NULL;
+		ZEND_ASYNC_CALLBACKS_NOTIFY_AND_CLOSE(event, NULL, iterator->exception);
 		ZEND_ASYNC_EVENT_RELEASE(event);
 	}
 
