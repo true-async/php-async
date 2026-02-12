@@ -805,6 +805,21 @@ PHP_FUNCTION(Async_iterate)
 		RETURN_THROWS();
 	}
 
+	// Create a child scope for the iterator to isolate it from the current scope.
+	// This prevents exceptions in iterator coroutines from cancelling unrelated coroutines.
+	zend_async_scope_t *iterator_scope = ZEND_ASYNC_NEW_SCOPE(ZEND_ASYNC_CURRENT_SCOPE);
+
+	if (UNEXPECTED(iterator_scope == NULL)) {
+		// free zend_iterator if it was created before returning
+		if (zend_iterator != NULL) {
+			zend_iterator_dtor(zend_iterator);
+		}
+
+		RETURN_THROWS();
+	}
+
+	ZEND_ASYNC_SCOPE_CLR_DISPOSE_SAFELY(iterator_scope);
+
 	/* Create fcall with 2 parameter slots for (value, key) */
 	zend_fcall_t *fcall = ecalloc(1, sizeof(zend_fcall_t));
 	fcall->fci = fci;
@@ -815,8 +830,8 @@ PHP_FUNCTION(Async_iterate)
 	ZVAL_UNDEF(&fcall->fci.params[1]);
 	Z_TRY_ADDREF(fcall->fci.function_name);
 
-	zend_async_iterator_t *iterator = ZEND_ASYNC_NEW_ITERATOR(
-		array, zend_iterator, fcall, NULL, (unsigned int) concurrency, ZEND_COROUTINE_NORMAL);
+	zend_async_iterator_t *iterator = ZEND_ASYNC_NEW_ITERATOR_SCOPE(
+		array, zend_iterator, fcall, NULL, iterator_scope, (unsigned int) concurrency, ZEND_COROUTINE_NORMAL);
 
 	if (UNEXPECTED(iterator == NULL || EG(exception))) {
 		efree(fcall->fci.params);
@@ -835,24 +850,51 @@ PHP_FUNCTION(Async_iterate)
 		SEPARATE_ARRAY(&async_iter->array);
 	}
 
+	// Run the iterator in a separate coroutine within the child scope
+	async_iterator_run_in_coroutine(async_iter, ZEND_COROUTINE_NORMAL, false);
+
+	if (UNEXPECTED(EG(exception))) {
+		iterator_scope->try_to_dispose(iterator_scope);
+		RETURN_THROWS();
+	}
+
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 	zend_object *exception = NULL;
-	iterator->run(iterator);
 
-	// Wait for the iterator to finish
-	if (async_iter->state != ASYNC_ITERATOR_FINISHED || async_iter->active_coroutines > 0) {
-		iterator->completion_event = async_iterator_completion_event_create();
+	// Wait for the iterator completion event
+	iterator->completion_event = async_iterator_completion_event_create();
+	zend_async_waker_new(coroutine);
+	zend_async_resume_when(coroutine,
+		iterator->completion_event, false, zend_async_waker_callback_resolve, NULL);
+	ZEND_ASYNC_SUSPEND();
 
-		zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	if (UNEXPECTED(EG(exception))) {
+		exception = EG(exception);
+		EG(exception) = NULL;
+	}
+
+	// Wait for the child scope to fully complete (all coroutines finished)
+	if (((async_scope_t *) iterator_scope)->active_coroutines_count > 0
+		|| iterator_scope->scopes.length > 0) {
 		zend_async_waker_new(coroutine);
-		zend_async_resume_when(coroutine,
-			iterator->completion_event, false, zend_async_waker_callback_resolve, NULL);
-		ZEND_ASYNC_SUSPEND();
+		zend_async_resume_when(coroutine, &iterator_scope->event, false, zend_async_waker_callback_resolve, NULL);
+
+		if (EXPECTED(!EG(exception))) {
+			ZEND_ASYNC_SUSPEND();
+		}
 
 		if (UNEXPECTED(EG(exception))) {
+			if (exception != NULL) {
+				zend_exception_set_previous(EG(exception), exception);
+			}
+
 			exception = EG(exception);
 			EG(exception) = NULL;
 		}
 	}
+
+	// Dispose the child scope
+	iterator_scope->try_to_dispose(iterator_scope);
 
 	if (async_iter->zend_iterator != NULL) {
 		zend_iterator_dtor(async_iter->zend_iterator);
