@@ -92,6 +92,13 @@ function root_context(): Context {}
 function get_coroutines(): array {}
 
 /**
+ * Iterates over an iterable, calling the callback for each element.
+ * The callback receives (value, key) and may return false to stop iteration.
+ * Blocks the current coroutine until all iterations complete.
+ */
+function iterate(iterable $iterable, callable $callback, int $concurrency = 0): void {}
+
+/**
  * Start the graceful shutdown of the Scheduler.
  */
 function graceful_shutdown(?CancellationError $cancellationError = null): void {}
