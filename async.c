@@ -834,6 +834,7 @@ PHP_FUNCTION(Async_iterate)
 		array, zend_iterator, fcall, NULL, iterator_scope, (unsigned int) concurrency, ZEND_COROUTINE_NORMAL);
 
 	if (UNEXPECTED(iterator == NULL || EG(exception))) {
+		iterator_scope->try_to_dispose(iterator_scope);
 		efree(fcall->fci.params);
 		efree(fcall);
 
@@ -855,8 +856,18 @@ PHP_FUNCTION(Async_iterate)
 
 	if (UNEXPECTED(EG(exception))) {
 		iterator_scope->try_to_dispose(iterator_scope);
+		efree(fcall->fci.params);
+		efree(fcall);
+
+		if (zend_iterator != NULL) {
+			zend_iterator_dtor(zend_iterator);
+		}
+
 		RETURN_THROWS();
 	}
+
+	// Increment ref count of the scope event to ensure it is not freed while we are waiting for it.
+	iterator_scope->event.ref_count++;
 
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 	zend_object *exception = NULL;
@@ -870,10 +881,13 @@ PHP_FUNCTION(Async_iterate)
 
 	if (UNEXPECTED(EG(exception))) {
 		exception = EG(exception);
-		EG(exception) = NULL;
+		GC_ADDREF(exception);
+		zend_clear_exception();
 	}
 
-	// Wait for the child scope to fully complete (all coroutines finished)
+	// Wait for the child scope to fully complete (all coroutines finished).
+	// scope_check_completion_and_notify calls with NULL exception,
+	// so we simply discard any exception from the scope event.
 	if (((async_scope_t *) iterator_scope)->active_coroutines_count > 0
 		|| iterator_scope->scopes.length > 0) {
 		zend_async_waker_new(coroutine);
@@ -889,7 +903,8 @@ PHP_FUNCTION(Async_iterate)
 			}
 
 			exception = EG(exception);
-			EG(exception) = NULL;
+			GC_ADDREF(exception);
+			zend_clear_exception();
 		}
 	}
 
@@ -906,13 +921,15 @@ PHP_FUNCTION(Async_iterate)
 		async_iter->fcall = NULL;
 	}
 
-	/* Restore exception from iterator before dtor frees it */
-	if (exception != NULL && async_iter->exception) {
-		zend_exception_set_previous(async_iter->exception, exception);
-	}
+	/* Merge exceptions: iterator exception takes priority */
+	if (async_iter->exception != NULL) {
+		if (exception != NULL && exception != async_iter->exception) {
+			zend_exception_set_previous(async_iter->exception, exception);
+		}
 
-	exception = async_iter->exception;
-	async_iter->exception = NULL;
+		exception = async_iter->exception;
+		async_iter->exception = NULL;
+	}
 
 	iterator->microtask.dtor(&iterator->microtask);
 
