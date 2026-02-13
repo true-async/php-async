@@ -868,6 +868,7 @@ PHP_FUNCTION(Async_iterate)
 
 	// Increment ref count of the scope event to ensure it is not freed while we are waiting for it.
 	iterator_scope->event.ref_count++;
+	ZEND_ASYNC_MICROTASK_ADD_REF(&iterator->microtask);
 
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 	zend_object *exception = NULL;
@@ -923,12 +924,21 @@ PHP_FUNCTION(Async_iterate)
 
 	/* Merge exceptions: iterator exception takes priority */
 	if (async_iter->exception != NULL) {
-		if (exception != NULL && exception != async_iter->exception) {
-			zend_exception_set_previous(async_iter->exception, exception);
-		}
 
-		exception = async_iter->exception;
-		async_iter->exception = NULL;
+		// Proper handling of iterator exceptions:
+		// 1. We can receive the same exception that the iterator threw.
+		// 2. If not, then we correctly combine the different exceptions.
+		if (exception == async_iter->exception) {
+			GC_DELREF(exception);
+			async_iter->exception = NULL;
+		} else if (exception != NULL) {
+			zend_exception_set_previous(async_iter->exception, exception);
+			exception = async_iter->exception;
+			async_iter->exception = NULL;
+		} else {
+			exception = async_iter->exception;
+			async_iter->exception = NULL;
+		}
 	}
 
 	iterator->microtask.dtor(&iterator->microtask);

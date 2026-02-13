@@ -34,8 +34,8 @@ echo "end\n";
 start
 end
 begin: 1
+end: 1
 begin: 2
 begin: 3
-end: 1
 caught: error at 2
 done
