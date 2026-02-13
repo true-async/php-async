@@ -80,6 +80,13 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_get_coroutines, 0, 0, IS_ARRAY, 0)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_iterate, 0, 2, IS_VOID, 0)
+	ZEND_ARG_OBJ_TYPE_MASK(0, iterable, Traversable, MAY_BE_ARRAY, NULL)
+	ZEND_ARG_TYPE_INFO(0, callback, IS_CALLABLE, 0)
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, concurrency, IS_LONG, 0, "0")
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, cancelPending, _IS_BOOL, 0, "true")
+ZEND_END_ARG_INFO()
+
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_graceful_shutdown, 0, 0, IS_VOID, 0)
 	ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, cancellationError, Async\\CancellationError, 1, "null")
 ZEND_END_ARG_INFO()
@@ -140,6 +147,7 @@ ZEND_FUNCTION(Async_coroutine_context);
 ZEND_FUNCTION(Async_current_coroutine);
 ZEND_FUNCTION(Async_root_context);
 ZEND_FUNCTION(Async_get_coroutines);
+ZEND_FUNCTION(Async_iterate);
 ZEND_FUNCTION(Async_graceful_shutdown);
 ZEND_METHOD(Async_Timeout, __construct);
 ZEND_METHOD(Async_Timeout, cancel);
@@ -165,6 +173,7 @@ static const zend_function_entry ext_functions[] = {
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "current_coroutine"), zif_Async_current_coroutine, arginfo_Async_current_coroutine, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "root_context"), zif_Async_root_context, arginfo_Async_root_context, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "get_coroutines"), zif_Async_get_coroutines, arginfo_Async_get_coroutines, 0, NULL, NULL)
+	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "iterate"), zif_Async_iterate, arginfo_Async_iterate, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "graceful_shutdown"), zif_Async_graceful_shutdown, arginfo_Async_graceful_shutdown, 0, NULL, NULL)
 	ZEND_FE_END
 };

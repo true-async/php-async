@@ -19,6 +19,61 @@
 #include "php_async.h"
 #include "zend_exceptions.h"
 
+///////////////////////////////////////////////////////////////////
+/// Iterator completion event
+///////////////////////////////////////////////////////////////////
+
+static bool completion_event_add_callback(
+		zend_async_event_t *event, zend_async_event_callback_t *callback)
+{
+	return zend_async_callbacks_push(event, callback);
+}
+
+static bool completion_event_del_callback(
+		zend_async_event_t *event, zend_async_event_callback_t *callback)
+{
+	return zend_async_callbacks_remove(event, callback);
+}
+
+static bool completion_event_start(zend_async_event_t *event)
+{
+	return true;
+}
+
+static bool completion_event_stop(zend_async_event_t *event)
+{
+	return true;
+}
+
+static bool completion_event_dispose(zend_async_event_t *event)
+{
+	zend_async_callbacks_free(event);
+	efree(event);
+	return true;
+}
+
+static zend_string *completion_event_info(zend_async_event_t *event)
+{
+	return zend_string_init("iterator-completion", sizeof("iterator-completion") - 1, 0);
+}
+
+zend_async_event_t *async_iterator_completion_event_create(void)
+{
+	zend_async_event_t *event = ecalloc(1, sizeof(zend_async_event_t));
+
+	event->ref_count = 1;
+	event->add_callback = completion_event_add_callback;
+	event->del_callback = completion_event_del_callback;
+	event->start = completion_event_start;
+	event->stop = completion_event_stop;
+	event->dispose = completion_event_dispose;
+	event->info = completion_event_info;
+
+	return event;
+}
+
+///////////////////////////////////////////////////////////////////
+
 /**
  *  An additional coroutine destructor that frees the iterator if the coroutine never started.
  */
@@ -70,6 +125,7 @@ void iterator_microtask(zend_async_microtask_t *microtask)
 		return;
 	}
 
+	ZEND_ASYNC_MICROTASK_ADD_REF(microtask);
 	iterator->active_coroutines++;
 	coroutine->internal_entry = coroutine_entry;
 	coroutine->extended_data = iterator;
@@ -104,19 +160,16 @@ void iterator_dtor(zend_async_microtask_t *microtask)
 		zval_ptr_dtor(&iterator->array);
 	}
 
-	// Free fcall structure if it exists
 	if (iterator->fcall != NULL) {
-		// Free any remaining parameter copies
-		if (iterator->fcall->fci.params != NULL) {
-			for (uint32_t i = 0; i < iterator->fcall->fci.param_count; i++) {
-				if (Z_TYPE(iterator->fcall->fci.params[i]) != IS_UNDEF) {
-					zval_ptr_dtor(&iterator->fcall->fci.params[i]);
-				}
-			}
-			efree(iterator->fcall->fci.params);
-		}
-
+		zend_fcall_release(iterator->fcall);
 		iterator->fcall = NULL;
+	}
+
+	if (iterator->completion_event != NULL) {
+		zend_async_event_t *event = iterator->completion_event;
+		iterator->completion_event = NULL;
+		ZEND_ASYNC_CALLBACKS_NOTIFY_AND_CLOSE(event, NULL, iterator->exception);
+		ZEND_ASYNC_EVENT_RELEASE(event);
 	}
 
 	if (iterator->exception != NULL) {
@@ -167,6 +220,7 @@ async_iterator_t *async_iterator_new(zval *array,
 	iterator->microtask.handler = iterator_microtask;
 	iterator->microtask.dtor = iterator_dtor;
 	iterator->microtask.ref_count = 1;
+	iterator->hash_iterator = -1;
 
 	iterator->run = (void (*)(zend_async_iterator_t *)) async_iterator_run;
 	iterator->run_in_coroutine = (void (*)(zend_async_iterator_t *, int32_t, bool)) async_iterator_run_in_coroutine;
@@ -233,6 +287,7 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 	}
 
 	zend_fcall_info fci;
+	fci.params = NULL;
 
 	// Copy the fci to avoid overwriting the original
 	// Because the another coroutine may be started in the callback function
@@ -240,9 +295,9 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 		fci = iterator->fcall->fci;
 
 		// Copy the args to avoid overwriting the original
-		fci.params = safe_emalloc(iterator->fcall->fci.param_count, sizeof(zval), 0);
+		fci.params = safe_emalloc(fci.param_count, sizeof(zval), 0);
 
-		for (uint32_t i = 0; i < iterator->fcall->fci.param_count; i++) {
+		for (uint32_t i = 0; i < fci.param_count; i++) {
 			ZVAL_COPY(&fci.params[i], &iterator->fcall->fci.params[i]);
 		}
 
@@ -250,11 +305,14 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 	}
 
 	if (iterator->zend_iterator == NULL) {
-		iterator->position = 0;
-		iterator->hash_iterator = -1;
 
-		zend_hash_internal_pointer_reset_ex(Z_ARRVAL(iterator->array), &iterator->position);
-		iterator->hash_iterator = zend_hash_iterator_add(Z_ARRVAL(iterator->array), iterator->position);
+		if (iterator->hash_iterator == -1) {
+			iterator->position = 0;
+			ZEND_ASSERT(!(GC_FLAGS(Z_ARRVAL(iterator->array)) & GC_IMMUTABLE) &&
+				"Iterator array must not be immutable; caller must SEPARATE_ARRAY before passing");
+			zend_hash_internal_pointer_reset_ex(Z_ARRVAL(iterator->array), &iterator->position);
+			iterator->hash_iterator = zend_hash_iterator_add(Z_ARRVAL(iterator->array), iterator->position);
+		}
 
 		// Reload target_hash and position if iterator->target_hash is not NULL
 		if (iterator->target_hash != NULL) {
@@ -424,6 +482,15 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 			break;
 		}
 	}
+
+	if (fci.params != NULL) {
+
+		for (uint32_t i = 0; i < fci.param_count; i++) {
+			zval_ptr_dtor(&fci.params[i]);
+		}
+
+		efree(fci.params);
+	}
 }
 
 static void coroutine_entry(void)
@@ -443,6 +510,13 @@ static void coroutine_entry(void)
 	} else {
 		iterator->active_coroutines = 0;
 		iterator->state = ASYNC_ITERATOR_FINISHED;
+
+		if (iterator->completion_event != NULL) {
+			zend_async_event_t *event = iterator->completion_event;
+			iterator->completion_event = NULL;
+			ZEND_ASYNC_CALLBACKS_NOTIFY_AND_CLOSE(event, NULL, iterator->exception);
+			ZEND_ASYNC_EVENT_RELEASE(event);
+		}
 	}
 
 	iterator->microtask.dtor(&iterator->microtask);
@@ -468,6 +542,16 @@ void async_iterator_run(async_iterator_t *iterator)
 
 	iterate(iterator);
 	async_iterator_apply_exception(iterator);
+
+	if (iterator->state == ASYNC_ITERATOR_FINISHED
+		&& iterator->active_coroutines == 0
+		&& iterator->completion_event != NULL) {
+
+		zend_async_event_t *event = iterator->completion_event;
+		iterator->completion_event = NULL;
+		ZEND_ASYNC_CALLBACKS_NOTIFY_AND_CLOSE(event, NULL, iterator->exception);
+		ZEND_ASYNC_EVENT_RELEASE(event);
+	}
 }
 
 /**

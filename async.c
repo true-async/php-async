@@ -29,6 +29,7 @@
 #include "future.h"
 #include "channel.h"
 #include "pool.h"
+#include "iterator.h"
 #include "async_API.h"
 #include "zend_enum.h"
 #include "async_arginfo.h"
@@ -764,6 +765,209 @@ PHP_FUNCTION(Async_graceful_shutdown)
 	THROW_IF_SCHEDULER_CONTEXT;
 
 	ZEND_ASYNC_SHUTDOWN();
+}
+
+PHP_FUNCTION(Async_iterate)
+{
+	THROW_IF_ASYNC_OFF;
+	THROW_IF_SCHEDULER_CONTEXT;
+
+	zval *iterable;
+	zend_fcall_info fci;
+	zend_fcall_info_cache fcc;
+	zend_long concurrency = 0;
+	bool cancel_pending = true;
+
+	ZEND_PARSE_PARAMETERS_START(2, 4)
+		Z_PARAM_ZVAL(iterable)
+		Z_PARAM_FUNC(fci, fcc)
+		Z_PARAM_OPTIONAL
+		Z_PARAM_LONG(concurrency)
+		Z_PARAM_BOOL(cancel_pending)
+	ZEND_PARSE_PARAMETERS_END();
+
+	SCHEDULER_LAUNCH;
+
+	zend_object_iterator *zend_iterator = NULL;
+	zval *array = NULL;
+
+	if (Z_TYPE_P(iterable) == IS_ARRAY) {
+		array = iterable;
+	} else if (Z_TYPE_P(iterable) == IS_OBJECT && Z_OBJCE_P(iterable)->get_iterator) {
+		zend_iterator = Z_OBJCE_P(iterable)->get_iterator(Z_OBJCE_P(iterable), iterable, 0);
+
+		if (UNEXPECTED(EG(exception) == NULL && zend_iterator == NULL)) {
+			async_throw_error("Failed to create iterator");
+		}
+	} else {
+		async_throw_error("Expected parameter 'iterable' to be an array or an object implementing Traversable");
+	}
+
+	if (UNEXPECTED(EG(exception))) {
+		RETURN_THROWS();
+	}
+
+	// Create a child scope for the iterator to isolate it from the current scope.
+	// This prevents exceptions in iterator coroutines from cancelling unrelated coroutines.
+	zend_async_scope_t *iterator_scope = ZEND_ASYNC_NEW_SCOPE(ZEND_ASYNC_CURRENT_SCOPE);
+
+	if (UNEXPECTED(iterator_scope == NULL)) {
+		// free zend_iterator if it was created before returning
+		if (zend_iterator != NULL) {
+			zend_iterator_dtor(zend_iterator);
+		}
+
+		RETURN_THROWS();
+	}
+
+	ZEND_ASYNC_SCOPE_CLR_DISPOSE_SAFELY(iterator_scope);
+
+	/* Create fcall with 2 parameter slots for (value, key) */
+	zend_fcall_t *fcall = ecalloc(1, sizeof(zend_fcall_t));
+	fcall->fci = fci;
+	fcall->fci_cache = fcc;
+	fcall->fci.param_count = 2;
+	fcall->fci.params = safe_emalloc(2, sizeof(zval), 0);
+	ZVAL_UNDEF(&fcall->fci.params[0]);
+	ZVAL_UNDEF(&fcall->fci.params[1]);
+	Z_TRY_ADDREF(fcall->fci.function_name);
+
+	zend_async_iterator_t *iterator = ZEND_ASYNC_NEW_ITERATOR_SCOPE(
+		array, zend_iterator, fcall, NULL, iterator_scope, (unsigned int) concurrency, ZEND_COROUTINE_NORMAL);
+
+	if (UNEXPECTED(iterator == NULL || EG(exception))) {
+		iterator_scope->try_to_dispose(iterator_scope);
+		efree(fcall->fci.params);
+		efree(fcall);
+
+		if (zend_iterator != NULL) {
+			zend_iterator_dtor(zend_iterator);
+		}
+
+		RETURN_THROWS();
+	}
+
+	async_iterator_t *async_iter = (async_iterator_t *) iterator;
+
+	if (Z_TYPE(async_iter->array) != IS_UNDEF) {
+		SEPARATE_ARRAY(&async_iter->array);
+	}
+
+	// Run the iterator in a separate coroutine within the child scope
+	async_iterator_run_in_coroutine(async_iter, ZEND_COROUTINE_NORMAL, false);
+
+	if (UNEXPECTED(EG(exception))) {
+		iterator_scope->try_to_dispose(iterator_scope);
+		efree(fcall->fci.params);
+		efree(fcall);
+
+		if (zend_iterator != NULL) {
+			zend_iterator_dtor(zend_iterator);
+		}
+
+		RETURN_THROWS();
+	}
+
+	// Increment ref count of the scope event to ensure it is not freed while we are waiting for it.
+	iterator_scope->event.ref_count++;
+	ZEND_ASYNC_MICROTASK_ADD_REF(&iterator->microtask);
+
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	zend_object *exception = NULL;
+
+	// Wait for the iterator completion event
+	iterator->completion_event = async_iterator_completion_event_create();
+	zend_async_waker_new(coroutine);
+	zend_async_resume_when(coroutine,
+		iterator->completion_event, false, zend_async_waker_callback_resolve, NULL);
+	ZEND_ASYNC_SUSPEND();
+
+	if (UNEXPECTED(EG(exception))) {
+		exception = EG(exception);
+		GC_ADDREF(exception);
+		zend_clear_exception();
+	}
+
+	// Handle pending coroutines spawned inside the iterator scope.
+	if (false == ZEND_ASYNC_SCOPE_IS_COMPLETED(iterator_scope)) {
+
+		if (cancel_pending) {
+			// Cancel all pending coroutines in the iterator scope
+			ZEND_ASYNC_SCOPE_CANCEL(
+				iterator_scope,
+				async_new_exception(async_ce_cancellation_exception,
+					"Cancellation of pending coroutines after iterator completion"),
+				true,
+				ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(iterator_scope));
+		}
+
+		if (UNEXPECTED(EG(exception))) {
+			if (exception != NULL) {
+				zend_exception_set_previous(EG(exception), exception);
+			}
+
+			exception = EG(exception);
+			GC_ADDREF(exception);
+			zend_clear_exception();
+		} else {
+			// Wait for the child scope to fully complete
+			zend_async_waker_new(coroutine);
+			zend_async_resume_when(coroutine, &iterator_scope->event, false, zend_async_waker_callback_resolve, NULL);
+
+			if (EXPECTED(EG(exception) == NULL)) {
+				ZEND_ASYNC_SUSPEND();
+			}
+		}
+
+		if (UNEXPECTED(EG(exception))) {
+			if (exception != NULL) {
+				zend_exception_set_previous(EG(exception), exception);
+			}
+
+			exception = EG(exception);
+			GC_ADDREF(exception);
+			zend_clear_exception();
+		}
+	}
+
+	// Dispose the child scope
+	iterator_scope->try_to_dispose(iterator_scope);
+
+	if (async_iter->zend_iterator != NULL) {
+		zend_iterator_dtor(async_iter->zend_iterator);
+		async_iter->zend_iterator = NULL;
+	}
+
+	if (async_iter->fcall != NULL) {
+		zend_fcall_release(async_iter->fcall);
+		async_iter->fcall = NULL;
+	}
+
+	/* Merge exceptions: iterator exception takes priority */
+	if (async_iter->exception != NULL) {
+
+		// Proper handling of iterator exceptions:
+		// 1. We can receive the same exception that the iterator threw.
+		// 2. If not, then we correctly combine the different exceptions.
+		if (exception == async_iter->exception) {
+			GC_DELREF(exception);
+			async_iter->exception = NULL;
+		} else if (exception != NULL) {
+			zend_exception_set_previous(async_iter->exception, exception);
+			exception = async_iter->exception;
+			async_iter->exception = NULL;
+		} else {
+			exception = async_iter->exception;
+			async_iter->exception = NULL;
+		}
+	}
+
+	iterator->microtask.dtor(&iterator->microtask);
+
+	if (UNEXPECTED(exception != NULL)) {
+		zend_throw_exception_internal(exception);
+		RETURN_THROWS();
+	}
 }
 
 /*

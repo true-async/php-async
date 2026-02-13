@@ -58,34 +58,6 @@ zend_class_entry *async_ce_pool_exception = NULL;
 static zend_object_handlers async_pool_handlers;
 
 ///////////////////////////////////////////////////////////////////////////////
-// Helper to release zend_fcall_t
-///////////////////////////////////////////////////////////////////////////////
-
-static void pool_fcall_release(zend_fcall_t *fcall)
-{
-	if (fcall == NULL) {
-		return;
-	}
-
-	if (fcall->fci.param_count) {
-		for (uint32_t i = 0; i < fcall->fci.param_count; i++) {
-			zval_ptr_dtor(&fcall->fci.params[i]);
-		}
-		efree(fcall->fci.params);
-	}
-
-	if (fcall->fci.named_params) {
-		GC_DELREF(fcall->fci.named_params);
-	}
-
-	/* Release the function_name only if it's refcounted */
-	if (Z_REFCOUNTED(fcall->fci.function_name)) {
-		zval_ptr_dtor(&fcall->fci.function_name);
-	}
-	efree(fcall);
-}
-
-///////////////////////////////////////////////////////////////////////////////
 // Queue operations (copied from channel.c)
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -490,19 +462,19 @@ static bool pool_dispose(zend_async_event_t *event)
 
 	/* Free fcall structures (only if not internal handlers) */
 	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_FACTORY_INTERNAL) && base->factory.fcall) {
-		pool_fcall_release(base->factory.fcall);
+		zend_fcall_release(base->factory.fcall);
 	}
 	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_DESTRUCTOR_INTERNAL) && base->destructor.fcall) {
-		pool_fcall_release(base->destructor.fcall);
+		zend_fcall_release(base->destructor.fcall);
 	}
 	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_HEALTHCHECK_INTERNAL) && base->healthcheck.fcall) {
-		pool_fcall_release(base->healthcheck.fcall);
+		zend_fcall_release(base->healthcheck.fcall);
 	}
 	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_BEFORE_ACQUIRE_INTERNAL) && base->before_acquire.fcall) {
-		pool_fcall_release(base->before_acquire.fcall);
+		zend_fcall_release(base->before_acquire.fcall);
 	}
 	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_BEFORE_RELEASE_INTERNAL) && base->before_release.fcall) {
-		pool_fcall_release(base->before_release.fcall);
+		zend_fcall_release(base->before_release.fcall);
 	}
 
 	/* Release strategy object */
@@ -977,19 +949,19 @@ void zend_async_pool_destroy(async_pool_t *pool)
 
 	/* Free fcall structures (only if not internal handlers) */
 	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_FACTORY_INTERNAL) && base->factory.fcall) {
-		pool_fcall_release(base->factory.fcall);
+		zend_fcall_release(base->factory.fcall);
 	}
 	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_DESTRUCTOR_INTERNAL) && base->destructor.fcall) {
-		pool_fcall_release(base->destructor.fcall);
+		zend_fcall_release(base->destructor.fcall);
 	}
 	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_HEALTHCHECK_INTERNAL) && base->healthcheck.fcall) {
-		pool_fcall_release(base->healthcheck.fcall);
+		zend_fcall_release(base->healthcheck.fcall);
 	}
 	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_BEFORE_ACQUIRE_INTERNAL) && base->before_acquire.fcall) {
-		pool_fcall_release(base->before_acquire.fcall);
+		zend_fcall_release(base->before_acquire.fcall);
 	}
 	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_BEFORE_RELEASE_INTERNAL) && base->before_release.fcall) {
-		pool_fcall_release(base->before_release.fcall);
+		zend_fcall_release(base->before_release.fcall);
 	}
 
 	/* Release strategy object */

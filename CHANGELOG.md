@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **stream_select() ignoring PHP-buffered data in async context**: When `fgets()`/`fread()` pulled more data into PHP's internal stream buffer than returned, a subsequent `stream_select()` would not detect the buffered data because the async path (libuv poll) only checks OS-level file descriptors. This caused hangs in `run-tests.php -j` parallel workers on macOS where TCP delivered multiple messages in a single segment. Fixed by checking `stream_array_emulate_read_fd_set()` before entering the async poll path.
+- **Waker events not cleaned when coroutine is resumed outside scheduler context**: When a coroutine was resumed directly (not from the scheduler), its waker events were not automatically cleaned up, which could lead to stale event references. Now `ZEND_ASYNC_WAKER_CLEAN_EVENTS` is called on resume outside the scheduler.
 
 ### Added
 - **TCP/UDP Socket I/O**: Efficient non-blocking TCP/UDP socket functions without poll overhead via libuv handles. Includes `sendto`/`recvfrom` for UDP, socket options API (`broadcast`, `multicast`, TCP `nodelay`/`keepalive`), and unified close callback for all I/O handle types.
@@ -35,9 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **PDO Connection Pooling**: Transparent connection pooling for PDO with per-coroutine dispatch and automatic lifecycle management
 - **PDO PgSQL**: Non-blocking query execution for PostgreSQL PDO driver
 - **PostgreSQL**: Concurrent `pg_*` query execution with separate connections per async context
+- **`Async\iterate()` function**: Iterates over an iterable, calling the callback for each element with optional concurrency limit. Supports `cancelPending` parameter (default: `true`) that controls whether coroutines spawned inside the callback are cancelled or awaited after iteration completes.
 
 ### Changed
 - **Hidden Events**: Added `ZEND_ASYNC_EVENT_F_HIDDEN` flag for events excluded from deadlock detection
+- **Scope `can_be_disposed` API**: Exposed `scope_can_be_disposed` as a virtual method on `zend_async_scope_t`, enabling scope completion checks from the Zend API via `ZEND_ASYNC_SCOPE_IS_COMPLETED`, `ZEND_ASYNC_SCOPE_IS_COMPLETELY_DONE`, and `ZEND_ASYNC_SCOPE_CAN_BE_DISPOSED` macros.
 
 ## [0.5.0] - 2025-12-24
 
