@@ -776,12 +776,14 @@ PHP_FUNCTION(Async_iterate)
 	zend_fcall_info fci;
 	zend_fcall_info_cache fcc;
 	zend_long concurrency = 0;
+	bool cancel_pending = true;
 
-	ZEND_PARSE_PARAMETERS_START(2, 3)
+	ZEND_PARSE_PARAMETERS_START(2, 4)
 		Z_PARAM_ZVAL(iterable)
 		Z_PARAM_FUNC(fci, fcc)
 		Z_PARAM_OPTIONAL
 		Z_PARAM_LONG(concurrency)
+		Z_PARAM_BOOL(cancel_pending)
 	ZEND_PARSE_PARAMETERS_END();
 
 	SCHEDULER_LAUNCH;
@@ -886,16 +888,35 @@ PHP_FUNCTION(Async_iterate)
 		zend_clear_exception();
 	}
 
-	// Wait for the child scope to fully complete (all coroutines finished).
-	// scope_check_completion_and_notify calls with NULL exception,
-	// so we simply discard any exception from the scope event.
-	if (((async_scope_t *) iterator_scope)->active_coroutines_count > 0
-		|| iterator_scope->scopes.length > 0) {
-		zend_async_waker_new(coroutine);
-		zend_async_resume_when(coroutine, &iterator_scope->event, false, zend_async_waker_callback_resolve, NULL);
+	// Handle pending coroutines spawned inside the iterator scope.
+	if (false == ZEND_ASYNC_SCOPE_IS_COMPLETED(iterator_scope)) {
 
-		if (EXPECTED(!EG(exception))) {
-			ZEND_ASYNC_SUSPEND();
+		if (cancel_pending) {
+			// Cancel all pending coroutines in the iterator scope
+			ZEND_ASYNC_SCOPE_CANCEL(
+				iterator_scope,
+				async_new_exception(async_ce_cancellation_exception,
+					"Cancellation of pending coroutines after iterator completion"),
+				true,
+				ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(iterator_scope));
+		}
+
+		if (UNEXPECTED(EG(exception))) {
+			if (exception != NULL) {
+				zend_exception_set_previous(EG(exception), exception);
+			}
+
+			exception = EG(exception);
+			GC_ADDREF(exception);
+			zend_clear_exception();
+		} else {
+			// Wait for the child scope to fully complete
+			zend_async_waker_new(coroutine);
+			zend_async_resume_when(coroutine, &iterator_scope->event, false, zend_async_waker_callback_resolve, NULL);
+
+			if (EXPECTED(EG(exception) == NULL)) {
+				ZEND_ASYNC_SUSPEND();
+			}
 		}
 
 		if (UNEXPECTED(EG(exception))) {

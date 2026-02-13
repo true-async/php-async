@@ -1180,7 +1180,7 @@ static zend_always_inline void scheduler_next_tick(void)
 	}
 
 	// Fast return path without context switching...
-	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	const zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
 	if (UNEXPECTED(coroutine != NULL && coroutine->waker != NULL &&
 				   coroutine->waker->status == ZEND_ASYNC_WAKER_RESULT)) {

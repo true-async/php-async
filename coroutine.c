@@ -732,6 +732,8 @@ bool async_coroutine_resume(zend_coroutine_t *coroutine, zend_object *error, con
 	// Add to resumed_coroutines queue for event cleanup
 	if (in_scheduler_context) {
 		circular_buffer_push_ptr_with_resize(&ASYNC_G(resumed_coroutines), coroutine);
+	} else if (coroutine->waker != NULL) {
+		ZEND_ASYNC_WAKER_CLEAN_EVENTS(coroutine->waker);
 	}
 
 	return true;
