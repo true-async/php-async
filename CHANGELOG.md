@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.6.0]
 
+### Changed
+- **Breaking Change: `Async\CancellationError` renamed to `Async\AsyncCancellation`** and now extends `\Cancellation` instead of `\Error`.
+  `\Cancellation` is a new PHP core root class implementing `\Throwable` (alongside `\Exception` and `\Error`), added per the [True Async RFC](https://wiki.php.net/rfc/true_async).
+  This prevents cancellation exceptions from being accidentally caught by `catch(\Exception)` or `catch(\Error)` blocks.
+  - **Migration**: Replace `catch(Async\CancellationError $e)` with `catch(Async\AsyncCancellation $e)` or `catch(\Cancellation $e)` for broader matching.
+
 ### Fixed
 - **stream_select() ignoring PHP-buffered data in async context**: When `fgets()`/`fread()` pulled more data into PHP's internal stream buffer than returned, a subsequent `stream_select()` would not detect the buffered data because the async path (libuv poll) only checks OS-level file descriptors. This caused hangs in `run-tests.php -j` parallel workers on macOS where TCP delivered multiple messages in a single segment. Fixed by checking `stream_array_emulate_read_fd_set()` before entering the async poll path.
 - **Waker events not cleaned when coroutine is resumed outside scheduler context**: When a coroutine was resumed directly (not from the scheduler), its waker events were not automatically cleaned up, which could lead to stale event references. Now `ZEND_ASYNC_WAKER_CLEAN_EVENTS` is called on resume outside the scheduler.
