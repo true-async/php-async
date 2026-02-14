@@ -6,7 +6,7 @@ Cancel fiber's coroutine from nested spawn
 use function Async\spawn;
 use function Async\suspend;
 use function Async\await;
-use Async\CancellationError;
+use Async\AsyncCancellation;
 
 $outer = spawn(function() {
     $fiber = new Fiber(function() {
@@ -22,7 +22,7 @@ $outer = spawn(function() {
     // Nested coroutine cancels fiber's coroutine
     $inner = spawn(function() use ($fiberCoro) {
         echo "Inner: cancelling fiber coroutine\n";
-        $fiberCoro->cancel(new CancellationError("nested cancel"));
+        $fiberCoro->cancel(new AsyncCancellation("nested cancel"));
     });
 
     await($inner);

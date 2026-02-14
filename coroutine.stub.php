@@ -34,7 +34,7 @@ final class Coroutine implements Completable
     /**
      * Returns the Coroutine exception when finished.
      * If the Coroutine is not finished, it will return null.
-     * If the Coroutine is cancelled, it will return a CancellationError.
+     * If the Coroutine is cancelled, it will return a AsyncCancellation.
      *
      * @throws \RuntimeException if the Coroutine is running
      */
@@ -110,7 +110,7 @@ final class Coroutine implements Completable
     /**
      * Cancel the coroutine.
      */
-    public function cancel(?CancellationError $CancellationError = null): void {}
+    public function cancel(?AsyncCancellation $cancellation = null): void {}
 
     /**
      * Define a callback to be executed when the coroutine is finished.

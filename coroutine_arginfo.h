@@ -48,7 +48,7 @@ ZEND_END_ARG_INFO()
 #define arginfo_class_Async_Coroutine_getAwaitingInfo arginfo_class_Async_Coroutine_getSpawnFileAndLine
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_Coroutine_cancel, 0, 0, IS_VOID, 0)
-	ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, CancellationError, Async\\CancellationError, 1, "null")
+	ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, cancellation, Async\\AsyncCancellation, 1, "null")
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_Coroutine_onFinally, 0, 1, IS_VOID, 0)

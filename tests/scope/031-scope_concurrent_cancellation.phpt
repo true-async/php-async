@@ -50,17 +50,17 @@ suspend();
 // Spawn concurrent cancellation operations
 $canceller1 = spawn(function() use ($scope1) {
     echo "canceller1 starting\n";
-    $scope1->cancel(new \Async\CancellationError("Concurrent cancel 1"));
+    $scope1->cancel(new \Async\AsyncCancellation("Concurrent cancel 1"));
 });
 
 $canceller2 = spawn(function() use ($scope2) {
     echo "canceller2 starting\n";
-    $scope2->cancel(new \Async\CancellationError("Concurrent cancel 2"));
+    $scope2->cancel(new \Async\AsyncCancellation("Concurrent cancel 2"));
 });
 
 $canceller3 = spawn(function() use ($scope3) {
     echo "canceller3 starting\n";
-    $scope3->cancel(new \Async\CancellationError("Concurrent cancel 3"));
+    $scope3->cancel(new \Async\AsyncCancellation("Concurrent cancel 3"));
 });
 
 echo "cancellers spawned\n";

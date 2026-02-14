@@ -17,12 +17,12 @@ static const zend_function_entry class_Async_CompositeException_methods[] = {
 	ZEND_FE_END
 };
 
-static zend_class_entry *register_class_Async_CancellationError(zend_class_entry *class_entry_Error)
+static zend_class_entry *register_class_Async_AsyncCancellation(zend_class_entry *class_entry_Cancellation)
 {
 	zend_class_entry ce, *class_entry;
 
-	INIT_NS_CLASS_ENTRY(ce, "Async", "CancellationError", NULL);
-	class_entry = zend_register_internal_class_with_flags(&ce, class_entry_Error, 0);
+	INIT_NS_CLASS_ENTRY(ce, "Async", "AsyncCancellation", NULL);
+	class_entry = zend_register_internal_class_with_flags(&ce, class_entry_Cancellation, 0);
 
 	return class_entry;
 }

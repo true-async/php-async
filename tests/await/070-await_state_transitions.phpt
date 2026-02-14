@@ -20,7 +20,7 @@ await($completed_coroutine);
 echo "coroutine completed: " . ($completed_coroutine->isCompleted() ? "true" : "false") . "\n";
 
 // Try to cancel already completed coroutine
-$completed_coroutine->cancel(new \Async\CancellationError("Too late"));
+$completed_coroutine->cancel(new \Async\AsyncCancellation("Too late"));
 echo "attempted to cancel completed coroutine\n";
 
 // Await should still return original result
@@ -44,7 +44,7 @@ try {
 echo "exception coroutine completed: " . ($exception_coroutine->isCompleted() ? "true" : "false") . "\n";
 
 // Try to cancel coroutine that already failed
-$exception_coroutine->cancel(new \Async\CancellationError("Post-error cancel"));
+$exception_coroutine->cancel(new \Async\AsyncCancellation("Post-error cancel"));
 echo "attempted to cancel failed coroutine\n";
 
 // Should still get original exception
@@ -57,7 +57,7 @@ try {
     } else {
         echo "unexpected exception: " . get_class($e) . ": " . $e->getMessage() . "\n";
     }
-} catch (\Async\CancellationError $e) {
+} catch (\Async\AsyncCancellation $e) {
     echo "unexpected cancellation: " . $e->getMessage() . "\n";
 }
 

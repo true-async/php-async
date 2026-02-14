@@ -8,7 +8,7 @@ namespace Async;
  * Exception thrown when a Coroutine is canceled.
  * Code inside the Coroutine must properly handle this exception to ensure graceful termination.
  */
-class CancellationError extends \Error {}
+class AsyncCancellation extends \Cancellation {}
 
 /**
  * Common type of exception.

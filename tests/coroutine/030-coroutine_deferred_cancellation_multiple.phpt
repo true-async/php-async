@@ -33,12 +33,12 @@ $multi_protected = spawn(function() {
 
 suspend(); // Enter first protection
 
-$multi_protected->cancel(new \Async\CancellationError("Multi deferred"));
+$multi_protected->cancel(new \Async\AsyncCancellation("Multi deferred"));
 echo "multi cancelled during first protection\n";
 
 try {
     await($multi_protected);
-} catch (\Async\CancellationError $e) {
+} catch (\Async\AsyncCancellation $e) {
     echo "multi deferred cancellation: " . $e->getMessage() . "\n";
 }
 

@@ -5,7 +5,7 @@ Cancel fiber's coroutine via getCoroutine()->cancel()
 
 use function Async\spawn;
 use function Async\await;
-use Async\CancellationError;
+use Async\AsyncCancellation;
 
 $c = spawn(function() {
     $fiber = new Fiber(function() {
@@ -20,15 +20,15 @@ $c = spawn(function() {
 
     // Get fiber's coroutine and cancel it
     $coro = $fiber->getCoroutine();
-    $coro->cancel(new CancellationError("cancelled"));
+    $coro->cancel(new AsyncCancellation("cancelled"));
     echo "Coroutine cancelled\n";
 
     // Try to resume fiber
     try {
         $fiber->resume();
         echo "Fiber completed\n";
-    } catch (CancellationError $e) {
-        echo "CancellationError: " . $e->getMessage() . "\n";
+    } catch (AsyncCancellation $e) {
+        echo "AsyncCancellation: " . $e->getMessage() . "\n";
     } catch (FiberError $e) {
         echo "FiberError: " . $e->getMessage() . "\n";
     }

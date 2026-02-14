@@ -58,13 +58,13 @@ $coroutine3 = spawn(function() {
     return "never_reached";
 });
 
-$coroutine3->cancel(new \Async\CancellationError("Shared cancellation"));
+$coroutine3->cancel(new \Async\AsyncCancellation("Shared cancellation"));
 
 echo "first await on cancelled coroutine\n";
 try {
     $result3a = await($coroutine3);
     echo "should not succeed\n";
-} catch (\Async\CancellationError $e) {
+} catch (\Async\AsyncCancellation $e) {
     echo "first caught cancellation: " . $e->getMessage() . "\n";
 }
 
@@ -72,7 +72,7 @@ echo "second await on cancelled coroutine\n";
 try {
     $result3b = await($coroutine3);
     echo "should not succeed\n";
-} catch (\Async\CancellationError $e) {
+} catch (\Async\AsyncCancellation $e) {
     echo "second caught cancellation: " . $e->getMessage() . "\n";
 }
 

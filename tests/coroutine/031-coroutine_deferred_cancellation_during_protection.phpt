@@ -21,7 +21,7 @@ $already_protected = spawn(function() {
             echo "protection completed\n";
         });
         echo "after protection block\n";
-    } catch (\Async\CancellationError $e) {
+    } catch (\Async\AsyncCancellation $e) {
         echo "caught cancellation in coroutine: " . $e->getMessage() . "\n";
         throw $e;
     }
@@ -32,11 +32,11 @@ $already_protected = spawn(function() {
 suspend(); // Enter protection
 
 // Cancel while protected
-$already_protected->cancel(new \Async\CancellationError("Cancel during protection"));
+$already_protected->cancel(new \Async\AsyncCancellation("Cancel during protection"));
 
 try {
     await($already_protected);
-} catch (\Async\CancellationError $e) {
+} catch (\Async\AsyncCancellation $e) {
     echo "protection cancellation: " . $e->getMessage() . "\n";
 }
 

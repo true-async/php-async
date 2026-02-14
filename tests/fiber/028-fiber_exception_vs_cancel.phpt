@@ -5,7 +5,7 @@ Fiber throws exception while coroutine is being cancelled
 
 use function Async\spawn;
 use function Async\await;
-use Async\CancellationError;
+use Async\AsyncCancellation;
 
 $c = spawn(function() {
     $fiber = new Fiber(function() {
@@ -17,14 +17,14 @@ $c = spawn(function() {
     $coro = $fiber->getCoroutine();
 
     // Cancel coroutine
-    $coro->cancel(new CancellationError("cancel"));
+    $coro->cancel(new AsyncCancellation("cancel"));
 
-    // Resume - what happens? Exception or CancellationError?
+    // Resume - what happens? Exception or AsyncCancellation?
     try {
         $fiber->resume();
         echo "No exception\n";
-    } catch (CancellationError $e) {
-        echo "CancellationError: " . $e->getMessage() . "\n";
+    } catch (AsyncCancellation $e) {
+        echo "AsyncCancellation: " . $e->getMessage() . "\n";
     } catch (Exception $e) {
         echo "Exception: " . $e->getMessage() . "\n";
     }

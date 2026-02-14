@@ -23,7 +23,7 @@ class ThrowingScopeProvider implements \Async\ScopeProvider
             case 'runtime':
                 throw new \RuntimeException("Runtime error in provider");
             case 'cancellation':
-                throw new \Async\CancellationError("Cancelled in provider");
+                throw new \Async\AsyncCancellation("Cancelled in provider");
             case 'invalid_argument':
                 throw new \InvalidArgumentException("Invalid argument in provider");
             case 'logic':
@@ -43,8 +43,8 @@ foreach ($exceptionTypes as $type) {
             return "test";
         });
         echo "ERROR: Should have thrown exception for {$type}\n";
-    } catch (\Async\CancellationError $e) {
-        echo "Caught CancellationError: " . $e->getMessage() . "\n";
+    } catch (\Async\AsyncCancellation $e) {
+        echo "Caught AsyncCancellation: " . $e->getMessage() . "\n";
     } catch (\RuntimeException $e) {
         echo "Caught RuntimeException: " . $e->getMessage() . "\n";
     } catch (\InvalidArgumentException $e) {
@@ -64,7 +64,7 @@ echo "end\n";
 --EXPECT--
 start
 Caught RuntimeException: Runtime error in provider
-Caught CancellationError: Cancelled in provider
+Caught AsyncCancellation: Cancelled in provider
 Caught InvalidArgumentException: Invalid argument in provider
 Caught LogicException: Logic error in provider
 Caught Exception: Generic error in provider
