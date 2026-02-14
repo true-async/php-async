@@ -104,7 +104,7 @@ final class Future implements Completable
     /**
      * Cancel the future.
      */
-    public function cancel(?CancellationError $cancellation = null): void {}
+    public function cancel(?AsyncCancellation $cancellation = null): void {}
 
     /**
      * Do not forward unhandled errors to the event loop handler.

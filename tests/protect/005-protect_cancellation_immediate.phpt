@@ -18,7 +18,7 @@ $coroutine = spawn(function() {
             suspend();
             echo "finished protect\n";
         });
-    } catch (Async\CancellationError $e) {
+    } catch (Async\AsyncCancellation $e) {
         echo "caught exception: " . $e->getMessage() . "\n";
     }
 });

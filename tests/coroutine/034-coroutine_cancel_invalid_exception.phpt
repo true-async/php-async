@@ -35,7 +35,7 @@ try {
 }
 
 // Valid cancellation
-$invalid_cancel_coroutine->cancel(new \Async\CancellationError("Valid cancellation"));
+$invalid_cancel_coroutine->cancel(new \Async\AsyncCancellation("Valid cancellation"));
 
 echo "end\n";
 

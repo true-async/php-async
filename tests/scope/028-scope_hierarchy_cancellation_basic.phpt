@@ -56,7 +56,7 @@ echo "child2 scope cancelled: " . ($child2_scope->isCancelled() ? "true" : "fals
 
 // Cancel parent scope - should cascade to children
 echo "cancelling parent scope\n";
-$parent_scope->cancel(new \Async\CancellationError("Parent cancelled"));
+$parent_scope->cancel(new \Async\AsyncCancellation("Parent cancelled"));
 
 // Let cancellation propagate
 suspend();

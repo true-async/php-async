@@ -6,7 +6,7 @@ Cancel fiber's coroutine while fiber is suspended
 use function Async\spawn;
 use function Async\suspend;
 use function Async\await;
-use Async\CancellationError;
+use Async\AsyncCancellation;
 
 $c = spawn(function() {
     $fiber = new Fiber(function() {
@@ -21,7 +21,7 @@ $c = spawn(function() {
     // Fiber is suspended, cancel its coroutine
     $coro = $fiber->getCoroutine();
     echo "Cancelling coroutine\n";
-    $coro->cancel(new CancellationError("test"));
+    $coro->cancel(new AsyncCancellation("test"));
 
     // Give scheduler a chance
     suspend();

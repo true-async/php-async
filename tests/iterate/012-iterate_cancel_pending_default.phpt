@@ -6,7 +6,7 @@ iterate() - cancelPending=true (default) cancels spawned coroutines after iterat
 use function Async\spawn;
 use function Async\suspend;
 use function Async\iterate;
-use Async\CancellationError;
+use Async\AsyncCancellation;
 
 echo "start\n";
 
@@ -23,7 +23,7 @@ spawn(function() {
                 suspend();
                 $spawned_completed = true;
                 echo "spawned $value completed\n";
-            } catch (CancellationError $e) {
+            } catch (AsyncCancellation $e) {
                 echo "spawned $value cancelled\n";
             }
         });

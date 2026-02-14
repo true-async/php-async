@@ -60,7 +60,7 @@ suspend();
 
 // Cancel only child1 - should not affect parent or other children
 echo "cancelling child1 scope only\n";
-$child1_scope->cancel(new \Async\CancellationError("Child1 cancelled"));
+$child1_scope->cancel(new \Async\AsyncCancellation("Child1 cancelled"));
 
 suspend();
 
@@ -76,7 +76,7 @@ suspend();
 
 // Cancel child3 as well
 echo "cancelling child3 scope\n";
-$child3_scope->cancel(new \Async\CancellationError("Child3 cancelled"));
+$child3_scope->cancel(new \Async\AsyncCancellation("Child3 cancelled"));
 
 // Let cancellation propagate
 suspend();

@@ -16,7 +16,7 @@ $self_cancelling = $scope->spawn(function() use ($scope) {
     suspend(); // Let it start properly
 
     echo "coroutine cancelling its own scope\n";
-    $scope->cancel(new \Async\CancellationError("Self-cancellation"));
+    $scope->cancel(new \Async\AsyncCancellation("Self-cancellation"));
     echo "coroutine end\n";
 });
 
@@ -25,7 +25,7 @@ echo "spawned coroutine\n";
 // Let coroutine start and cancel scope
 try {
     await($self_cancelling);
-} catch (\Async\CancellationError $e) {
+} catch (\Async\AsyncCancellation $e) {
     echo "caught cancellation in main\n";
 }
 

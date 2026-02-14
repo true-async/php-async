@@ -19,7 +19,7 @@ $coroutine1 = $scope->spawn(function() {
         suspend();
         echo "coroutine1 should not reach here\n";
         return "result1";
-    } catch (\Async\CancellationError $e) {
+    } catch (\Async\AsyncCancellation $e) {
         echo "coroutine1 caught cancellation: " . $e->getMessage() . "\n";
         throw $e;
     }
@@ -32,7 +32,7 @@ $coroutine2 = $scope->spawn(function() {
         suspend();
         echo "coroutine2 should not reach here\n";
         return "result2";
-    } catch (\Async\CancellationError $e) {
+    } catch (\Async\AsyncCancellation $e) {
         echo "coroutine2 caught cancellation: " . $e->getMessage() . "\n";
         throw $e;
     }
@@ -44,7 +44,7 @@ echo "spawned coroutines\n";
 suspend();
 
 echo "cancelling scope\n";
-$scope->cancel(new \Async\CancellationError("Custom cancellation message"));
+$scope->cancel(new \Async\AsyncCancellation("Custom cancellation message"));
 
 // Let cancellation propagate
 suspend();

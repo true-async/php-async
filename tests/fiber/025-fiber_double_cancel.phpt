@@ -5,7 +5,7 @@ Double cancel - parent coroutine and fiber's coroutine
 
 use function Async\spawn;
 use function Async\await;
-use Async\CancellationError;
+use Async\AsyncCancellation;
 
 $parent = spawn(function() {
     $fiber = new Fiber(function() {
@@ -17,7 +17,7 @@ $parent = spawn(function() {
 
     // Cancel fiber's coroutine
     $fiberCoro = $fiber->getCoroutine();
-    $fiberCoro->cancel(new CancellationError("fiber cancel"));
+    $fiberCoro->cancel(new AsyncCancellation("fiber cancel"));
     echo "Fiber coroutine cancelled\n";
 
     // Try resume
@@ -31,12 +31,12 @@ $parent = spawn(function() {
 });
 
 // Also cancel parent
-$parent->cancel(new CancellationError("parent cancel"));
+$parent->cancel(new AsyncCancellation("parent cancel"));
 echo "Parent cancelled\n";
 
 try {
     await($parent);
-} catch (CancellationError $e) {
+} catch (AsyncCancellation $e) {
     echo "Parent caught: " . $e->getMessage() . "\n";
 }
 

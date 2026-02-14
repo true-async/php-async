@@ -7,7 +7,7 @@ namespace Async;
 interface Awaitable {}
 
 interface Completable extends Awaitable {
-    public function cancel(?CancellationError $cancellation = null): void;
+    public function cancel(?AsyncCancellation $cancellation = null): void;
     public function isCompleted(): bool;
     public function isCancelled(): bool;
 }
@@ -16,7 +16,7 @@ final class Timeout implements Completable
 {
     private function __construct() {}
 
-    public function cancel(?CancellationError $cancellation = null): void {}
+    public function cancel(?AsyncCancellation $cancellation = null): void {}
 
     public function isCompleted(): bool {}
 
@@ -105,7 +105,7 @@ function iterate(iterable $iterable, callable $callback, int $concurrency = 0, b
 /**
  * Start the graceful shutdown of the Scheduler.
  */
-function graceful_shutdown(?CancellationError $cancellationError = null): void {}
+function graceful_shutdown(?AsyncCancellation $cancellationError = null): void {}
 
 /**
  * Execute an external program.
