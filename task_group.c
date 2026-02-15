@@ -269,7 +269,7 @@ static zend_object *task_group_create_object(zend_class_entry *ce)
 
 static void task_group_dtor_object(zend_object *object)
 {
-	const async_task_group_t *group = ASYNC_TASK_GROUP_FROM_OBJ(object);
+	async_task_group_t *group = ASYNC_TASK_GROUP_FROM_OBJ(object);
 
 	/* Report unhandled errors to scope exception handler */
 	if (!ZEND_ASYNC_EVENT_IS_EXCEPTION_HANDLED(&group->event) && group->scope != NULL) {
@@ -290,6 +290,20 @@ static void task_group_dtor_object(zend_object *object)
 
 		if (has_errors) {
 			ZEND_ASYNC_SCOPE_CATCH(&group->scope->scope, NULL, NULL, composite, true, false);
+		}
+	}
+
+	/* Dispose owned scope (analogous to scope_destroy for Scope objects).
+	 * Must happen in dtor, not free, because coroutines may still be alive. */
+	if (group->scope != NULL) {
+		async_scope_t *scope = group->scope;
+		group->scope = NULL;
+
+		if (false == scope->scope.try_to_dispose(&scope->scope)) {
+			zend_object *exception = async_new_exception(async_ce_cancellation_exception,
+														 "Scope is being disposed due to TaskGroup destruction");
+
+			ZEND_ASYNC_SCOPE_CANCEL(&scope->scope, exception, true, ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(&scope->scope));
 		}
 	}
 
@@ -314,11 +328,8 @@ static void task_group_free_object(zend_object *object)
 	/* Free event callbacks */
 	zend_async_callbacks_free(&group->event);
 
-	/* Dispose owned scope */
-	if (group->scope != NULL) {
-		group->scope->scope.event.dispose(&group->scope->scope.event);
-		group->scope = NULL;
-	}
+	/* Scope is released in dtor_obj, but guard against leaks */
+	ZEND_ASSERT(group->scope == NULL && "Scope should have been released in dtor");
 }
 
 static HashTable *task_group_get_gc(zend_object *object, zval **table, int *n)
