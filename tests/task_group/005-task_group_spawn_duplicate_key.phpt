@@ -20,4 +20,4 @@ spawn(function() {
 });
 ?>
 --EXPECT--
-caught: Duplicate key in TaskGroup
+caught: Duplicate key "same" in TaskGroup

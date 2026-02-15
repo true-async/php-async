@@ -973,8 +973,12 @@ METHOD(spawn)
 	}
 
 	if (UNEXPECTED(duplicate)) {
+		if (Z_TYPE(key_zv) == IS_STRING) {
+			async_throw_error("Duplicate key \"%s\" in TaskGroup", ZSTR_VAL(Z_STR(key_zv)));
+		} else {
+			async_throw_error("Duplicate key " ZEND_LONG_FMT " in TaskGroup", Z_LVAL(key_zv));
+		}
 		zval_ptr_dtor(&key_zv);
-		async_throw_error("Duplicate key in TaskGroup");
 		RETURN_THROWS();
 	}
 
