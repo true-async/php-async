@@ -313,6 +313,12 @@ static void task_group_free_object(zend_object *object)
 
 	/* Free event callbacks */
 	zend_async_callbacks_free(&group->event);
+
+	/* Dispose owned scope */
+	if (group->scope != NULL) {
+		group->scope->scope.event.dispose(&group->scope->scope.event);
+		group->scope = NULL;
+	}
 }
 
 static HashTable *task_group_get_gc(zend_object *object, zval **table, int *n)
