@@ -1487,7 +1487,7 @@ static void async_future_create_mapper(
     ZEND_PARSE_PARAMETERS_END();
 
     if (UNEXPECTED(!zend_is_callable(callable, 0, NULL))) {
-        async_throw_error("Argument must be a valid callable");
+        zend_argument_type_error(1, "must be of type callable, %s given", zend_zval_type_name(callable));
         RETURN_THROWS();
     }
 

@@ -202,12 +202,21 @@ zend_class_entry *async_ce_context = NULL;
 #define ZEND_OBJECT_TO_CONTEXT(obj) ((async_context_t *) ((char *) (obj) - (obj)->handlers->offset))
 #define THIS_CONTEXT ZEND_OBJECT_TO_CONTEXT(Z_OBJ_P(ZEND_THIS))
 
+#define VALIDATE_CONTEXT_KEY(key, arg_num) do { \
+	if (UNEXPECTED(Z_TYPE_P(key) != IS_STRING && Z_TYPE_P(key) != IS_OBJECT)) { \
+		zend_argument_type_error(arg_num, "must be of type string|object, %s given", zend_zval_type_name(key)); \
+		RETURN_THROWS(); \
+	} \
+} while (0)
+
 METHOD(find)
 {
 	zval *key;
 	ZEND_PARSE_PARAMETERS_START(1, 1)
 	Z_PARAM_ZVAL(key)
 	ZEND_PARSE_PARAMETERS_END();
+
+	VALIDATE_CONTEXT_KEY(key, 1);
 
 	if (async_context_find(THIS_CONTEXT, key, return_value, true)) {
 		return;
@@ -223,6 +232,8 @@ METHOD(get)
 	Z_PARAM_ZVAL(key)
 	ZEND_PARSE_PARAMETERS_END();
 
+	VALIDATE_CONTEXT_KEY(key, 1);
+
 	if (async_context_find(THIS_CONTEXT, key, return_value, true)) {
 		return;
 	}
@@ -237,6 +248,8 @@ METHOD(has)
 	Z_PARAM_ZVAL(key)
 	ZEND_PARSE_PARAMETERS_END();
 
+	VALIDATE_CONTEXT_KEY(key, 1);
+
 	RETURN_BOOL(async_context_find(THIS_CONTEXT, key, NULL, true));
 }
 
@@ -246,6 +259,8 @@ METHOD(findLocal)
 	ZEND_PARSE_PARAMETERS_START(1, 1)
 	Z_PARAM_ZVAL(key)
 	ZEND_PARSE_PARAMETERS_END();
+
+	VALIDATE_CONTEXT_KEY(key, 1);
 
 	if (async_context_find_local(THIS_CONTEXT, key, return_value)) {
 		return;
@@ -261,6 +276,8 @@ METHOD(getLocal)
 	Z_PARAM_ZVAL(key)
 	ZEND_PARSE_PARAMETERS_END();
 
+	VALIDATE_CONTEXT_KEY(key, 1);
+
 	if (async_context_find_local(THIS_CONTEXT, key, return_value)) {
 		return;
 	}
@@ -274,6 +291,8 @@ METHOD(hasLocal)
 	ZEND_PARSE_PARAMETERS_START(1, 1)
 	Z_PARAM_ZVAL(key)
 	ZEND_PARSE_PARAMETERS_END();
+
+	VALIDATE_CONTEXT_KEY(key, 1);
 
 	RETURN_BOOL(async_context_has_local(THIS_CONTEXT, key));
 }
@@ -292,7 +311,8 @@ METHOD(set)
 
 	async_context_t *context = THIS_CONTEXT;
 
-	// Check if key exists and replace is false
+	VALIDATE_CONTEXT_KEY(key, 1);
+
 	if (!replace && async_context_has_local(context, key)) {
 		async_throw_error("Context key already exists and replace is false");
 		RETURN_THROWS();
@@ -309,6 +329,8 @@ METHOD(unset)
 	ZEND_PARSE_PARAMETERS_START(1, 1)
 	Z_PARAM_ZVAL(key)
 	ZEND_PARSE_PARAMETERS_END();
+
+	VALIDATE_CONTEXT_KEY(key, 1);
 
 	async_context_t *context = THIS_CONTEXT;
 

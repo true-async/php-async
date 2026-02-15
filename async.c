@@ -29,6 +29,7 @@
 #include "future.h"
 #include "channel.h"
 #include "pool.h"
+#include "task_group.h"
 #include "iterator.h"
 #include "async_API.h"
 #include "zend_enum.h"
@@ -800,7 +801,8 @@ PHP_FUNCTION(Async_iterate)
 			async_throw_error("Failed to create iterator");
 		}
 	} else {
-		async_throw_error("Expected parameter 'iterable' to be an array or an object implementing Traversable");
+		zend_argument_type_error(1, "must be of type array|Traversable, %s given", zend_zval_type_name(iterable));
+		RETURN_THROWS();
 	}
 
 	if (UNEXPECTED(EG(exception))) {
@@ -1188,6 +1190,7 @@ ZEND_MINIT_FUNCTION(async)
 	async_register_channel_ce();
 	async_register_circuit_breaker_ce();
 	async_register_pool_ce();
+	async_register_task_group_ce();
 	async_register_future_ce();
 
 	async_scheduler_startup();
