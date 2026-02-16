@@ -17,6 +17,7 @@
 #include "task_group.h"
 #include "task_group_arginfo.h"
 #include "exceptions.h"
+#include "zend_exceptions.h"
 #include "zend_interfaces.h"
 
 /* Task entry states — stored as IS_PTR in unified tasks HashTable */
@@ -883,7 +884,7 @@ zend_async_group_t *async_new_group(uint32_t concurrency, zend_object *scope_obj
 	group->concurrency = concurrency;
 
 	if (scope_obj != NULL) {
-		async_scope_object_t *scope_object = (async_scope_object_t *)scope_obj;
+		const async_scope_object_t *scope_object = (async_scope_object_t *)scope_obj;
 		if (UNEXPECTED(scope_object->scope == NULL)) {
 			async_throw_error("Cannot use a disposed Scope for TaskGroup");
 			zval_ptr_dtor(&zv);
@@ -1019,7 +1020,6 @@ METHOD(spawn)
 
 METHOD(all)
 {
-	zend_coroutine_t *current;
 	bool ignore_errors = false;
 
 	ZEND_PARSE_PARAMETERS_START(0, 1)
@@ -1034,11 +1034,10 @@ retry:
 	if (task_group_all_settled(group) && !task_group_has_pending(group)) {
 		/* Check errors */
 		if (!ignore_errors && task_group_has_errors(group)) {
-			zend_object *composite;
 			zval composite_zv;
 
 			ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(&group->event);
-			composite = task_group_collect_composite_exception(group);
+			zend_object *composite = task_group_collect_composite_exception(group);
 			ZVAL_OBJ(&composite_zv, composite);
 			zend_throw_exception_object(&composite_zv);
 			RETURN_THROWS();
@@ -1049,7 +1048,7 @@ retry:
 	}
 
 	/* Suspend and wait */
-	current = (zend_coroutine_t *)ZEND_ASYNC_CURRENT_COROUTINE;
+	zend_coroutine_t *current = (zend_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
 
 	if (UNEXPECTED(current == NULL)) {
 		async_throw_error("TaskGroup::all() can only be called inside a coroutine");
@@ -1161,7 +1160,6 @@ METHOD(any)
 {
 	async_task_group_t *group;
 	zval *zv;
-	zend_coroutine_t *current;
 
 	ZEND_PARSE_PARAMETERS_NONE();
 
@@ -1186,18 +1184,17 @@ retry:
 	/* All settled with errors only? */
 	if (task_group_all_settled(group) && !task_group_has_pending(group)
 		&& !task_group_has_success(group)) {
-		zend_object *composite;
 		zval composite_zv;
 
 		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(&group->event);
-		composite = task_group_collect_composite_exception(group);
+		zend_object *composite = task_group_collect_composite_exception(group);
 		ZVAL_OBJ(&composite_zv, composite);
 		zend_throw_exception_object(&composite_zv);
 		RETURN_THROWS();
 	}
 
 	/* Suspend */
-	current = (zend_coroutine_t *)ZEND_ASYNC_CURRENT_COROUTINE;
+	zend_coroutine_t *current = (zend_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
 
 	if (UNEXPECTED(current == NULL)) {
 		async_throw_error("TaskGroup::any() can only be called inside a coroutine");
@@ -1315,7 +1312,7 @@ METHOD(isClosed)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	async_task_group_t *group = THIS_GROUP();
+	const async_task_group_t *group = THIS_GROUP();
 	RETURN_BOOL(ZEND_ASYNC_EVENT_IS_CLOSED(&group->event));
 }
 
