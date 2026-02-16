@@ -22,7 +22,7 @@ spawn(function() {
 
     $group->cancel();
 
-    var_dump($group->isClosed());
+    var_dump($group->isSealed());
     var_dump($group->isFinished());
     echo "results: " . count($group->getResults()) . "\n";
     echo "done\n";

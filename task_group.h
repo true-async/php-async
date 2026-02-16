@@ -23,11 +23,17 @@
 
 /* TaskGroup-specific event flags (bits 11+) */
 #define ASYNC_TASK_GROUP_F_COMPLETED (1u << 11)
+#define ASYNC_TASK_GROUP_F_SEALED    (1u << 12)
 
 #define ASYNC_TASK_GROUP_IS_COMPLETED(group) \
 	(((group)->event.flags & ASYNC_TASK_GROUP_F_COMPLETED) != 0)
 #define ASYNC_TASK_GROUP_SET_COMPLETED(group) \
 	((group)->event.flags |= ASYNC_TASK_GROUP_F_COMPLETED)
+
+#define ASYNC_TASK_GROUP_IS_SEALED(group) \
+	(((group)->event.flags & ASYNC_TASK_GROUP_F_SEALED) != 0)
+#define ASYNC_TASK_GROUP_SET_SEALED(group) \
+	((group)->event.flags |= ASYNC_TASK_GROUP_F_SEALED)
 
 typedef struct _async_task_group_s async_task_group_t;
 
@@ -35,9 +41,9 @@ struct _async_task_group_s {
 	/* Event (must be first) — TaskGroup IS an event (Awaitable).
 	 * group->event == all() semantics.
 	 * Flags used:
-	 *   ZEND_ASYNC_EVENT_F_CLOSED          — closed for new tasks
+	 *   ASYNC_TASK_GROUP_F_SEALED          — sealed for new tasks (spawn rejected)
 	 *   ZEND_ASYNC_EVENT_F_EXCEPTION_HANDLED — errors handled (toggle)
-	 *   ASYNC_TASK_GROUP_F_COMPLETED       — terminal: CLOSED + all tasks done */
+	 *   ASYNC_TASK_GROUP_F_COMPLETED       — terminal: all tasks done, event CLOSED */
 	zend_async_event_t event;
 
 	/* Child scope (always owned, dispose is safe) */

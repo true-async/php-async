@@ -14,7 +14,7 @@ spawn(function() {
     $group->spawn(function() { throw new \RuntimeException("fail1"); }, "bad1");
     $group->spawn(function() { throw new \LogicException("fail2"); }, "bad2");
 
-    $group->close();
+    $group->seal();
 
     try {
         $group->all();

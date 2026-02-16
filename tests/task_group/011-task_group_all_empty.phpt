@@ -8,7 +8,7 @@ use function Async\spawn;
 
 spawn(function() {
     $group = new TaskGroup();
-    $group->close();
+    $group->seal();
     $results = $group->all();
 
     var_dump($results);

@@ -376,7 +376,7 @@ static HashTable *task_group_get_gc(zend_object *object, zval **table, int *n)
 
 static void task_group_try_complete(async_task_group_t *group)
 {
-	if (!ZEND_ASYNC_EVENT_IS_CLOSED(&group->event)) {
+	if (!ASYNC_TASK_GROUP_IS_SEALED(group)) {
 		return;
 	}
 
@@ -389,6 +389,7 @@ static void task_group_try_complete(async_task_group_t *group)
 	}
 
 	ASYNC_TASK_GROUP_SET_COMPLETED(group);
+	ZEND_ASYNC_EVENT_SET_CLOSED(&group->event);
 
 	/* Fire finally handlers asynchronously */
 	if (group->finally_handlers != NULL && zend_hash_num_elements(group->finally_handlers) > 0) {
@@ -781,7 +782,7 @@ retry:
 
 	/* Check termination: past all elements */
 	if (iterator->position >= zend_hash_num_elements(&group->tasks)) {
-		if (ZEND_ASYNC_EVENT_IS_CLOSED(&group->event) && group->active_coroutines == 0
+		if (ASYNC_TASK_GROUP_IS_SEALED(group) && group->active_coroutines == 0
 			&& !task_group_has_pending(group)) {
 			iterator->valid = false;
 			return;
@@ -963,9 +964,9 @@ METHOD(spawn)
 
 	async_task_group_t *group = THIS_GROUP();
 
-	/* Check closed/completed */
-	if (UNEXPECTED(ZEND_ASYNC_EVENT_IS_CLOSED(&group->event))) {
-		async_throw_error("Cannot spawn tasks on a closed TaskGroup");
+	/* Check sealed/completed */
+	if (UNEXPECTED(ASYNC_TASK_GROUP_IS_SEALED(group))) {
+		async_throw_error("Cannot spawn tasks on a sealed TaskGroup");
 		RETURN_THROWS();
 	}
 
@@ -1260,10 +1261,11 @@ METHOD(cancel)
 
 	async_task_group_t *group = THIS_GROUP();
 
-	if (ZEND_ASYNC_EVENT_IS_CLOSED(&group->event)) {
+	if (ASYNC_TASK_GROUP_IS_SEALED(group)) {
 		return;
 	}
 
+	ASYNC_TASK_GROUP_SET_SEALED(group);
 	ZEND_ASYNC_EVENT_SET_CLOSED(&group->event);
 	ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(&group->event);
 
@@ -1275,17 +1277,17 @@ METHOD(cancel)
 	task_group_try_complete(group);
 }
 
-METHOD(close)
+METHOD(seal)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
 	async_task_group_t *group = THIS_GROUP();
 
-	if (ZEND_ASYNC_EVENT_IS_CLOSED(&group->event)) {
+	if (ASYNC_TASK_GROUP_IS_SEALED(group)) {
 		return;
 	}
 
-	ZEND_ASYNC_EVENT_SET_CLOSED(&group->event);
+	ASYNC_TASK_GROUP_SET_SEALED(group);
 	task_group_try_complete(group);
 }
 
@@ -1308,12 +1310,12 @@ METHOD(isFinished)
 	RETURN_BOOL(task_group_all_settled(group) && !task_group_has_pending(group));
 }
 
-METHOD(isClosed)
+METHOD(isSealed)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
 	const async_task_group_t *group = THIS_GROUP();
-	RETURN_BOOL(ZEND_ASYNC_EVENT_IS_CLOSED(&group->event));
+	RETURN_BOOL(ASYNC_TASK_GROUP_IS_SEALED(group));
 }
 
 METHOD(count)

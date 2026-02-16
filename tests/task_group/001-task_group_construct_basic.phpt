@@ -10,7 +10,7 @@ $group = new TaskGroup();
 var_dump($group instanceof TaskGroup);
 var_dump($group->count());
 var_dump($group->isFinished());
-var_dump($group->isClosed());
+var_dump($group->isSealed());
 
 echo "done\n";
 ?>

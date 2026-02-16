@@ -30,7 +30,7 @@ spawn(function() {
         return "r3";
     });
 
-    $group->close();
+    $group->seal();
     $group->all();
 
     foreach ($order as $item) {

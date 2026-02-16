@@ -13,7 +13,7 @@ spawn(function() {
     $group->spawn(function() { throw new \RuntimeException("fail1"); });
     $group->spawn(function() { throw new \LogicException("fail2"); });
 
-    $group->close();
+    $group->seal();
 
     try {
         $group->any();

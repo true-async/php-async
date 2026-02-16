@@ -13,7 +13,7 @@ spawn(function() {
     $group->spawn(function() { throw new \RuntimeException("fail"); }, "bad");
     $group->spawn(function() { return "ok2"; }, "good2");
 
-    $group->close();
+    $group->seal();
     $results = $group->all(ignoreErrors: true);
 
     var_dump(count($results));

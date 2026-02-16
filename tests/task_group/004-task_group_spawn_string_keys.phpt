@@ -13,7 +13,7 @@ spawn(function() {
     $group->spawn(function() { return "Bob"; }, "user2");
     $group->spawn(function() { return "Charlie"; }, "user3");
 
-    $group->close();
+    $group->seal();
     $results = $group->all();
 
     foreach ($results as $key => $value) {

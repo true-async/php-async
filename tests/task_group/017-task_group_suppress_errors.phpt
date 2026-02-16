@@ -11,7 +11,7 @@ spawn(function() {
 
     $group->spawn(function() { throw new \RuntimeException("err"); });
 
-    $group->close();
+    $group->seal();
     $group->all(ignoreErrors: true);
 
     $group->suppressErrors();

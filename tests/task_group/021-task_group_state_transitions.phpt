@@ -1,5 +1,5 @@
 --TEST--
-TaskGroup: isFinished() and isClosed() state transitions
+TaskGroup: isFinished() and isSealed() state transitions
 --FILE--
 <?php
 
@@ -11,7 +11,7 @@ spawn(function() {
     $group = new TaskGroup();
 
     echo "initial: finished=" . var_export($group->isFinished(), true)
-       . " closed=" . var_export($group->isClosed(), true) . "\n";
+       . " sealed=" . var_export($group->isSealed(), true) . "\n";
 
     $group->spawn(function() {
         suspend();
@@ -19,21 +19,21 @@ spawn(function() {
     });
 
     echo "after spawn: finished=" . var_export($group->isFinished(), true)
-       . " closed=" . var_export($group->isClosed(), true) . "\n";
+       . " sealed=" . var_export($group->isSealed(), true) . "\n";
 
-    $group->close();
+    $group->seal();
 
     echo "after close: finished=" . var_export($group->isFinished(), true)
-       . " closed=" . var_export($group->isClosed(), true) . "\n";
+       . " sealed=" . var_export($group->isSealed(), true) . "\n";
 
     $group->all();
 
     echo "after all: finished=" . var_export($group->isFinished(), true)
-       . " closed=" . var_export($group->isClosed(), true) . "\n";
+       . " sealed=" . var_export($group->isSealed(), true) . "\n";
 });
 ?>
 --EXPECT--
-initial: finished=true closed=false
-after spawn: finished=false closed=false
-after close: finished=false closed=true
-after all: finished=true closed=true
+initial: finished=true sealed=false
+after spawn: finished=false sealed=false
+after close: finished=false sealed=true
+after all: finished=true sealed=true
