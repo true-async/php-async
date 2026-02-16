@@ -538,12 +538,16 @@ static void task_group_on_coroutine_complete(
 	old_entry = (task_entry_t *)Z_PTR_P(slot);
 
 	if (exception != NULL) {
+		/* Mark exception as handled on the coroutine so it won't propagate */
+		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
+
 		/* Transition: RUNNING → ERROR */
+		OBJ_RELEASE(old_entry->coroutine);
 		old_entry->state = TASK_STATE_ERROR;
 		old_entry->exception = exception;
 		GC_ADDREF(exception);
 
-		/* New error → reset EXCEPTION_HANDLED */
+		/* New error → reset EXCEPTION_HANDLED on group */
 		ZEND_ASYNC_EVENT_CLR_EXCEPTION_HANDLED(&group->event);
 	} else {
 		/* Transition: RUNNING → success (replace IS_PTR with result zval) */
