@@ -556,7 +556,8 @@ static void task_group_on_coroutine_complete(
 			ZVAL_NULL(&result_copy);
 		}
 
-		/* Free the entry, then overwrite the slot */
+		/* Release coroutine ref (added in task_entry_new_running), then free entry */
+		OBJ_RELEASE(old_entry->coroutine);
 		efree(old_entry);
 		ZVAL_COPY_VALUE(slot, &result_copy);
 	}
