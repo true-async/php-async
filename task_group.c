@@ -22,7 +22,7 @@
 
 /* Task entry states — stored as IS_PTR in unified tasks HashTable */
 typedef enum {
-	TASK_STATE_PENDING,    /* closure waiting in queue */
+	TASK_STATE_PENDING,    /* callable waiting in queue (owns zend_fcall_t) */
 	TASK_STATE_RUNNING,    /* coroutine executing */
 	TASK_STATE_ERROR       /* coroutine finished with exception */
 } task_state_t;
@@ -30,7 +30,7 @@ typedef enum {
 typedef struct {
 	task_state_t state;
 	union {
-		zval closure;              /* TASK_STATE_PENDING */
+		zend_fcall_t *fcall;       /* TASK_STATE_PENDING (owned, freed on transition or cancel) */
 		zend_object *coroutine;    /* TASK_STATE_RUNNING (ref-counted) */
 		zend_object *exception;    /* TASK_STATE_ERROR (ref-counted) */
 	};
@@ -157,11 +157,11 @@ static void task_group_on_coroutine_complete(
 /// task_entry_t lifecycle
 ///////////////////////////////////////////////////////////
 
-static task_entry_t *task_entry_new_pending(zval *closure)
+static task_entry_t *task_entry_new_pending(zend_fcall_t *fcall)
 {
 	task_entry_t *entry = emalloc(sizeof(task_entry_t));
 	entry->state = TASK_STATE_PENDING;
-	ZVAL_COPY(&entry->closure, closure);
+	entry->fcall = fcall;
 	return entry;
 }
 
@@ -178,7 +178,7 @@ static void task_entry_free(task_entry_t *entry)
 {
 	switch (entry->state) {
 		case TASK_STATE_PENDING:
-			zval_ptr_dtor(&entry->closure);
+			zend_fcall_release(entry->fcall);
 			break;
 		case TASK_STATE_RUNNING:
 			OBJ_RELEASE(entry->coroutine);
@@ -455,7 +455,12 @@ static HashTable *task_group_get_gc(zend_object *object, zval **table, int *n)
 			task_entry_t *entry = (task_entry_t *)Z_PTR_P(zv);
 			switch (entry->state) {
 				case TASK_STATE_PENDING:
-					zend_get_gc_buffer_add_zval(buf, &entry->closure);
+					if (entry->fcall != NULL) {
+						zend_get_gc_buffer_add_zval(buf, &entry->fcall->fci.function_name);
+						for (uint32_t p = 0; p < entry->fcall->fci.param_count; p++) {
+							zend_get_gc_buffer_add_zval(buf, &entry->fcall->fci.params[p]);
+						}
+					}
 					break;
 				case TASK_STATE_RUNNING:
 					zend_get_gc_buffer_add_obj(buf, entry->coroutine);
@@ -546,35 +551,22 @@ static bool task_group_has_slot(const async_task_group_t *group)
 	return group->concurrency == 0 || group->active_coroutines < (int32_t)group->concurrency;
 }
 
-static void task_group_spawn_coroutine(async_task_group_t *group, zval *closure, zval *key, task_entry_t *pending_entry)
+static void task_group_spawn_coroutine(async_task_group_t *group, zend_fcall_t *fcall, zval *key, task_entry_t *pending_entry)
 {
-	async_coroutine_t *coroutine;
-	zend_fcall_info fci;
-	zend_fcall_info_cache fcc;
-	zend_fcall_t *fcall;
-	task_group_coroutine_callback_t *cb;
-
 	/* Create coroutine in group's scope */
-	coroutine = (async_coroutine_t *)ZEND_ASYNC_SPAWN_WITH(&group->scope->scope);
+	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_SPAWN_WITH(&group->scope->scope);
 
 	if (UNEXPECTED(coroutine == NULL || EG(exception))) {
 		return;
 	}
 
-	if (UNEXPECTED(zend_fcall_info_init(closure, 0, &fci, &fcc, NULL, NULL) == FAILURE)) {
-		async_throw_error("Failed to initialize closure for TaskGroup");
-		return;
-	}
-
-	fcall = ecalloc(1, sizeof(zend_fcall_t));
-	fcall->fci = fci;
-	fcall->fci_cache = fcc;
-	Z_TRY_ADDREF(fcall->fci.function_name);
+	/* Transfer fcall ownership to coroutine */
 	coroutine->coroutine.fcall = fcall;
 
 	/* Transition entry: PENDING → RUNNING */
 	if (pending_entry != NULL) {
-		zval_ptr_dtor(&pending_entry->closure);
+		/* fcall ownership transferred to coroutine, clear pointer without releasing */
+		pending_entry->fcall = NULL;
 		pending_entry->state = TASK_STATE_RUNNING;
 		pending_entry->coroutine = &coroutine->std;
 		GC_ADDREF(&coroutine->std);
@@ -592,7 +584,7 @@ static void task_group_spawn_coroutine(async_task_group_t *group, zval *closure,
 	}
 
 	/* Create extended callback with key */
-	cb = ecalloc(1, sizeof(task_group_coroutine_callback_t));
+	task_group_coroutine_callback_t *cb = ecalloc(1, sizeof(task_group_coroutine_callback_t));
 	cb->base.base.ref_count = 0;
 	cb->base.base.callback = task_group_on_coroutine_complete;
 	cb->base.base.dispose = task_group_callback_dispose;
@@ -634,7 +626,7 @@ static void task_group_drain(async_task_group_t *group)
 		zval key_zv;
 		zend_hash_get_current_key_zval(&group->tasks, &key_zv);
 
-		task_group_spawn_coroutine(group, &entry->closure, &key_zv, entry);
+		task_group_spawn_coroutine(group, entry->fcall, &key_zv, entry);
 		zval_ptr_dtor(&key_zv);
 
 		zend_hash_move_forward(&group->tasks);
@@ -1099,71 +1091,99 @@ METHOD(__construct)
 	}
 }
 
-METHOD(spawn)
+/* Internal spawn implementation shared by spawn() and spawnWithKey() */
+static void task_group_do_spawn(async_task_group_t *group, zval *key_zv,
+	zend_fcall_info *fci, zend_fcall_info_cache *fcc, zval *args, int args_count, HashTable *named_args)
 {
-	zval *task;
-	zval *key = NULL;
-
-	ZEND_PARSE_PARAMETERS_START(1, 2)
-		Z_PARAM_ZVAL(task)
-		Z_PARAM_OPTIONAL
-		Z_PARAM_ZVAL_OR_NULL(key)
-	ZEND_PARSE_PARAMETERS_END();
-
-	async_task_group_t *group = THIS_GROUP();
-
 	/* Check sealed/completed */
 	if (UNEXPECTED(ASYNC_TASK_GROUP_IS_SEALED(group))) {
 		async_throw_error("Cannot spawn tasks on a sealed TaskGroup");
-		RETURN_THROWS();
+		return;
 	}
 
 	if (UNEXPECTED(ASYNC_TASK_GROUP_IS_COMPLETED(group))) {
 		async_throw_error("Cannot spawn tasks on a completed TaskGroup");
-		RETURN_THROWS();
-	}
-
-	/* Determine key */
-	zval key_zv;
-	if (key == NULL || Z_TYPE_P(key) == IS_NULL) {
-		ZVAL_LONG(&key_zv, group->next_key++);
-	} else {
-		ZVAL_COPY(&key_zv, key);
+		return;
 	}
 
 	/* Check duplicate key */
 	bool duplicate;
-	if (Z_TYPE(key_zv) == IS_STRING) {
-		duplicate = zend_hash_exists(&group->tasks, Z_STR(key_zv));
+	if (Z_TYPE_P(key_zv) == IS_STRING) {
+		duplicate = zend_hash_exists(&group->tasks, Z_STR_P(key_zv));
 	} else {
-		duplicate = zend_hash_index_exists(&group->tasks, Z_LVAL(key_zv));
+		duplicate = zend_hash_index_exists(&group->tasks, Z_LVAL_P(key_zv));
 	}
 
 	if (UNEXPECTED(duplicate)) {
-		if (Z_TYPE(key_zv) == IS_STRING) {
-			async_throw_error("Duplicate key \"%s\" in TaskGroup", ZSTR_VAL(Z_STR(key_zv)));
+		if (Z_TYPE_P(key_zv) == IS_STRING) {
+			async_throw_error("Duplicate key \"%s\" in TaskGroup", ZSTR_VAL(Z_STR_P(key_zv)));
 		} else {
-			async_throw_error("Duplicate key " ZEND_LONG_FMT " in TaskGroup", Z_LVAL(key_zv));
+			async_throw_error("Duplicate key " ZEND_LONG_FMT " in TaskGroup", Z_LVAL_P(key_zv));
 		}
-		zval_ptr_dtor(&key_zv);
-		RETURN_THROWS();
+		return;
 	}
+
+	/* Build zend_fcall_t */
+	ZEND_ASYNC_FCALL_DEFINE(fcall, (*fci), (*fcc), args, args_count, named_args);
 
 	/* Spawn immediately or queue as pending */
 	if (task_group_has_slot(group)) {
-		task_group_spawn_coroutine(group, task, &key_zv, NULL);
+		task_group_spawn_coroutine(group, fcall, key_zv, NULL);
 	} else {
-		task_entry_t *entry = task_entry_new_pending(task);
+		task_entry_t *entry = task_entry_new_pending(fcall);
 		zval ptr_zv;
 		ZVAL_PTR(&ptr_zv, entry);
 
-		if (Z_TYPE(key_zv) == IS_STRING) {
-			zend_hash_add_new(&group->tasks, Z_STR(key_zv), &ptr_zv);
+		if (Z_TYPE_P(key_zv) == IS_STRING) {
+			zend_hash_add_new(&group->tasks, Z_STR_P(key_zv), &ptr_zv);
 		} else {
-			zend_hash_index_add_new(&group->tasks, Z_LVAL(key_zv), &ptr_zv);
+			zend_hash_index_add_new(&group->tasks, Z_LVAL_P(key_zv), &ptr_zv);
 		}
 	}
+}
 
+METHOD(spawn)
+{
+	zval *args = NULL;
+	int args_count = 0;
+	HashTable *named_args = NULL;
+	zend_fcall_info fci;
+	zend_fcall_info_cache fcc;
+
+	ZEND_PARSE_PARAMETERS_START(1, -1)
+		Z_PARAM_FUNC(fci, fcc)
+		Z_PARAM_VARIADIC_WITH_NAMED(args, args_count, named_args)
+	ZEND_PARSE_PARAMETERS_END();
+
+	async_task_group_t *group = THIS_GROUP();
+
+	zval key_zv;
+	ZVAL_LONG(&key_zv, group->next_key++);
+
+	task_group_do_spawn(group, &key_zv, &fci, &fcc, args, args_count, named_args);
+}
+
+METHOD(spawnWithKey)
+{
+	zval *key = NULL;
+	zval *args = NULL;
+	int args_count = 0;
+	HashTable *named_args = NULL;
+	zend_fcall_info fci;
+	zend_fcall_info_cache fcc;
+
+	ZEND_PARSE_PARAMETERS_START(2, -1)
+		Z_PARAM_ZVAL(key)
+		Z_PARAM_FUNC(fci, fcc)
+		Z_PARAM_VARIADIC_WITH_NAMED(args, args_count, named_args)
+	ZEND_PARSE_PARAMETERS_END();
+
+	async_task_group_t *group = THIS_GROUP();
+
+	zval key_zv;
+	ZVAL_COPY(&key_zv, key);
+
+	task_group_do_spawn(group, &key_zv, &fci, &fcc, args, args_count, named_args);
 	zval_ptr_dtor(&key_zv);
 }
 

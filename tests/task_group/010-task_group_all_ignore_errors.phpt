@@ -9,9 +9,9 @@ use function Async\spawn;
 spawn(function() {
     $group = new TaskGroup();
 
-    $group->spawn(function() { return "ok1"; }, "good");
-    $group->spawn(function() { throw new \RuntimeException("fail"); }, "bad");
-    $group->spawn(function() { return "ok2"; }, "good2");
+    $group->spawnWithKey("good", function() { return "ok1"; });
+    $group->spawnWithKey("bad", function() { throw new \RuntimeException("fail"); });
+    $group->spawnWithKey("good2", function() { return "ok2"; });
 
     $group->seal();
     $results = $group->all(ignoreErrors: true);

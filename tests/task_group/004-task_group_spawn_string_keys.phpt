@@ -1,5 +1,5 @@
 --TEST--
-TaskGroup: spawn() - with string keys
+TaskGroup: spawnWithKey() - with string keys
 --FILE--
 <?php
 
@@ -9,9 +9,9 @@ use function Async\spawn;
 spawn(function() {
     $group = new TaskGroup();
 
-    $group->spawn(function() { return "Alice"; }, "user1");
-    $group->spawn(function() { return "Bob"; }, "user2");
-    $group->spawn(function() { return "Charlie"; }, "user3");
+    $group->spawnWithKey("user1", function() { return "Alice"; });
+    $group->spawnWithKey("user2", function() { return "Bob"; });
+    $group->spawnWithKey("user3", function() { return "Charlie"; });
 
     $group->seal();
     $results = $group->all();

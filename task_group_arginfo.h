@@ -1,5 +1,5 @@
 /* This is a generated file, edit task_group.stub.php instead.
- * Stub hash: d0b7254192ac64fc999eeb5e245ad92faa4d589a */
+ * Stub hash: 63dd5a44cbaa5c6227341696e727b8caa2f90d8d */
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Async_TaskGroup___construct, 0, 0, 0)
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, concurrency, IS_LONG, 1, "null")
@@ -7,8 +7,14 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Async_TaskGroup___construct, 0, 0, 0)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_TaskGroup_spawn, 0, 1, IS_VOID, 0)
-	ZEND_ARG_OBJ_INFO(0, task, Closure, 0)
-	ZEND_ARG_TYPE_MASK(0, key, MAY_BE_STRING|MAY_BE_LONG|MAY_BE_NULL, "null")
+	ZEND_ARG_TYPE_INFO(0, task, IS_CALLABLE, 0)
+	ZEND_ARG_VARIADIC_TYPE_INFO(0, args, IS_MIXED, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_TaskGroup_spawnWithKey, 0, 2, IS_VOID, 0)
+	ZEND_ARG_TYPE_MASK(0, key, MAY_BE_STRING|MAY_BE_LONG, NULL)
+	ZEND_ARG_TYPE_INFO(0, task, IS_CALLABLE, 0)
+	ZEND_ARG_VARIADIC_TYPE_INFO(0, args, IS_MIXED, 0)
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_TaskGroup_all, 0, 0, IS_ARRAY, 0)
@@ -53,6 +59,7 @@ ZEND_END_ARG_INFO()
 
 ZEND_METHOD(Async_TaskGroup, __construct);
 ZEND_METHOD(Async_TaskGroup, spawn);
+ZEND_METHOD(Async_TaskGroup, spawnWithKey);
 ZEND_METHOD(Async_TaskGroup, all);
 ZEND_METHOD(Async_TaskGroup, race);
 ZEND_METHOD(Async_TaskGroup, any);
@@ -71,6 +78,7 @@ ZEND_METHOD(Async_TaskGroup, getIterator);
 static const zend_function_entry class_Async_TaskGroup_methods[] = {
 	ZEND_ME(Async_TaskGroup, __construct, arginfo_class_Async_TaskGroup___construct, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_TaskGroup, spawn, arginfo_class_Async_TaskGroup_spawn, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_TaskGroup, spawnWithKey, arginfo_class_Async_TaskGroup_spawnWithKey, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_TaskGroup, all, arginfo_class_Async_TaskGroup_all, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_TaskGroup, race, arginfo_class_Async_TaskGroup_race, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_TaskGroup, any, arginfo_class_Async_TaskGroup_any, ZEND_ACC_PUBLIC)

@@ -9,9 +9,9 @@ use function Async\spawn;
 spawn(function() {
     $group = new TaskGroup();
 
-    $group->spawn(function() { return "first"; }, "a");
-    $group->spawn(function() { return "second"; }, "b");
-    $group->spawn(function() { return "third"; }, "c");
+    $group->spawnWithKey("a", function() { return "first"; });
+    $group->spawnWithKey("b", function() { return "second"; });
+    $group->spawnWithKey("c", function() { return "third"; });
 
     $group->seal();
 

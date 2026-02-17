@@ -1,5 +1,5 @@
 --TEST--
-TaskGroup: spawn() - duplicate key throws error
+TaskGroup: spawnWithKey() - duplicate key throws error
 --FILE--
 <?php
 
@@ -9,10 +9,10 @@ use function Async\spawn;
 spawn(function() {
     $group = new TaskGroup();
 
-    $group->spawn(function() { return 1; }, "same");
+    $group->spawnWithKey("same", function() { return 1; });
 
     try {
-        $group->spawn(function() { return 2; }, "same");
+        $group->spawnWithKey("same", function() { return 2; });
         echo "ERROR: no exception\n";
     } catch (\Throwable $e) {
         echo "caught: " . $e->getMessage() . "\n";

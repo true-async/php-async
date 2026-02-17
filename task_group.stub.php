@@ -6,7 +6,7 @@ namespace Async;
 
 /**
  * TaskGroup is a task pool with queue and concurrency control.
- * Accepts closures, manages coroutine creation with concurrency limits.
+ * Accepts callables, manages coroutine creation with concurrency limits.
  * Tasks can be added with associative keys.
  *
  * @strict-properties
@@ -26,16 +26,29 @@ final class TaskGroup implements Awaitable, \Countable, \IteratorAggregate
     public function __construct(?int $concurrency = null, ?Scope $scope = null) {}
 
     /**
-     * Add a closure to the group.
+     * Add a callable to the group with auto-increment key.
      *
      * If concurrency limit is not reached, a coroutine is created immediately.
-     * Otherwise the closure is queued and started when a slot becomes available.
+     * Otherwise the callable is queued and started when a slot becomes available.
      *
-     * @param \Closure $task Closure to execute.
-     * @param string|int|null $key Result key. null = auto-increment index.
+     * @param callable $task Callable to execute.
+     * @param mixed ...$args Arguments to pass to the callable.
+     * @throws AsyncException if group is sealed/cancelled.
+     */
+    public function spawn(callable $task, mixed ...$args): void {}
+
+    /**
+     * Add a callable to the group with an explicit key.
+     *
+     * If concurrency limit is not reached, a coroutine is created immediately.
+     * Otherwise the callable is queued and started when a slot becomes available.
+     *
+     * @param string|int $key Result key.
+     * @param callable $task Callable to execute.
+     * @param mixed ...$args Arguments to pass to the callable.
      * @throws AsyncException if group is sealed/cancelled or key is duplicate.
      */
-    public function spawn(\Closure $task, string|int|null $key = null): void {}
+    public function spawnWithKey(string|int $key, callable $task, mixed ...$args): void {}
 
     /**
      * Wait for all current tasks to complete.
