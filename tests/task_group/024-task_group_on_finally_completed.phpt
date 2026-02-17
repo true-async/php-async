@@ -1,5 +1,5 @@
 --TEST--
-TaskGroup: onFinally() - on already completed group calls immediately
+TaskGroup: finally() - on already completed group calls immediately
 --FILE--
 <?php
 
@@ -13,16 +13,16 @@ spawn(function() {
     $group->seal();
     $group->all();
 
-    echo "before onFinally\n";
+    echo "before finally\n";
 
-    $group->onFinally(function(TaskGroup $g) {
+    $group->finally(function(TaskGroup $g) {
         echo "finally called synchronously\n";
     });
 
-    echo "after onFinally\n";
+    echo "after finally\n";
 });
 ?>
 --EXPECT--
-before onFinally
+before finally
 finally called synchronously
-after onFinally
+after finally

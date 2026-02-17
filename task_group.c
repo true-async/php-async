@@ -1198,53 +1198,57 @@ METHOD(all)
 
 	async_task_group_t *group = THIS_GROUP();
 
-retry:
-	/* Check if all settled */
+	/* Check if all settled already */
 	if (task_group_all_settled(group) && !task_group_has_pending(group)) {
-		/* Check errors */
-		if (!ignore_errors && task_group_has_errors(group)) {
-			zval composite_zv;
+		goto return_results;
+	}
 
-			ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(&group->event);
-			zend_object *composite = task_group_collect_composite_exception(group);
-			ZVAL_OBJ(&composite_zv, composite);
-			zend_throw_exception_object(&composite_zv);
+	/* Suspend and wait for completion once.
+	 * No retry — returns whatever is available after waking up.
+	 * New tasks added while suspended are not awaited. */
+	{
+		zend_coroutine_t *current = (zend_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
+
+		if (UNEXPECTED(current == NULL)) {
+			async_throw_error("TaskGroup::all() can only be called inside a coroutine");
 			RETURN_THROWS();
 		}
 
-		/* Return results in spawn order */
-		RETURN_ARR(task_group_collect_results(group));
-	}
+		zend_async_waker_new(current);
 
-	/* Suspend and wait */
-	zend_coroutine_t *current = (zend_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
+		if (UNEXPECTED(EG(exception))) {
+			RETURN_THROWS();
+		}
 
-	if (UNEXPECTED(current == NULL)) {
-		async_throw_error("TaskGroup::all() can only be called inside a coroutine");
-		RETURN_THROWS();
-	}
+		zend_async_resume_when(current, &group->event, false, zend_async_waker_callback_resolve, NULL);
 
-	zend_async_waker_new(current);
+		if (UNEXPECTED(EG(exception))) {
+			zend_async_waker_clean(current);
+			RETURN_THROWS();
+		}
 
-	if (UNEXPECTED(EG(exception))) {
-		RETURN_THROWS();
-	}
-
-	zend_async_resume_when(current, &group->event, false, zend_async_waker_callback_resolve, NULL);
-
-	if (UNEXPECTED(EG(exception))) {
+		ZEND_ASYNC_SUSPEND();
 		zend_async_waker_clean(current);
+
+		if (UNEXPECTED(EG(exception))) {
+			RETURN_THROWS();
+		}
+	}
+
+return_results:
+	/* Check errors */
+	if (!ignore_errors && task_group_has_errors(group)) {
+		zval composite_zv;
+
+		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(&group->event);
+		zend_object *composite = task_group_collect_composite_exception(group);
+		ZVAL_OBJ(&composite_zv, composite);
+		zend_throw_exception_object(&composite_zv);
 		RETURN_THROWS();
 	}
 
-	ZEND_ASYNC_SUSPEND();
-	zend_async_waker_clean(current);
-
-	if (UNEXPECTED(EG(exception))) {
-		RETURN_THROWS();
-	}
-
-	goto retry;
+	/* Return results in spawn order */
+	RETURN_ARR(task_group_collect_results(group));
 }
 
 METHOD(race)
@@ -1339,18 +1343,73 @@ METHOD(any)
 		RETURN_THROWS();
 	}
 
-retry:
 	/* Check for first success */
 	if (task_group_has_success(group)) {
-		ZEND_HASH_FOREACH_VAL(&group->tasks, zv) {
-			if (task_is_completed(zv)) {
-				RETURN_COPY(zv);
-			}
-		} ZEND_HASH_FOREACH_END();
+		goto return_first_success;
 	}
 
 	/* All settled with errors only → throw composite */
 	if (task_group_all_settled(group) && !task_group_has_pending(group)) {
+		goto throw_composite;
+	}
+
+	/* Suspend — wait for next successful completion once.
+	 * No retry — returns whatever is available after waking up. */
+	{
+		zend_coroutine_t *current = (zend_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
+
+		if (UNEXPECTED(current == NULL)) {
+			async_throw_error("TaskGroup::any() can only be called inside a coroutine");
+			RETURN_THROWS();
+		}
+
+		task_group_waiter_event_t *waiter = task_group_waiter_event_new(group, WAITER_TYPE_ANY);
+
+		zend_async_waker_new(current);
+
+		if (UNEXPECTED(EG(exception))) {
+			RETURN_THROWS();
+		}
+
+		/* trans_event=true: waker takes ownership */
+		zend_async_resume_when(current, &waiter->event, true, zend_async_waker_callback_resolve, NULL);
+
+		if (UNEXPECTED(EG(exception))) {
+			zend_async_waker_clean(current);
+			RETURN_THROWS();
+		}
+
+		ZEND_ASYNC_SUSPEND();
+		zend_async_waker_clean(current);
+
+		if (UNEXPECTED(EG(exception))) {
+			RETURN_THROWS();
+		}
+	}
+
+	/* Check for success after waking up */
+	if (task_group_has_success(group)) {
+		goto return_first_success;
+	}
+
+	/* All settled with errors only → throw composite */
+	if (task_group_all_settled(group) && !task_group_has_pending(group)) {
+		goto throw_composite;
+	}
+
+	/* Woke up but neither success nor all settled — return null */
+	RETURN_NULL();
+
+return_first_success:
+	ZEND_HASH_FOREACH_VAL(&group->tasks, zv) {
+		if (task_is_completed(zv)) {
+			RETURN_COPY(zv);
+		}
+	} ZEND_HASH_FOREACH_END();
+	RETURN_NULL();
+
+throw_composite:
+	{
 		zval composite_zv;
 
 		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(&group->event);
@@ -1359,39 +1418,6 @@ retry:
 		zend_throw_exception_object(&composite_zv);
 		RETURN_THROWS();
 	}
-
-	/* Suspend — wait for next completion */
-	zend_coroutine_t *current = (zend_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
-
-	if (UNEXPECTED(current == NULL)) {
-		async_throw_error("TaskGroup::any() can only be called inside a coroutine");
-		RETURN_THROWS();
-	}
-
-	task_group_waiter_event_t *waiter = task_group_waiter_event_new(group, WAITER_TYPE_ANY);
-
-	zend_async_waker_new(current);
-
-	if (UNEXPECTED(EG(exception))) {
-		RETURN_THROWS();
-	}
-
-	/* trans_event=true: waker takes ownership */
-	zend_async_resume_when(current, &waiter->event, true, zend_async_waker_callback_resolve, NULL);
-
-	if (UNEXPECTED(EG(exception))) {
-		zend_async_waker_clean(current);
-		RETURN_THROWS();
-	}
-
-	ZEND_ASYNC_SUSPEND();
-	zend_async_waker_clean(current);
-
-	if (UNEXPECTED(EG(exception))) {
-		RETURN_THROWS();
-	}
-
-	goto retry;
 }
 
 METHOD(getResults)
@@ -1435,10 +1461,11 @@ METHOD(cancel)
 	}
 
 	ASYNC_TASK_GROUP_SET_SEALED(group);
-	ZEND_ASYNC_EVENT_SET_CLOSED(&group->event);
 	ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(&group->event);
 
-	/* Cancel running coroutines via scope */
+	/* Cancel running coroutines via scope.
+	 * Note: CLOSED is NOT set here — coroutines may still be running.
+	 * task_group_try_complete() will set CLOSED when all coroutines finish. */
 	if (group->scope != NULL && false == group->scope->scope.try_to_dispose(&group->scope->scope)) {
 		zend_object *exception;
 
@@ -1509,7 +1536,60 @@ METHOD(count)
 	RETURN_LONG(zend_hash_num_elements(&group->tasks));
 }
 
-METHOD(onFinally)
+METHOD(awaitCompletion)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	async_task_group_t *group = THIS_GROUP();
+
+	if (UNEXPECTED(!ASYNC_TASK_GROUP_IS_SEALED(group))) {
+		async_throw_error("TaskGroup must be sealed before calling awaitCompletion()");
+		RETURN_THROWS();
+	}
+
+	/* Already completed — return immediately */
+	if (ASYNC_TASK_GROUP_IS_COMPLETED(group)) {
+		return;
+	}
+
+retry:
+	/* Check if all settled */
+	if (task_group_all_settled(group) && !task_group_has_pending(group)) {
+		return;
+	}
+
+	/* Suspend and wait */
+	zend_coroutine_t *current = (zend_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
+
+	if (UNEXPECTED(current == NULL)) {
+		async_throw_error("TaskGroup::awaitCompletion() can only be called inside a coroutine");
+		RETURN_THROWS();
+	}
+
+	zend_async_waker_new(current);
+
+	if (UNEXPECTED(EG(exception))) {
+		RETURN_THROWS();
+	}
+
+	zend_async_resume_when(current, &group->event, false, zend_async_waker_callback_resolve, NULL);
+
+	if (UNEXPECTED(EG(exception))) {
+		zend_async_waker_clean(current);
+		RETURN_THROWS();
+	}
+
+	ZEND_ASYNC_SUSPEND();
+	zend_async_waker_clean(current);
+
+	if (UNEXPECTED(EG(exception))) {
+		RETURN_THROWS();
+	}
+
+	goto retry;
+}
+
+METHOD(finally)
 {
 	zval *callback;
 

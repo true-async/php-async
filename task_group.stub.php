@@ -51,10 +51,12 @@ final class TaskGroup implements Awaitable, \Countable, \IteratorAggregate
     public function spawnWithKey(string|int $key, callable $task, mixed ...$args): void {}
 
     /**
-     * Wait for all current tasks to complete.
+     * Wait for all current tasks to complete and return results.
      *
-     * Returns results array keyed by spawn keys.
-     * On empty group returns empty array immediately.
+     * Waits once for the group event to fire, then returns whatever
+     * results are available. Does NOT retry — if new tasks were added
+     * while suspended, they are not awaited.
+     * If all tasks are already settled, returns immediately.
      *
      * @param bool $ignoreErrors If false and errors exist, throws CompositeException.
      *   If true, errors are ignored (retrieve via getErrors()).
@@ -144,12 +146,22 @@ final class TaskGroup implements Awaitable, \Countable, \IteratorAggregate
     public function count(): int {}
 
     /**
+     * Wait until all tasks are fully completed (settled).
+     * The group must be sealed before calling this method.
+     * Unlike all(), this method never throws on task errors —
+     * it simply waits for termination.
+     *
+     * @throws AsyncException if group is not sealed.
+     */
+    public function awaitCompletion(): void {}
+
+    /**
      * Register a callback invoked when the group is sealed AND all tasks are completed.
      * If the group is already completed, the callback is invoked immediately.
      *
      * @param \Closure $callback Callback receiving the TaskGroup as parameter.
      */
-    public function onFinally(\Closure $callback): void {}
+    public function finally(\Closure $callback): void {}
 
     /**
      * Get iterator for foreach support.

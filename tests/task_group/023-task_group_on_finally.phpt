@@ -1,5 +1,5 @@
 --TEST--
-TaskGroup: onFinally() - called when group completes
+TaskGroup: finally() - called when group completes
 --FILE--
 <?php
 
@@ -10,7 +10,7 @@ use function Async\await;
 spawn(function() {
     $group = new TaskGroup();
 
-    $group->onFinally(function(TaskGroup $g) {
+    $group->finally(function(TaskGroup $g) {
         echo "finally called\n";
         echo "count: " . $g->count() . "\n";
     });

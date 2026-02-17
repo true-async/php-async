@@ -50,7 +50,9 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_TaskGroup_count, 0, 0, IS_LONG, 0)
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_TaskGroup_onFinally, 0, 1, IS_VOID, 0)
+#define arginfo_class_Async_TaskGroup_awaitCompletion arginfo_class_Async_TaskGroup_suppressErrors
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_TaskGroup_finally, 0, 1, IS_VOID, 0)
 	ZEND_ARG_OBJ_INFO(0, callback, Closure, 0)
 ZEND_END_ARG_INFO()
 
@@ -72,7 +74,8 @@ ZEND_METHOD(Async_TaskGroup, dispose);
 ZEND_METHOD(Async_TaskGroup, isFinished);
 ZEND_METHOD(Async_TaskGroup, isSealed);
 ZEND_METHOD(Async_TaskGroup, count);
-ZEND_METHOD(Async_TaskGroup, onFinally);
+ZEND_METHOD(Async_TaskGroup, awaitCompletion);
+ZEND_METHOD(Async_TaskGroup, finally);
 ZEND_METHOD(Async_TaskGroup, getIterator);
 
 static const zend_function_entry class_Async_TaskGroup_methods[] = {
@@ -91,7 +94,8 @@ static const zend_function_entry class_Async_TaskGroup_methods[] = {
 	ZEND_ME(Async_TaskGroup, isFinished, arginfo_class_Async_TaskGroup_isFinished, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_TaskGroup, isSealed, arginfo_class_Async_TaskGroup_isSealed, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_TaskGroup, count, arginfo_class_Async_TaskGroup_count, ZEND_ACC_PUBLIC)
-	ZEND_ME(Async_TaskGroup, onFinally, arginfo_class_Async_TaskGroup_onFinally, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_TaskGroup, awaitCompletion, arginfo_class_Async_TaskGroup_awaitCompletion, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_TaskGroup, finally, arginfo_class_Async_TaskGroup_finally, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_TaskGroup, getIterator, arginfo_class_Async_TaskGroup_getIterator, ZEND_ACC_PUBLIC)
 	ZEND_FE_END
 };
