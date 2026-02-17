@@ -36,11 +36,110 @@ typedef struct {
 	};
 } task_entry_t;
 
-/* Event structure for race/any waiters */
-typedef struct {
+/* Waiter types determine notification and lifetime semantics */
+typedef enum {
+	WAITER_TYPE_RACE,     /* notify on any completion, then remove */
+	WAITER_TYPE_ANY,      /* notify on success only, then remove */
+	WAITER_TYPE_ITERATOR  /* notify on any completion, lives until iterator/group dies */
+} task_group_waiter_type_t;
+
+/* Waiter event for race/any/iterator — lightweight event allocated per wait call.
+ * Registered in group->waiter_events, notified on coroutine completion.
+ * Coroutine subscribes via zend_async_resume_when on this event. */
+struct _task_group_waiter_event_s {
 	zend_async_event_t event;
 	async_task_group_t *group;
-} task_group_event_t;
+	task_group_waiter_type_t type;
+};
+
+/* Forward declarations for waiter event */
+static void task_group_waiter_event_remove(const task_group_waiter_event_t *waiter);
+
+///////////////////////////////////////////////////////////
+/// Waiter event vtable
+///////////////////////////////////////////////////////////
+
+static bool waiter_event_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
+{
+	return zend_async_callbacks_push(event, callback);
+}
+
+static bool waiter_event_del_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
+{
+	return zend_async_callbacks_remove(event, callback);
+}
+
+static bool waiter_event_start(zend_async_event_t *event)
+{
+	return true;
+}
+
+static bool waiter_event_stop(zend_async_event_t *event)
+{
+	return true;
+}
+
+static bool waiter_event_dispose(zend_async_event_t *event)
+{
+	task_group_waiter_event_t *waiter = (task_group_waiter_event_t *)event;
+
+	/* Remove from group vector */
+	task_group_waiter_event_remove(waiter);
+
+	/* Free callbacks */
+	zend_async_callbacks_free(event);
+
+	efree(waiter);
+	return true;
+}
+
+static task_group_waiter_event_t *task_group_waiter_event_new(
+	async_task_group_t *group, const task_group_waiter_type_t type)
+{
+	task_group_waiter_event_t *waiter = ecalloc(1, sizeof(task_group_waiter_event_t));
+
+	waiter->event.ref_count = 1;
+	waiter->event.add_callback = waiter_event_add_callback;
+	waiter->event.del_callback = waiter_event_del_callback;
+	waiter->event.start = waiter_event_start;
+	waiter->event.stop = waiter_event_stop;
+	waiter->event.dispose = waiter_event_dispose;
+	waiter->group = group;
+	waiter->type = type;
+
+	/* Add to group vector */
+	if (group->waiter_events_length == group->waiter_events_capacity) {
+		const uint32_t new_cap = group->waiter_events_capacity ? group->waiter_events_capacity * 2 : 4;
+		group->waiter_events = safe_erealloc(group->waiter_events, new_cap, sizeof(task_group_waiter_event_t *), 0);
+		group->waiter_events_capacity = new_cap;
+	}
+
+	group->waiter_events[group->waiter_events_length++] = waiter;
+
+	return waiter;
+}
+
+static void task_group_waiter_event_remove(const task_group_waiter_event_t *waiter)
+{
+	async_task_group_t *group = waiter->group;
+
+	if (UNEXPECTED(group == NULL)) {
+		return;
+	}
+
+	for (uint32_t i = 0; i < group->waiter_events_length; i++) {
+		if (group->waiter_events[i] == waiter) {
+			/* Swap with last */
+			group->waiter_events[i] = group->waiter_events[--group->waiter_events_length];
+
+			/* Adjust active iterator */
+			if (i < group->waiter_notify_index) {
+				group->waiter_notify_index--;
+			}
+			return;
+		}
+	}
+}
 
 #define METHOD(name) PHP_METHOD(Async_TaskGroup, name)
 #define THIS_GROUP() ASYNC_TASK_GROUP_FROM_OBJ(Z_OBJ_P(ZEND_THIS))
@@ -132,7 +231,7 @@ static zend_always_inline bool task_is_settled(const zval *zv)
 }
 
 /* Check if all tasks in the group are settled (success or error) */
-static bool task_group_all_settled(const async_task_group_t *group)
+static zend_always_inline bool task_group_all_settled(const async_task_group_t *group)
 {
 	return group->active_coroutines == 0;
 }
@@ -263,7 +362,9 @@ static zend_object *task_group_create_object(zend_class_entry *ce)
 
 	zend_hash_init(&group->tasks, 8, NULL, task_zval_dtor, 0);
 
-	memset(&group->waiter_events, 0, sizeof(zend_async_callbacks_vector_t));
+	group->waiter_events = NULL;
+	group->waiter_events_length = 0;
+	group->waiter_events_capacity = 0;
 
 	return &group->std;
 }
@@ -317,8 +418,17 @@ static void task_group_free_object(zend_object *object)
 
 	zend_hash_destroy(&group->tasks);
 
-	/* Free waiter event vector */
-	zend_async_callbacks_vector_free(&group->waiter_events, &group->event);
+	/* Free remaining waiter events */
+	if (group->waiter_events != NULL) {
+		for (uint32_t i = 0; i < group->waiter_events_length; i++) {
+			task_group_waiter_event_t *waiter = group->waiter_events[i];
+			waiter->group = NULL;
+			zend_async_callbacks_free(&waiter->event);
+			efree(waiter);
+		}
+		efree(group->waiter_events);
+		group->waiter_events = NULL;
+	}
 
 	/* Free finally handlers */
 	if (group->finally_handlers != NULL) {
@@ -389,6 +499,9 @@ static void task_group_try_complete(async_task_group_t *group)
 	}
 
 	ASYNC_TASK_GROUP_SET_COMPLETED(group);
+
+	/* Notify all/await waiters — group is fully settled */
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&group->event, NULL, NULL);
 	ZEND_ASYNC_EVENT_SET_CLOSED(&group->event);
 
 	/* Fire finally handlers asynchronously */
@@ -572,12 +685,22 @@ done:
 	/* Drain pending tasks */
 	task_group_drain(group);
 
-	/* Notify all/await waiters */
-	ZEND_ASYNC_CALLBACKS_NOTIFY(&group->event, result, exception);
+	/* Notify waiter events based on type.
+	 * Coroutine owns the waiter (trans_event=true), so dispose handles cleanup.
+	 * Use waiter_notify_index for safe iteration — dispose may remove from vector. */
+	const bool is_success = (exception == NULL);
 
-	/* Notify race/any waiters */
-	if (group->waiter_events.length > 0) {
-		zend_async_callbacks_vector_notify(&group->waiter_events, &group->event, result);
+	group->waiter_notify_index = 0;
+	while (group->waiter_notify_index < group->waiter_events_length) {
+		task_group_waiter_event_t *waiter = group->waiter_events[group->waiter_notify_index];
+
+		if (waiter->type == WAITER_TYPE_ANY && !is_success) {
+			group->waiter_notify_index++;
+			continue;
+		}
+
+		group->waiter_notify_index++;
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&waiter->event, result, NULL);
 	}
 
 	/* Check terminal state */
@@ -810,16 +933,20 @@ retry:
 		return;
 	}
 
-	zend_async_resume_when(current, &group->event, false, zend_async_waker_callback_resolve, NULL);
+	{
+		task_group_waiter_event_t *waiter = task_group_waiter_event_new(group, WAITER_TYPE_ITERATOR);
 
-	if (UNEXPECTED(EG(exception))) {
+		zend_async_resume_when(current, &waiter->event, true, zend_async_waker_callback_resolve, NULL);
+
+		if (UNEXPECTED(EG(exception))) {
+			zend_async_waker_clean(current);
+			iterator->valid = false;
+			return;
+		}
+
+		ZEND_ASYNC_SUSPEND();
 		zend_async_waker_clean(current);
-		iterator->valid = false;
-		return;
 	}
-
-	ZEND_ASYNC_SUSPEND();
-	zend_async_waker_clean(current);
 
 	if (UNEXPECTED(EG(exception))) {
 		iterator->valid = false;
@@ -1100,7 +1227,7 @@ METHOD(race)
 		RETURN_THROWS();
 	}
 
-	/* Phase 1: Check already settled (first in spawn order) */
+	/* Check already settled (first in spawn order) */
 	ZEND_HASH_FOREACH_VAL(&group->tasks, zv) {
 		if (task_is_completed(zv)) {
 			RETURN_COPY(zv);
@@ -1115,7 +1242,7 @@ METHOD(race)
 		}
 	} ZEND_HASH_FOREACH_END();
 
-	/* Phase 2: Suspend and wait */
+	/* Suspend — wait for first completion (success or error) */
 	current = (zend_coroutine_t *)ZEND_ASYNC_CURRENT_COROUTINE;
 
 	if (UNEXPECTED(current == NULL)) {
@@ -1123,14 +1250,16 @@ METHOD(race)
 		RETURN_THROWS();
 	}
 
-retry:
+	task_group_waiter_event_t *waiter = task_group_waiter_event_new(group, WAITER_TYPE_RACE);
+
 	zend_async_waker_new(current);
 
 	if (UNEXPECTED(EG(exception))) {
 		RETURN_THROWS();
 	}
 
-	zend_async_resume_when(current, &group->event, false, zend_async_waker_callback_resolve, NULL);
+	/* trans_event=true: waker takes ownership, dispose frees waiter */
+	zend_async_resume_when(current, &waiter->event, true, zend_async_waker_callback_resolve, NULL);
 
 	if (UNEXPECTED(EG(exception))) {
 		zend_async_waker_clean(current);
@@ -1144,7 +1273,7 @@ retry:
 		RETURN_THROWS();
 	}
 
-	/* Check for any settled task */
+	/* race() returns first settled — find it */
 	ZEND_HASH_FOREACH_VAL(&group->tasks, zv) {
 		if (task_is_completed(zv)) {
 			RETURN_COPY(zv);
@@ -1158,18 +1287,15 @@ retry:
 			RETURN_THROWS();
 		}
 	} ZEND_HASH_FOREACH_END();
-
-	goto retry;
 }
 
 METHOD(any)
 {
-	async_task_group_t *group;
 	zval *zv;
 
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	group = THIS_GROUP();
+	async_task_group_t *group = THIS_GROUP();
 
 	/* Empty group check */
 	if (UNEXPECTED(zend_hash_num_elements(&group->tasks) == 0)) {
@@ -1187,9 +1313,8 @@ retry:
 		} ZEND_HASH_FOREACH_END();
 	}
 
-	/* All settled with errors only? */
-	if (task_group_all_settled(group) && !task_group_has_pending(group)
-		&& !task_group_has_success(group)) {
+	/* All settled with errors only → throw composite */
+	if (task_group_all_settled(group) && !task_group_has_pending(group)) {
 		zval composite_zv;
 
 		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(&group->event);
@@ -1199,7 +1324,7 @@ retry:
 		RETURN_THROWS();
 	}
 
-	/* Suspend */
+	/* Suspend — wait for next completion */
 	zend_coroutine_t *current = (zend_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
 
 	if (UNEXPECTED(current == NULL)) {
@@ -1207,13 +1332,16 @@ retry:
 		RETURN_THROWS();
 	}
 
+	task_group_waiter_event_t *waiter = task_group_waiter_event_new(group, WAITER_TYPE_ANY);
+
 	zend_async_waker_new(current);
 
 	if (UNEXPECTED(EG(exception))) {
 		RETURN_THROWS();
 	}
 
-	zend_async_resume_when(current, &group->event, false, zend_async_waker_callback_resolve, NULL);
+	/* trans_event=true: waker takes ownership */
+	zend_async_resume_when(current, &waiter->event, true, zend_async_waker_callback_resolve, NULL);
 
 	if (UNEXPECTED(EG(exception))) {
 		zend_async_waker_clean(current);

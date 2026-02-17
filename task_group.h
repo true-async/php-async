@@ -36,6 +36,7 @@
 	((group)->event.flags |= ASYNC_TASK_GROUP_F_SEALED)
 
 typedef struct _async_task_group_s async_task_group_t;
+typedef struct _task_group_waiter_event_s task_group_waiter_event_t;
 
 struct _async_task_group_s {
 	/* Event (must be first) — TaskGroup IS an event (Awaitable).
@@ -61,8 +62,11 @@ struct _async_task_group_s {
 	 * Keys: string|int as provided to spawn(). */
 	HashTable tasks;
 
-	/* Race/any waiter events */
-	zend_async_callbacks_vector_t waiter_events;
+	/* Race/any waiter events — pointer vector with safe iteration */
+	task_group_waiter_event_t **waiter_events;
+	uint32_t waiter_events_length;
+	uint32_t waiter_events_capacity;
+	uint32_t waiter_notify_index;
 
 	/* Finally handlers (lazy-init) */
 	HashTable *finally_handlers;
