@@ -25,4 +25,4 @@ spawn(function() {
 ?>
 --EXPECT--
 disposed
-bool(true)
+bool(false)

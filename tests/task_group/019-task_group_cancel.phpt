@@ -30,6 +30,6 @@ spawn(function() {
 ?>
 --EXPECT--
 bool(true)
-bool(true)
+bool(false)
 results: 0
 done

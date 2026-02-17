@@ -484,6 +484,15 @@ static HashTable *task_group_get_gc(zend_object *object, zval **table, int *n)
 /// Internal functions
 ///////////////////////////////////////////////////////////
 
+static void task_group_finally_handlers_dtor(finally_handlers_context_t *context)
+{
+	async_task_group_t *group = (async_task_group_t *) context->target;
+	if (group != NULL) {
+		context->target = NULL;
+		OBJ_RELEASE(&group->std);
+	}
+}
+
 static void task_group_try_complete(async_task_group_t *group)
 {
 	if (!ASYNC_TASK_GROUP_IS_SEALED(group)) {
@@ -519,7 +528,7 @@ static void task_group_try_complete(async_task_group_t *group)
 		finally_handlers_context_t *context = ecalloc(1, sizeof(finally_handlers_context_t));
 		context->target = group;
 		context->scope = &group->scope->scope;
-		context->dtor = NULL;
+		context->dtor = task_group_finally_handlers_dtor;
 		context->params_count = 1;
 		ZVAL_OBJ(&context->params[0], &group->std);
 
@@ -1410,8 +1419,18 @@ METHOD(cancel)
 	ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(&group->event);
 
 	/* Cancel running coroutines via scope */
-	if (group->scope != NULL) {
-		group->scope->scope.event.dispose(&group->scope->scope.event);
+	if (group->scope != NULL && false == group->scope->scope.try_to_dispose(&group->scope->scope)) {
+		zend_object *exception;
+
+		if (cancellation_obj != NULL) {
+			exception = cancellation_obj;
+			GC_ADDREF(exception);
+		} else {
+			exception = async_new_exception(async_ce_cancellation_exception, "TaskGroup cancelled");
+		}
+
+		ZEND_ASYNC_SCOPE_CANCEL(&group->scope->scope, exception, true,
+			ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(&group->scope->scope));
 	}
 
 	task_group_try_complete(group);
@@ -1437,8 +1456,12 @@ METHOD(dispose)
 
 	async_task_group_t *group = THIS_GROUP();
 
-	if (group->scope != NULL) {
-		group->scope->scope.event.dispose(&group->scope->scope.event);
+	if (group->scope != NULL && false == group->scope->scope.try_to_dispose(&group->scope->scope)) {
+		zend_object *exception = async_new_exception(async_ce_cancellation_exception,
+			"Scope is being disposed due to TaskGroup disposal");
+
+		ZEND_ASYNC_SCOPE_CANCEL(&group->scope->scope, exception, true,
+			ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(&group->scope->scope));
 	}
 }
 
