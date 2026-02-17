@@ -500,6 +500,13 @@ static void task_group_try_complete(async_task_group_t *group)
 
 	ASYNC_TASK_GROUP_SET_COMPLETED(group);
 
+	/* Notify waiter events — wake any suspended any()/race()/iterator.
+	 * This is critical for any() when all tasks failed: the per-task notification
+	 * skips ANY waiters on error, so they must be woken here at terminal state. */
+	for (uint32_t i = 0; i < group->waiter_events_length; i++) {
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&group->waiter_events[i]->event, NULL, NULL);
+	}
+
 	/* Notify all/await waiters — group is fully settled */
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&group->event, NULL, NULL);
 	ZEND_ASYNC_EVENT_SET_CLOSED(&group->event);
