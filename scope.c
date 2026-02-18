@@ -629,8 +629,8 @@ METHOD(disposeAfterTimeout)
 	Z_PARAM_LONG(timeout)
 	ZEND_PARSE_PARAMETERS_END();
 
-	if (timeout < 0) {
-		async_throw_error("Timeout must be non-negative");
+	if (UNEXPECTED(timeout < 0)) {
+		zend_argument_value_error(1, "must be greater than or equal to 0");
 		RETURN_THROWS();
 	}
 

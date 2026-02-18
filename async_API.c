@@ -23,6 +23,7 @@
 #include "pool.h"
 #include "scheduler.h"
 #include "scope.h"
+#include "task_group.h"
 #include "zend_common.h"
 
 zend_async_scope_t *async_provide_scope(zend_object *scope_provider)
@@ -1105,10 +1106,6 @@ static zend_object *async_new_channel_obj_stub(zend_async_channel_t *channel)
 	return NULL;
 }
 
-static zend_async_group_t *async_new_group_stub(size_t extra_size)
-{
-	return NULL;
-}
 
 ///////////////////////////////////////////////////////////////////////////////
 // Pool API wrappers
@@ -1193,6 +1190,6 @@ void async_api_register(void)
 								  async_new_channel_stub,
 								  async_new_future_obj,
 								  async_new_channel_obj_stub,
-								  async_new_group_stub,
+								  async_new_group,
 								  engine_shutdown);
 }

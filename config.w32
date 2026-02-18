@@ -4,7 +4,7 @@ ARG_ENABLE('async', 'Enable True Async', 'no');
 
 if (PHP_ASYNC == "yes") {
 
-    EXTENSION("async", "async.c coroutine.c scope.c scheduler.c exceptions.c iterator.c async_API.c zend_common.c context.c libuv_reactor.c future.c channel.c pool.c");
+    EXTENSION("async", "async.c coroutine.c scope.c scheduler.c exceptions.c iterator.c async_API.c zend_common.c context.c libuv_reactor.c future.c channel.c pool.c task_group.c");
     ADD_SOURCES("ext/async/internal", "allocator.c circular_buffer.c");
 
     ADD_FLAG("CFLAGS", "/D PHP_ASYNC");
@@ -22,6 +22,7 @@ if (PHP_ASYNC == "yes") {
     PHP_INSTALL_HEADERS("ext/async", "future.h");
     PHP_INSTALL_HEADERS("ext/async", "channel.h");
     PHP_INSTALL_HEADERS("ext/async", "pool.h");
+    PHP_INSTALL_HEADERS("ext/async", "task_group.h");
 
     if (CHECK_HEADER_ADD_INCLUDE("libuv/uv.h", "CFLAGS_UV", PHP_PHP_BUILD + "\\include")
         && CHECK_LIB("libuv.lib", "libuv")) {
