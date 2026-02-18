@@ -1369,8 +1369,10 @@ METHOD(any)
 		goto throw_composite;
 	}
 
-	/* Suspend — wait for next successful completion once.
-	 * No retry — returns whatever is available after waking up. */
+retry:
+	/* Suspend — wait for next successful completion.
+	 * Retry is correct here: WAITER_TYPE_ANY skips error notifications,
+	 * so we need to re-enter the wait loop to check terminal state. */
 	{
 		zend_coroutine_t *current = (zend_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
 
@@ -1413,8 +1415,8 @@ METHOD(any)
 		goto throw_composite;
 	}
 
-	/* Woke up but neither success nor all settled — return null */
-	RETURN_NULL();
+	/* Woke up but neither success nor all settled — retry */
+	goto retry;
 
 return_first_success:
 	ZEND_HASH_FOREACH_VAL(&group->tasks, zv) {
