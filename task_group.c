@@ -549,6 +549,7 @@ static void task_group_try_complete(async_task_group_t *group)
 
 		if (async_call_finally_handlers(handlers, context, 0)) {
 			GC_ADDREF(&group->std);
+			ZEND_ASYNC_EVENT_ADD_REF(&group->scope->scope.event);
 		} else {
 			efree(context);
 			zend_array_destroy(handlers);

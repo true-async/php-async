@@ -744,6 +744,8 @@ bool async_coroutine_cancel(zend_coroutine_t *zend_coroutine,
 							bool transfer_error,
 							const bool is_safely)
 {
+	transfer_error = error != NULL ? transfer_error : false;
+
 	// If the coroutine finished, do nothing.
 	if (ZEND_COROUTINE_IS_FINISHED(zend_coroutine)) {
 		if (transfer_error && error != NULL) {
@@ -775,7 +777,7 @@ bool async_coroutine_cancel(zend_coroutine_t *zend_coroutine,
 		if (zend_coroutine->exception == NULL) {
 			zend_coroutine->exception = error;
 
-			if (false == transfer_error) {
+			if (error && false == transfer_error) {
 				GC_ADDREF(error);
 			}
 		}
