@@ -196,7 +196,6 @@ static zend_object_handlers task_group_handlers;
 static void task_group_try_complete(async_task_group_t *group);
 static void task_group_drain(async_task_group_t *group);
 static bool task_group_has_errors(const async_task_group_t *group);
-static bool task_group_has_success(const async_task_group_t *group);
 static bool task_group_all_settled(const async_task_group_t *group);
 static bool task_group_has_pending(const async_task_group_t *group);
 static HashTable *task_group_collect_results(const async_task_group_t *group);
@@ -600,7 +599,7 @@ static void task_group_try_complete(async_task_group_t *group)
 				task_group_waiter_event_remove(waiter);
 				break;
 
-			case WAITER_TYPE_ALL_IGNORE_ERRORS:
+			case WAITER_TYPE_ALL_IGNORE_ERRORS: {
 				HashTable *results = task_group_collect_results(group);
 				zval results_zv;
 				ZVAL_ARR(&results_zv, results);
@@ -608,14 +607,16 @@ static void task_group_try_complete(async_task_group_t *group)
 				zval_ptr_dtor(&results_zv);
 				task_group_waiter_event_remove(waiter);
 				continue;
+			}
 
-			case WAITER_TYPE_ANY:
+			case WAITER_TYPE_ANY: {
 				zend_object *composite = task_group_collect_composite_exception(group);
 				ZEND_FUTURE_REJECT(&waiter->future, composite);
 				//ZEND_FUTURE_SET_EXCEPTION_CAUGHT(&waiter->future);
 				OBJ_RELEASE(composite);
 				task_group_waiter_event_remove(waiter);
 				break;
+			}
 
 			case WAITER_TYPE_ITERATOR:
 				ZEND_ASYNC_CALLBACKS_NOTIFY(&waiter->event, NULL, NULL);
@@ -926,17 +927,6 @@ static HashTable *task_group_collect_errors(const async_task_group_t *group)
 	} ZEND_HASH_FOREACH_END();
 
 	return ht;
-}
-
-static bool task_group_has_success(const async_task_group_t *group)
-{
-	zval *zv;
-	ZEND_HASH_FOREACH_VAL(&group->tasks, zv) {
-		if (task_is_completed(zv)) {
-			return true;
-		}
-	} ZEND_HASH_FOREACH_END();
-	return false;
 }
 
 ///////////////////////////////////////////////////////////
