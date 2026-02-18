@@ -21,7 +21,7 @@ spawn(function() {
     $group->spawnWithKey("sum", 'compute', 100, 200);
 
     $group->seal();
-    $results = $group->all();
+    $results = $group->all()->await();
 
     var_dump($results[0]);
     var_dump($results[1]);

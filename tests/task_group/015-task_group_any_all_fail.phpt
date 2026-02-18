@@ -16,7 +16,7 @@ spawn(function() {
     $group->seal();
 
     try {
-        $group->any();
+        $group->any()->await();
         echo "ERROR: no exception\n";
     } catch (CompositeException $e) {
         echo "caught CompositeException\n";

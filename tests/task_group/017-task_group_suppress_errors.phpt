@@ -12,7 +12,7 @@ spawn(function() {
     $group->spawn(function() { throw new \RuntimeException("err"); });
 
     $group->seal();
-    $group->all(ignoreErrors: true);
+    $group->all(ignoreErrors: true)->await();
 
     $group->suppressErrors();
 

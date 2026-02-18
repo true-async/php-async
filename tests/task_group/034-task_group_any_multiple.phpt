@@ -13,10 +13,10 @@ spawn(function() {
     $group->spawn(function() { return "success"; });
     $group->seal();
 
-    $r1 = $group->any();
+    $r1 = $group->any()->await();
     echo "any 1: $r1\n";
 
-    $r2 = $group->any();
+    $r2 = $group->any()->await();
     echo "any 2: $r2\n";
 });
 ?>

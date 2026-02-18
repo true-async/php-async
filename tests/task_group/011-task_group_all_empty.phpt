@@ -9,7 +9,7 @@ use function Async\spawn;
 spawn(function() {
     $group = new TaskGroup();
     $group->seal();
-    $results = $group->all();
+    $results = $group->all()->await();
 
     var_dump($results);
 });

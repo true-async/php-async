@@ -11,7 +11,7 @@ spawn(function() {
 
     $group->spawn(function() { return 1; });
     $group->seal();
-    $group->all();
+    $group->all()->await();
 
     echo "before finally\n";
 

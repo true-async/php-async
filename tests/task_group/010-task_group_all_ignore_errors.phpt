@@ -14,7 +14,7 @@ spawn(function() {
     $group->spawnWithKey("good2", function() { return "ok2"; });
 
     $group->seal();
-    $results = $group->all(ignoreErrors: true);
+    $results = $group->all(ignoreErrors: true)->await();
 
     var_dump(count($results));
     var_dump($results["good"]);

@@ -26,7 +26,7 @@ spawn(function() {
         echo "caught: " . $e->getMessage() . "\n";
     }
 
-    $results = $group->all();
+    $results = $group->all()->await();
     echo "result: " . $results[0] . "\n";
 });
 ?>

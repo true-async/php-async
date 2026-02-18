@@ -51,43 +51,39 @@ final class TaskGroup implements Awaitable, \Countable, \IteratorAggregate
     public function spawnWithKey(string|int $key, callable $task, mixed ...$args): void {}
 
     /**
-     * Wait for all current tasks to complete and return results.
+     * Returns a Future that resolves with all task results when all tasks complete.
      *
-     * Waits once for the group event to fire, then returns whatever
-     * results are available. Does NOT retry — if new tasks were added
-     * while suspended, they are not awaited.
-     * If all tasks are already settled, returns immediately.
+     * If all tasks are already settled, the Future is resolved immediately.
+     * Use await() on the returned Future to get results, optionally with a cancellation token.
      *
-     * @param bool $ignoreErrors If false and errors exist, throws CompositeException.
+     * @param bool $ignoreErrors If false and errors exist, Future rejects with CompositeException.
      *   If true, errors are ignored (retrieve via getErrors()).
-     * @return array Results indexed by task keys.
-     * @throws CompositeException if $ignoreErrors is false and any task failed.
+     * @return Future<array> Future resolving with results indexed by task keys.
      */
-    public function all(bool $ignoreErrors = false): array {}
+    public function all(bool $ignoreErrors = false): Future {}
 
     /**
-     * Wait for the first completed task (success or error).
+     * Returns a Future that resolves with the first completed task (success or error).
      *
-     * If a task is already completed, returns immediately.
+     * If a task is already settled, the Future is resolved immediately.
      * Remaining tasks continue running.
      *
-     * @return mixed Result of the first completed task.
+     * @return Future<mixed> Future resolving with the first result, or rejecting with its error.
      * @throws AsyncException if group is empty.
-     * @throws \Throwable if the first completed task failed.
      */
-    public function race(): mixed {}
+    public function race(): Future {}
 
     /**
-     * Wait for the first successful task.
+     * Returns a Future that resolves with the first successful task.
      *
-     * Errors are ignored until a successful result is found.
+     * Errors are skipped until a successful result is found.
+     * If all tasks fail, the Future rejects with CompositeException.
      * Remaining tasks continue running.
      *
-     * @return mixed Result of the first successful task.
+     * @return Future<mixed> Future resolving with the first successful result.
      * @throws AsyncException if group is empty.
-     * @throws CompositeException if all tasks failed.
      */
-    public function any(): mixed {}
+    public function any(): Future {}
 
     /**
      * Get results of completed tasks.

@@ -62,7 +62,7 @@ struct _async_task_group_s {
 	 * Keys: string|int as provided to spawn(). */
 	HashTable tasks;
 
-	/* Race/any waiter events — pointer vector with safe iteration */
+	/* Race/any/all/iterator waiter events — pointer vector with safe iteration */
 	task_group_waiter_event_t **waiter_events;
 	uint32_t waiter_events_length;
 	uint32_t waiter_events_capacity;

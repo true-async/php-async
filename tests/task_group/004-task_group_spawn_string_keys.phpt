@@ -14,7 +14,7 @@ spawn(function() {
     $group->spawnWithKey("user3", function() { return "Charlie"; });
 
     $group->seal();
-    $results = $group->all();
+    $results = $group->all()->await();
 
     foreach ($results as $key => $value) {
         echo "$key => $value\n";

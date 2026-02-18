@@ -20,7 +20,7 @@ spawn(function() {
         return "fast";
     });
 
-    $result = $group->race();
+    $result = $group->race()->await();
     echo "race result: $result\n";
 });
 ?>

@@ -488,6 +488,10 @@ static bool zend_future_resolve(zend_async_event_t *event, void *iterator)
     // Notify resolve_callbacks (map/catch/finally chains) with iterator
     zend_async_callbacks_vector_notify(&future->resolve_callbacks, event, iterator);
 
+	if (ZEND_ASYNC_EVENT_IS_EXCEPTION_HANDLED(event)) {
+		ZEND_FUTURE_SET_EXCEPTION_CAUGHT(future);
+	}
+
     return true;
 }
 
@@ -1239,6 +1243,7 @@ static void process_future_mapper(zend_future_t *parent_future, async_future_t *
 			    fallback_exception = NULL;
 			    // Mark that exception was caught by catch handler
 			    ZEND_FUTURE_SET_EXCEPTION_CAUGHT(parent_future);
+				ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(&parent_future->event);
 			} else {
 			    // Not called in case of success.
 			    should_call = false;
@@ -1370,10 +1375,7 @@ static void async_future_callback_handler(
         return;
     }
 
-    // We mark that the exceptions have been handled.
-    ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
-
-    future_iterator_t *existing_iterator = (future_iterator_t *)result;
+    const future_iterator_t *existing_iterator = (future_iterator_t *)result;
 
     if (existing_iterator != NULL) {
         // Iterator already exists - add this future to its queue
@@ -1381,6 +1383,7 @@ static void async_future_callback_handler(
         ZVAL_OBJ(&self, &future_obj->std);
         Z_ADDREF(self);
         zend_hash_next_index_insert(existing_iterator->future_queue, &self);
+    	ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
         return;
     }
 

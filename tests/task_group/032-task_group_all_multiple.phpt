@@ -13,10 +13,10 @@ spawn(function() {
     $group->spawn(function() { return "b"; });
     $group->seal();
 
-    $results1 = $group->all();
+    $results1 = $group->all()->await();
     echo "first all: " . count($results1) . "\n";
 
-    $results2 = $group->all();
+    $results2 = $group->all()->await();
     echo "second all: " . count($results2) . "\n";
 
     var_dump($results1[0]);

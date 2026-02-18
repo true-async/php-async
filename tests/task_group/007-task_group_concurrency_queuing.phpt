@@ -31,7 +31,7 @@ spawn(function() {
     });
 
     $group->seal();
-    $group->all();
+    $group->all()->await();
 
     foreach ($order as $item) {
         echo "$item\n";

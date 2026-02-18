@@ -38,25 +38,32 @@ typedef struct {
 
 /* Waiter types determine notification and lifetime semantics */
 typedef enum {
-	WAITER_TYPE_RACE,     /* notify on any completion, then remove */
-	WAITER_TYPE_ANY,      /* notify on success only, then remove */
-	WAITER_TYPE_ITERATOR  /* notify on any completion, lives until iterator/group dies */
+	WAITER_TYPE_RACE,               /* resolve future on any completion (success or error) */
+	WAITER_TYPE_ANY,                /* resolve future on first success, reject when all failed */
+	WAITER_TYPE_ALL,                /* resolve future when all settled, reject on errors */
+	WAITER_TYPE_ALL_IGNORE_ERRORS,  /* resolve future when all settled, ignore errors */
+	WAITER_TYPE_ITERATOR            /* notify via callbacks on any completion (no future) */
 } task_group_waiter_type_t;
 
-/* Waiter event for race/any/iterator — lightweight event allocated per wait call.
- * Registered in group->waiter_events, notified on coroutine completion.
- * Coroutine subscribes via zend_async_resume_when on this event. */
+/* Waiter event — union of event (for iterator) and future (for race/any/all).
+ * zend_future_t has zend_async_event_t as first member, so cast to event always works.
+ * For RACE/ANY/ALL: created via ZEND_ASYNC_NEW_FUTURE_EX, resolved by group, returned as Future.
+ * For ITERATOR: uses event part only, notified via ZEND_ASYNC_CALLBACKS_NOTIFY. */
 struct _task_group_waiter_event_s {
-	zend_async_event_t event;
+	union {
+		zend_async_event_t event;   /* ITERATOR: lightweight event */
+		zend_future_t future;       /* RACE/ANY/ALL: full future */
+	};
 	async_task_group_t *group;
 	task_group_waiter_type_t type;
+	zend_async_event_dispose_t original_dispose;
 };
 
-/* Forward declarations for waiter event */
+/* Forward declarations */
 static void task_group_waiter_event_remove(const task_group_waiter_event_t *waiter);
 
 ///////////////////////////////////////////////////////////
-/// Waiter event vtable
+/// Waiter event vtable (ITERATOR only — lightweight event)
 ///////////////////////////////////////////////////////////
 
 static bool waiter_event_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
@@ -79,22 +86,47 @@ static bool waiter_event_stop(zend_async_event_t *event)
 	return true;
 }
 
-static bool waiter_event_dispose(zend_async_event_t *event)
+static bool waiter_iterator_dispose(zend_async_event_t *event)
 {
 	task_group_waiter_event_t *waiter = (task_group_waiter_event_t *)event;
 
-	/* Remove from group vector */
 	task_group_waiter_event_remove(waiter);
-
-	/* Free callbacks */
 	zend_async_callbacks_free(event);
-
 	efree(waiter);
 	return true;
 }
 
-static task_group_waiter_event_t *task_group_waiter_event_new(
-	async_task_group_t *group, const task_group_waiter_type_t type)
+///////////////////////////////////////////////////////////
+/// Waiter future dispose (RACE/ANY/ALL — extends zend_future_t)
+///////////////////////////////////////////////////////////
+
+static bool waiter_future_dispose(zend_async_event_t *event)
+{
+	task_group_waiter_event_t *waiter = (task_group_waiter_event_t *)event;
+
+	task_group_waiter_event_remove(waiter);
+
+	/* Call original zend_future_t dispose (frees callbacks, result, etc.) */
+	return waiter->original_dispose(event);
+}
+
+///////////////////////////////////////////////////////////
+/// Waiter creation
+///////////////////////////////////////////////////////////
+
+static void task_group_waiter_add_to_vector(async_task_group_t *group, task_group_waiter_event_t *waiter)
+{
+	if (group->waiter_events_length == group->waiter_events_capacity) {
+		const uint32_t new_cap = group->waiter_events_capacity ? group->waiter_events_capacity * 2 : 4;
+		group->waiter_events = safe_erealloc(group->waiter_events, new_cap, sizeof(task_group_waiter_event_t *), 0);
+		group->waiter_events_capacity = new_cap;
+	}
+
+	group->waiter_events[group->waiter_events_length++] = waiter;
+}
+
+/* Create iterator waiter — lightweight event, no future */
+static task_group_waiter_event_t *task_group_waiter_iterator_new(async_task_group_t *group)
 {
 	task_group_waiter_event_t *waiter = ecalloc(1, sizeof(task_group_waiter_event_t));
 
@@ -103,18 +135,31 @@ static task_group_waiter_event_t *task_group_waiter_event_new(
 	waiter->event.del_callback = waiter_event_del_callback;
 	waiter->event.start = waiter_event_start;
 	waiter->event.stop = waiter_event_stop;
-	waiter->event.dispose = waiter_event_dispose;
+	waiter->event.dispose = waiter_iterator_dispose;
+	waiter->group = group;
+	waiter->type = WAITER_TYPE_ITERATOR;
+
+	task_group_waiter_add_to_vector(group, waiter);
+
+	return waiter;
+}
+
+/* Create future waiter for race/any/all — extends zend_future_t */
+static task_group_waiter_event_t *task_group_waiter_future_new(
+	async_task_group_t *group, const task_group_waiter_type_t type)
+{
+	const size_t extra_size = sizeof(task_group_waiter_event_t) - sizeof(zend_future_t);
+	zend_future_t *future = ZEND_ASYNC_NEW_FUTURE_EX(false, extra_size);
+
+	task_group_waiter_event_t *waiter = (task_group_waiter_event_t *)future;
 	waiter->group = group;
 	waiter->type = type;
 
-	/* Add to group vector */
-	if (group->waiter_events_length == group->waiter_events_capacity) {
-		const uint32_t new_cap = group->waiter_events_capacity ? group->waiter_events_capacity * 2 : 4;
-		group->waiter_events = safe_erealloc(group->waiter_events, new_cap, sizeof(task_group_waiter_event_t *), 0);
-		group->waiter_events_capacity = new_cap;
-	}
+	/* Intercept dispose to remove from group vector */
+	waiter->original_dispose = future->event.dispose;
+	future->event.dispose = waiter_future_dispose;
 
-	group->waiter_events[group->waiter_events_length++] = waiter;
+	task_group_waiter_add_to_vector(group, waiter);
 
 	return waiter;
 }
@@ -150,6 +195,12 @@ static zend_object_handlers task_group_handlers;
 /* Forward declarations */
 static void task_group_try_complete(async_task_group_t *group);
 static void task_group_drain(async_task_group_t *group);
+static bool task_group_has_errors(const async_task_group_t *group);
+static bool task_group_has_success(const async_task_group_t *group);
+static bool task_group_all_settled(const async_task_group_t *group);
+static bool task_group_has_pending(const async_task_group_t *group);
+static HashTable *task_group_collect_results(const async_task_group_t *group);
+static zend_object *task_group_collect_composite_exception(const async_task_group_t *group);
 static void task_group_on_coroutine_complete(
 	zend_async_event_t *event, zend_async_event_callback_t *callback, void *result, zend_object *exception);
 
@@ -428,16 +479,16 @@ static void task_group_free_object(zend_object *object)
 
 	zend_hash_destroy(&group->tasks);
 
-	/* Free remaining waiter events */
+	/* Dispose remaining waiter events */
 	if (group->waiter_events != NULL) {
 		for (uint32_t i = 0; i < group->waiter_events_length; i++) {
 			task_group_waiter_event_t *waiter = group->waiter_events[i];
-			waiter->group = NULL;
-			zend_async_callbacks_free(&waiter->event);
-			efree(waiter);
+			waiter->group = NULL; /* detach so dispose won't try to remove from vector */
+			waiter->event.dispose(&waiter->event);
 		}
 		efree(group->waiter_events);
 		group->waiter_events = NULL;
+		group->waiter_events_length = 0;
 	}
 
 	/* Free finally handlers */
@@ -524,11 +575,59 @@ static void task_group_try_complete(async_task_group_t *group)
 
 	ASYNC_TASK_GROUP_SET_COMPLETED(group);
 
-	/* Notify waiter events — wake any suspended any()/race()/iterator.
-	 * This is critical for any() when all tasks failed: the per-task notification
-	 * skips ANY waiters on error, so they must be woken here at terminal state. */
-	for (uint32_t i = 0; i < group->waiter_events_length; i++) {
-		ZEND_ASYNC_CALLBACKS_NOTIFY(&group->waiter_events[i]->event, NULL, NULL);
+	/* Resolve remaining future waiters at terminal state.
+	 * Use index-based iteration — resolve/remove may shift the vector. */
+	const bool has_errors = task_group_has_errors(group);
+	uint32_t i = 0;
+
+	while (i < group->waiter_events_length) {
+		task_group_waiter_event_t *waiter = group->waiter_events[i];
+
+		switch (waiter->type) {
+			case WAITER_TYPE_ALL:
+				if (has_errors) {
+					zend_object *composite = task_group_collect_composite_exception(group);
+					ZEND_FUTURE_REJECT(&waiter->future, composite);
+					//ZEND_FUTURE_SET_EXCEPTION_CAUGHT(&waiter->future);
+					OBJ_RELEASE(composite);
+				} else {
+					HashTable *results = task_group_collect_results(group);
+					zval results_zv;
+					ZVAL_ARR(&results_zv, results);
+					ZEND_FUTURE_COMPLETE(&waiter->future, &results_zv);
+					zval_ptr_dtor(&results_zv);
+				}
+				task_group_waiter_event_remove(waiter);
+				break;
+
+			case WAITER_TYPE_ALL_IGNORE_ERRORS:
+				HashTable *results = task_group_collect_results(group);
+				zval results_zv;
+				ZVAL_ARR(&results_zv, results);
+				ZEND_FUTURE_COMPLETE(&waiter->future, &results_zv);
+				zval_ptr_dtor(&results_zv);
+				task_group_waiter_event_remove(waiter);
+				continue;
+
+			case WAITER_TYPE_ANY:
+				zend_object *composite = task_group_collect_composite_exception(group);
+				ZEND_FUTURE_REJECT(&waiter->future, composite);
+				//ZEND_FUTURE_SET_EXCEPTION_CAUGHT(&waiter->future);
+				OBJ_RELEASE(composite);
+				task_group_waiter_event_remove(waiter);
+				break;
+
+			case WAITER_TYPE_ITERATOR:
+				ZEND_ASYNC_CALLBACKS_NOTIFY(&waiter->event, NULL, NULL);
+				i++;
+				break;
+
+			case WAITER_TYPE_RACE:
+				i++;
+				break;
+		}
+
+		i++;
 	}
 
 	/* Notify all/await waiters — group is fully settled */
@@ -705,21 +804,48 @@ done:
 	task_group_drain(group);
 
 	/* Notify waiter events based on type.
-	 * Coroutine owns the waiter (trans_event=true), so dispose handles cleanup.
-	 * Use waiter_notify_index for safe iteration — dispose may remove from vector. */
+	 * Use waiter_notify_index for safe iteration — remove may shift vector. */
 	const bool is_success = (exception == NULL);
+	const zval *result_zval = (zval *)result;
 
 	group->waiter_notify_index = 0;
 	while (group->waiter_notify_index < group->waiter_events_length) {
 		task_group_waiter_event_t *waiter = group->waiter_events[group->waiter_notify_index];
 
-		if (waiter->type == WAITER_TYPE_ANY && !is_success) {
-			group->waiter_notify_index++;
-			continue;
+		switch (waiter->type) {
+			case WAITER_TYPE_RACE:
+				/* Resolve future with first completion (success or error) */
+				if (is_success) {
+					ZEND_FUTURE_COMPLETE(&waiter->future, result_zval);
+				} else {
+					ZEND_FUTURE_REJECT(&waiter->future, exception);
+					//ZEND_FUTURE_SET_EXCEPTION_CAUGHT(&waiter->future);
+				}
+				task_group_waiter_event_remove(waiter);
+				continue; /* don't increment — remove shifted vector */
+
+			case WAITER_TYPE_ANY:
+				if (!is_success) {
+					group->waiter_notify_index++;
+					continue; /* skip errors, wait for success */
+				}
+				ZEND_FUTURE_COMPLETE(&waiter->future, result_zval);
+				task_group_waiter_event_remove(waiter);
+				continue;
+
+			case WAITER_TYPE_ALL:
+			case WAITER_TYPE_ALL_IGNORE_ERRORS:
+				/* Don't resolve per-task — wait for terminal state */
+				group->waiter_notify_index++;
+				continue;
+
+			case WAITER_TYPE_ITERATOR:
+				group->waiter_notify_index++;
+				ZEND_ASYNC_CALLBACKS_NOTIFY(&waiter->event, result, NULL);
+				continue;
 		}
 
 		group->waiter_notify_index++;
-		ZEND_ASYNC_CALLBACKS_NOTIFY(&waiter->event, result, NULL);
 	}
 
 	/* Check terminal state */
@@ -953,7 +1079,7 @@ retry:
 	}
 
 	{
-		task_group_waiter_event_t *waiter = task_group_waiter_event_new(group, WAITER_TYPE_ITERATOR);
+		task_group_waiter_event_t *waiter = task_group_waiter_iterator_new(group);
 
 		zend_async_resume_when(current, &waiter->event, true, zend_async_waker_callback_resolve, NULL);
 
@@ -1214,68 +1340,33 @@ METHOD(all)
 
 	async_task_group_t *group = THIS_GROUP();
 
-	/* Check if all settled already */
+	const task_group_waiter_type_t type = ignore_errors ? WAITER_TYPE_ALL_IGNORE_ERRORS : WAITER_TYPE_ALL;
+	task_group_waiter_event_t *waiter = task_group_waiter_future_new(group, type);
+
+	/* Already settled — resolve immediately */
 	if (task_group_all_settled(group) && !task_group_has_pending(group)) {
-		goto return_results;
-	}
-
-	/* Suspend and wait for completion once.
-	 * No retry — returns whatever is available after waking up.
-	 * New tasks added while suspended are not awaited. */
-	{
-		zend_coroutine_t *current = (zend_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
-
-		if (UNEXPECTED(current == NULL)) {
-			async_throw_error("TaskGroup::all() can only be called inside a coroutine");
-			RETURN_THROWS();
-		}
-
-		zend_async_waker_new(current);
-
-		if (UNEXPECTED(EG(exception))) {
-			RETURN_THROWS();
-		}
-
-		zend_async_resume_when(current, &group->event, false, zend_async_waker_callback_resolve, NULL);
-
-		if (UNEXPECTED(EG(exception))) {
-			zend_async_waker_clean(current);
-			RETURN_THROWS();
-		}
-
-		ZEND_ASYNC_SUSPEND();
-		zend_async_waker_clean(current);
-
-		if (UNEXPECTED(EG(exception))) {
-			RETURN_THROWS();
+		if (!ignore_errors && task_group_has_errors(group)) {
+			zend_object *composite = task_group_collect_composite_exception(group);
+			ZEND_FUTURE_REJECT(&waiter->future, composite);
+			//ZEND_FUTURE_SET_EXCEPTION_CAUGHT(&waiter->future);
+			OBJ_RELEASE(composite);
+		} else {
+			HashTable *results = task_group_collect_results(group);
+			zval results_zv;
+			ZVAL_ARR(&results_zv, results);
+			ZEND_FUTURE_COMPLETE(&waiter->future, &results_zv);
+			zval_ptr_dtor(&results_zv);
 		}
 	}
 
-return_results:
-	/* Check errors */
-	if (!ignore_errors && task_group_has_errors(group)) {
-		zval composite_zv;
-
-		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(&group->event);
-		zend_object *composite = task_group_collect_composite_exception(group);
-		ZVAL_OBJ(&composite_zv, composite);
-		zend_throw_exception_object(&composite_zv);
-		RETURN_THROWS();
-	}
-
-	/* Return results in spawn order */
-	RETURN_ARR(task_group_collect_results(group));
+	RETURN_OBJ(ZEND_ASYNC_NEW_FUTURE_OBJ(&waiter->future));
 }
 
 METHOD(race)
 {
-	async_task_group_t *group;
-	zval *zv;
-	zend_coroutine_t *current;
-
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	group = THIS_GROUP();
+	async_task_group_t *group = THIS_GROUP();
 
 	/* Empty group check */
 	if (UNEXPECTED(zend_hash_num_elements(&group->tasks) == 0)) {
@@ -1283,72 +1374,29 @@ METHOD(race)
 		RETURN_THROWS();
 	}
 
-	/* Check already settled (first in spawn order) */
+	task_group_waiter_event_t *waiter = task_group_waiter_future_new(group, WAITER_TYPE_RACE);
+
+	/* Check already settled (first in spawn order) — resolve immediately */
+	zval *zv;
 	ZEND_HASH_FOREACH_VAL(&group->tasks, zv) {
 		if (task_is_completed(zv)) {
-			RETURN_COPY(zv);
+			ZEND_FUTURE_COMPLETE(&waiter->future, zv);
+			goto return_future;
 		}
 		if (task_is_error(zv)) {
-			task_entry_t *e = (task_entry_t *)Z_PTR_P(zv);
-			zval ex_zv;
-			GC_ADDREF(e->exception);
-			ZVAL_OBJ(&ex_zv, e->exception);
-			zend_throw_exception_object(&ex_zv);
-			RETURN_THROWS();
+			const task_entry_t *entry = (task_entry_t *)Z_PTR_P(zv);
+			ZEND_FUTURE_REJECT(&waiter->future, entry->exception);
+			//ZEND_FUTURE_SET_EXCEPTION_CAUGHT(&waiter->future);
+			goto return_future;
 		}
 	} ZEND_HASH_FOREACH_END();
 
-	/* Suspend — wait for first completion (success or error) */
-	current = (zend_coroutine_t *)ZEND_ASYNC_CURRENT_COROUTINE;
-
-	if (UNEXPECTED(current == NULL)) {
-		async_throw_error("TaskGroup::race() can only be called inside a coroutine");
-		RETURN_THROWS();
-	}
-
-	task_group_waiter_event_t *waiter = task_group_waiter_event_new(group, WAITER_TYPE_RACE);
-
-	zend_async_waker_new(current);
-
-	if (UNEXPECTED(EG(exception))) {
-		RETURN_THROWS();
-	}
-
-	/* trans_event=true: waker takes ownership, dispose frees waiter */
-	zend_async_resume_when(current, &waiter->event, true, zend_async_waker_callback_resolve, NULL);
-
-	if (UNEXPECTED(EG(exception))) {
-		zend_async_waker_clean(current);
-		RETURN_THROWS();
-	}
-
-	ZEND_ASYNC_SUSPEND();
-	zend_async_waker_clean(current);
-
-	if (UNEXPECTED(EG(exception))) {
-		RETURN_THROWS();
-	}
-
-	/* race() returns first settled — find it */
-	ZEND_HASH_FOREACH_VAL(&group->tasks, zv) {
-		if (task_is_completed(zv)) {
-			RETURN_COPY(zv);
-		}
-		if (task_is_error(zv)) {
-			task_entry_t *e = (task_entry_t *)Z_PTR_P(zv);
-			zval ex_zv;
-			GC_ADDREF(e->exception);
-			ZVAL_OBJ(&ex_zv, e->exception);
-			zend_throw_exception_object(&ex_zv);
-			RETURN_THROWS();
-		}
-	} ZEND_HASH_FOREACH_END();
+return_future:
+	RETURN_OBJ(ZEND_ASYNC_NEW_FUTURE_OBJ(&waiter->future));
 }
 
 METHOD(any)
 {
-	zval *zv;
-
 	ZEND_PARSE_PARAMETERS_NONE();
 
 	async_task_group_t *group = THIS_GROUP();
@@ -1359,83 +1407,27 @@ METHOD(any)
 		RETURN_THROWS();
 	}
 
-	/* Check for first success */
-	if (task_group_has_success(group)) {
-		goto return_first_success;
-	}
+	task_group_waiter_event_t *waiter = task_group_waiter_future_new(group, WAITER_TYPE_ANY);
 
-	/* All settled with errors only → throw composite */
-	if (task_group_all_settled(group) && !task_group_has_pending(group)) {
-		goto throw_composite;
-	}
-
-retry:
-	/* Suspend — wait for next successful completion.
-	 * Retry is correct here: WAITER_TYPE_ANY skips error notifications,
-	 * so we need to re-enter the wait loop to check terminal state. */
-	{
-		zend_coroutine_t *current = (zend_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
-
-		if (UNEXPECTED(current == NULL)) {
-			async_throw_error("TaskGroup::any() can only be called inside a coroutine");
-			RETURN_THROWS();
-		}
-
-		task_group_waiter_event_t *waiter = task_group_waiter_event_new(group, WAITER_TYPE_ANY);
-
-		zend_async_waker_new(current);
-
-		if (UNEXPECTED(EG(exception))) {
-			RETURN_THROWS();
-		}
-
-		/* trans_event=true: waker takes ownership */
-		zend_async_resume_when(current, &waiter->event, true, zend_async_waker_callback_resolve, NULL);
-
-		if (UNEXPECTED(EG(exception))) {
-			zend_async_waker_clean(current);
-			RETURN_THROWS();
-		}
-
-		ZEND_ASYNC_SUSPEND();
-		zend_async_waker_clean(current);
-
-		if (UNEXPECTED(EG(exception))) {
-			RETURN_THROWS();
-		}
-	}
-
-	/* Check for success after waking up */
-	if (task_group_has_success(group)) {
-		goto return_first_success;
-	}
-
-	/* All settled with errors only → throw composite */
-	if (task_group_all_settled(group) && !task_group_has_pending(group)) {
-		goto throw_composite;
-	}
-
-	/* Woke up but neither success nor all settled — retry */
-	goto retry;
-
-return_first_success:
+	/* Check for first success — resolve immediately */
+	zval *zv;
 	ZEND_HASH_FOREACH_VAL(&group->tasks, zv) {
 		if (task_is_completed(zv)) {
-			RETURN_COPY(zv);
+			ZEND_FUTURE_COMPLETE(&waiter->future, zv);
+			goto return_future;
 		}
 	} ZEND_HASH_FOREACH_END();
-	RETURN_NULL();
 
-throw_composite:
-	{
-		zval composite_zv;
-
-		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(&group->event);
+	/* All settled with errors only → reject immediately */
+	if (task_group_all_settled(group) && !task_group_has_pending(group)) {
 		zend_object *composite = task_group_collect_composite_exception(group);
-		ZVAL_OBJ(&composite_zv, composite);
-		zend_throw_exception_object(&composite_zv);
-		RETURN_THROWS();
+		ZEND_FUTURE_REJECT(&waiter->future, composite);
+		//ZEND_FUTURE_SET_EXCEPTION_CAUGHT(&waiter->future);
+		OBJ_RELEASE(composite);
 	}
+
+return_future:
+	RETURN_OBJ(ZEND_ASYNC_NEW_FUTURE_OBJ(&waiter->future));
 }
 
 METHOD(getResults)

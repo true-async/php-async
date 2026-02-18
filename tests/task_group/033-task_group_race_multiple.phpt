@@ -13,10 +13,10 @@ spawn(function() {
     $group->spawn(function() { return "second"; });
     $group->seal();
 
-    $r1 = $group->race();
+    $r1 = $group->race()->await();
     echo "race 1: $r1\n";
 
-    $r2 = $group->race();
+    $r2 = $group->race()->await();
     echo "race 2: $r2\n";
 });
 ?>

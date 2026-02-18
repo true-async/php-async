@@ -20,7 +20,7 @@ spawn(function() {
     });
 
     $group->suppressErrors();
-    $result = $group->any();
+    $result = $group->any()->await();
     echo "any result: $result\n";
 });
 ?>

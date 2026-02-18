@@ -26,7 +26,7 @@ spawn(function() {
     echo "after close: finished=" . var_export($group->isFinished(), true)
        . " sealed=" . var_export($group->isSealed(), true) . "\n";
 
-    $group->all();
+    $group->all()->await();
 
     echo "after all: finished=" . var_export($group->isFinished(), true)
        . " sealed=" . var_export($group->isSealed(), true) . "\n";

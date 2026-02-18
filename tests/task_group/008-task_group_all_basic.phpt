@@ -14,7 +14,7 @@ spawn(function() {
     $group->spawnWithKey("c", function() { return 30; });
 
     $group->seal();
-    $results = $group->all();
+    $results = $group->all()->await();
 
     var_dump($results["a"]);
     var_dump($results["b"]);

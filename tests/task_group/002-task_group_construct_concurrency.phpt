@@ -28,7 +28,7 @@ spawn(function() {
     });
 
     $group->seal();
-    $results = $group->all();
+    $results = $group->all()->await();
 
     echo "count: " . count($results) . "\n";
     echo "done\n";

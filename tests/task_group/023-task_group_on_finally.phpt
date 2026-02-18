@@ -19,7 +19,7 @@ spawn(function() {
     $group->spawn(function() { return "b"; });
 
     $group->seal();
-    $group->all();
+    $group->all()->await();
 
     echo "after all\n";
 });
