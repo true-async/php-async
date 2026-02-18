@@ -398,14 +398,24 @@ static void task_group_dtor_object(zend_object *object)
 	/* Dispose owned scope (analogous to scope_destroy for Scope objects).
 	 * Must happen in dtor, not free, because coroutines may still be alive. */
 	if (group->scope != NULL) {
-		async_scope_t *scope = group->scope;
+		zend_async_scope_t *scope = (zend_async_scope_t *) group->scope;
 		group->scope = NULL;
 
-		if (false == scope->scope.try_to_dispose(&scope->scope)) {
+		// The Scope is owned by the Scheduler, so it is not allowed to decrement ref_count = 1 on our own.
+		// However, we do own a reference to the Scope.
+		if (ZEND_ASYNC_EVENT_REFCOUNT(&scope->event) > 1) {
+			ZEND_ASYNC_EVENT_DEL_REF(&scope->event);
+		}
+
+		// If the Scope still cannot be completed, we must cancel all remaining coroutines.
+		if (false == ZEND_ASYNC_SCOPE_IS_COMPLETELY_DONE(scope)) {
 			zend_object *exception = async_new_exception(async_ce_cancellation_exception,
 														 "Scope is being disposed due to TaskGroup destruction");
 
-			ZEND_ASYNC_SCOPE_CANCEL(&scope->scope, exception, true, ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(&scope->scope));
+			ZEND_ASYNC_SCOPE_CANCEL(scope, exception, true, ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(scope));
+		} else {
+			// Correctly finalize the Scope.
+			scope->try_to_dispose(scope);
 		}
 	}
 
@@ -1042,6 +1052,7 @@ zend_async_group_t *async_new_group(uint32_t concurrency, zend_object *scope_obj
 			return NULL;
 		}
 
+		ZEND_ASYNC_EVENT_ADD_REF(&child_scope->event);
 		group->scope = (async_scope_t *)child_scope;
 	}
 
@@ -1087,6 +1098,10 @@ METHOD(__construct)
 			RETURN_THROWS();
 		}
 
+		/* Add ref to prevent premature disposal during coroutine finalization.
+		 * Without this, when all spawned coroutines complete, scope_dispose()
+		 * would free the scope while the TaskGroup still holds a pointer to it. */
+		ZEND_ASYNC_EVENT_ADD_REF(&child_scope->event);
 		group->scope = (async_scope_t *)child_scope;
 	}
 }
