@@ -259,11 +259,6 @@ static zend_always_inline bool task_is_pending(const zval *zv)
 	return Z_TYPE_P(zv) == IS_PTR && ((task_entry_t *)Z_PTR_P(zv))->state == TASK_STATE_PENDING;
 }
 
-static zend_always_inline bool task_is_running(const zval *zv)
-{
-	return Z_TYPE_P(zv) == IS_PTR && ((task_entry_t *)Z_PTR_P(zv))->state == TASK_STATE_RUNNING;
-}
-
 static zend_always_inline bool task_is_error(const zval *zv)
 {
 	return Z_TYPE_P(zv) == IS_PTR && ((task_entry_t *)Z_PTR_P(zv))->state == TASK_STATE_ERROR;
@@ -272,12 +267,6 @@ static zend_always_inline bool task_is_error(const zval *zv)
 static zend_always_inline bool task_is_completed(const zval *zv)
 {
 	return Z_TYPE_P(zv) != IS_PTR;
-}
-
-static zend_always_inline bool task_is_settled(const zval *zv)
-{
-	return Z_TYPE_P(zv) != IS_PTR
-		|| ((task_entry_t *)Z_PTR_P(zv))->state == TASK_STATE_ERROR;
 }
 
 /* Check if all tasks in the group are settled (success or error) */
