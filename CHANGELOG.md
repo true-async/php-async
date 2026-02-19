@@ -44,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **PDO PgSQL**: Non-blocking query execution for PostgreSQL PDO driver
 - **PostgreSQL**: Concurrent `pg_*` query execution with separate connections per async context
 - **`Async\iterate()` function**: Iterates over an iterable, calling the callback for each element with optional concurrency limit. Supports `cancelPending` parameter (default: `true`) that controls whether coroutines spawned inside the callback are cancelled or awaited after iteration completes.
+- **`Async\watch_filesystem()` function: Watch filesystem changes with efficient event handling. Supports recursive watching, event filtering, and callback invocation with event details.
 
 ### Changed
 - **Hidden Events**: Added `ZEND_ASYNC_EVENT_F_HIDDEN` flag for events excluded from deadlock detection
