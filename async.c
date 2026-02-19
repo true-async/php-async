@@ -41,6 +41,7 @@
 zend_class_entry *async_ce_awaitable = NULL;
 zend_class_entry *async_ce_completable = NULL;
 zend_class_entry *async_ce_timeout = NULL;
+zend_class_entry *async_ce_signal = NULL;
 zend_class_entry *async_ce_circuit_breaker_state = NULL;
 zend_class_entry *async_ce_circuit_breaker = NULL;
 zend_class_entry *async_ce_circuit_breaker_strategy = NULL;
@@ -980,6 +981,234 @@ PHP_FUNCTION(Async_exec)
 }
 */
 
+///////////////////////////////////////////////////////////////
+/// Signal API
+///////////////////////////////////////////////////////////////
+
+typedef struct {
+	zend_async_event_callback_t base;
+	zend_future_t *future;
+	zend_async_signal_event_t *signal_event;
+	zend_async_event_callback_t *cancellation_callback;
+	zend_async_event_t *cancellation_event;
+	zend_object *cancellation_obj;
+} async_signal_callback_t;
+
+static void async_signal_callback_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event)
+{
+	async_signal_callback_t * const signal_cb = (async_signal_callback_t *) callback;
+
+	if (signal_cb->cancellation_obj != NULL) {
+		OBJ_RELEASE(signal_cb->cancellation_obj);
+		signal_cb->cancellation_obj = NULL;
+	}
+
+	efree(callback);
+}
+
+static void async_signal_cancellation_callback_fn(zend_async_event_t *event,
+												  zend_async_event_callback_t *callback,
+												  void *result,
+												  zend_object *exception)
+{
+	async_signal_callback_t *signal_cb = (async_signal_callback_t *) callback;
+
+	if (ZEND_FUTURE_IS_COMPLETED(signal_cb->future)) {
+		return;
+	}
+
+	/* Stop and dispose signal event */
+	zend_async_event_t *signal_event = &signal_cb->signal_event->base;
+	signal_cb->signal_event = NULL;
+	signal_event->stop(signal_event);
+	signal_event->dispose(signal_event);
+
+	/* Reject with cancellation exception */
+	if (exception != NULL) {
+		ZEND_FUTURE_REJECT(signal_cb->future, exception);
+	} else {
+		zend_object *cancel_ex = async_new_exception(async_ce_cancellation_exception, "Signal wait cancelled");
+		ZEND_FUTURE_REJECT(signal_cb->future, cancel_ex);
+		OBJ_RELEASE(cancel_ex);
+	}
+}
+
+static void async_signal_event_callback_fn(zend_async_event_t *event,
+										   zend_async_event_callback_t *callback,
+										   void *result,
+										   zend_object *exception)
+{
+	async_signal_callback_t *signal_cb = (async_signal_callback_t *) callback;
+
+	if (ZEND_FUTURE_IS_COMPLETED(signal_cb->future)) {
+		return;
+	}
+
+	/* Remove cancellation callback if set (dispose will release cancellation_obj) */
+	if (signal_cb->cancellation_callback != NULL && signal_cb->cancellation_event != NULL) {
+		signal_cb->cancellation_event->del_callback(signal_cb->cancellation_event, signal_cb->cancellation_callback);
+		signal_cb->cancellation_callback = NULL;
+		signal_cb->cancellation_event = NULL;
+	}
+
+	/* Stop signal event (one-shot) */
+	zend_async_event_t *signal_event = &signal_cb->signal_event->base;
+	signal_event->stop(signal_event);
+
+	if (UNEXPECTED(exception != NULL)) {
+		ZEND_FUTURE_REJECT(signal_cb->future, exception);
+	} else {
+		/* Resolve with Signal enum case */
+		const int signum = signal_cb->signal_event->signal;
+		zend_object *enum_case = NULL;
+
+		if (EXPECTED(zend_enum_get_case_by_value(&enum_case, async_ce_signal, (zend_long) signum, NULL, false) == SUCCESS)) {
+			zval result_zval;
+			ZVAL_OBJ(&result_zval, enum_case);
+			ZEND_FUTURE_COMPLETE(signal_cb->future, &result_zval);
+		} else {
+			zend_object *err = async_new_exception(NULL, "Unknown signal number: %d", signum);
+			ZEND_FUTURE_REJECT(signal_cb->future, err);
+			OBJ_RELEASE(err);
+		}
+	}
+
+	/* Dispose signal event */
+	signal_event->dispose(signal_event);
+	signal_cb->signal_event = NULL;
+}
+
+PHP_FUNCTION(Async_signal)
+{
+	zend_object *signal_enum = NULL;
+	zend_object *cancellation = NULL;
+
+	ZEND_PARSE_PARAMETERS_START(1, 2)
+		Z_PARAM_OBJ_OF_CLASS(signal_enum, async_ce_signal)
+		Z_PARAM_OPTIONAL
+		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_completable)
+	ZEND_PARSE_PARAMETERS_END();
+
+	SCHEDULER_LAUNCH;
+
+	/* Extract backing int value from Signal enum */
+	const zval *backing_value = zend_enum_fetch_case_value(signal_enum);
+	const int signum = (int) Z_LVAL_P(backing_value);
+
+	/* If cancellation is already completed, return a rejected Future */
+	if (cancellation != NULL) {
+		zend_async_event_t * const cancel_event = ZEND_ASYNC_OBJECT_TO_EVENT(cancellation);
+
+		if (ZEND_ASYNC_EVENT_IS_CLOSED(cancel_event)) {
+			zend_future_t * const future = async_new_future(false, 0);
+			if (UNEXPECTED(future == NULL)) {
+				async_throw_error("Failed to create future for signal");
+				RETURN_THROWS();
+			}
+
+			zend_object *cancel_exception = NULL;
+			ZEND_ASYNC_EVENT_EXTRACT_RESULT_OR_ERROR(cancel_event, return_value, &cancel_exception);
+
+			if (cancel_exception == NULL) {
+				cancel_exception = async_new_exception(async_ce_cancellation_exception, "Signal wait cancelled");
+				ZEND_FUTURE_REJECT(future, cancel_exception);
+				OBJ_RELEASE(cancel_exception);
+			} else {
+				ZEND_FUTURE_REJECT(future, cancel_exception);
+			}
+
+			zend_object * const future_obj = async_new_future_obj(future);
+			if (UNEXPECTED(future_obj == NULL)) {
+				RETURN_THROWS();
+			}
+
+			RETURN_OBJ(future_obj);
+		}
+	}
+
+	/* 1. Create signal event — may fail, nothing to clean up yet */
+	zend_async_signal_event_t * const signal_event = ZEND_ASYNC_NEW_SIGNAL_EVENT(signum);
+	if (UNEXPECTED(signal_event == NULL)) {
+		async_throw_error("Failed to create signal event for signal %d", signum);
+		RETURN_THROWS();
+	}
+
+	/* 2. Create signal callback — ecalloc never fails (aborts on OOM) */
+	async_signal_callback_t * const signal_cb = ecalloc(1, sizeof(async_signal_callback_t));
+	signal_cb->base.callback = async_signal_event_callback_fn;
+	signal_cb->base.dispose = async_signal_callback_dispose;
+	signal_cb->signal_event = signal_event;
+
+	/* 3. Create future — if fails, clean up signal event and callback */
+	zend_future_t * const future = async_new_future(false, 0);
+	if (UNEXPECTED(future == NULL)) {
+		efree(signal_cb);
+		signal_event->base.dispose(&signal_event->base);
+		async_throw_error("Failed to create future for signal");
+		RETURN_THROWS();
+	}
+
+	signal_cb->future = future;
+
+	/* Add callback to signal event */
+	signal_event->base.add_callback(&signal_event->base, &signal_cb->base);
+
+	/* Wire cancellation if provided */
+	if (cancellation != NULL) {
+		zend_async_event_t * const cancel_event = ZEND_ASYNC_OBJECT_TO_EVENT(cancellation);
+
+		/* Hold a reference to cancellation object so it stays alive */
+		GC_ADDREF(cancellation);
+
+		async_signal_callback_t * const cancel_cb = ecalloc(1, sizeof(async_signal_callback_t));
+		cancel_cb->base.callback = async_signal_cancellation_callback_fn;
+		cancel_cb->base.dispose = async_signal_callback_dispose;
+		cancel_cb->future = future;
+		cancel_cb->signal_event = signal_event;
+		cancel_cb->cancellation_obj = cancellation;
+
+		cancel_event->add_callback(cancel_event, &cancel_cb->base);
+
+		signal_cb->cancellation_callback = &cancel_cb->base;
+		signal_cb->cancellation_event = cancel_event;
+	}
+
+	/* Start cancellation event — if fails, destroy everything and throw */
+	if (cancellation != NULL) {
+		zend_async_event_t * const cancel_event = ZEND_ASYNC_OBJECT_TO_EVENT(cancellation);
+
+		if (UNEXPECTED(!cancel_event->start(cancel_event))) {
+			signal_event->base.dispose(&signal_event->base);
+			RETURN_THROWS();
+		}
+	}
+
+	zend_object * const future_obj = async_new_future_obj(future);
+	if (UNEXPECTED(future_obj == NULL)) {
+		signal_event->base.dispose(&signal_event->base);
+		RETURN_THROWS();
+	}
+
+	/* Start signal event — if fails, reject future and return it */
+	if (UNEXPECTED(!signal_event->base.start(&signal_event->base))) {
+		zend_object * exception = NULL;
+		if (EG(exception)) {
+			exception = EG(exception);
+			GC_ADDREF(exception);
+			zend_clear_exception();
+		} else {
+			exception = async_new_exception(NULL, "Failed to start signal event for signal %d", signum);
+		}
+
+		ZEND_FUTURE_REJECT(future, exception);
+		OBJ_RELEASE(exception);
+		signal_event->base.dispose(&signal_event->base);
+		RETURN_OBJ(future_obj);
+	}
+
+	RETURN_OBJ(future_obj);
+}
+
 PHP_METHOD(Async_Timeout, __construct)
 {
 	async_throw_error("Timeout cannot be constructed directly");
@@ -1193,6 +1422,7 @@ ZEND_MINIT_FUNCTION(async)
 	async_register_channel_ce();
 	async_register_fs_watcher_ce();
 	async_register_circuit_breaker_ce();
+	async_ce_signal = register_class_Async_Signal();
 	async_register_pool_ce();
 	async_register_task_group_ce();
 	async_register_future_ce();

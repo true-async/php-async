@@ -970,6 +970,12 @@ static void libuv_add_signal_event(int signum, zend_async_event_t *event)
 	HashTable *events_list = zend_hash_index_find_ptr(ASYNC_G(signal_events), signum);
 	if (events_list == NULL) {
 		events_list = zend_new_array(0);
+
+		if (UNEXPECTED(zend_hash_index_add_ptr(ASYNC_G(signal_events), signum, events_list) == NULL)) {
+			async_throw_error("Failed to store signal event: %d", signum);
+			zend_array_destroy(events_list);
+			return;
+		}
 	}
 
 	// Add event to the list (use pointer address as key)
