@@ -1814,7 +1814,13 @@ static void on_filesystem_event(uv_fs_event_t *handle, const char *filename, int
 		return;
 	}
 
-	fs_event->event.triggered_events = events;
+	if (events & UV_RENAME) {
+		fs_event->event.triggered_events |= ZEND_ASYNC_FS_EVENT_RENAME;
+	}
+	if (events & UV_CHANGE) {
+		fs_event->event.triggered_events |= ZEND_ASYNC_FS_EVENT_CHANGE;
+	}
+
 	fs_event->event.triggered_filename = filename ? zend_string_init(filename, strlen(filename), 0) : NULL;
 
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&fs_event->event.base, NULL, NULL);
@@ -1831,8 +1837,13 @@ static bool libuv_filesystem_start(zend_async_event_t *event)
 
 	async_filesystem_event_t *fs_event = (async_filesystem_event_t *) (event);
 
+	unsigned int uv_flags = 0;
+	if (fs_event->event.flags & ZEND_ASYNC_FS_EVENT_RECURSIVE) {
+		uv_flags |= UV_FS_EVENT_RECURSIVE;
+	}
+
 	const int error = uv_fs_event_start(
-			&fs_event->uv_handle, on_filesystem_event, ZSTR_VAL(fs_event->event.path), fs_event->event.flags);
+			&fs_event->uv_handle, on_filesystem_event, ZSTR_VAL(fs_event->event.path), uv_flags);
 
 	if (error < 0) {
 		async_throw_error("Failed to start filesystem handle: %s", uv_strerror(error));
