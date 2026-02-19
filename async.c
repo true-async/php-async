@@ -30,6 +30,7 @@
 #include "channel.h"
 #include "pool.h"
 #include "task_group.h"
+#include "fs_watcher.h"
 #include "iterator.h"
 #include "async_API.h"
 #include "zend_enum.h"
@@ -42,7 +43,6 @@ zend_class_entry *async_ce_completable = NULL;
 zend_class_entry *async_ce_timeout = NULL;
 zend_class_entry *async_ce_circuit_breaker_state = NULL;
 zend_class_entry *async_ce_circuit_breaker = NULL;
-zend_class_entry *async_ce_filesystem_event = NULL;
 zend_class_entry *async_ce_circuit_breaker_strategy = NULL;
 
 ///////////////////////////////////////////////////////////////
@@ -980,220 +980,6 @@ PHP_FUNCTION(Async_exec)
 }
 */
 
-///////////////////////////////////////////////////////////////
-/// watch_filesystem
-///////////////////////////////////////////////////////////////
-
-typedef struct {
-	zend_async_event_callback_t base;
-	zend_future_t *future;
-	zend_async_filesystem_event_t *fs_event;
-	zend_async_event_callback_t *cancel_cb;
-} watch_fs_callback_t;
-
-typedef struct {
-	zend_async_event_callback_t base;
-	zend_future_t *future;
-	zend_async_filesystem_event_t *fs_event;
-	watch_fs_callback_t *fs_cb;
-	zend_object *cancellation;
-} watch_fs_cancel_callback_t;
-
-static void watch_fs_callback_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event)
-{
-	efree(callback);
-}
-
-static void watch_fs_cancel_callback_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event)
-{
-	watch_fs_cancel_callback_t *cb = (watch_fs_cancel_callback_t *)callback;
-	zend_object *cancellation = cb->cancellation;
-	cb->cancellation = NULL;
-	if (cancellation) {
-		OBJ_RELEASE(cancellation);
-	}
-	efree(cb);
-}
-
-static void watch_fs_cleanup(zend_async_filesystem_event_t *fs_event)
-{
-	if (EXPECTED(!ZEND_ASYNC_EVENT_IS_CLOSED(&fs_event->base))) {
-		fs_event->base.stop(&fs_event->base);
-	}
-	fs_event->base.dispose(&fs_event->base);
-}
-
-static void watch_fs_on_cancel(
-	zend_async_event_t *event, zend_async_event_callback_t *callback, void *result, zend_object *exception)
-{
-	const watch_fs_cancel_callback_t *cb = (watch_fs_cancel_callback_t *)callback;
-	zend_future_t *future = cb->future;
-	zend_async_filesystem_event_t *fs_event = cb->fs_event;
-
-	/* Detach cross-reference */
-	if (cb->fs_cb != NULL) {
-		cb->fs_cb->cancel_cb = NULL;
-	}
-
-	if (ZEND_ASYNC_EVENT_IS_CLOSED(&future->event)) {
-		return;
-	}
-
-	if (exception != NULL) {
-		ZEND_FUTURE_REJECT(future, exception);
-	} else {
-		zend_object *cancel_ex = async_new_exception(
-			async_ce_cancellation_exception, "Filesystem watch cancelled");
-		ZEND_FUTURE_REJECT(future, cancel_ex);
-		zend_object_release(cancel_ex);
-	}
-
-	watch_fs_cleanup(fs_event);
-}
-
-static void watch_fs_on_event(
-	zend_async_event_t *event, zend_async_event_callback_t *callback, void *result, zend_object *exception)
-{
-	const watch_fs_callback_t *cb = (watch_fs_callback_t *)callback;
-	zend_future_t *future = cb->future;
-	zend_async_filesystem_event_t *fs_event = cb->fs_event;
-
-	/* Remove cancellation callback if registered */
-	if (cb->cancel_cb != NULL) {
-		watch_fs_cancel_callback_t *cancel = (watch_fs_cancel_callback_t *)cb->cancel_cb;
-		cancel->fs_cb = NULL;
-	}
-
-	if (UNEXPECTED(ZEND_ASYNC_EVENT_IS_CLOSED(&future->event))) {
-		goto cleanup;
-	}
-
-	if (UNEXPECTED(exception != NULL)) {
-		ZEND_FUTURE_REJECT(future, exception);
-		goto cleanup;
-	}
-
-	/* Create FileSystemEvent object and set readonly properties via property slots */
-	zval event_obj;
-	object_init_ex(&event_obj, async_ce_filesystem_event);
-	zend_object *obj = Z_OBJ(event_obj);
-
-	/* Property slot 0: path */
-	ZVAL_STR_COPY(OBJ_PROP_NUM(obj, 0), fs_event->path);
-
-	/* Property slot 1: filename */
-	if (fs_event->triggered_filename != NULL) {
-		ZVAL_STR_COPY(OBJ_PROP_NUM(obj, 1), fs_event->triggered_filename);
-	} else {
-		ZVAL_NULL(OBJ_PROP_NUM(obj, 1));
-	}
-
-	/* Property slot 2: renamed */
-	ZVAL_BOOL(OBJ_PROP_NUM(obj, 2), (fs_event->triggered_events & UV_RENAME) != 0);
-
-	/* Property slot 3: changed */
-	ZVAL_BOOL(OBJ_PROP_NUM(obj, 3), (fs_event->triggered_events & UV_CHANGE) != 0);
-
-	ZEND_FUTURE_COMPLETE(future, &event_obj);
-	zval_ptr_dtor(&event_obj);
-
-cleanup:
-	watch_fs_cleanup(fs_event);
-}
-
-PHP_FUNCTION(Async_watch_filesystem)
-{
-	zend_string *path = NULL;
-	bool recursive = false;
-	zend_object *cancellation = NULL;
-
-	ZEND_PARSE_PARAMETERS_START(1, 3)
-		Z_PARAM_STR(path)
-		Z_PARAM_OPTIONAL
-		Z_PARAM_BOOL(recursive)
-		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_completable)
-	ZEND_PARSE_PARAMETERS_END();
-
-	SCHEDULER_LAUNCH;
-
-	const unsigned int flags = recursive ? UV_FS_EVENT_RECURSIVE : 0;
-
-	zend_async_filesystem_event_t *fs_event = ZEND_ASYNC_NEW_FILESYSTEM_EVENT(path, flags);
-
-	if (UNEXPECTED(fs_event == NULL)) {
-		RETURN_THROWS();
-	}
-
-	/* Create the future */
-	zend_future_t *future = ZEND_ASYNC_NEW_FUTURE(false);
-
-	if (UNEXPECTED(future == NULL)) {
-		fs_event->base.dispose(&fs_event->base);
-		RETURN_THROWS();
-	}
-
-	/* Create and register fs event callback */
-	watch_fs_callback_t *cb = ecalloc(1, sizeof(watch_fs_callback_t));
-	cb->base.ref_count = 0;
-	cb->base.callback = watch_fs_on_event;
-	cb->base.dispose = watch_fs_callback_dispose;
-	cb->future = future;
-	cb->fs_event = fs_event;
-	cb->cancel_cb = NULL;
-
-	fs_event->base.add_callback(&fs_event->base, &cb->base);
-
-	/* Register cancellation callback */
-	if (cancellation != NULL) {
-		zend_async_event_t *cancel_event = ZEND_ASYNC_OBJECT_TO_EVENT(cancellation);
-
-		if (UNEXPECTED(ZEND_ASYNC_EVENT_IS_CLOSED(cancel_event))) {
-			/* Already cancelled — reject immediately */
-			zend_object *cancel_ex = async_new_exception(
-				async_ce_cancellation_exception, "Filesystem watch cancelled");
-			ZEND_FUTURE_REJECT(future, cancel_ex);
-			zend_object_release(cancel_ex);
-			fs_event->base.dispose(&fs_event->base);
-			RETURN_OBJ(ZEND_ASYNC_NEW_FUTURE_OBJ(future));
-		}
-
-		watch_fs_cancel_callback_t *cancel_cb = ecalloc(1, sizeof(watch_fs_cancel_callback_t));
-		cancel_cb->base.ref_count = 0;
-		cancel_cb->base.callback = watch_fs_on_cancel;
-		cancel_cb->base.dispose = watch_fs_cancel_callback_dispose;
-		cancel_cb->future = future;
-		cancel_cb->fs_event = fs_event;
-		cancel_cb->fs_cb = cb;
-		cancel_cb->cancellation = cancellation;
-		GC_ADDREF(cancellation);
-
-		cb->cancel_cb = &cancel_cb->base;
-
-		cancel_event->add_callback(cancel_event, &cancel_cb->base);
-	}
-
-	/* Start watching */
-	if (UNEXPECTED(!fs_event->base.start(&fs_event->base))) {
-		fs_event->base.dispose(&fs_event->base);
-		ZEND_FUTURE_SET_USED(future);
-		future->event.dispose(&future->event);
-		RETURN_THROWS();
-	}
-
-	if (cancellation != NULL) {
-		zend_async_event_t *cancel_event = ZEND_ASYNC_OBJECT_TO_EVENT(cancellation);
-
-		if (UNEXPECTED(false == cancel_event->start(cancel_event))) {
-			fs_event->base.dispose(&fs_event->base);
-			ZEND_FUTURE_SET_USED(future);
-			future->event.dispose(&future->event);
-			RETURN_THROWS();
-		}
-	}
-
-	RETURN_OBJ(ZEND_ASYNC_NEW_FUTURE_OBJ(future));
-}
-
 PHP_METHOD(Async_Timeout, __construct)
 {
 	async_throw_error("Timeout cannot be constructed directly");
@@ -1248,10 +1034,7 @@ void async_register_awaitable_ce(void)
 	async_ce_completable = register_class_Async_Completable(async_ce_awaitable);
 }
 
-void async_register_filesystem_event_ce(void)
-{
-	async_ce_filesystem_event = register_class_Async_FileSystemEvent();
-}
+
 
 void async_register_circuit_breaker_ce(void)
 {
@@ -1408,7 +1191,7 @@ ZEND_MINIT_FUNCTION(async)
 	async_register_context_ce();
 	async_register_exceptions_ce();
 	async_register_channel_ce();
-	async_register_filesystem_event_ce();
+	async_register_fs_watcher_ce();
 	async_register_circuit_breaker_ce();
 	async_register_pool_ce();
 	async_register_task_group_ce();

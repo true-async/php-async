@@ -11,14 +11,14 @@ if test "$PHP_ASYNC" = "yes"; then
   dnl Register extension source files.
   PHP_NEW_EXTENSION([async],
     [async.c coroutine.c scope.c scheduler.c exceptions.c iterator.c async_API.c \
-     context.c libuv_reactor.c future.c channel.c pool.c task_group.c \
+     context.c libuv_reactor.c future.c channel.c pool.c task_group.c fs_watcher.c \
      internal/allocator.c internal/circular_buffer.c \
      zend_common.c],
     $ext_shared)
 
   dnl Optionally install headers (if desired for public use).
   PHP_INSTALL_HEADERS([ext/async],
-    [php_async.h coroutine.h scope.h scheduler.h exceptions.h iterator.h async_API.h context.h future.h channel.h pool.h task_group.h])
+    [php_async.h coroutine.h scope.h scheduler.h exceptions.h iterator.h async_API.h context.h future.h channel.h pool.h task_group.h fs_watcher.h])
 
 
     AC_PATH_PROG(PKG_CONFIG, pkg-config, no)

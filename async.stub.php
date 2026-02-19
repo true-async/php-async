@@ -121,27 +121,6 @@ function exec(
 ): Future {}
 */
 
-/**
- * Represents a filesystem event detected by watch_filesystem().
- *
- * @strict-properties
- * @not-serializable
- */
-final readonly class FileSystemEvent
-{
-    public string $path;
-    public ?string $filename;
-    public bool $renamed;
-    public bool $changed;
-}
-
-/**
- * Watch a file or directory for filesystem changes.
- * Returns a Future that resolves with a FileSystemEvent on the first detected change.
- *
- * @return Future<FileSystemEvent>
- */
-function watch_filesystem(string $path, bool $recursive = false, ?Completable $cancellation = null): Future {}
 
 /**
  * Circuit breaker states.
