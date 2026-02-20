@@ -11,23 +11,28 @@ use function Async\delay;
 $dir = sys_get_temp_dir() . '/async_fsw_rename_' . getmypid();
 @mkdir($dir, 0777, true);
 
-// Create the file first
 $src = $dir . '/original.txt';
-file_put_contents($src, 'content');
+$dst = $dir . '/renamed.txt';
 
 $watcher = new FileSystemWatcher($dir);
 
-spawn(function() use ($dir, $src, $watcher) {
+spawn(function() use ($src, $dst, $watcher) {
     delay(50);
-    rename($src, $dir . '/renamed.txt');
+    file_put_contents($src, 'content');
+    delay(100);
+    rename($src, $dst);
     delay(150);
     $watcher->close();
 });
 
 $event = null;
 foreach ($watcher as $e) {
-    $event = $e;
-    break;
+    // On macOS (kqueue), file creation also fires as UV_RENAME.
+    // Skip events until the rename has actually happened.
+    if (file_exists($dst)) {
+        $event = $e;
+        break;
+    }
 }
 
 $watcher->close();
@@ -37,7 +42,7 @@ echo "renamed: " . var_export($event->renamed, true) . "\n";
 echo "path matches: " . var_export($event->path === $dir, true) . "\n";
 
 // Cleanup
-@unlink($dir . '/renamed.txt');
+@unlink($dst);
 @unlink($src);
 @rmdir($dir);
 
