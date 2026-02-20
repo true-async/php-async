@@ -18,7 +18,7 @@ echo "start\n";
 $future = signal(Signal::SIGUSR1);
 
 spawn(function() {
-    posix_kill(getmypid(), SIGUSR1);
+    posix_kill(getmypid(), Signal::SIGUSR1->value);
 });
 
 $result = await($future);

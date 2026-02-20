@@ -711,6 +711,35 @@ static zend_object *async_future_object_create(zend_class_entry *ce)
     return &future->std;
 }
 
+static HashTable *async_future_get_gc(zend_object *object, zval **table, int *n)
+{
+    async_future_t *future = ASYNC_FUTURE_FROM_OBJ(object);
+    zend_get_gc_buffer *gc_buffer = zend_get_gc_buffer_create();
+
+    zend_future_t *zend_future = (zend_future_t *)future->event;
+
+    if (zend_future != NULL) {
+        if (zend_future->exception != NULL) {
+            zend_get_gc_buffer_add_obj(gc_buffer, zend_future->exception);
+        }
+        if (Z_TYPE(zend_future->result) != IS_UNDEF) {
+            zend_get_gc_buffer_add_zval(gc_buffer, &zend_future->result);
+        }
+    }
+
+    if (Z_TYPE(future->mapper) != IS_UNDEF) {
+        zend_get_gc_buffer_add_zval(gc_buffer, &future->mapper);
+    }
+
+    if (future->child_futures != NULL) {
+        zend_get_gc_buffer_add_ht(gc_buffer, future->child_futures);
+    }
+
+    zend_get_gc_buffer_use(gc_buffer, table, n);
+
+    return NULL;
+}
+
 static void async_future_object_free(zend_object *object)
 {
     async_future_t *future = ASYNC_FUTURE_FROM_OBJ(object);
@@ -1785,5 +1814,6 @@ void async_register_future_ce(void)
     memcpy(&async_future_handlers, &std_object_handlers, sizeof(zend_object_handlers));
     async_future_handlers.offset = XtOffsetOf(async_future_t, std);
     async_future_handlers.free_obj = async_future_object_free;
+    async_future_handlers.get_gc = async_future_get_gc;
     async_ce_future->default_object_handlers = &async_future_handlers;
 }

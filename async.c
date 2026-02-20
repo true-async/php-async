@@ -1031,6 +1031,14 @@ static void async_signal_cancellation_callback_fn(zend_async_event_t *event,
 		ZEND_FUTURE_REJECT(signal_cb->future, cancel_ex);
 		OBJ_RELEASE(cancel_ex);
 	}
+
+	/* Release the cancellation object reference to break the circular reference:
+	 * cancel_cb->cancellation_obj → timeout object → timeout event → cancel_cb.
+	 * Without this, the timeout object can never be freed. */
+	if (signal_cb->cancellation_obj != NULL) {
+		OBJ_RELEASE(signal_cb->cancellation_obj);
+		signal_cb->cancellation_obj = NULL;
+	}
 }
 
 static void async_signal_event_callback_fn(zend_async_event_t *event,
