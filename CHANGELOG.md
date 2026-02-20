@@ -45,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **PostgreSQL**: Concurrent `pg_*` query execution with separate connections per async context
 - **`Async\iterate()` function**: Iterates over an iterable, calling the callback for each element with optional concurrency limit. Supports `cancelPending` parameter (default: `true`) that controls whether coroutines spawned inside the callback are cancelled or awaited after iteration completes.
 - **`Async\FileSystemWatcher` class**: Persistent filesystem watcher with `foreach` iteration support, suspend/resume on new events, two storage modes (coalesce with HashTable deduplication, raw with circular buffer), `close()`/`isClosed()` lifecycle, and `Awaitable` interface via `ZEND_ASYNC_EVENT_REF_FIELDS` pattern. Replaces the one-shot `Async\watch_filesystem()` function.
+- **`Async\signal()` function**: One-shot signal handler that returns a `Future` resolved when the specified signal is received. Supports optional `Cancellation` for early cancellation.
 
 ### Changed
 - **Hidden Events**: Added `ZEND_ASYNC_EVENT_F_HIDDEN` flag for events excluded from deadlock detection
