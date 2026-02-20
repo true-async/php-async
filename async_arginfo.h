@@ -1,5 +1,5 @@
 /* This is a generated file, edit async.stub.php instead.
- * Stub hash: 9b18d85e6c92049f215d48af683c006544604498 */
+ * Stub hash: 3118a82e83d554a5d7d11bbd9c78a7962faceaa6 */
 
 ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_Async_spawn, 0, 1, Async\\Coroutine, 0)
 	ZEND_ARG_TYPE_INFO(0, task, IS_CALLABLE, 0)
@@ -87,9 +87,13 @@ ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_iterate, 0, 2, IS_VOID, 0)
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, cancelPending, _IS_BOOL, 0, "true")
 ZEND_END_ARG_INFO()
 
-
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_graceful_shutdown, 0, 0, IS_VOID, 0)
 	ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, cancellationError, Async\\AsyncCancellation, 1, "null")
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_Async_signal, 0, 1, Async\\Future, 0)
+	ZEND_ARG_OBJ_INFO(0, signal, Async\\Signal, 0)
+	ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, cancellation, Async\\Completable, 1, "null")
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_Completable_cancel, 0, 0, IS_VOID, 0)
@@ -150,6 +154,7 @@ ZEND_FUNCTION(Async_root_context);
 ZEND_FUNCTION(Async_get_coroutines);
 ZEND_FUNCTION(Async_iterate);
 ZEND_FUNCTION(Async_graceful_shutdown);
+ZEND_FUNCTION(Async_signal);
 ZEND_METHOD(Async_Timeout, __construct);
 ZEND_METHOD(Async_Timeout, cancel);
 ZEND_METHOD(Async_Timeout, isCompleted);
@@ -176,6 +181,7 @@ static const zend_function_entry ext_functions[] = {
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "get_coroutines"), zif_Async_get_coroutines, arginfo_Async_get_coroutines, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "iterate"), zif_Async_iterate, arginfo_Async_iterate, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "graceful_shutdown"), zif_Async_graceful_shutdown, arginfo_Async_graceful_shutdown, 0, NULL, NULL)
+	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "signal"), zif_Async_signal, arginfo_Async_signal, 0, NULL, NULL)
 	ZEND_FE_END
 };
 
@@ -241,6 +247,68 @@ static zend_class_entry *register_class_Async_Timeout(zend_class_entry *class_en
 	return class_entry;
 }
 
+static zend_class_entry *register_class_Async_Signal(void)
+{
+	zend_class_entry *class_entry = zend_register_internal_enum("Async\\Signal", IS_LONG, NULL);
+
+	zval enum_case_SIGHUP_value;
+	ZVAL_LONG(&enum_case_SIGHUP_value, 1);
+	zend_enum_add_case_cstr(class_entry, "SIGHUP", &enum_case_SIGHUP_value);
+
+	zval enum_case_SIGINT_value;
+	ZVAL_LONG(&enum_case_SIGINT_value, 2);
+	zend_enum_add_case_cstr(class_entry, "SIGINT", &enum_case_SIGINT_value);
+
+	zval enum_case_SIGQUIT_value;
+	ZVAL_LONG(&enum_case_SIGQUIT_value, 3);
+	zend_enum_add_case_cstr(class_entry, "SIGQUIT", &enum_case_SIGQUIT_value);
+
+	zval enum_case_SIGILL_value;
+	ZVAL_LONG(&enum_case_SIGILL_value, 4);
+	zend_enum_add_case_cstr(class_entry, "SIGILL", &enum_case_SIGILL_value);
+
+	zval enum_case_SIGABRT_value;
+	ZVAL_LONG(&enum_case_SIGABRT_value, 6);
+	zend_enum_add_case_cstr(class_entry, "SIGABRT", &enum_case_SIGABRT_value);
+
+	zval enum_case_SIGFPE_value;
+	ZVAL_LONG(&enum_case_SIGFPE_value, 8);
+	zend_enum_add_case_cstr(class_entry, "SIGFPE", &enum_case_SIGFPE_value);
+
+	zval enum_case_SIGKILL_value;
+	ZVAL_LONG(&enum_case_SIGKILL_value, 9);
+	zend_enum_add_case_cstr(class_entry, "SIGKILL", &enum_case_SIGKILL_value);
+
+	zval enum_case_SIGUSR1_value;
+	ZVAL_LONG(&enum_case_SIGUSR1_value, 10);
+	zend_enum_add_case_cstr(class_entry, "SIGUSR1", &enum_case_SIGUSR1_value);
+
+	zval enum_case_SIGSEGV_value;
+	ZVAL_LONG(&enum_case_SIGSEGV_value, 11);
+	zend_enum_add_case_cstr(class_entry, "SIGSEGV", &enum_case_SIGSEGV_value);
+
+	zval enum_case_SIGUSR2_value;
+	ZVAL_LONG(&enum_case_SIGUSR2_value, 12);
+	zend_enum_add_case_cstr(class_entry, "SIGUSR2", &enum_case_SIGUSR2_value);
+
+	zval enum_case_SIGTERM_value;
+	ZVAL_LONG(&enum_case_SIGTERM_value, 15);
+	zend_enum_add_case_cstr(class_entry, "SIGTERM", &enum_case_SIGTERM_value);
+
+	zval enum_case_SIGBREAK_value;
+	ZVAL_LONG(&enum_case_SIGBREAK_value, 21);
+	zend_enum_add_case_cstr(class_entry, "SIGBREAK", &enum_case_SIGBREAK_value);
+
+	zval enum_case_SIGABRT2_value;
+	ZVAL_LONG(&enum_case_SIGABRT2_value, 22);
+	zend_enum_add_case_cstr(class_entry, "SIGABRT2", &enum_case_SIGABRT2_value);
+
+	zval enum_case_SIGWINCH_value;
+	ZVAL_LONG(&enum_case_SIGWINCH_value, 28);
+	zend_enum_add_case_cstr(class_entry, "SIGWINCH", &enum_case_SIGWINCH_value);
+
+	return class_entry;
+}
 
 static zend_class_entry *register_class_Async_CircuitBreakerState(void)
 {

@@ -41,6 +41,7 @@ extern zend_module_entry async_module_entry;
 PHP_ASYNC_API extern zend_class_entry *async_ce_awaitable;
 PHP_ASYNC_API extern zend_class_entry *async_ce_completable;
 PHP_ASYNC_API extern zend_class_entry *async_ce_timeout;
+PHP_ASYNC_API extern zend_class_entry *async_ce_signal;
 PHP_ASYNC_API extern zend_class_entry *async_ce_circuit_breaker_state;
 PHP_ASYNC_API extern zend_class_entry *async_ce_circuit_breaker;
 PHP_ASYNC_API extern zend_class_entry *async_ce_filesystem_event;

@@ -29,6 +29,25 @@
 #include <errno.h>
 #endif
 
+#ifdef ZEND_SIGNALS
+#include "Zend/zend_signal.h"
+
+/* Storage for original sigaction handlers (typically zend_signal_handler_defer)
+ * that were installed before libuv took over signal handling. These are restored
+ * when libuv releases the signal, so zend_signal_deactivate() sees the expected
+ * handler and does not emit a warning. */
+static struct sigaction async_saved_sigactions[NSIG];
+static bool async_signal_active[NSIG] = {false};
+
+static void libuv_restore_signal_handler(int signum)
+{
+	if (signum > 0 && signum < NSIG && async_signal_active[signum]) {
+		sigaction(signum, &async_saved_sigactions[signum], NULL);
+		async_signal_active[signum] = false;
+	}
+}
+#endif
+
 static void libuv_reactor_stop_with_exception(void);
 
 // Forward declarations for global signal management
@@ -898,6 +917,23 @@ static void libuv_signal_close_cb(uv_handle_t *handle)
 /* {{{ libuv_global_signal_callback */
 static void libuv_global_signal_callback(uv_signal_t *handle, int signum)
 {
+#ifdef ZEND_SIGNALS
+	/* Forward signal to the Zend handler chain (pcntl, timeout handler, etc.).
+	 * libuv replaced zend_signal_handler_defer with its own sigaction, so Zend
+	 * handlers stored in SIGG(handlers) would never be called otherwise.
+	 * We call them first because they only set flags / enqueue — no PHP
+	 * execution happens here. */
+	zend_signal_entry_t p_sig = SIGG(handlers)[signum - 1];
+
+	if (p_sig.handler != SIG_DFL && p_sig.handler != SIG_IGN) {
+		if (p_sig.flags & SA_SIGINFO) {
+			((void (*)(int, siginfo_t*, void*))p_sig.handler)(signum, NULL, NULL);
+		} else {
+			((void (*)(int))p_sig.handler)(signum);
+		}
+	}
+#endif
+
 	// Handle regular signal events for ALL signals (including SIGCHLD)
 	libuv_handle_signal_events(signum);
 
@@ -932,6 +968,15 @@ static uv_signal_t *libuv_get_or_create_signal_handler(int signum)
 		pefree(handler, 0);
 		return NULL;
 	}
+
+#ifdef ZEND_SIGNALS
+	/* Save the current sigaction (zend_signal_handler_defer) before libuv
+	 * overwrites it via uv_signal_start() → sigaction(). */
+	if (signum > 0 && signum < NSIG && !async_signal_active[signum]) {
+		sigaction(signum, NULL, &async_saved_sigactions[signum]);
+		async_signal_active[signum] = true;
+	}
+#endif
 
 	error = uv_signal_start(handler, libuv_global_signal_callback, signum);
 	if (UNEXPECTED(error < 0)) {
@@ -970,6 +1015,12 @@ static void libuv_add_signal_event(int signum, zend_async_event_t *event)
 	HashTable *events_list = zend_hash_index_find_ptr(ASYNC_G(signal_events), signum);
 	if (events_list == NULL) {
 		events_list = zend_new_array(0);
+
+		if (UNEXPECTED(zend_hash_index_add_ptr(ASYNC_G(signal_events), signum, events_list) == NULL)) {
+			async_throw_error("Failed to store signal event: %d", signum);
+			zend_array_destroy(events_list);
+			return;
+		}
 	}
 
 	// Add event to the list (use pointer address as key)
@@ -1010,6 +1061,9 @@ static void libuv_remove_signal_event(int signum, zend_async_event_t *event)
 			uv_signal_t *handler = zend_hash_index_find_ptr(ASYNC_G(signal_handlers), signum);
 			if (handler != NULL) {
 				uv_signal_stop(handler);
+#ifdef ZEND_SIGNALS
+				libuv_restore_signal_handler(signum);
+#endif
 				uv_close((uv_handle_t *) handler, libuv_signal_close_cb);
 				zend_hash_index_del(ASYNC_G(signal_handlers), signum);
 			}
@@ -1174,6 +1228,9 @@ static void libuv_cleanup_signal_handlers(void)
 		{
 			if (handler != NULL) {
 				uv_signal_stop(handler);
+#ifdef ZEND_SIGNALS
+				libuv_restore_signal_handler(handler->signum);
+#endif
 				uv_close((uv_handle_t *) handler, libuv_signal_close_cb);
 			}
 		}
