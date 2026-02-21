@@ -10,9 +10,6 @@ no callbacks, no promises, no framework required.
 
 - [Features](#features)
 - [Installation](#installation)
-    - [Unix / macOS](#unix--macos)
-    - [Windows](#windows)
-- [Quick Start](#quick-start)
 - [Documentation](#documentation)
 - [Contributing](#contributing)
 - [License](#license)
@@ -32,7 +29,8 @@ no callbacks, no promises, no framework required.
 - **[TaskGroup](https://true-async.github.io/en/docs/components/task-group.html)** — High-level structured concurrency with multiple completion strategies (`all` / `race` / `any`) and concurrency limits.
 - **[PDO Pool](https://true-async.github.io/en/docs/components/pdo-pool.html)** — Transparent built-in connection pool for PDO, with automatic transaction management and health checks.
 - **[FileSystemWatcher](https://true-async.github.io/en/docs/components/filesystem-watcher.html)** — Persistent filesystem event observer with coalesced and raw event delivery modes.
-- **[50+ async-aware PHP functions](https://true-async.github.io/en/docs/reference/supported-functions.html)** — DNS, sockets, streams, cURL, PDO, MySQLi, PostgreSQL, process execution, sleep/timers, and more — all automatically non-blocking inside coroutines.
+- **[70+ async-aware PHP functions](https://true-async.github.io/en/docs/reference/supported-functions.html)** — 
+  `DNS`, sockets, streams, `cURL`, `PDO`, `MySQLi`, `PostgreSQL`, process execution, sleep/timers, and more. All automatically non-blocking inside coroutines.
 
 ---
 
@@ -99,35 +97,6 @@ docker run --rm true-async-php php -m | grep true_async
 
 ---
 
-## Quick Start
-
-```php
-<?php
-
-// Spawn multiple concurrent coroutines
-Async\spawn(function() {
-    $ip = gethostbyname('github.com'); // non-blocking
-    echo "GitHub: $ip\n";
-});
-
-Async\spawn(function() {
-    sleep(1); // non-blocking — other coroutines continue
-    echo "Done after 1s\n";
-});
-
-// Structured concurrency with Scope
-$scope = new Async\Scope();
-
-$scope->spawn(function() use ($scope) {
-    $result = file_get_contents('https://example.com'); // non-blocking
-    echo strlen($result) . " bytes\n";
-});
-
-$scope->awaitCompletion();
-```
-
----
-
 ## Documentation
 
 - **[Documentation](https://true-async.github.io/)** — full reference and guides
@@ -140,6 +109,7 @@ $scope->awaitCompletion();
 
 Pull requests and suggestions are welcome!
 Please read [CONTRIBUTING.md](CONTRIBUTING.md) before starting.
+Also see: [Contributing](https://true-async.github.io/en/contributing.html)
 
 ---
 
