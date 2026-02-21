@@ -1,10 +1,11 @@
 --TEST--
-Scope onFinally multiple exceptions handling
+Coroutine finally multiple exceptions handling
 --FILE--
 <?php
 
-use Async\Scope;
+use function Async\spawn;
 use Async\CompositeException;
+use Async\Scope;
 
 $scope = new Scope();
 
@@ -27,22 +28,21 @@ $coro = $scope->spawn(function() {
 });
 
 // Add multiple finally handlers that will throw exceptions
-$scope->onFinally(function() {
+$coro->finally(function($coroutine) {
     throw new Exception("First exception");
 });
 
-$scope->onFinally(function() {
+$coro->finally(function($coroutine) {
     throw new RuntimeException("Second exception"); 
 });
 
-$scope->onFinally(function() {
+$coro->finally(function($coroutine) {
     throw new InvalidArgumentException("Third exception");
 });
 
-$scope->dispose();
-
 ?>
 --EXPECT--
+Caught single exception: Exception - Original exception
 Caught CompositeException
 Number of exceptions: 3
 Exception 1: Exception - First exception

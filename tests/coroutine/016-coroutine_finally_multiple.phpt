@@ -1,5 +1,5 @@
 --TEST--
-Coroutine: onFinally() - multiple handlers execution
+Coroutine: finally() - multiple handlers execution
 --FILE--
 <?php
 
@@ -13,12 +13,12 @@ $coroutine = spawn(function() {
     return "test";
 });
 
-$coroutine->onFinally(function() use (&$calls) {
+$coroutine->finally(function() use (&$calls) {
     $calls[] = "first";
     echo "First finally handler\n";
 });
 
-$coroutine->onFinally(function() use (&$calls) {
+$coroutine->finally(function() use (&$calls) {
     $calls[] = "second";
     echo "Second finally handler\n";
 });

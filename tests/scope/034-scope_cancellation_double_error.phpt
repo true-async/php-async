@@ -1,7 +1,7 @@
 --TEST--
 Scope cancellation with double-exception case in finally handlers execution
 --DESCRIPTION--
-This test triggers a double-exception case: first in the coroutine, and then in the onFinally handler.
+This test triggers a double-exception case: first in the coroutine, and then in the finally handler.
 --FILE--
 <?php
 
@@ -19,7 +19,7 @@ $coroutine_with_finally = $scope->spawn(function() {
     
     $coroutine = \Async\current_coroutine();
 
-    $coroutine->onFinally(function() {
+    $coroutine->finally(function() {
         echo "finally handler 3 executed\n";
         // This might throw during cancellation cleanup
         throw new \RuntimeException("Finally handler error");
@@ -45,7 +45,7 @@ echo "coroutines with finally handlers spawned\n";
 suspend();
 
 // Add scope-level finally handler
-$scope->onFinally(function() {
+$scope->finally(function() {
     echo "scope finally handler executed\n";
 });
 

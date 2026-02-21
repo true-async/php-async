@@ -12,7 +12,7 @@ $coroutine = spawn(function() {
 });
 
 // Add finally handler with callable
-$coroutine->onFinally(function() {
+$coroutine->finally(function() {
     echo "Finally executed\n";
 });
 

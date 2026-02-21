@@ -1,5 +1,5 @@
 --TEST--
-Scope: onFinally() - basic execution of finally handler
+Scope: finally() - basic execution of finally handler
 --FILE--
 <?php
 
@@ -15,7 +15,7 @@ $coroutine = $scope->spawn(function() {
 
 // You should understand that this handler will be invoked in a different coroutine,
 // so you cannot rely on the exact timing of when it will happen.
-$scope->onFinally(function() {
+$scope->finally(function() {
     echo "Finally handler executed\n";
 });
 

@@ -17,16 +17,16 @@ $coroutine_with_finally = $scope->spawn(function() {
     
     $coroutine = \Async\current_coroutine();
     
-    $coroutine->onFinally(function() {
+    $coroutine->finally(function() {
         echo "finally handler 1 executed\n";
     });
     
-    $coroutine->onFinally(function() {
+    $coroutine->finally(function() {
         echo "finally handler 2 executed\n";
         return "finally_cleanup";
     });
     
-    $coroutine->onFinally(function() {
+    $coroutine->finally(function() {
         echo "finally handler 3 executed\n";
         // This might throw during cancellation cleanup
         throw new \RuntimeException("Finally handler error");
@@ -44,7 +44,7 @@ $child_coroutine = $child_scope->spawn(function() {
     
     $coroutine = \Async\current_coroutine();
     
-    $coroutine->onFinally(function() {
+    $coroutine->finally(function() {
         echo "child finally handler executed\n";
     });
     
@@ -59,7 +59,7 @@ echo "coroutines with finally handlers spawned\n";
 suspend();
 
 // Add scope-level finally handler
-$scope->onFinally(function() {
+$scope->finally(function() {
     echo "scope finally handler executed\n";
 });
 

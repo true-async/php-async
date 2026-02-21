@@ -17,7 +17,7 @@ $circular_finally_coroutine = spawn(function() {
     $data = new \stdClass();
     $data->coroutine = $coroutine;
     
-    $coroutine->onFinally(function() use ($data) {
+    $coroutine->finally(function() use ($data) {
         echo "circular finally executed\n";
         $data->cleanup = "done";
         // $data holds reference to coroutine, creating cycle

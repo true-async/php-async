@@ -18,12 +18,12 @@ This directory contains tests for the Async\Scope functionality.
 - **012-scope_dispose_after_timeout.phpt**: Timeout-based disposal
 
 ### Finally Handlers
-- **013-scope_onFinally_execution.phpt**: Finally handlers execution testing
-- **014-scope_onFinally_completed.phpt**: Finally handlers on completed scopes  
-- **015-scope_onFinally_multiple.phpt**: Multiple finally handlers
-- **016-scope_onFinally_parameter.phpt**: Finally handlers with parameters
-- **017-scope_onFinally_error.phpt**: Error handling in finally handlers
-- **018-scope_onFinally_composite_exception.phpt**: CompositeException in finally handlers
+- **013-scope_finally_execution.phpt**: Finally handlers execution testing
+- **014-scope_finally_completed.phpt**: Finally handlers on completed scopes  
+- **015-scope_finally_multiple.phpt**: Multiple finally handlers
+- **016-scope_finally_parameter.phpt**: Finally handlers with parameters
+- **017-scope_finally_error.phpt**: Error handling in finally handlers
+- **018-scope_finally_composite_exception.phpt**: CompositeException in finally handlers
 
 ### Garbage Collection
 - **019-scope_gc_basic.phpt**: Basic GC handler functionality

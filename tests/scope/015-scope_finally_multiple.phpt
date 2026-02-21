@@ -1,5 +1,5 @@
 --TEST--
-Scope: onFinally() - multiple handlers execution
+Scope: finally() - multiple handlers execution
 --FILE--
 <?php
 
@@ -13,11 +13,11 @@ $coroutine = $scope->spawn(function() {
     echo "Spawned coroutine\n";
 });
 
-$scope->onFinally(function() {
+$scope->finally(function() {
     echo "First finally handler\n";
 });
 
-$scope->onFinally(function() {
+$scope->finally(function() {
     echo "Second finally handler\n";
 });
 

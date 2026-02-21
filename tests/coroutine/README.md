@@ -28,11 +28,11 @@ This directory contains tests for the Coroutine class methods implementation.
 - `012-coroutine_getContext.phpt` - Tests getContext() method
 
 ### Finally Handlers
-- `014-coroutine_onFinally_basic.phpt` - Tests onFinally() basic functionality
-- `015-coroutine_onFinally_finished.phpt` - Tests onFinally() on finished coroutines
-- `016-coroutine_onFinally_multiple.phpt` - Tests multiple finally handlers
-- `017-coroutine_onFinally_single_exception.phpt` - Tests finally handlers with exceptions
-- `018-coroutine_onFinally_multiple_exceptions.phpt` - Tests CompositeException handling
+- `014-coroutine_finally_basic.phpt` - Tests finally() basic functionality
+- `015-coroutine_finally_finished.phpt` - Tests finally() on finished coroutines
+- `016-coroutine_finally_multiple.phpt` - Tests multiple finally handlers
+- `017-coroutine_finally_single_exception.phpt` - Tests finally handlers with exceptions
+- `018-coroutine_finally_multiple_exceptions.phpt` - Tests CompositeException handling
 
 ### Garbage Collection
 - `019-coroutine_gc_basic.phpt` - Tests basic GC handler functionality
@@ -50,6 +50,6 @@ Some methods have TODO implementations and return placeholder values:
 - `asHiPriority()` - Returns same coroutine (needs scheduler priority implementation)
 
 The coroutine implementation now includes:
-- Complete `onFinally()` support with CompositeException handling
+- Complete `finally()` support with CompositeException handling
 - Full garbage collection support to prevent memory leaks
 - Context API integration for coroutine-local storage

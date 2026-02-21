@@ -51,7 +51,7 @@ ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_Coroutine_cancel, 0,
 	ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, cancellation, Async\\AsyncCancellation, 1, "null")
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_Coroutine_onFinally, 0, 1, IS_VOID, 0)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_Coroutine_finally, 0, 1, IS_VOID, 0)
 	ZEND_ARG_OBJ_INFO(0, callback, Closure, 0)
 ZEND_END_ARG_INFO()
 
@@ -74,7 +74,7 @@ ZEND_METHOD(Async_Coroutine, isCancellationRequested);
 ZEND_METHOD(Async_Coroutine, isCompleted);
 ZEND_METHOD(Async_Coroutine, getAwaitingInfo);
 ZEND_METHOD(Async_Coroutine, cancel);
-ZEND_METHOD(Async_Coroutine, onFinally);
+ZEND_METHOD(Async_Coroutine, finally);
 
 static const zend_function_entry class_Async_Coroutine_methods[] = {
 	ZEND_ME(Async_Coroutine, getId, arginfo_class_Async_Coroutine_getId, ZEND_ACC_PUBLIC)
@@ -96,7 +96,7 @@ static const zend_function_entry class_Async_Coroutine_methods[] = {
 	ZEND_ME(Async_Coroutine, isCompleted, arginfo_class_Async_Coroutine_isCompleted, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_Coroutine, getAwaitingInfo, arginfo_class_Async_Coroutine_getAwaitingInfo, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_Coroutine, cancel, arginfo_class_Async_Coroutine_cancel, ZEND_ACC_PUBLIC)
-	ZEND_ME(Async_Coroutine, onFinally, arginfo_class_Async_Coroutine_onFinally, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_Coroutine, finally, arginfo_class_Async_Coroutine_finally, ZEND_ACC_PUBLIC)
 	ZEND_FE_END
 };
 

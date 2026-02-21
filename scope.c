@@ -513,7 +513,7 @@ METHOD(setChildScopeExceptionHandler)
 	zend_copy_fci(scope->child_exception_fci, scope->child_exception_fcc, &fci, &fcc);
 }
 
-METHOD(onFinally)
+METHOD(finally)
 {
 	zval *callable;
 

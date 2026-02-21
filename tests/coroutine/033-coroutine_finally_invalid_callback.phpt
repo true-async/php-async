@@ -1,5 +1,5 @@
 --TEST--
-Coroutine onFinally with invalid callback parameters
+Coroutine finally with invalid callback parameters
 --FILE--
 <?php
 
@@ -16,7 +16,7 @@ $invalid_finally_coroutine = spawn(function() {
     
     // Test invalid callback types
     try {
-        $coroutine->onFinally("not_a_callable");
+        $coroutine->finally("not_a_callable");
         echo "should not accept string as callback\n";
     } catch (\TypeError $e) {
         echo "caught TypeError for string: " . $e->getMessage() . "\n";
@@ -25,7 +25,7 @@ $invalid_finally_coroutine = spawn(function() {
     }
     
     try {
-        $coroutine->onFinally(123);
+        $coroutine->finally(123);
         echo "should not accept integer as callback\n";
     } catch (\TypeError $e) {
         echo "caught TypeError for integer: " . $e->getMessage() . "\n";
@@ -34,7 +34,7 @@ $invalid_finally_coroutine = spawn(function() {
     }
     
     try {
-        $coroutine->onFinally(null);
+        $coroutine->finally(null);
         echo "should not accept null as callback\n";
     } catch (\TypeError $e) {
         echo "caught TypeError for null: " . $e->getMessage() . "\n";

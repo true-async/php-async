@@ -1,5 +1,5 @@
 --TEST--
-Coroutine onFinally single exception handling
+Coroutine finally single exception handling
 --FILE--
 <?php
 
@@ -18,7 +18,7 @@ $coro = $scope->spawn(function() {
 });
 
 // Add single finally handler that will throw exception
-$coro->onFinally(function($coroutine) {
+$coro->finally(function($coroutine) {
     throw new Exception("Single exception");
 });
 

@@ -115,5 +115,5 @@ final class Coroutine implements Completable
     /**
      * Define a callback to be executed when the coroutine is finished.
      */
-    public function onFinally(\Closure $callback): void {}
+    public function finally(\Closure $callback): void {}
 }

@@ -11,7 +11,7 @@ use function Async\suspend;
 $scope = new Scope();
 
 // Add finally handler with callable
-$scope->onFinally(function() {
+$scope->finally(function() {
     echo "Scope finally executed\n";
 });
 

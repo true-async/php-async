@@ -1,5 +1,5 @@
 --TEST--
-Memory exhaustion bailout with exception in onFinally handler
+Memory exhaustion bailout with exception in finally handler
 --SKIPIF--
 <?php
 $zend_mm_enabled = getenv("USE_ZEND_ALLOC");
@@ -36,7 +36,7 @@ $scope->setExceptionHandler(function($scope, $coroutine, $exception) {
     }
 });
 
-$scope->onFinally(function() {
+$scope->finally(function() {
     echo "Finally handler executed\n";
     throw new RuntimeException("Exception in finally handler");
 });

@@ -1,5 +1,5 @@
 --TEST--
-Memory exhaustion bailout with onFinally handlers
+Memory exhaustion bailout with finally handlers
 --SKIPIF--
 <?php
 $zend_mm_enabled = getenv("USE_ZEND_ALLOC");
@@ -23,11 +23,11 @@ echo "Before scope\n";
 
 $scope = new Scope();
 
-$scope->onFinally(function() {
+$scope->finally(function() {
     echo "Finally handler 1 executed\n";
 });
 
-$scope->onFinally(function() {
+$scope->finally(function() {
     echo "Finally handler 2 executed\n";
 });
 

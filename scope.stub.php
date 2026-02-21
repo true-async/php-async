@@ -76,7 +76,7 @@ final class Scope implements ScopeProvider
      */
     public function setChildScopeExceptionHandler(callable $exceptionHandler): void {}
 
-    public function onFinally(\Closure $callback): void {}
+    public function finally(\Closure $callback): void {}
 
     public function dispose(): void {}
 

@@ -30,17 +30,17 @@ $composite_coroutine = $scope->spawn(function() {
     $coroutine = \Async\current_coroutine();
     
     // Add multiple finally handlers that throw
-    $coroutine->onFinally(function() {
+    $coroutine->finally(function() {
         echo "finally 1 executing\n";
         throw new \RuntimeException("Finally 1 error");
     });
     
-    $coroutine->onFinally(function() {
+    $coroutine->finally(function() {
         echo "finally 2 executing\n";
         throw new \InvalidArgumentException("Finally 2 error");
     });
     
-    $coroutine->onFinally(function() {
+    $coroutine->finally(function() {
         echo "finally 3 executing\n";
         throw new \LogicException("Finally 3 error");
     });

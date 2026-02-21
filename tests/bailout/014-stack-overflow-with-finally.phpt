@@ -1,5 +1,5 @@
 --TEST--
-Stack overflow bailout with onFinally handlers
+Stack overflow bailout with finally handlers
 --INI--
 opcache.jit_hot_func=0
 --SKIPIF--
@@ -27,7 +27,7 @@ echo "Before scope\n";
 
 $scope = new Scope();
 
-$scope->onFinally(function() {
+$scope->finally(function() {
     echo "Finally handler executed\n";
 });
 

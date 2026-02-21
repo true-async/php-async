@@ -1,5 +1,5 @@
 --TEST--
-Scope onFinally single exception handling
+Scope finally single exception handling
 --FILE--
 <?php
 
@@ -16,7 +16,7 @@ $coro = $scope->spawn(function() {
 });
 
 // Add single finally handler that will throw exception
-$scope->onFinally(function() {
+$scope->finally(function() {
     throw new Exception("Single exception");
 });
 

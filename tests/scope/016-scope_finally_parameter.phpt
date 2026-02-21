@@ -1,5 +1,5 @@
 --TEST--
-Scope: onFinally() - finally handler receives scope parameter
+Scope: finally() - finally handler receives scope parameter
 --FILE--
 <?php
 
@@ -11,7 +11,7 @@ $coroutine = $scope->spawn(function() {
     return "test"; 
 });
 
-$scope->onFinally(function($receivedScope) use ($scope) {
+$scope->finally(function($receivedScope) use ($scope) {
     echo "Finally handler received scope: " . 
          ($receivedScope === $scope ? "correct" : "incorrect") . "\n";
 });

@@ -19,7 +19,7 @@ $coroutine = spawn(function() use ($test_data) {
 });
 
 // Add finally handler
-$coroutine->onFinally(function() {
+$coroutine->finally(function() {
     echo "Finally with data\n";
 });
 

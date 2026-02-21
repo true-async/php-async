@@ -1,5 +1,5 @@
 --TEST--
-Coroutine: onFinally() - call when coroutine is already finished
+Coroutine: finally() - call when coroutine is already finished
 --FILE--
 <?php
 
@@ -12,7 +12,7 @@ $coroutine = spawn(function() {
 
 echo 'Coroutine returned: '.await($coroutine)."\n";
 
-$coroutine->onFinally(function() {
+$coroutine->finally(function() {
     echo "Finally called\n";
 });
 

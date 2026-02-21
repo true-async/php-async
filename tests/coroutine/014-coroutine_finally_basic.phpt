@@ -1,5 +1,5 @@
 --TEST--
-Coroutine: onFinally() - basic usage with callback execution
+Coroutine: finally() - basic usage with callback execution
 --FILE--
 <?php
 
@@ -13,7 +13,7 @@ $coroutine = spawn(function() {
     return "test result";
 });
 
-$coroutine->onFinally(function() use (&$called) {
+$coroutine->finally(function() use (&$called) {
     $called = true;
     echo "Finally callback executed\n";
 });

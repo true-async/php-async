@@ -1,5 +1,5 @@
 --TEST--
-Scope: onFinally() - basic usage
+Scope: finally() - basic usage
 --FILE--
 <?php
 
@@ -7,7 +7,7 @@ use Async\Scope;
 
 $scope = new Scope();
 
-$scope->onFinally(function() {
+$scope->finally(function() {
     echo "Finally callback executed\n";
 });
 

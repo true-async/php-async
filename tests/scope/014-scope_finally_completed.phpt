@@ -1,5 +1,5 @@
 --TEST--
-Scope: onFinally() - call when scope is already completed
+Scope: finally() - call when scope is already completed
 --FILE--
 <?php
 
@@ -17,7 +17,7 @@ $scope->dispose();
 echo "Coroutine completed\n";
 
 // Add finally handler to completed scope - should execute immediately
-$scope->onFinally(function() {
+$scope->finally(function() {
     echo "Finally called on completed scope\n";
 });
 

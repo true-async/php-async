@@ -1175,7 +1175,7 @@ bool async_call_finally_handlers(HashTable *finally_handlers, finally_handlers_c
 	//
 	// We retain ownership of the Scope in order to be able to handle exceptions from the Finally handlers.
 	// example: finally_handlers_iterator_dtor
-	// If the onFinally handlers throw an exception, it will end up in the Scope,
+	// If the finally handlers throw an exception, it will end up in the Scope,
 	// so it's important that the Scope is not destroyed before that moment.
 	//
 	ZEND_ASYNC_EVENT_ADD_REF(&context->scope->event);
@@ -1240,7 +1240,7 @@ METHOD(getContext)
 }
 
 // Finally Handler Method
-METHOD(onFinally)
+METHOD(finally)
 {
 	zval *callable;
 
