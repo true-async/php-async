@@ -22,17 +22,17 @@ no callbacks, no promises, no framework required.
 
 ## Features
 
-- **Coroutines** — Lightweight execution units that automatically suspend on blocking I/O, allowing other coroutines to run concurrently.
-- **Scope** — Structured concurrency container ensuring all child coroutines are properly awaited or cancelled, with hierarchical cancellation support.
-- **Future** — Represents a value not yet available, with chaining via `map` / `catch` / `finally` and lazy evaluation through `await`.
-- **Channels** — CSP-style primitives for safe data transfer between coroutines, with buffered queues and backpressure.
-- **Context** — Hierarchical key-value storage propagated implicitly through scopes and coroutines, similar to Go's `context.Context`.
-- **Cancellation** — Cooperative cancellation with critical section support (`protect`) and cascading cancellation through scope hierarchies.
-- **Pool** — Universal resource pool for managing reusable objects (connections, sockets) with health checks and circuit breaker patterns.
-- **TaskGroup** — High-level structured concurrency with multiple completion strategies (`all` / `race` / `any`) and concurrency limits.
-- **PDO Pool** — Transparent built-in connection pool for PDO, with automatic transaction management and health checks.
-- **FileSystemWatcher** — Persistent filesystem event observer with coalesced and raw event delivery modes.
-- **50+ async-aware PHP functions** — DNS, sockets, streams, cURL, PDO, MySQLi, PostgreSQL, process execution, sleep/timers, and more — all automatically non-blocking inside coroutines.
+- **[Coroutines](https://true-async.github.io/en/docs/components/coroutines.html)** — Lightweight execution units that automatically suspend on blocking I/O, allowing other coroutines to run concurrently.
+- **[Scope](https://true-async.github.io/en/docs/components/scope.html)** — Structured concurrency container ensuring all child coroutines are properly awaited or cancelled, with hierarchical cancellation support.
+- **[Future](https://true-async.github.io/en/docs/components/future.html)** — Represents a value not yet available, with chaining via `map` / `catch` / `finally` and lazy evaluation through `await`.
+- **[Channels](https://true-async.github.io/en/docs/components/channels.html)** — CSP-style primitives for safe data transfer between coroutines, with buffered queues and backpressure.
+- **[Context](https://true-async.github.io/en/docs/components/context.html)** — Hierarchical key-value storage propagated implicitly through scopes and coroutines, similar to Go's `context.Context`.
+- **[Cancellation](https://true-async.github.io/en/docs/components/cancellation.html)** — Cooperative cancellation with critical section support (`protect`) and cascading cancellation through scope hierarchies.
+- **[Pool](https://true-async.github.io/en/docs/components/pool.html)** — Universal resource pool for managing reusable objects (connections, sockets) with health checks and circuit breaker patterns.
+- **[TaskGroup](https://true-async.github.io/en/docs/components/task-group.html)** — High-level structured concurrency with multiple completion strategies (`all` / `race` / `any`) and concurrency limits.
+- **[PDO Pool](https://true-async.github.io/en/docs/components/pdo-pool.html)** — Transparent built-in connection pool for PDO, with automatic transaction management and health checks.
+- **[FileSystemWatcher](https://true-async.github.io/en/docs/components/filesystem-watcher.html)** — Persistent filesystem event observer with coalesced and raw event delivery modes.
+- **[50+ async-aware PHP functions](https://true-async.github.io/en/docs/reference/supported-functions.html)** — DNS, sockets, streams, cURL, PDO, MySQLi, PostgreSQL, process execution, sleep/timers, and more — all automatically non-blocking inside coroutines.
 
 ---
 
