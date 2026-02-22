@@ -3996,7 +3996,5 @@ void async_libuv_reactor_register(void)
 			libuv_io_seek, libuv_udp_sendto, libuv_udp_recvfrom,
 			libuv_io_set_option, libuv_udp_set_membership);
 
-	zend_string *tp_module = zend_string_init(LIBUV_REACTOR_NAME, sizeof(LIBUV_REACTOR_NAME) - 1, 1);
-	zend_async_thread_pool_register(tp_module, false, libuv_queue_task);
-	zend_string_release(tp_module);
+	zend_async_thread_pool_register(LIBUV_REACTOR_NAME, false, libuv_queue_task);
 }
