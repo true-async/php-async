@@ -497,6 +497,16 @@ static bool pool_stop(zend_async_event_t *event)
 	return true;
 }
 
+static zend_string *pool_info(zend_async_event_t *event)
+{
+	const async_pool_t *pool = (async_pool_t *) event;
+
+	return zend_strpprintf(0, "Pool(idle=%u, active=%u, max=%u)",
+		circular_buffer_count(&pool->idle),
+		pool->active_count,
+		pool->base.max_size);
+}
+
 static void pool_event_init(async_pool_t *pool)
 {
 	zend_async_event_t *event = &pool->base.event;
@@ -508,6 +518,7 @@ static void pool_event_init(async_pool_t *pool)
 	event->start = pool_start;
 	event->stop = pool_stop;
 	event->dispose = pool_dispose;
+	event->info = pool_info;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

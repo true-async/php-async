@@ -517,6 +517,61 @@ zend_always_inline static void execute_queued_coroutines(void)
 /// DEADLOCK RESOLUTION AND ERROR HANDLING
 ///////////////////////////////////////////////////////////
 
+static void dump_deadlock_info(const zend_long real_coroutines)
+{
+	if (!ASYNC_G(debug_deadlock)) {
+		return;
+	}
+
+	php_printf("\n=== DEADLOCK DETECTED: " ZEND_LONG_FMT " coroutines in waiting, "
+		"active_events=%u ===\n\n",
+		real_coroutines, ZEND_ASYNC_G(active_event_count));
+
+	zval *value;
+	ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), value)
+	{
+		const async_coroutine_t *coroutine = (async_coroutine_t *) Z_PTR_P(value);
+		const zend_async_event_t *event = &coroutine->coroutine.event;
+
+		/* Print coroutine info */
+		if (event->info != NULL) {
+			zend_string *info = event->info((zend_async_event_t *) event);
+			php_printf("%s\n", ZSTR_VAL(info));
+			zend_string_release(info);
+		} else {
+			php_printf("Coroutine %d\n", coroutine->std.handle);
+		}
+
+		/* Print events the coroutine is waiting for */
+		const zend_async_waker_t *waker = coroutine->coroutine.waker;
+
+		if (waker == NULL || waker->events.nNumOfElements == 0) {
+			php_printf("  waiting for: <nothing>\n\n");
+			continue;
+		}
+
+		php_printf("  waiting for:\n");
+
+		zend_async_waker_trigger_t *trigger;
+		ZEND_HASH_FOREACH_PTR(&waker->events, trigger)
+		{
+			if (trigger->event != NULL && trigger->event->info != NULL) {
+				zend_string *event_info = trigger->event->info(trigger->event);
+				php_printf("    - %s\n", ZSTR_VAL(event_info));
+				zend_string_release(event_info);
+			} else {
+				php_printf("    - <unknown event>\n");
+			}
+		}
+		ZEND_HASH_FOREACH_END();
+
+		php_printf("\n");
+	}
+	ZEND_HASH_FOREACH_END();
+
+	php_printf("========================================\n\n");
+}
+
 static bool resolve_deadlocks(void)
 {
 	zval *value;
@@ -578,6 +633,8 @@ static bool resolve_deadlocks(void)
 		ZEND_ASYNC_SCHEDULER_CONTEXT = false;
 		return false;
 	}
+
+	dump_deadlock_info(real_coroutines);
 
 	// Create deadlock exception to be set as exit_exception
 	zend_object *deadlock_exception =
@@ -1190,7 +1247,8 @@ static zend_always_inline void scheduler_next_tick(void)
 	const bool is_next_coroutine = circular_buffer_is_not_empty(&ASYNC_G(coroutine_queue));
 
 	if (UNEXPECTED(false == has_handles && false == is_next_coroutine &&
-				   zend_hash_num_elements(&ASYNC_G(coroutines)) > 0 && circular_buffer_is_empty(&ASYNC_G(microtasks)) &&
+				   zend_hash_num_elements(&ASYNC_G(coroutines)) > 0 &&
+				   circular_buffer_is_empty(&ASYNC_G(microtasks)) &&
 				   resolve_deadlocks())) {
 		switch_to_scheduler(transfer);
 	}
@@ -1464,6 +1522,7 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 					next_coroutine->fiber_context = fiber_context;
 					FIBER_DEBUG("Execute coroutine %p in Fiber %p\n", next_coroutine, EG(current_fiber_context));
 					async_coroutine_execute(next_coroutine);
+					was_executed = true;
 				} else {
 					break;
 				}
@@ -1474,7 +1533,8 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 			if (UNEXPECTED(false == has_handles && false == was_executed &&
 						   zend_hash_num_elements(&ASYNC_G(coroutines)) > 0 &&
 						   circular_buffer_is_empty(coroutine_queue) &&
-						   circular_buffer_is_empty(&ASYNC_G(microtasks)) && resolve_deadlocks())) {
+						   circular_buffer_is_empty(&ASYNC_G(microtasks)) &&
+						   resolve_deadlocks())) {
 				break;
 			}
 

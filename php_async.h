@@ -118,6 +118,9 @@ circular_buffer_t *pid_queue;
 /* Reactor execution optimization */
 uint64_t last_reactor_tick;
 
+/* Debug: print coroutine wait info on deadlock detection */
+bool debug_deadlock;
+
 #ifdef PHP_WIN32
 #endif
 ZEND_END_MODULE_GLOBALS(async)

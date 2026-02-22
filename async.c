@@ -1401,6 +1401,9 @@ static PHP_GINIT_FUNCTION(async)
 	/* Initialize reactor execution optimization */
 	async_globals->last_reactor_tick = 0;
 
+	/* Debug deadlock diagnostics enabled by default */
+	async_globals->debug_deadlock = true;
+
 #ifdef PHP_WIN32
 	async_globals->watcherThread = NULL;
 	async_globals->ioCompletionPort = NULL;
@@ -1417,10 +1420,17 @@ static PHP_GSHUTDOWN_FUNCTION(async){
 #endif
 } /* }}} */
 
+/* INI entries */
+
+PHP_INI_BEGIN()
+	STD_PHP_INI_BOOLEAN("async.debug_deadlock", "1", PHP_INI_ALL, OnUpdateBool, debug_deadlock, zend_async_globals, async_globals)
+PHP_INI_END()
+
 /* Module registration */
 
 ZEND_MINIT_FUNCTION(async)
 {
+	REGISTER_INI_ENTRIES();
 	async_register_awaitable_ce();
 	async_register_timeout_ce();
 	async_register_scope_ce();
@@ -1445,8 +1455,7 @@ ZEND_MINIT_FUNCTION(async)
 
 ZEND_MSHUTDOWN_FUNCTION(async)
 {
-	// async_scheduler_shutdown();
-	// async_libuv_shutdown();
+	UNREGISTER_INI_ENTRIES();
 
 	return SUCCESS;
 }
@@ -1459,6 +1468,8 @@ PHP_MINFO_FUNCTION(async)
 	php_info_print_table_row(2, "Support", "Enabled");
 	php_info_print_table_row(2, "LibUv Reactor", "Enabled");
 	php_info_print_table_end();
+
+	DISPLAY_INI_ENTRIES();
 }
 
 PHP_RINIT_FUNCTION(async) /* {{{ */

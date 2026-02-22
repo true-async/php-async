@@ -303,6 +303,16 @@ static bool channel_stop(zend_async_event_t *event)
 	return true;
 }
 
+static zend_string *channel_info(zend_async_event_t *event)
+{
+	const async_channel_t *channel = (async_channel_t *) event;
+
+	return zend_strpprintf(0, "Channel(capacity=%d, receivers=%u, senders=%u)",
+		channel->capacity,
+		channel->waiting_receivers.length,
+		channel->waiting_senders.length);
+}
+
 static void channel_event_init(async_channel_t *channel)
 {
 	zend_async_event_t *event = &channel->channel.event;
@@ -315,6 +325,7 @@ static void channel_event_init(async_channel_t *channel)
 	event->start = channel_start;
 	event->stop = channel_stop;
 	event->dispose = channel_dispose;
+	event->info = channel_info;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

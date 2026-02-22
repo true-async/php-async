@@ -65,6 +65,132 @@ static void libuv_cleanup_signal_events(void);
 static void libuv_cleanup_process_events(void);
 static void uv_stat_to_zend_stat(const uv_stat_t *uv_statbuf, zend_stat_t *zend_statbuf);
 
+///////////////////////////////////////////////////////////
+/// Event info methods for deadlock diagnostics
+///////////////////////////////////////////////////////////
+
+static const char *io_type_name(const zend_async_io_type type)
+{
+	switch (type) {
+		case ZEND_ASYNC_IO_TYPE_PIPE: return "pipe";
+		case ZEND_ASYNC_IO_TYPE_FILE: return "file";
+		case ZEND_ASYNC_IO_TYPE_TCP:  return "tcp";
+		case ZEND_ASYNC_IO_TYPE_UDP:  return "udp";
+		case ZEND_ASYNC_IO_TYPE_TTY:  return "tty";
+		default: return "unknown";
+	}
+}
+
+static zend_string *libuv_poll_info(zend_async_event_t *event)
+{
+	const zend_async_poll_event_t *poll = (zend_async_poll_event_t *) event;
+
+	if (poll->is_socket) {
+		return zend_strpprintf(0, "Poll(socket=" ZEND_LONG_FMT ", events=%s%s)",
+			(zend_long) poll->socket,
+			(poll->events & ASYNC_READABLE) ? "r" : "",
+			(poll->events & ASYNC_WRITABLE) ? "w" : "");
+	}
+
+	return zend_strpprintf(0, "Poll(fd=" ZEND_LONG_FMT ", events=%s%s)",
+		(zend_long) poll->file,
+		(poll->events & ASYNC_READABLE) ? "r" : "",
+		(poll->events & ASYNC_WRITABLE) ? "w" : "");
+}
+
+static zend_string *libuv_poll_proxy_info(zend_async_event_t *event)
+{
+	const zend_async_poll_proxy_t *proxy = (zend_async_poll_proxy_t *) event;
+
+	return zend_strpprintf(0, "PollProxy(events=%s%s)",
+		(proxy->events & ASYNC_READABLE) ? "r" : "",
+		(proxy->events & ASYNC_WRITABLE) ? "w" : "");
+}
+
+static zend_string *libuv_timer_info(zend_async_event_t *event)
+{
+	const zend_async_timer_event_t *timer = (zend_async_timer_event_t *) event;
+
+	return zend_strpprintf(0, "Timer(timeout=%ums, %s)",
+		timer->timeout,
+		timer->is_periodic ? "periodic" : "once");
+}
+
+static zend_string *libuv_signal_info(zend_async_event_t *event)
+{
+	const zend_async_signal_event_t *signal = (zend_async_signal_event_t *) event;
+
+	return zend_strpprintf(0, "Signal(signum=%d)", signal->signal);
+}
+
+static zend_string *libuv_process_info(zend_async_event_t *event)
+{
+	const zend_async_process_event_t *proc = (zend_async_process_event_t *) event;
+
+	return zend_strpprintf(0, "Process(handle=%p)", (void *) proc->process);
+}
+
+static zend_string *libuv_filesystem_info(zend_async_event_t *event)
+{
+	const zend_async_filesystem_event_t *fs = (zend_async_filesystem_event_t *) event;
+
+	return zend_strpprintf(0, "FilesystemWatch(path=%s)",
+		fs->path ? ZSTR_VAL(fs->path) : "<null>");
+}
+
+static zend_string *libuv_dns_nameinfo_info(zend_async_event_t *event)
+{
+	return zend_string_init(ZEND_STRL("DNSNameInfo"), 0);
+}
+
+static zend_string *libuv_dns_addrinfo_info(zend_async_event_t *event)
+{
+	const zend_async_dns_addrinfo_t *addr = (zend_async_dns_addrinfo_t *) event;
+
+	return zend_strpprintf(0, "DNSAddrInfo(node=%s, service=%s)",
+		addr->node ? addr->node : "<null>",
+		addr->service ? addr->service : "<null>");
+}
+
+static zend_string *libuv_exec_info(zend_async_event_t *event)
+{
+	const zend_async_exec_event_t *exec = (zend_async_exec_event_t *) event;
+
+	return zend_strpprintf(0, "Exec(cmd=%.80s)", exec->cmd ? exec->cmd : "<null>");
+}
+
+static zend_string *libuv_trigger_info(zend_async_event_t *event)
+{
+	return zend_string_init(ZEND_STRL("Trigger"), 0);
+}
+
+static zend_string *libuv_io_info(zend_async_event_t *event)
+{
+	const async_io_t *aio = (async_io_t *) event;
+	const zend_async_io_t *io = &aio->base;
+
+	if (io->type == ZEND_ASYNC_IO_TYPE_TCP || io->type == ZEND_ASYNC_IO_TYPE_UDP) {
+		return zend_strpprintf(0, "IO(type=%s, socket=" ZEND_LONG_FMT ")",
+			io_type_name(io->type), (zend_long) io->descriptor.socket);
+	}
+
+	return zend_strpprintf(0, "IO(type=%s, fd=" ZEND_LONG_FMT ")",
+		io_type_name(io->type), (zend_long) io->descriptor.fd);
+}
+
+static zend_string *libuv_listen_info(zend_async_event_t *event)
+{
+	const zend_async_listen_event_t *listen = (zend_async_listen_event_t *) event;
+
+	return zend_strpprintf(0, "Listen(host=%s, port=%d)",
+		listen->host ? listen->host : "<null>", listen->port);
+}
+
+static zend_string *libuv_task_info(zend_async_event_t *event)
+{
+	return zend_string_init(ZEND_STRL("ThreadPoolTask"), 0);
+}
+
 #define UVLOOP (&ASYNC_G(uvloop))
 #define LIBUV_REACTOR ((zend_async_globals *) ASYNC_GLOBALS)
 #define LIBUV_REACTOR_VAR zend_async_globals *reactor = LIBUV_REACTOR;
@@ -625,6 +751,7 @@ libuv_new_poll_event(zend_file_descriptor_t fh, zend_socket_t socket, async_poll
 	poll->event.base.start = libuv_poll_start;
 	poll->event.base.stop = libuv_poll_stop;
 	poll->event.base.dispose = libuv_poll_dispose;
+	poll->event.base.info = libuv_poll_info;
 
 	return &poll->event;
 }
@@ -665,6 +792,7 @@ libuv_new_poll_proxy_event(zend_async_poll_event_t *poll_event, async_poll_event
 	proxy->base.start = libuv_poll_proxy_start;
 	proxy->base.stop = libuv_poll_proxy_stop;
 	proxy->base.dispose = libuv_poll_proxy_dispose;
+	proxy->base.info = libuv_poll_proxy_info;
 
 	return proxy;
 }
@@ -797,6 +925,7 @@ libuv_new_timer_event(const zend_ulong timeout, const zend_ulong nanoseconds, co
 	event->event.base.start = libuv_timer_start;
 	event->event.base.stop = libuv_timer_stop;
 	event->event.base.dispose = libuv_timer_dispose;
+	event->event.base.info = libuv_timer_info;
 
 	return &event->event;
 }
@@ -879,6 +1008,7 @@ zend_async_signal_event_t *libuv_new_signal_event(int signum, size_t extra_size)
 	signal->event.base.start = libuv_signal_start;
 	signal->event.base.stop = libuv_signal_stop;
 	signal->event.base.dispose = libuv_signal_dispose;
+	signal->event.base.info = libuv_signal_info;
 
 	return &signal->event;
 }
@@ -1682,6 +1812,7 @@ zend_async_process_event_t *libuv_new_process_event(zend_process_t process_handl
 	process_event->event.base.start = libuv_process_event_start;
 	process_event->event.base.stop = libuv_process_event_stop;
 	process_event->event.base.dispose = libuv_process_event_dispose;
+	process_event->event.base.info = libuv_process_info;
 
 	if (UNEXPECTED(zend_hash_index_add_ptr(ASYNC_G(process_events), pid_key, &process_event->event) == NULL)) {
 		async_throw_error("Failed to store process event");
@@ -1825,6 +1956,7 @@ static bool libuv_queue_task(zend_async_task_t *task)
 	event->start = libuv_task_start;
 	event->stop = libuv_task_stop;
 	event->dispose = libuv_task_dispose;
+	event->info = libuv_task_info;
 
 	/* Allocate the libuv work wrapper */
 	libuv_work_wrapper_t *wrapper = pecalloc(1, sizeof(libuv_work_wrapper_t), 0);
@@ -1995,6 +2127,7 @@ libuv_new_filesystem_event(zend_string *path, const unsigned int flags, size_t e
 	fs_event->event.base.start = libuv_filesystem_start;
 	fs_event->event.base.stop = libuv_filesystem_stop;
 	fs_event->event.base.dispose = libuv_filesystem_dispose;
+	fs_event->event.base.info = libuv_filesystem_info;
 
 	return &fs_event->event;
 }
@@ -2129,6 +2262,7 @@ static zend_async_dns_nameinfo_t *libuv_getnameinfo(const struct sockaddr *addr,
 	name_info->event.base.start = libuv_dns_nameinfo_start;
 	name_info->event.base.stop = libuv_dns_nameinfo_stop;
 	name_info->event.base.dispose = libuv_dns_nameinfo_dispose;
+	name_info->event.base.info = libuv_dns_nameinfo_info;
 
 	return &name_info->event;
 }
@@ -2238,6 +2372,7 @@ libuv_getaddrinfo(const char *node, const char *service, const struct addrinfo *
 	addr_info->event.base.start = libuv_dns_getaddrinfo_start;
 	addr_info->event.base.stop = libuv_dns_getaddrinfo_stop;
 	addr_info->event.base.dispose = libuv_dns_getaddrinfo_dispose;
+	addr_info->event.base.info = libuv_dns_addrinfo_info;
 
 	return &addr_info->event;
 }
@@ -2597,6 +2732,7 @@ static zend_async_exec_event_t *libuv_new_exec_event(zend_async_exec_mode exec_m
 	exec->event.base.start = libuv_exec_start;
 	exec->event.base.stop = libuv_exec_stop;
 	exec->event.base.dispose = libuv_exec_dispose;
+	exec->event.base.info = libuv_exec_info;
 
 	return &exec->event;
 }
@@ -2770,6 +2906,7 @@ zend_async_trigger_event_t *libuv_new_trigger_event(size_t extra_size)
 	trigger->event.base.start = libuv_trigger_event_start;
 	trigger->event.base.stop = libuv_trigger_event_stop;
 	trigger->event.base.dispose = libuv_trigger_event_dispose;
+	trigger->event.base.info = libuv_trigger_info;
 
 	// Set the trigger method
 	trigger->event.trigger = libuv_trigger_event_trigger;
@@ -3062,6 +3199,7 @@ static zend_async_io_t *libuv_io_create(
 	io->base.event.start = libuv_io_event_start;
 	io->base.event.stop = libuv_io_event_stop;
 	io->base.event.dispose = libuv_io_event_dispose;
+	io->base.event.info = libuv_io_info;
 
 	if (type == ZEND_ASYNC_IO_TYPE_PIPE) {
 		int error = uv_pipe_init(UVLOOP, &io->handle.pipe, 0);
@@ -3750,6 +3888,7 @@ zend_async_listen_event_t *libuv_socket_listen(const char *host, int port, int b
 	listen_event->event.base.start = libuv_listen_start;
 	listen_event->event.base.stop = libuv_listen_stop;
 	listen_event->event.base.dispose = libuv_listen_dispose;
+	listen_event->event.base.info = libuv_listen_info;
 	listen_event->event.get_local_address = libuv_listen_get_local_address;
 
 	return &listen_event->event;
