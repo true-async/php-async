@@ -1459,9 +1459,8 @@ static void libuv_stop_process_watcher(void)
 	CloseHandle(reactor->ioCompletionPort);
 	reactor->ioCompletionPort = NULL;
 
-	// Stop circular buffer
+	// Stop circular buffer (circular_buffer_destroy frees the struct itself)
 	circular_buffer_destroy(reactor->pid_queue);
-	efree(reactor->pid_queue);
 	reactor->pid_queue = NULL;
 }
 
