@@ -97,6 +97,14 @@ docker run --rm true-async-php php -m | grep true_async
 
 ---
 
+## IDE Support
+
+PhpStorm stubs for autocompletion and inline docs are available in [`ide-stubs/`](ide-stubs/).
+
+**Settings → PHP → Include Path** → `+` → select the `ide-stubs/` folder.
+
+---
+
 ## Documentation
 
 - **[Documentation](https://true-async.github.io/)** — full reference and guides
