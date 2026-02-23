@@ -939,12 +939,13 @@ static bool coroutine_replay(zend_async_event_t *event,
 
 static zend_string *coroutine_info(zend_async_event_t *event)
 {
-	async_coroutine_t *coroutine = (async_coroutine_t *) event;
+	const async_coroutine_t *coroutine = (async_coroutine_t *) event;
 
 	zend_string *zend_coroutine_name = zend_coroutine_callable_name(&coroutine->coroutine);
+	zend_string *result;
 
 	if (ZEND_COROUTINE_SUSPENDED(&coroutine->coroutine)) {
-		return zend_strpprintf(0,
+		result = zend_strpprintf(0,
 							   "Coroutine %d spawned at %s:%d, suspended at %s:%d (%s)",
 							   coroutine->std.handle,
 							   coroutine->coroutine.filename ? ZSTR_VAL(coroutine->coroutine.filename) : "",
@@ -953,13 +954,16 @@ static zend_string *coroutine_info(zend_async_event_t *event)
 							   coroutine->waker.lineno,
 							   ZSTR_VAL(zend_coroutine_name));
 	} else {
-		return zend_strpprintf(0,
+		result = zend_strpprintf(0,
 							   "Coroutine %d spawned at %s:%d (%s)",
 							   coroutine->std.handle,
 							   coroutine->coroutine.filename ? ZSTR_VAL(coroutine->coroutine.filename) : "",
 							   coroutine->coroutine.lineno,
 							   ZSTR_VAL(zend_coroutine_name));
 	}
+
+	zend_string_release(zend_coroutine_name);
+	return result;
 }
 
 static bool coroutine_dispose(zend_async_event_t *event)
