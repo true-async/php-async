@@ -52,6 +52,19 @@
 		} \
 	}
 
+/* If the cancellation token is a Future: mark it as used, and if it is already
+ * resolved with an exception – throw that exception immediately. */
+#define CANCELLATION_TOKEN_PREPARE(ct) \
+	if ((ct) != NULL && instanceof_function((ct)->ce, async_ce_future)) { \
+		zend_future_t *_future = (zend_future_t *) ZEND_ASYNC_OBJECT_TO_EVENT(ct); \
+		ZEND_FUTURE_SET_USED(_future); \
+		if (ZEND_FUTURE_IS_COMPLETED(_future) && _future->exception != NULL) { \
+			GC_ADDREF(_future->exception); \
+			zend_throw_exception_object(_future->exception); \
+			RETURN_THROWS(); \
+		} \
+	}
+
 zend_class_entry *async_ce_channel = NULL;
 zend_class_entry *async_ce_channel_exception = NULL;
 static zend_object_handlers async_channel_handlers;
@@ -566,6 +579,7 @@ METHOD(send)
 	ZEND_PARSE_PARAMETERS_END();
 
 	ENSURE_COROUTINE_CONTEXT
+	CANCELLATION_TOKEN_PREPARE(cancellation_token)
 
 	async_channel_t *channel = THIS_CHANNEL;
 
@@ -639,6 +653,7 @@ METHOD(recv)
 	ZEND_PARSE_PARAMETERS_END();
 
 	ENSURE_COROUTINE_CONTEXT
+	CANCELLATION_TOKEN_PREPARE(cancellation_token)
 
 	async_channel_t *channel = THIS_CHANNEL;
 
