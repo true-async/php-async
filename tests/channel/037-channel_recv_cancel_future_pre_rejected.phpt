@@ -12,7 +12,6 @@ use function Async\await;
 $ch = new Channel(0);
 
 $state = new FutureState();
-$state->ignore();
 $state->error(new \RuntimeException("Already cancelled"));
 $cancel = new Future($state);
 
