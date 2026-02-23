@@ -1,5 +1,7 @@
 --TEST--
 Deadlock - Deadlock is an operation after coroutines are cancelled, when they are already zombies.
+--INI--
+async.debug_deadlock=0
 --FILE--
 <?php
 

@@ -1,5 +1,7 @@
 --TEST--
 Deadlock basic test
+--INI--
+async.debug_deadlock=0
 --FILE--
 <?php
 

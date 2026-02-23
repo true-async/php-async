@@ -1,5 +1,7 @@
 --TEST--
 Deadlock occurs when a coroutine continues execution after being cancelled.
+--INI--
+async.debug_deadlock=0
 --FILE--
 <?php
 

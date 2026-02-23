@@ -1,5 +1,7 @@
 --TEST--
 Deadlock - The coroutine not only continues execution but also performs a suspend.
+--INI--
+async.debug_deadlock=0
 --FILE--
 <?php
 
