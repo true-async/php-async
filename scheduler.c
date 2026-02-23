@@ -1101,7 +1101,9 @@ bool async_scheduler_main_coroutine_suspend(void)
 	// that was raised somewhere in other coroutines.
 	//
 	if (EG(exception) != NULL && exit_exception != NULL) {
-		zend_exception_set_previous(EG(exception), exit_exception);
+		if (UNEXPECTED(EG(exception) != exit_exception)) {
+			zend_exception_set_previous(EG(exception), exit_exception);
+		}
 	} else if (exit_exception != NULL) {
 		async_rethrow_exception(exit_exception);
 	}
@@ -1521,8 +1523,8 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 
 					next_coroutine->fiber_context = fiber_context;
 					FIBER_DEBUG("Execute coroutine %p in Fiber %p\n", next_coroutine, EG(current_fiber_context));
-					async_coroutine_execute(next_coroutine);
 					was_executed = true;
+					async_coroutine_execute(next_coroutine);
 				} else {
 					break;
 				}
@@ -1574,13 +1576,16 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 	async_scheduler_dtor();
 
 	if (EG(exception) != NULL && exit_exception != NULL) {
-		zend_exception_set_previous(EG(exception), exit_exception);
+		if (UNEXPECTED(EG(exception) != exit_exception)) {
+			zend_exception_set_previous(EG(exception), exit_exception);
+		}
 		exit_exception = EG(exception);
 		GC_ADDREF(exit_exception);
 		zend_clear_exception();
+	} else if (exit_exception != NULL) {
+		async_rethrow_exception(exit_exception);
 	}
 
-	// Here we are guaranteed to exit the coroutine without exceptions.
 	return_to_main(transfer);
 
 	// Free VM stack

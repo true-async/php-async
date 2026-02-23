@@ -125,6 +125,11 @@ zend_object *zend_exception_merge(zend_object *exception, bool to_previous, bool
 		return exception;
 	}
 
+	if (exception == *exception_ptr) {
+		*exception_ptr = NULL;
+		return exception;
+	}
+
 	if (to_previous) {
 		// The zend_exception_set_previous method requires ownership of the object to be transferred to it,
 		// so if ownership was not passed, we must increment the reference count by 1.

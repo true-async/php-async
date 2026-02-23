@@ -1209,6 +1209,7 @@ FUTURE_METHOD(await)
     ZEND_ASYNC_SUSPEND();
 
     if (UNEXPECTED(EG(exception) != NULL)) {
+    	zend_async_waker_destroy(coroutine);
         RETURN_THROWS();
     }
 

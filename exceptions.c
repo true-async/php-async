@@ -388,7 +388,7 @@ void async_apply_exception_to_context(zend_object *exception)
 		return;
 	}
 
-	zend_exception_set_previous(exception, EG(exception));
+	zend_exception_set_previous(exception, previous);
 
 	EG(exception) = exception;
 

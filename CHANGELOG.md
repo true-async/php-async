@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.6.0]
 
+### Fixed
+- **Use-after-free in `zend_exception_set_previous` calls**: When `exception == add_previous` (same object), `zend_exception_set_previous` calls `OBJ_RELEASE` which frees the object while other pointers (e.g. `EG(exception)`) still reference it. Added identity checks before all `zend_exception_set_previous` calls where the two arguments could alias the same object. Affected files: `scheduler.c`, `exceptions.c`, `zend_common.c`, `future.c`.
+- **Memory leak of `Async\DeadlockError` in scheduler fiber exit path**: In `fiber_entry`, when the scheduler fiber finalized, `exit_exception` from `ZEND_ASYNC_EXIT_EXCEPTION` was not propagated when `EG(exception) == NULL` — the exception was silently lost. Added `async_rethrow_exception(exit_exception)` for this case.
+
 ### Changed
 - **Breaking Change: `onFinally()` renamed to `finally()`** on both `Async\Coroutine` and `Async\Scope` classes,
   aligning with the Promise/A+ convention (`.then()`, `.catch()`, `.finally()`).
