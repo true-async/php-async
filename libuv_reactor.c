@@ -127,7 +127,7 @@ static zend_string *libuv_process_info(zend_async_event_t *event)
 {
 	const zend_async_process_event_t *proc = (zend_async_process_event_t *) event;
 
-	return zend_strpprintf(0, "Process(handle=%p)", (void *) proc->process);
+	return zend_strpprintf(0, "Process(pid=" ZEND_LONG_FMT ")", (zend_long) proc->process);
 }
 
 static zend_string *libuv_filesystem_info(zend_async_event_t *event)

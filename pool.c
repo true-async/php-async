@@ -501,7 +501,7 @@ static zend_string *pool_info(zend_async_event_t *event)
 {
 	const async_pool_t *pool = (async_pool_t *) event;
 
-	return zend_strpprintf(0, "Pool(idle=%u, active=%u, max=%u)",
+	return zend_strpprintf(0, "Pool(idle=%zu, active=%u, max=%u)",
 		circular_buffer_count(&pool->idle),
 		pool->active_count,
 		pool->base.max_size);
