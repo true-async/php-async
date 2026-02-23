@@ -16,6 +16,7 @@
 
 #include "task_group.h"
 #include "task_group_arginfo.h"
+#include "task_set_arginfo.h"
 #include "exceptions.h"
 #include "zend_exceptions.h"
 #include "zend_interfaces.h"
@@ -190,7 +191,9 @@ static void task_group_waiter_event_remove(const task_group_waiter_event_t *wait
 #define THIS_GROUP() ASYNC_TASK_GROUP_FROM_OBJ(Z_OBJ_P(ZEND_THIS))
 
 zend_class_entry *async_ce_task_group = NULL;
+zend_class_entry *async_ce_task_set = NULL;
 static zend_object_handlers task_group_handlers;
+static zend_object_handlers task_set_handlers;
 
 /* Forward declarations */
 static void task_group_try_complete(async_task_group_t *group);
@@ -361,7 +364,8 @@ static zend_string *task_group_info(zend_async_event_t *event)
 {
 	const async_task_group_t *group = ASYNC_TASK_GROUP_FROM_EVENT(event);
 	const uint32_t total = zend_hash_num_elements(&group->tasks);
-	return zend_strpprintf(0, "TaskGroup(total=%u, active=%d)", total, group->active_coroutines);
+	const char *name = ASYNC_TASK_GROUP_IS_TASK_SET(group) ? "TaskSet" : "TaskGroup";
+	return zend_strpprintf(0, "%s(total=%u, active=%d)", name, total, group->active_coroutines);
 }
 
 static void task_group_event_init(async_task_group_t *group)
@@ -547,23 +551,49 @@ static void task_group_finally_handlers_dtor(finally_handlers_context_t *context
 	}
 }
 
-static void task_group_try_complete(async_task_group_t *group)
+/* TaskSet: remove a delivered entry by key zval (IS_STRING or IS_LONG). */
+static zend_always_inline void task_set_remove_entry_by_zval(
+	async_task_group_t *group, const zval *key)
 {
-	if (!ASYNC_TASK_GROUP_IS_SEALED(group)) {
+	if (!ASYNC_TASK_GROUP_IS_TASK_SET(group)) {
 		return;
 	}
+	if (Z_TYPE_P(key) == IS_STRING) {
+		zend_hash_del(&group->tasks, Z_STR_P(key));
+	} else {
+		zend_hash_index_del(&group->tasks, Z_LVAL_P(key));
+	}
+}
 
+/* TaskSet: remove a delivered entry by hash key (for FOREACH_KEY_VAL loops). */
+static zend_always_inline void task_set_remove_entry(
+	async_task_group_t *group, zend_string *str_key, const zend_ulong num_key)
+{
+	if (!ASYNC_TASK_GROUP_IS_TASK_SET(group)) {
+		return;
+	}
+	if (str_key != NULL) {
+		zend_hash_del(&group->tasks, str_key);
+	} else {
+		zend_hash_index_del(&group->tasks, num_key);
+	}
+}
+
+/* TaskSet: remove all entries after bulk delivery (joinAll). */
+static zend_always_inline void task_set_remove_all_entries(async_task_group_t *group)
+{
+	if (ASYNC_TASK_GROUP_IS_TASK_SET(group)) {
+		zend_hash_clean(&group->tasks);
+	}
+}
+
+static void task_group_try_complete(async_task_group_t *group)
+{
 	if (group->active_coroutines > 0 || task_group_has_pending(group)) {
 		return;
 	}
 
-	if (ASYNC_TASK_GROUP_IS_COMPLETED(group)) {
-		return;
-	}
-
-	ASYNC_TASK_GROUP_SET_COMPLETED(group);
-
-	/* Resolve remaining future waiters at terminal state.
+	/* Resolve future waiters when all tasks are settled.
 	 * Use index-based iteration — resolve/remove may shift the vector. */
 	const bool has_errors = task_group_has_errors(group);
 	uint32_t i = 0;
@@ -585,6 +615,7 @@ static void task_group_try_complete(async_task_group_t *group)
 					ZEND_FUTURE_COMPLETE(&waiter->future, &results_zv);
 					zval_ptr_dtor(&results_zv);
 				}
+				task_set_remove_all_entries(group);
 				task_group_waiter_event_remove(waiter);
 				break;
 
@@ -594,6 +625,7 @@ static void task_group_try_complete(async_task_group_t *group)
 				ZVAL_ARR(&results_zv, results);
 				ZEND_FUTURE_COMPLETE(&waiter->future, &results_zv);
 				zval_ptr_dtor(&results_zv);
+				task_set_remove_all_entries(group);
 				task_group_waiter_event_remove(waiter);
 				continue;
 			}
@@ -618,6 +650,10 @@ static void task_group_try_complete(async_task_group_t *group)
 		}
 
 		i++;
+	}
+
+	if (ASYNC_TASK_GROUP_IS_SEALED(group)) {
+		ASYNC_TASK_GROUP_SET_COMPLETED(group);
 	}
 
 	/* Notify all/await waiters — group is fully settled */
@@ -811,6 +847,7 @@ done:
 					ZEND_FUTURE_REJECT(&waiter->future, exception);
 					//ZEND_FUTURE_SET_EXCEPTION_CAUGHT(&waiter->future);
 				}
+				task_set_remove_entry_by_zval(group, &group_callback->key);
 				task_group_waiter_event_remove(waiter);
 				continue; /* don't increment — remove shifted vector */
 
@@ -834,8 +871,6 @@ done:
 				ZEND_ASYNC_CALLBACKS_NOTIFY(&waiter->event, result, NULL);
 				continue;
 		}
-
-		group->waiter_notify_index++;
 	}
 
 	/* Check terminal state */
@@ -1010,6 +1045,10 @@ retry:
 			}
 			task_group_iterator_set_current(iterator, &key_zv, zv, NULL);
 			zval_ptr_dtor(&key_zv);
+			if (ASYNC_TASK_GROUP_IS_TASK_SET(group)) {
+				task_set_remove_entry(group, str_key, num_key);
+				iterator->position--;
+			}
 			iterator->valid = true;
 			return;
 		}
@@ -1024,6 +1063,10 @@ retry:
 			}
 			task_group_iterator_set_current(iterator, &key_zv, NULL, entry->exception);
 			zval_ptr_dtor(&key_zv);
+			if (ASYNC_TASK_GROUP_IS_TASK_SET(group)) {
+				task_set_remove_entry(group, str_key, num_key);
+				iterator->position--;
+			}
 			iterator->valid = true;
 			return;
 		}
@@ -1336,6 +1379,8 @@ METHOD(all)
 			ZEND_FUTURE_COMPLETE(&waiter->future, &results_zv);
 			zval_ptr_dtor(&results_zv);
 		}
+
+		task_set_remove_all_entries(group);
 	}
 
 	RETURN_OBJ(ZEND_ASYNC_NEW_FUTURE_OBJ(&waiter->future));
@@ -1357,15 +1402,20 @@ METHOD(race)
 
 	/* Check already settled (first in spawn order) — resolve immediately */
 	zval *zv;
-	ZEND_HASH_FOREACH_VAL(&group->tasks, zv) {
+	zend_string *str_key;
+	zend_ulong num_key;
+
+	ZEND_HASH_FOREACH_KEY_VAL(&group->tasks, num_key, str_key, zv) {
 		if (task_is_completed(zv)) {
 			ZEND_FUTURE_COMPLETE(&waiter->future, zv);
+			task_set_remove_entry(group, str_key, num_key);
 			goto return_future;
 		}
 		if (task_is_error(zv)) {
 			const task_entry_t *entry = (task_entry_t *)Z_PTR_P(zv);
 			ZEND_FUTURE_REJECT(&waiter->future, entry->exception);
 			//ZEND_FUTURE_SET_EXCEPTION_CAUGHT(&waiter->future);
+			task_set_remove_entry(group, str_key, num_key);
 			goto return_future;
 		}
 	} ZEND_HASH_FOREACH_END();
@@ -1390,9 +1440,13 @@ METHOD(any)
 
 	/* Check for first success — resolve immediately */
 	zval *zv;
-	ZEND_HASH_FOREACH_VAL(&group->tasks, zv) {
+	zend_string *str_key;
+	zend_ulong num_key;
+
+	ZEND_HASH_FOREACH_KEY_VAL(&group->tasks, num_key, str_key, zv) {
 		if (task_is_completed(zv)) {
 			ZEND_FUTURE_COMPLETE(&waiter->future, zv);
+			task_set_remove_entry(group, str_key, num_key);
 			goto return_future;
 		}
 	} ZEND_HASH_FOREACH_END();
@@ -1646,4 +1700,30 @@ void async_register_task_group_ce(void)
 	task_group_handlers.dtor_obj = task_group_dtor_object;
 	task_group_handlers.free_obj = task_group_free_object;
 	task_group_handlers.clone_obj = NULL;
+}
+
+///////////////////////////////////////////////////////////
+/// TaskSet registration (shares TaskGroup internals)
+///////////////////////////////////////////////////////////
+
+static zend_object *task_set_create_object(zend_class_entry *ce)
+{
+	zend_object *obj = task_group_create_object(ce);
+	async_task_group_t *group = ASYNC_TASK_GROUP_FROM_OBJ(obj);
+	ASYNC_TASK_GROUP_SET_TASK_SET(group);
+	return obj;
+}
+
+void async_register_task_set_ce(void)
+{
+	async_ce_task_set = register_class_Async_TaskSet(
+		async_ce_awaitable,
+		zend_ce_countable,
+		zend_ce_aggregate
+	);
+
+	async_ce_task_set->create_object = task_set_create_object;
+	async_ce_task_set->get_iterator = task_group_get_iterator;
+
+	memcpy(&task_set_handlers, &task_group_handlers, sizeof(zend_object_handlers));
 }

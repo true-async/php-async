@@ -7,27 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.6.0]
 
-### Fixed
-- **Use-after-free in `zend_exception_set_previous` calls**: When `exception == add_previous` (same object), `zend_exception_set_previous` calls `OBJ_RELEASE` which frees the object while other pointers (e.g. `EG(exception)`) still reference it. Added identity checks before all `zend_exception_set_previous` calls where the two arguments could alias the same object. Affected files: `scheduler.c`, `exceptions.c`, `zend_common.c`, `future.c`.
-- **Memory leak of `Async\DeadlockError` in scheduler fiber exit path**: In `fiber_entry`, when the scheduler fiber finalized, `exit_exception` from `ZEND_ASYNC_EXIT_EXCEPTION` was not propagated when `EG(exception) == NULL` — the exception was silently lost. Added `async_rethrow_exception(exit_exception)` for this case.
-
-### Changed
-- **Breaking Change: `onFinally()` renamed to `finally()`** on both `Async\Coroutine` and `Async\Scope` classes,
-  aligning with the Promise/A+ convention (`.then()`, `.catch()`, `.finally()`).
-  - **Migration**: Replace `->onFinally(function() { ... })` with `->finally(function() { ... })`.
-- **Breaking Change: `Async\CancellationError` renamed to `Async\AsyncCancellation`** and now extends `\Cancellation` instead of `\Error`.
-  `\Cancellation` is a new PHP core root class implementing `\Throwable` (alongside `\Exception` and `\Error`), added per the [True Async RFC](https://wiki.php.net/rfc/true_async).
-  This prevents cancellation exceptions from being accidentally caught by `catch(\Exception)` or `catch(\Error)` blocks.
-  - **Migration**: Replace `catch(Async\CancellationError $e)` with `catch(Async\AsyncCancellation $e)` or `catch(\Cancellation $e)` for broader matching.
-
-### Fixed
-- **stream_select() ignoring PHP-buffered data in async context**: When `fgets()`/`fread()` pulled more data into PHP's internal stream buffer than returned, a subsequent `stream_select()` would not detect the buffered data because the async path (libuv poll) only checks OS-level file descriptors. This caused hangs in `run-tests.php -j` parallel workers on macOS where TCP delivered multiple messages in a single segment. Fixed by checking `stream_array_emulate_read_fd_set()` before entering the async poll path.
-- **Waker events not cleaned when coroutine is resumed outside scheduler context**: When a coroutine was resumed directly (not from the scheduler), its waker events were not automatically cleaned up, which could lead to stale event references. Now `ZEND_ASYNC_WAKER_CLEAN_EVENTS` is called on resume outside the scheduler.
-- **False deadlock detection after coroutine execution**: The `has_handles` flag from `ZEND_ASYNC_REACTOR_EXECUTE` was evaluated before coroutines ran but checked after, causing false deadlock when coroutines created new I/O handles between those points. Added `ZEND_ASYNC_REACTOR_LOOP_ALIVE()` check to deadlock conditions for accurate state at decision time.
-
 ### Added
-- **Deadlock diagnostics** (`async.debug_deadlock` INI option): When enabled (default: on), prints detailed diagnostic info on deadlock detection — coroutine list with spawn/suspend locations and the events each coroutine is waiting for. All event types now implement `info` method for human-readable descriptions.
 - **TaskGroup** (`Async\TaskGroup`): Task pool with queue, concurrency control, and structured completion via `all()`, `race()`, `any()`, `awaitCompletion()`, `cancel()`, `seal()`, `finally()`, and `foreach` iteration
+- **TaskSet** (`Async\TaskSet`): Mutable task collection with automatic cleanup semantics. Completed entries are removed after results are consumed. Provides `joinNext()`, `joinAny()`, `joinAll()` methods (replacing `race()`/`any()`/`all()` with join semantics), plus `foreach` iteration with per-entry cleanup.
+- **Deadlock diagnostics** (`async.debug_deadlock` INI option): When enabled (default: on), prints detailed diagnostic info on deadlock detection — coroutine list with spawn/suspend locations and the events each coroutine is waiting for. All event types now implement `info` method for human-readable descriptions.
 - **TCP/UDP Socket I/O**: Efficient non-blocking TCP/UDP socket functions without poll overhead via libuv handles. Includes `sendto`/`recvfrom` for UDP, socket options API (`broadcast`, `multicast`, TCP `nodelay`/`keepalive`), and unified close callback for all I/O handle types.
 - **Async File and Pipe I/O**: Non-blocking I/O for plain files and pipes via `php_stdiop_read`/`php_stdiop_write` async path. Supported functions: `fread`, `fwrite`, `fseek`, `ftell`, `rewind`, `fgets`, `fgetc`, `fgetcsv`, `fputcsv`, `ftruncate`, `fflush`, `fscanf`, `file_get_contents`, `file_put_contents`, `file()`, `copy`, `tmpfile`, `readfile`, `fpassthru`, `stream_get_contents`, `stream_copy_to_stream`
 - **Async IO Seek API**: `ZEND_ASYNC_IO_SEEK` for syncing libuv file offset after `fseek`/`rewind`
@@ -57,8 +40,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Async\signal()` function**: One-shot signal handler that returns a `Future` resolved when the specified signal is received. Supports optional `Cancellation` for early cancellation.
 
 ### Changed
+- **Breaking Change: `onFinally()` renamed to `finally()`** on both `Async\Coroutine` and `Async\Scope` classes,
+  aligning with the Promise/A+ convention (`.then()`, `.catch()`, `.finally()`).
+  - **Migration**: Replace `->onFinally(function() { ... })` with `->finally(function() { ... })`.
+- **Breaking Change: `Async\CancellationError` renamed to `Async\AsyncCancellation`** and now extends `\Cancellation` instead of `\Error`.
+  `\Cancellation` is a new PHP core root class implementing `\Throwable` (alongside `\Exception` and `\Error`), added per the [True Async RFC](https://wiki.php.net/rfc/true_async).
+  This prevents cancellation exceptions from being accidentally caught by `catch(\Exception)` or `catch(\Error)` blocks.
+  - **Migration**: Replace `catch(Async\CancellationError $e)` with `catch(Async\AsyncCancellation $e)` or `catch(\Cancellation $e)` for broader matching.
 - **Hidden Events**: Added `ZEND_ASYNC_EVENT_F_HIDDEN` flag for events excluded from deadlock detection
 - **Scope `can_be_disposed` API**: Exposed `scope_can_be_disposed` as a virtual method on `zend_async_scope_t`, enabling scope completion checks from the Zend API via `ZEND_ASYNC_SCOPE_IS_COMPLETED`, `ZEND_ASYNC_SCOPE_IS_COMPLETELY_DONE`, and `ZEND_ASYNC_SCOPE_CAN_BE_DISPOSED` macros.
+- **TaskGroup completion semantics**: `ASYNC_TASK_GROUP_F_COMPLETED` flag is now set only when the group is both sealed and all tasks are settled. `finally()` handlers fire only in this terminal state. Calling `finally()` on an already-completed group invokes the callback synchronously.
+
+### Fixed
+- **Use-after-free in `zend_exception_set_previous` calls**: When `exception == add_previous` (same object), `zend_exception_set_previous` calls `OBJ_RELEASE` which frees the object while other pointers (e.g. `EG(exception)`) still reference it. Added identity checks before all `zend_exception_set_previous` calls where the two arguments could alias the same object. Affected files: `scheduler.c`, `exceptions.c`, `zend_common.c`, `future.c`.
+- **Memory leak of `Async\DeadlockError` in scheduler fiber exit path**: In `fiber_entry`, when the scheduler fiber finalized, `exit_exception` from `ZEND_ASYNC_EXIT_EXCEPTION` was not propagated when `EG(exception) == NULL` — the exception was silently lost. Added `async_rethrow_exception(exit_exception)` for this case.
+- **stream_select() ignoring PHP-buffered data in async context**: When `fgets()`/`fread()` pulled more data into PHP's internal stream buffer than returned, a subsequent `stream_select()` would not detect the buffered data because the async path (libuv poll) only checks OS-level file descriptors. This caused hangs in `run-tests.php -j` parallel workers on macOS where TCP delivered multiple messages in a single segment. Fixed by checking `stream_array_emulate_read_fd_set()` before entering the async poll path.
+- **Waker events not cleaned when coroutine is resumed outside scheduler context**: When a coroutine was resumed directly (not from the scheduler), its waker events were not automatically cleaned up, which could lead to stale event references. Now `ZEND_ASYNC_WAKER_CLEAN_EVENTS` is called on resume outside the scheduler.
+- **False deadlock detection after coroutine execution**: The `has_handles` flag from `ZEND_ASYNC_REACTOR_EXECUTE` was evaluated before coroutines ran but checked after, causing false deadlock when coroutines created new I/O handles between those points. Added `ZEND_ASYNC_REACTOR_LOOP_ALIVE()` check to deadlock conditions for accurate state at decision time.
+- **TaskSet auto-cleanup race condition**: Completed task entries were removed unconditionally in `task_group_try_complete()`, even when no consumer had requested results. This caused `joinAll()`/`joinNext()`/`joinAny()` to return empty results when called after tasks had already completed. Fixed by deferring cleanup to the point of actual result delivery — per-entry removal in `race()`/`any()`/iterator callbacks, and bulk cleanup in `all()` after results are collected.
 
 ## [0.5.0] - 2025-12-24
 

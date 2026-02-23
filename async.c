@@ -1443,6 +1443,7 @@ ZEND_MINIT_FUNCTION(async)
 	async_ce_signal = register_class_Async_Signal();
 	async_register_pool_ce();
 	async_register_task_group_ce();
+	async_register_task_set_ce();
 	async_register_future_ce();
 
 	async_scheduler_startup();

@@ -24,6 +24,7 @@
 /* TaskGroup-specific event flags (bits 11+) */
 #define ASYNC_TASK_GROUP_F_COMPLETED (1u << 11)
 #define ASYNC_TASK_GROUP_F_SEALED    (1u << 12)
+#define ASYNC_TASK_GROUP_F_TASK_SET  (1u << 13)
 
 #define ASYNC_TASK_GROUP_IS_COMPLETED(group) \
 	(((group)->event.flags & ASYNC_TASK_GROUP_F_COMPLETED) != 0)
@@ -34,6 +35,11 @@
 	(((group)->event.flags & ASYNC_TASK_GROUP_F_SEALED) != 0)
 #define ASYNC_TASK_GROUP_SET_SEALED(group) \
 	((group)->event.flags |= ASYNC_TASK_GROUP_F_SEALED)
+
+#define ASYNC_TASK_GROUP_IS_TASK_SET(group) \
+	(((group)->event.flags & ASYNC_TASK_GROUP_F_TASK_SET) != 0)
+#define ASYNC_TASK_GROUP_SET_TASK_SET(group) \
+	((group)->event.flags |= ASYNC_TASK_GROUP_F_TASK_SET)
 
 typedef struct _async_task_group_s async_task_group_t;
 typedef struct _task_group_waiter_event_s task_group_waiter_event_t;
@@ -89,8 +95,9 @@ typedef struct {
 	bool started;
 } task_group_iterator_t;
 
-/* Class entry */
+/* Class entries */
 extern zend_class_entry *async_ce_task_group;
+extern zend_class_entry *async_ce_task_set;
 
 /* Convert zend_object → async_task_group_t */
 #define ASYNC_TASK_GROUP_FROM_OBJ(obj) \
@@ -103,5 +110,6 @@ extern zend_class_entry *async_ce_task_group;
 /* API */
 zend_async_group_t *async_new_group(uint32_t concurrency, zend_object *scope);
 void async_register_task_group_ce(void);
+void async_register_task_set_ce(void);
 
 #endif /* ASYNC_TASK_GROUP_H */
