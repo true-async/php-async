@@ -523,8 +523,8 @@ static void dump_deadlock_info(const zend_long real_coroutines)
 		return;
 	}
 
-	php_printf("\n=== DEADLOCK DETECTED: " ZEND_LONG_FMT " coroutines in waiting, "
-		"active_events=%u ===\n\n",
+	php_printf("\n=== DEADLOCK REPORT START ===\n"
+		"Coroutines waiting: " ZEND_LONG_FMT ", active_events: %u\n\n",
 		real_coroutines, ZEND_ASYNC_G(active_event_count));
 
 	zval *value;
@@ -569,7 +569,7 @@ static void dump_deadlock_info(const zend_long real_coroutines)
 	}
 	ZEND_HASH_FOREACH_END();
 
-	php_printf("========================================\n\n");
+	php_printf("=== DEADLOCK REPORT END   ===\n\n");
 }
 
 static bool resolve_deadlocks(void)
