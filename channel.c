@@ -60,8 +60,9 @@
 		ZEND_FUTURE_SET_USED(_future); \
 		ZEND_FUTURE_SET_EXCEPTION_CAUGHT(_future); \
 		if (ZEND_FUTURE_IS_COMPLETED(_future) && _future->exception != NULL) { \
-			GC_ADDREF(_future->exception); \
-			zend_throw_exception_object(_future->exception); \
+			zval _exc_zv; \
+			ZVAL_OBJ_COPY(&_exc_zv, _future->exception); \
+			zend_throw_exception_object(&_exc_zv); \
 			RETURN_THROWS(); \
 		} \
 	}
