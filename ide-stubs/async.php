@@ -929,12 +929,12 @@ final class Channel implements Awaitable, \IteratorAggregate, \Countable
      * Suspends the current coroutine until the value is consumed (unbuffered)
      * or until a buffer slot is available (buffered).
      *
-     * @param mixed $value
-     * @param int   $timeoutMs Timeout in milliseconds; 0 = no timeout.
-     * @throws ChannelException  If the channel is closed.
-     * @throws TimeoutException  If the timeout expires.
+     * @param mixed            $value
+     * @param Completable|null $cancellationToken Optional cancellation token (e.g. timeout(ms)).
+     * @throws ChannelException If the channel is closed.
+     * @throws \Throwable       If the cancellation token fires.
      */
-    public function send(mixed $value, int $timeoutMs = 0): void {}
+    public function send(mixed $value, ?Completable $cancellationToken = null): void {}
 
     /**
      * Try to send a value without blocking.
@@ -949,12 +949,12 @@ final class Channel implements Awaitable, \IteratorAggregate, \Countable
      *
      * Suspends the current coroutine until a value is available.
      *
-     * @param int $timeoutMs Timeout in milliseconds; 0 = no timeout.
+     * @param Completable|null $cancellationToken Optional cancellation token (e.g. timeout(ms)).
      * @return mixed The received value.
      * @throws ChannelException If the channel is closed and empty.
-     * @throws TimeoutException If the timeout expires.
+     * @throws \Throwable       If the cancellation token fires.
      */
-    public function recv(int $timeoutMs = 0): mixed {}
+    public function recv(?Completable $cancellationToken = null): mixed {}
 
     /**
      * Receive a value without blocking.

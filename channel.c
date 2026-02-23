@@ -237,8 +237,17 @@ static void channel_wake_all(async_channel_t *channel, zend_object *exception)
 // Wait operations
 ///////////////////////////////////////////////////////////////////////////////
 
-static void channel_wait_for(async_channel_t *channel, zend_async_callbacks_vector_t *queue, zend_long timeoutMs)
+static void channel_wait_for(async_channel_t *channel, zend_async_callbacks_vector_t *queue, zend_object *cancellation_token)
 {
+	if (cancellation_token != NULL) {
+		const zend_async_event_t *cancel_event = ZEND_ASYNC_OBJECT_TO_EVENT(cancellation_token);
+
+		if (UNEXPECTED(ZEND_ASYNC_EVENT_IS_CLOSED(cancel_event))) {
+			async_throw_cancellation("Operation has been cancelled");
+			return;
+		}
+	}
+
 	channel_waiter_t *waiter = ecalloc(1, sizeof(channel_waiter_t));
 	waiter->callback.base.callback = zend_async_waker_callback_resolve;
 	waiter->callback.base.ref_count = 1;
@@ -251,28 +260,28 @@ static void channel_wait_for(async_channel_t *channel, zend_async_callbacks_vect
 	zend_async_resume_when(ZEND_ASYNC_CURRENT_COROUTINE, &channel->channel.event,
 		false, zend_async_waker_callback_resolve, &waiter->callback);
 
-	if (timeoutMs > 0) {
+	if (cancellation_token != NULL) {
 		zend_async_resume_when(ZEND_ASYNC_CURRENT_COROUTINE,
-			&ZEND_ASYNC_NEW_TIMER_EVENT(timeoutMs, false)->base,
-			true, zend_async_waker_callback_timeout, NULL);
+			ZEND_ASYNC_OBJECT_TO_EVENT(cancellation_token),
+			false, zend_async_waker_callback_cancel, NULL);
 	}
 
 	ZEND_ASYNC_SUSPEND();
 
 	/* Cleanup after waking up */
 	if (channel_queue_remove(queue, waiter)) {
-		/* Was still in queue (timeout/close case) - release queue's ref */
+		/* Was still in queue (cancellation/close case) - release queue's ref */
 		ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
 	}
 	/* Release our initial ref */
 	ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
 }
 
-#define CHANNEL_WAIT_FOR_DATA(channel, timeoutMs) \
-	channel_wait_for((channel), &(channel)->waiting_receivers, (timeoutMs))
+#define CHANNEL_WAIT_FOR_DATA(ch, ct) \
+	channel_wait_for((ch), &(ch)->waiting_receivers, (ct))
 
-#define CHANNEL_WAIT_FOR_SPACE(channel, timeoutMs) \
-	channel_wait_for((channel), &(channel)->waiting_senders, (timeoutMs))
+#define CHANNEL_WAIT_FOR_SPACE(ch, ct) \
+	channel_wait_for((ch), &(ch)->waiting_senders, (ct))
 
 ///////////////////////////////////////////////////////////////////////////////
 // Event handlers (for Awaitable interface)
@@ -548,12 +557,12 @@ METHOD(__construct)
 METHOD(send)
 {
 	zval *value;
-	zend_long timeoutMs = 0;
+	zend_object *cancellation_token = NULL;
 
 	ZEND_PARSE_PARAMETERS_START(1, 2)
 		Z_PARAM_ZVAL(value)
 		Z_PARAM_OPTIONAL
-		Z_PARAM_LONG(timeoutMs)
+		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation_token, async_ce_completable)
 	ZEND_PARSE_PARAMETERS_END();
 
 	ENSURE_COROUTINE_CONTEXT
@@ -578,7 +587,7 @@ retry:
 		}
 	}
 
-	CHANNEL_WAIT_FOR_SPACE(channel, timeoutMs);
+	CHANNEL_WAIT_FOR_SPACE(channel, cancellation_token);
 
 	if (EG(exception)) {
 		RETURN_THROWS();
@@ -622,11 +631,11 @@ METHOD(sendAsync)
 
 METHOD(recv)
 {
-	zend_long timeoutMs = 0;
+	zend_object *cancellation_token = NULL;
 
 	ZEND_PARSE_PARAMETERS_START(0, 1)
 		Z_PARAM_OPTIONAL
-		Z_PARAM_LONG(timeoutMs)
+		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation_token, async_ce_completable)
 	ZEND_PARSE_PARAMETERS_END();
 
 	ENSURE_COROUTINE_CONTEXT
@@ -649,7 +658,7 @@ retry:
 
 	THROW_IF_CLOSED(channel)
 
-	CHANNEL_WAIT_FOR_DATA(channel, timeoutMs);
+	CHANNEL_WAIT_FOR_DATA(channel, cancellation_token);
 
 	if (EG(exception)) {
 		RETURN_THROWS();

@@ -457,7 +457,9 @@ static void future_mapper_context_dispose(zend_coroutine_t *coroutine);
 
 static bool zend_future_event_start(zend_async_event_t *event)
 {
-    /* Nothing to start for zend_future_t */
+    /* When something starts listening to a Future (e.g. as a cancellation token),
+     * mark it as used so "Future was never used" warning is suppressed. */
+    ZEND_FUTURE_SET_USED((zend_future_t *) event);
     return true;
 }
 
