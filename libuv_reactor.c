@@ -1769,7 +1769,7 @@ static bool libuv_process_event_dispose(zend_async_event_t *event)
 
 	// Remove from process_events hash before freeing to prevent UAF via stale hash pointer
 	const zend_process_t proc_handle = ((zend_async_process_event_t *) event)->process;
-	if (proc_handle != NULL && ASYNC_G(process_events) != NULL) {
+	if ((uintptr_t) proc_handle != 0 && ASYNC_G(process_events) != NULL) {
 		zend_hash_index_del(ASYNC_G(process_events), (zend_ulong)(uintptr_t) proc_handle);
 	}
 
