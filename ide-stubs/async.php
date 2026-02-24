@@ -29,6 +29,17 @@ namespace Async;
 class AsyncCancellation extends \Cancellation {}
 
 /**
+ * Exception thrown when an awaited operation is cancelled by a cancellation token.
+ *
+ * This exception wraps the original reason from the token as `$previous`,
+ * allowing the caller to distinguish a token-triggered cancellation from
+ * an exception thrown by the awaitable itself.
+ *
+ * @since 8.6
+ */
+class OperationCanceledException extends AsyncCancellation {}
+
+/**
  * Common base exception for the async extension.
  *
  * @since 8.6
@@ -592,6 +603,7 @@ final class Scope implements ScopeProvider
      * Suspend the current coroutine until all child coroutines have finished.
      *
      * @param Awaitable $cancellation Cancellation token.
+     * @throws OperationCanceledException If the cancellation token fires.
      */
     public function awaitCompletion(Awaitable $cancellation): void {}
 
@@ -600,6 +612,7 @@ final class Scope implements ScopeProvider
      *
      * @param callable|null $errorHandler Called for each unhandled child error.
      * @param Awaitable|null $cancellation Cancellation token.
+     * @throws OperationCanceledException If the cancellation token fires.
      */
     public function awaitAfterCancellation(?callable $errorHandler = null, ?Awaitable $cancellation = null): void {}
 
@@ -840,6 +853,7 @@ final class Future implements Completable
      * @param Completable|null $cancellation Optional cancellation token.
      * @return T
      * @throws \Throwable If the Future was rejected.
+     * @throws OperationCanceledException If the cancellation token fires.
      */
     public function await(?Completable $cancellation = null): mixed {}
 
@@ -932,7 +946,7 @@ final class Channel implements Awaitable, \IteratorAggregate, \Countable
      * @param mixed            $value
      * @param Completable|null $cancellationToken Optional cancellation token (e.g. timeout(ms)).
      * @throws ChannelException If the channel is closed.
-     * @throws \Throwable       If the cancellation token fires.
+     * @throws OperationCanceledException If the cancellation token fires.
      */
     public function send(mixed $value, ?Completable $cancellationToken = null): void {}
 
@@ -952,7 +966,7 @@ final class Channel implements Awaitable, \IteratorAggregate, \Countable
      * @param Completable|null $cancellationToken Optional cancellation token (e.g. timeout(ms)).
      * @return mixed The received value.
      * @throws ChannelException If the channel is closed and empty.
-     * @throws \Throwable       If the cancellation token fires.
+     * @throws OperationCanceledException If the cancellation token fires.
      */
     public function recv(?Completable $cancellationToken = null): mixed {}
 
@@ -1551,6 +1565,7 @@ function protect(\Closure $closure): mixed {}
  * @param Completable|null $cancellation Optional cancellation token.
  * @return mixed The resolved value.
  * @throws \Throwable If `$awaitable` was rejected.
+ * @throws OperationCanceledException If the cancellation token fires.
  */
 function await(Completable $awaitable, ?Completable $cancellation = null): mixed {}
 
@@ -1561,6 +1576,7 @@ function await(Completable $awaitable, ?Completable $cancellation = null): mixed
  * @param Awaitable|null      $cancellation
  * @return mixed The value of the first settled trigger.
  * @throws \Throwable If the settled trigger was rejected.
+ * @throws OperationCanceledException If the cancellation token fires.
  */
 function await_any_or_fail(iterable $triggers, ?Awaitable $cancellation = null): mixed {}
 
@@ -1573,6 +1589,7 @@ function await_any_or_fail(iterable $triggers, ?Awaitable $cancellation = null):
  * @param Awaitable|null      $cancellation
  * @return mixed The first successful result.
  * @throws \Throwable If all triggers fail.
+ * @throws OperationCanceledException If the cancellation token fires.
  */
 function await_first_success(iterable $triggers, ?Awaitable $cancellation = null): mixed {}
 
@@ -1584,6 +1601,7 @@ function await_first_success(iterable $triggers, ?Awaitable $cancellation = null
  * @param bool                $preserveKeyOrder Preserve the original key order.
  * @return array<mixed> Resolved values.
  * @throws \Throwable On the first failed trigger.
+ * @throws OperationCanceledException If the cancellation token fires.
  */
 function await_all_or_fail(iterable $triggers, ?Awaitable $cancellation = null, bool $preserveKeyOrder = true): array {}
 
@@ -1595,6 +1613,7 @@ function await_all_or_fail(iterable $triggers, ?Awaitable $cancellation = null, 
  * @param bool                $preserveKeyOrder
  * @param bool                $fillNull         Fill failed slots with null instead of skipping.
  * @return array<mixed>
+ * @throws OperationCanceledException If the cancellation token fires.
  */
 function await_all(iterable $triggers, ?Awaitable $cancellation = null, bool $preserveKeyOrder = true, bool $fillNull = false): array {}
 
@@ -1607,6 +1626,7 @@ function await_all(iterable $triggers, ?Awaitable $cancellation = null, bool $pr
  * @param bool                $preserveKeyOrder
  * @return array<mixed>
  * @throws \Throwable If fewer than `$count` triggers succeed.
+ * @throws OperationCanceledException If the cancellation token fires.
  */
 function await_any_of_or_fail(int $count, iterable $triggers, ?Awaitable $cancellation = null, bool $preserveKeyOrder = true): array {}
 
@@ -1619,6 +1639,7 @@ function await_any_of_or_fail(int $count, iterable $triggers, ?Awaitable $cancel
  * @param bool                $preserveKeyOrder
  * @param bool                $fillNull
  * @return array<mixed>
+ * @throws OperationCanceledException If the cancellation token fires.
  */
 function await_any_of(int $count, iterable $triggers, ?Awaitable $cancellation = null, bool $preserveKeyOrder = true, bool $fillNull = false): array {}
 
@@ -1705,5 +1726,6 @@ function graceful_shutdown(?AsyncCancellation $cancellationError = null): void {
  * @param Signal           $signal
  * @param Completable|null $cancellation
  * @return Future<Signal>
+ * @throws OperationCanceledException If the cancellation token fires.
  */
 function signal(Signal $signal, ?Completable $cancellation = null): Future {}

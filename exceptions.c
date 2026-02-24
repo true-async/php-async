@@ -25,6 +25,7 @@
 
 zend_class_entry *async_ce_async_exception = NULL;
 zend_class_entry *async_ce_cancellation_exception = NULL;
+zend_class_entry *async_ce_operation_cancelled_exception = NULL;
 zend_class_entry *async_ce_input_output_exception = NULL;
 zend_class_entry *async_ce_timeout_exception = NULL;
 zend_class_entry *async_ce_poll_exception = NULL;
@@ -64,6 +65,7 @@ void async_register_exceptions_ce(void)
 {
 	async_ce_async_exception = register_class_Async_AsyncException(zend_ce_exception);
 	async_ce_cancellation_exception = register_class_Async_AsyncCancellation(zend_ce_cancellation);
+	async_ce_operation_cancelled_exception = register_class_Async_OperationCanceledException(async_ce_cancellation_exception);
 	async_ce_input_output_exception = register_class_Async_InputOutputException(zend_ce_exception);
 	async_ce_timeout_exception = register_class_Async_TimeoutException(zend_ce_exception);
 	async_ce_poll_exception = register_class_Async_PollException(zend_ce_exception);

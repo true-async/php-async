@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.6.0]
 
 ### Added
+- **`Async\OperationCanceledException`**: New exception class extending `AsyncCancellation`, thrown when an awaited operation is interrupted by a cancellation token. The original exception from the token is always available via `$previous`. This allows distinguishing token-triggered cancellations from exceptions thrown by the awaitable itself. Affects all cancellable APIs: `await()`, `await_*()` family, `Future::await()`, `Channel::send()`/`recv()`, `Scope::awaitCompletion()`/`awaitAfterCancellation()`, and `signal()`.
 - **TaskGroup** (`Async\TaskGroup`): Task pool with queue, concurrency control, and structured completion via `all()`, `race()`, `any()`, `awaitCompletion()`, `cancel()`, `seal()`, `finally()`, and `foreach` iteration
 - **TaskSet** (`Async\TaskSet`): Mutable task collection with automatic cleanup semantics. Completed entries are removed after results are consumed. Provides `joinNext()`, `joinAny()`, `joinAll()` methods (replacing `race()`/`any()`/`all()` with join semantics), plus `foreach` iteration with per-entry cleanup.
 - **Deadlock diagnostics** (`async.debug_deadlock` INI option): When enabled (default: on), prints detailed diagnostic info on deadlock detection — coroutine list with spawn/suspend locations and the events each coroutine is waiting for. All event types now implement `info` method for human-readable descriptions.

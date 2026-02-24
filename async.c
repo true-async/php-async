@@ -260,13 +260,7 @@ PHP_FUNCTION(Async_await)
 		RETURN_NULL();
 	}
 
-	// If the cancellation event is already resolved, we can return exception immediately.
-	if (cancellation_event != NULL && ZEND_ASYNC_EVENT_IS_CLOSED(cancellation_event)) {
-		if (ZEND_ASYNC_EVENT_EXTRACT_RESULT(cancellation_event, return_value)) {
-			return;
-		}
-
-		async_throw_cancellation("Operation has been cancelled");
+	if (cancellation != NULL && UNEXPECTED(async_resolve_cancel_token(cancellation))) {
 		RETURN_THROWS();
 	}
 

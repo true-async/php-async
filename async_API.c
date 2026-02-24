@@ -270,6 +270,8 @@ static zend_class_entry *async_get_class_ce(zend_async_class type)
 			return async_ce_deadlock_error;
 		case ZEND_ASYNC_EXCEPTION_SERVICE_UNAVAILABLE:
 			return async_ce_service_unavailable_exception;
+		case ZEND_ASYNC_EXCEPTION_OPERATION_CANCELLED:
+			return async_ce_operation_cancelled_exception;
 		default:
 			return NULL;
 	}
@@ -1164,6 +1166,43 @@ void async_pool_api_register(void)
 		async_pool_try_acquire_wrapper,
 		async_pool_release_wrapper,
 		async_pool_close_wrapper);
+}
+
+/* Resolves a fired cancellation token into an appropriate exception.
+ * For Future tokens: marks as used + exception-caught to suppress warnings.
+ * Exception logic:
+ *   - Closed with CancellationException → rethrow it directly
+ *   - Closed with other exception       → throw AsyncCancellation with original as $previous
+ *   - Closed without exception          → throw generic AsyncCancellation
+ * Returns false if the token has not yet fired. */
+bool async_resolve_cancel_token(zend_object *token)
+{
+	zend_async_event_t *event = ZEND_ASYNC_OBJECT_TO_EVENT(token);
+
+	if (instanceof_function(token->ce, async_ce_future)) {
+		ZEND_ASYNC_EVENT_SET_RESULT_USED(event);
+		ZEND_ASYNC_EVENT_SET_EXC_CAUGHT(event);
+	}
+
+	if (!ZEND_ASYNC_EVENT_IS_CLOSED(event)) {
+		return false;
+	}
+
+	zend_object *exception = NULL;
+	ZEND_ASYNC_EVENT_EXTRACT_RESULT_OR_ERROR(event, NULL, &exception);
+
+	/* Always wrap in OperationCanceledException so the caller can distinguish
+	 * a cancellation-token exception from an exception thrown by the awaitable itself. */
+	zend_object *cancel_exc = async_new_exception(
+			ZEND_ASYNC_GET_CE(ZEND_ASYNC_EXCEPTION_OPERATION_CANCELLED), "Operation has been cancelled");
+
+	if (exception != NULL) {
+		zend_exception_set_previous(cancel_exc, exception);
+	}
+
+	async_rethrow_exception(cancel_exc);
+
+	return true;
 }
 
 void async_api_register(void)

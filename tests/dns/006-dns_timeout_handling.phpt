@@ -19,7 +19,7 @@ $coroutine = spawn(function() {
 
         await($dns_coroutine, timeout(1));
 
-    } catch (Async\TimeoutException $e) {
+    } catch (Async\OperationCanceledException $e) {
         //echo "DNS lookup timed out as expected\n";
     } catch (Throwable $e) {
         echo "Other exception: " . get_class($e) . ": " . $e->getMessage() . "\n";
@@ -33,7 +33,7 @@ $coroutine = spawn(function() {
         });
 
         echo 'Fast DNS lookup completed: '.await($dns_coroutine, timeout(1000))."\n";
-    } catch (Async\TimeoutException $e) {
+    } catch (Async\OperationCanceledException $e) {
         echo "Unexpected timeout for localhost\n";
     }
 });

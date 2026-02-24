@@ -31,7 +31,7 @@ echo "start\n";
 try {
     $results = await_any_of_or_fail(2, $coroutines, timeout(1));
     echo "Unexpected success\n";
-} catch (Async\TimeoutException $e) {
+} catch (Async\OperationCanceledException $e) {
     echo "Timeout caught as expected\n";
 } catch (Exception $e) {
     echo "Exception: " . get_class($e) . " - " . $e->getMessage() . "\n";

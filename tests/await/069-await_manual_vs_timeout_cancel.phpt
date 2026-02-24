@@ -47,11 +47,9 @@ echo "timeout coroutine spawned\n";
 try {
     $result = await($timeout_coroutine, timeout(1));
     echo "timeout await should not succeed\n";
-} catch (\Async\TimeoutException $e) {
+} catch (\Async\OperationCanceledException $e) {
     echo "timeout cancellation caught: " . get_class($e) . ": " . $e->getMessage() . "\n";
     $timeout_coroutine->cancel(new \Async\AsyncCancellation("Timeout after 1 milliseconds"));
-} catch (\Async\AsyncCancellation $e) {
-    echo "timeout as cancellation: " . get_class($e) . ": " . $e->getMessage() . "\n";
 } catch (Throwable $e) {
     echo "timeout unexpected: " . get_class($e) . ": " . $e->getMessage() . "\n";
 }
@@ -91,7 +89,7 @@ manual coroutine cancelled
 manual cancellation caught: Async\AsyncCancellation: Manual cancel message
 timeout coroutine spawned
 timeout coroutine started
-timeout cancellation caught: Async\TimeoutException: Timeout occurred after 1 milliseconds
+timeout cancellation caught: Async\OperationCanceledException: Operation has been cancelled
 race coroutine started
 race cancellation caught: Async\AsyncCancellation: Manual wins
 end

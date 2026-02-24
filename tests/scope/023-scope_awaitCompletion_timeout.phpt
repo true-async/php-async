@@ -31,7 +31,7 @@ $external = spawn(function() use ($scope) {
     try {
         $scope->awaitCompletion(timeout(50));
         echo "ERROR: Should have timed out\n";
-    } catch (\Async\TimeoutException $e) {
+    } catch (\Async\OperationCanceledException $e) {
         echo "caught timeout as expected\n";
     }
 });

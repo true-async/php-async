@@ -86,6 +86,8 @@ typedef struct
 void async_api_register(void);
 void async_pool_api_register(void);
 
+bool async_resolve_cancel_token(zend_object *token);
+
 void async_await_futures(zval *iterable,
 						 int count,
 						 bool ignore_errors,

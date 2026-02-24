@@ -20,7 +20,7 @@ $timeout_obj = timeout(1);
 try {
     $result = await($coroutine, $timeout_obj);
     echo "awaited result: $result\n";
-} catch (Async\TimeoutException $e) {
+} catch (Async\OperationCanceledException $e) {
     echo "caught timeout exception\n";
 }
 

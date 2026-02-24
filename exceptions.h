@@ -25,6 +25,7 @@ BEGIN_EXTERN_C()
 
 PHP_ASYNC_API extern zend_class_entry *async_ce_async_exception;
 PHP_ASYNC_API extern zend_class_entry *async_ce_cancellation_exception;
+PHP_ASYNC_API extern zend_class_entry *async_ce_operation_cancelled_exception;
 PHP_ASYNC_API extern zend_class_entry *async_ce_input_output_exception;
 PHP_ASYNC_API extern zend_class_entry *async_ce_timeout_exception;
 PHP_ASYNC_API extern zend_class_entry *async_ce_poll_exception;

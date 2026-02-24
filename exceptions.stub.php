@@ -11,6 +11,12 @@ namespace Async;
 class AsyncCancellation extends \Cancellation {}
 
 /**
+ * Exception thrown when an awaited operation is cancelled by a cancellation token.
+ * Wraps the original exception from the token as $previous.
+ */
+class OperationCanceledException extends AsyncCancellation {}
+
+/**
  * Common type of exception.
  */
 class AsyncException extends \Exception {}

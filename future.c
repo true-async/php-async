@@ -17,6 +17,7 @@
 #include "future.h"
 #include "php_async.h"
 #include "exceptions.h"
+#include "async_API.h"
 #include "future_arginfo.h"
 #include "zend_exceptions.h"
 #include "zend_closures.h"
@@ -524,20 +525,20 @@ static bool zend_future_replay(zend_async_event_t *event, zend_async_event_callb
 
     if (callback != NULL) {
         callback->callback(event, callback, &future->result, future->exception);
-    } else if (result != NULL) {
-        // Extract result for await
-        if (future->exception != NULL) {
-            if (exception != NULL) {
-                *exception = future->exception;
-                GC_ADDREF(future->exception);
-            } else {
-                zval ex;
-                ZVAL_OBJ(&ex, future->exception);
-                GC_ADDREF(future->exception);
-                zend_throw_exception_object(&ex);
-            }
+        return EG(exception) == NULL;
+    }
+
+    if (result != NULL && future->exception == NULL) {
+        ZVAL_COPY(result, &future->result);
+    }
+
+    if (future->exception != NULL) {
+        if (exception != NULL) {
+            *exception = future->exception;
+            GC_ADDREF(future->exception);
         } else {
-            ZVAL_COPY(result, &future->result);
+        	GC_ADDREF(future->exception);
+        	async_rethrow_exception(future->exception);
         }
     }
 
@@ -1164,13 +1165,7 @@ FUTURE_METHOD(await)
 
     zend_async_event_t *cancellation_event = cancellation != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation) : NULL;
 
-    // If the cancellation event is already resolved, we can return exception immediately.
-    if (cancellation_event != NULL && ZEND_ASYNC_EVENT_IS_CLOSED(cancellation_event)) {
-        if (ZEND_ASYNC_EVENT_EXTRACT_RESULT(cancellation_event, return_value)) {
-            return;
-        }
-
-        async_throw_cancellation("Future awaiting has been cancelled");
+    if (cancellation != NULL && UNEXPECTED(async_resolve_cancel_token(cancellation))) {
         RETURN_THROWS();
     }
 

@@ -27,7 +27,6 @@ $coroutine = spawn(function() use ($ch, $cancel) {
 });
 
 spawn(function() use ($state) {
-    delay(10);
     echo "Signalling cancel\n";
     $state->complete(null);
 });

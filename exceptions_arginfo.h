@@ -27,6 +27,16 @@ static zend_class_entry *register_class_Async_AsyncCancellation(zend_class_entry
 	return class_entry;
 }
 
+static zend_class_entry *register_class_Async_OperationCanceledException(zend_class_entry *class_entry_Async_AsyncCancellation)
+{
+	zend_class_entry ce, *class_entry;
+
+	INIT_NS_CLASS_ENTRY(ce, "Async", "OperationCanceledException", NULL);
+	class_entry = zend_register_internal_class_with_flags(&ce, class_entry_Async_AsyncCancellation, 0);
+
+	return class_entry;
+}
+
 static zend_class_entry *register_class_Async_AsyncException(zend_class_entry *class_entry_Exception)
 {
 	zend_class_entry ce, *class_entry;

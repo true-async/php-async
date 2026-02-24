@@ -18,6 +18,7 @@
 #include "php_async.h"
 #include "exceptions.h"
 #include "future.h"
+#include "async_API.h"
 #include "scheduler.h"
 #include "coroutine.h"
 #include "channel_arginfo.h"
@@ -52,19 +53,10 @@
 		} \
 	}
 
-/* If the cancellation token is a Future: mark it as used, and if it is already
- * resolved with an exception – throw that exception immediately. */
+/* Mark Future token as used (non-blocking path) and throw if already fired. */
 #define CANCELLATION_TOKEN_PREPARE(ct) \
-	if ((ct) != NULL && instanceof_function((ct)->ce, async_ce_future)) { \
-		zend_future_t *_future = (zend_future_t *) ZEND_ASYNC_OBJECT_TO_EVENT(ct); \
-		ZEND_FUTURE_SET_USED(_future); \
-		ZEND_FUTURE_SET_EXCEPTION_CAUGHT(_future); \
-		if (ZEND_FUTURE_IS_COMPLETED(_future) && _future->exception != NULL) { \
-			zval _exc_zv; \
-			ZVAL_OBJ_COPY(&_exc_zv, _future->exception); \
-			zend_throw_exception_object(&_exc_zv); \
-			RETURN_THROWS(); \
-		} \
+	if ((ct) != NULL && UNEXPECTED(async_resolve_cancel_token(ct))) { \
+		RETURN_THROWS(); \
 	}
 
 zend_class_entry *async_ce_channel = NULL;
@@ -254,13 +246,8 @@ static void channel_wake_all(async_channel_t *channel, zend_object *exception)
 
 static void channel_wait_for(async_channel_t *channel, zend_async_callbacks_vector_t *queue, zend_object *cancellation_token)
 {
-	if (cancellation_token != NULL) {
-		const zend_async_event_t *cancel_event = ZEND_ASYNC_OBJECT_TO_EVENT(cancellation_token);
-
-		if (UNEXPECTED(ZEND_ASYNC_EVENT_IS_CLOSED(cancel_event))) {
-			async_throw_cancellation("Operation has been cancelled");
-			return;
-		}
+	if (cancellation_token != NULL && UNEXPECTED(async_resolve_cancel_token(cancellation_token))) {
+		return;
 	}
 
 	channel_waiter_t *waiter = ecalloc(1, sizeof(channel_waiter_t));
