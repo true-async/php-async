@@ -1439,11 +1439,10 @@ static void process_watcher_thread(void *args)
 		switch (lpNumberOfBytesTransferred) {
 			case JOB_OBJECT_MSG_EXIT_PROCESS:
 			case JOB_OBJECT_MSG_ABNORMAL_EXIT_PROCESS:
-			case JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO:
-				// Try to handle process exit
 				goto handleExitCode;
+			// JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO always accompanies EXIT_PROCESS for
+			// single-process jobs — ignore it to avoid double-processing the same event.
 			default:
-				// Ignore other messages
 				continue;
 		}
 
@@ -1607,7 +1606,7 @@ static bool libuv_process_event_start(zend_async_event_t *event)
 		return true;
 	}
 
-	DWORD exitCode;
+	DWORD exitCode = 0;
 	if (GetExitCodeProcess(process->event.process, &exitCode) && exitCode != STILL_ACTIVE) {
 		async_throw_error("Process has already terminated: %d", exitCode);
 		return false;
@@ -1624,6 +1623,11 @@ static bool libuv_process_event_start(zend_async_event_t *event)
 
 		error = GetLastError();
 		if (error == ERROR_SUCCESS) {
+			exitCode = 0;
+			GetExitCodeProcess(process->event.process, &exitCode);
+			process->event.exit_code = (zend_long) exitCode;
+			ZEND_ASYNC_EVENT_SET_CLOSED(event);
+			ZEND_ASYNC_CALLBACKS_NOTIFY(&process->event.base, NULL, NULL);
 			return true;
 		}
 
@@ -1647,6 +1651,11 @@ static bool libuv_process_event_start(zend_async_event_t *event)
 
 		error = GetLastError();
 		if (error == ERROR_SUCCESS) {
+			exitCode = 0;
+			GetExitCodeProcess(process->event.process, &exitCode);
+			process->event.exit_code = (zend_long) exitCode;
+			ZEND_ASYNC_EVENT_SET_CLOSED(event);
+			ZEND_ASYNC_CALLBACKS_NOTIFY(&process->event.base, NULL, NULL);
 			return true;
 		}
 
@@ -1758,13 +1767,15 @@ static bool libuv_process_event_dispose(zend_async_event_t *event)
 
 	zend_async_callbacks_free(event);
 
+	// Remove from process_events hash before freeing to prevent UAF via stale hash pointer
+	const zend_process_t proc_handle = ((zend_async_process_event_t *) event)->process;
+	if (proc_handle != NULL && ASYNC_G(process_events) != NULL) {
+		zend_hash_index_del(ASYNC_G(process_events), (zend_ulong)(uintptr_t) proc_handle);
+	}
+
 #ifdef PHP_WIN32
 
 	async_process_event_t *process = (async_process_event_t *) (event);
-
-	if (process->event.process != NULL) {
-		process->event.process = NULL;
-	}
 
 	if (process->hJob != NULL) {
 		CloseHandle(process->hJob);
@@ -2776,7 +2787,7 @@ static int libuv_exec(zend_async_exec_mode exec_mode,
 		return -1;
 	}
 
-	zend_async_waker_new(coroutine);
+	ZEND_ASYNC_WAKER_NEW(coroutine);
 	if (UNEXPECTED(EG(exception))) {
 		return -1;
 	}
