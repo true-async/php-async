@@ -375,7 +375,7 @@ retry:
 		return;
 	}
 
-	zend_async_waker_new(coroutine);
+	ZEND_ASYNC_WAKER_NEW(coroutine);
 
 	if (UNEXPECTED(EG(exception))) {
 		iterator->valid = false;

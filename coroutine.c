@@ -61,6 +61,68 @@ static bool coroutine_dispose(zend_async_event_t *event);
 /// 2. Object Lifecycle Management
 ///////////////////////////////////////////////////////////
 
+///////////////////////////////////////////////////////////
+/// Embedded Waker API
+///////////////////////////////////////////////////////////
+
+zend_async_waker_t *async_waker_new(zend_coroutine_t *coroutine)
+{
+	if (UNEXPECTED(coroutine == NULL)) {
+		coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	}
+
+	if (UNEXPECTED(coroutine == NULL)) {
+		zend_error(E_CORE_ERROR, "Cannot create waker for a coroutine that is not running");
+		return NULL;
+	}
+
+	async_coroutine_t *async_coroutine = (async_coroutine_t *) coroutine;
+	zend_async_waker_t *waker = &async_coroutine->waker;
+
+	ZEND_ASSERT(waker != NULL && "Embedded waker must never be NULL");
+
+	if (waker->status != ZEND_ASYNC_WAKER_NO_STATUS) {
+		zend_async_waker_clean(coroutine);
+	}
+
+	return waker;
+}
+
+void async_waker_destroy(zend_coroutine_t *coroutine)
+{
+	if (UNEXPECTED(coroutine->waker == NULL)) {
+		return;
+	}
+
+	zend_async_waker_t *waker = coroutine->waker;
+
+	if (waker->dtor != NULL) {
+		waker->dtor(coroutine);
+		waker->dtor = NULL;
+	}
+
+	waker->status = ZEND_ASYNC_WAKER_NO_STATUS;
+
+	if (waker->error != NULL) {
+		zend_object_release(waker->error);
+		waker->error = NULL;
+	}
+
+	if (waker->triggered_events != NULL) {
+		zend_hash_clean(waker->triggered_events);
+	}
+
+	if (waker->filename != NULL) {
+		zend_string_release(waker->filename);
+		waker->filename = NULL;
+		waker->lineno = 0;
+	}
+
+	zval_ptr_dtor(&waker->result);
+	ZVAL_UNDEF(&waker->result);
+	zend_hash_clean(&waker->events);
+}
+
 static zend_object *coroutine_object_create(zend_class_entry *class_entry)
 {
 	async_coroutine_t *coroutine = zend_object_alloc(sizeof(async_coroutine_t), class_entry);
@@ -128,8 +190,16 @@ static void coroutine_object_destroy(zend_object *object)
 		coroutine->coroutine.filename = NULL;
 	}
 
-	// Cleanup embedded waker contents
-	zend_async_waker_destroy(&coroutine->coroutine);
+	// Cleanup embedded waker contents: first clean for reuse, then final destroy
+	ZEND_ASYNC_WAKER_DESTROY(&coroutine->coroutine);
+
+	if (coroutine->waker.triggered_events != NULL) {
+		zend_hash_destroy(coroutine->waker.triggered_events);
+		efree(coroutine->waker.triggered_events);
+		coroutine->waker.triggered_events = NULL;
+	}
+
+	zend_hash_destroy(&coroutine->waker.events);
 	coroutine->coroutine.waker = NULL;
 
 	if (coroutine->coroutine.internal_context != NULL) {
@@ -578,7 +648,7 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 			coroutine_call_finally_handlers(coroutine);
 		}
 
-		zend_async_waker_destroy(&coroutine->coroutine);
+		ZEND_ASYNC_WAKER_DESTROY(&coroutine->coroutine);
 
 		if (coroutine->coroutine.extended_dispose != NULL) {
 			const zend_async_coroutine_dispose dispose = coroutine->coroutine.extended_dispose;

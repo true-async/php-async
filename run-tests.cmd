@@ -3,7 +3,7 @@ setlocal
 
 set BASE_PATH=%~dp0tests
 set RUN_TESTS_PATH=%~dp0..\..\run-tests.php
-set PHP_EXECUTABLE=%~dp0..\..\x64\Debug_TS\php.exe
+set PHP_EXECUTABLE=%~dp0..\..\x64\Release_TS\php.exe
 
 if "%~1"=="" (
     set TEST_PATH=%BASE_PATH%

@@ -264,7 +264,7 @@ PHP_FUNCTION(Async_await)
 		RETURN_THROWS();
 	}
 
-	zend_async_waker_new(coroutine);
+	ZEND_ASYNC_WAKER_NEW(coroutine);
 
 	if (UNEXPECTED(EG(exception) != NULL)) {
 		RETURN_THROWS();
@@ -875,7 +875,7 @@ PHP_FUNCTION(Async_iterate)
 
 	// Wait for the iterator completion event
 	iterator->completion_event = async_iterator_completion_event_create();
-	zend_async_waker_new(coroutine);
+	ZEND_ASYNC_WAKER_NEW(coroutine);
 	zend_async_resume_when(coroutine,
 		iterator->completion_event, false, zend_async_waker_callback_resolve, NULL);
 	ZEND_ASYNC_SUSPEND();
@@ -909,7 +909,7 @@ PHP_FUNCTION(Async_iterate)
 			zend_clear_exception();
 		} else {
 			// Wait for the child scope to fully complete
-			zend_async_waker_new(coroutine);
+			ZEND_ASYNC_WAKER_NEW(coroutine);
 			zend_async_resume_when(coroutine, &iterator_scope->event, false, zend_async_waker_callback_resolve, NULL);
 
 			if (EXPECTED(EG(exception) == NULL)) {

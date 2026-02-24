@@ -16,6 +16,7 @@
 #include "async_API.h"
 
 #include "context.h"
+#include "coroutine.h"
 #include "exceptions.h"
 #include "future.h"
 #include "iterator.h"
@@ -136,7 +137,7 @@ zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object *scope_provider, 
 		zval_ptr_dtor(&options);
 	}
 
-	zend_async_waker_t *waker = zend_async_waker_new(&coroutine->coroutine);
+	zend_async_waker_t *waker = ZEND_ASYNC_WAKER_NEW(&coroutine->coroutine);
 	if (UNEXPECTED(waker == NULL)) {
 		coroutine->coroutine.event.dispose(&coroutine->coroutine.event);
 		return NULL;
@@ -769,7 +770,7 @@ static void async_cancel_awaited_futures(async_await_context_t *await_context, H
 {
 	zend_coroutine_t *this_coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
-	if (UNEXPECTED(zend_async_waker_new(this_coroutine) == NULL)) {
+	if (UNEXPECTED(ZEND_ASYNC_WAKER_NEW(this_coroutine) == NULL)) {
 		return;
 	}
 
@@ -1220,6 +1221,8 @@ void async_api_register(void)
 								  async_coroutine_cancel,
 								  async_spawn_and_throw,
 								  start_graceful_shutdown,
+								  async_waker_new,
+								  async_waker_destroy,
 								  get_coroutines,
 								  add_microtask,
 								  get_awaiting_info,

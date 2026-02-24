@@ -84,6 +84,8 @@ struct _finally_handlers_context_s
 	zval params[1];
 };
 
+zend_async_waker_t *async_waker_new(zend_coroutine_t *coroutine);
+void async_waker_destroy(zend_coroutine_t *coroutine);
 void async_register_coroutine_ce(void);
 zend_coroutine_t *async_new_coroutine(zend_async_scope_t *scope);
 void async_coroutine_cleanup(zend_fiber_context *context);

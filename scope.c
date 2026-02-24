@@ -307,7 +307,7 @@ METHOD(awaitCompletion)
 		return;
 	}
 
-	zend_async_waker_new(current_coroutine);
+	ZEND_ASYNC_WAKER_NEW(current_coroutine);
 	if (UNEXPECTED(EG(exception))) {
 		RETURN_THROWS();
 	}
@@ -374,7 +374,7 @@ METHOD(awaitAfterCancellation)
 		return;
 	}
 
-	zend_async_waker_new(current_coroutine);
+	ZEND_ASYNC_WAKER_NEW(current_coroutine);
 	if (UNEXPECTED(EG(exception))) {
 		RETURN_THROWS();
 	}

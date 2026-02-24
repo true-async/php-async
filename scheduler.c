@@ -1131,7 +1131,7 @@ bool async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine)
 	// coroutine->waker->status != ZEND_ASYNC_WAKER_QUEUED means not need to add to queue twice
 	if (coroutine != NULL && (coroutine->waker == NULL || false == ZEND_ASYNC_WAKER_IN_QUEUE(coroutine->waker))) {
 		if (coroutine->waker == NULL) {
-			zend_async_waker_t *waker = zend_async_waker_new(coroutine);
+			zend_async_waker_t *waker = ZEND_ASYNC_WAKER_NEW(coroutine);
 			if (UNEXPECTED(EG(exception))) {
 				async_throw_error("Failed to create waker for coroutine");
 				return false;

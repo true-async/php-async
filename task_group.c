@@ -1093,7 +1093,7 @@ retry:
 		return;
 	}
 
-	zend_async_waker_new(current);
+	ZEND_ASYNC_WAKER_NEW(current);
 
 	if (UNEXPECTED(EG(exception))) {
 		iterator->valid = false;
@@ -1609,7 +1609,7 @@ retry:
 		RETURN_THROWS();
 	}
 
-	zend_async_waker_new(current);
+	ZEND_ASYNC_WAKER_NEW(current);
 
 	if (UNEXPECTED(EG(exception))) {
 		RETURN_THROWS();

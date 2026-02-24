@@ -1169,7 +1169,7 @@ FUTURE_METHOD(await)
         RETURN_THROWS();
     }
 
-    zend_async_waker_new(coroutine);
+    ZEND_ASYNC_WAKER_NEW(coroutine);
 
     if (UNEXPECTED(EG(exception) != NULL)) {
         RETURN_THROWS();
@@ -1204,7 +1204,7 @@ FUTURE_METHOD(await)
     ZEND_ASYNC_SUSPEND();
 
     if (UNEXPECTED(EG(exception) != NULL)) {
-    	zend_async_waker_destroy(coroutine);
+    	ZEND_ASYNC_WAKER_DESTROY(coroutine);
         RETURN_THROWS();
     }
 
@@ -1216,7 +1216,7 @@ FUTURE_METHOD(await)
         ZVAL_COPY(return_value, &coroutine->waker->result);
     }
 
-    zend_async_waker_destroy(coroutine);
+    ZEND_ASYNC_WAKER_DESTROY(coroutine);
 }
 
 ///////////////////////////////////////////////////////////
