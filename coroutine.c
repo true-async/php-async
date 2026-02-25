@@ -168,6 +168,13 @@ static void coroutine_object_destroy(zend_object *object)
 	ZEND_ASSERT(ZEND_ASYNC_WAKER_NOT_IN_QUEUE(&coroutine->waker) &&
 				"Coroutine waker must be dequeued before destruction");
 
+	/* Unlink fiber if still attached to prevent use-after-free. */
+	if (ZEND_COROUTINE_IS_FIBER(&coroutine->coroutine) && coroutine->coroutine.extended_data != NULL) {
+		zend_fiber *fiber = (zend_fiber *) coroutine->coroutine.extended_data;
+		fiber->coroutine = NULL;
+		coroutine->coroutine.extended_data = NULL;
+	}
+
 	if (coroutine->coroutine.scope != NULL) {
 		async_scope_notify_coroutine_finished(coroutine);
 		coroutine->coroutine.scope = NULL;
