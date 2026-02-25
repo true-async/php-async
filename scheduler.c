@@ -736,9 +736,9 @@ bool start_graceful_shutdown(void)
 	ZEND_ASYNC_GRACEFUL_SHUTDOWN = true;
 
 	// If the exit exception is not defined, we will define it.
-	if (EG(exception) == NULL && ZEND_ASYNC_EXIT_EXCEPTION == NULL) {
-		zend_error(E_CORE_WARNING, "Graceful shutdown mode was started");
-	}
+	// if (EG(exception) == NULL && ZEND_ASYNC_EXIT_EXCEPTION == NULL) {
+	// 	zend_error(E_CORE_WARNING, "Graceful shutdown mode was started");
+	// }
 
 	if (EG(exception) != NULL) {
 		ZEND_ASYNC_EXIT_EXCEPTION = EG(exception);

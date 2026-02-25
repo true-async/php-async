@@ -1208,8 +1208,19 @@ bool async_resolve_cancel_token(zend_object *token)
 	return true;
 }
 
+static zend_execute_data *async_coroutine_get_execute_data(zend_coroutine_t *coroutine)
+{
+	async_coroutine_t *async_coroutine = (async_coroutine_t *) coroutine;
+	if (async_coroutine->fiber_context != NULL) {
+		return async_coroutine->fiber_context->execute_data;
+	}
+	return NULL;
+}
+
 void async_api_register(void)
 {
+	zend_async_coroutine_get_execute_data_fn = async_coroutine_get_execute_data;
+
 	zend_async_scheduler_register(PHP_ASYNC_NAME_VERSION,
 								  false,
 								  async_scheduler_launch,
