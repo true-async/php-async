@@ -2947,6 +2947,16 @@ static bool libuv_io_event_stop(zend_async_event_t *event)
 {
 	EVENT_STOP_PROLOGUE(event);
 
+	async_io_t *io = (async_io_t *)event;
+
+	/* Cancel pending pipe/TTY read if any */
+	if (io->active_req != NULL
+		&& (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE
+			|| io->base.type == ZEND_ASYNC_IO_TYPE_TTY)) {
+		uv_read_stop(&io->handle.stream);
+		io->active_req = NULL;
+	}
+
 	event->loop_ref_count = 0;
 	ZEND_ASYNC_DECREASE_EVENT_COUNT(event);
 	return true;
