@@ -202,12 +202,13 @@ zend_class_entry *async_ce_context = NULL;
 #define ZEND_OBJECT_TO_CONTEXT(obj) ((async_context_t *) ((char *) (obj) - (obj)->handlers->offset))
 #define THIS_CONTEXT ZEND_OBJECT_TO_CONTEXT(Z_OBJ_P(ZEND_THIS))
 
-#define VALIDATE_CONTEXT_KEY(key, arg_num) do { \
-	if (UNEXPECTED(Z_TYPE_P(key) != IS_STRING && Z_TYPE_P(key) != IS_OBJECT)) { \
-		zend_argument_type_error(arg_num, "must be of type string|object, %s given", zend_zval_type_name(key)); \
-		RETURN_THROWS(); \
-	} \
-} while (0)
+#define VALIDATE_CONTEXT_KEY(key, arg_num) \
+	do { \
+		if (UNEXPECTED(Z_TYPE_P(key) != IS_STRING && Z_TYPE_P(key) != IS_OBJECT)) { \
+			zend_argument_type_error(arg_num, "must be of type string|object, %s given", zend_zval_type_name(key)); \
+			RETURN_THROWS(); \
+		} \
+	} while (0)
 
 METHOD(find)
 {

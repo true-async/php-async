@@ -37,7 +37,8 @@ static zend_object_handlers fs_watcher_handlers;
 /// Callback structure for fs_event notifications
 ///////////////////////////////////////////////////////////////
 
-typedef struct {
+typedef struct
+{
 	zend_async_event_callback_t base;
 	async_fs_watcher_t *watcher;
 } fs_watcher_fs_callback_t;
@@ -46,17 +47,15 @@ typedef struct {
 /// Helpers
 ///////////////////////////////////////////////////////////////
 
-static zend_string *fs_watcher_build_key(
-	const zend_string *path, const zend_string *filename)
+static zend_string *fs_watcher_build_key(const zend_string *path, const zend_string *filename)
 {
 	if (filename != NULL) {
 		return zend_strpprintf(0, "%s/%s", ZSTR_VAL(path), ZSTR_VAL(filename));
 	}
-	return zend_string_copy((zend_string *)path);
+	return zend_string_copy((zend_string *) path);
 }
 
-static void fs_watcher_create_event_zval(
-	zval *result, const zend_async_filesystem_event_t *fs)
+static void fs_watcher_create_event_zval(zval *result, const zend_async_filesystem_event_t *fs)
 {
 	object_init_ex(result, async_ce_filesystem_event);
 	zend_object *obj = Z_OBJ_P(result);
@@ -110,17 +109,17 @@ static bool fs_watcher_pop_event(async_fs_watcher_t *watcher, zval *result)
 /// FS event callback (reactor → watcher buffer)
 ///////////////////////////////////////////////////////////////
 
-static void fs_watcher_callback_dispose(
-	zend_async_event_callback_t *callback, zend_async_event_t *event)
+static void fs_watcher_callback_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event)
 {
 	efree(callback);
 }
 
-static void fs_watcher_on_fs_event(
-	zend_async_event_t *event, zend_async_event_callback_t *callback,
-	void *result, zend_object *exception)
+static void fs_watcher_on_fs_event(zend_async_event_t *event,
+								   zend_async_event_callback_t *callback,
+								   void *result,
+								   zend_object *exception)
 {
-	const fs_watcher_fs_callback_t *cb = (fs_watcher_fs_callback_t *)callback;
+	const fs_watcher_fs_callback_t *cb = (fs_watcher_fs_callback_t *) callback;
 	async_fs_watcher_t *watcher = cb->watcher;
 
 	if (UNEXPECTED(ASYNC_FS_WATCHER_IS_CLOSED(watcher))) {
@@ -215,8 +214,8 @@ static void fs_watcher_free_object(zend_object *object)
 		zend_hash_destroy(&watcher->coalesce_ht);
 	} else if (watcher->raw_buffer.data != NULL) {
 		zval tmp;
-		while (circular_buffer_is_not_empty(&watcher->raw_buffer)
-				&& zval_circular_buffer_pop(&watcher->raw_buffer, &tmp) == SUCCESS) {
+		while (circular_buffer_is_not_empty(&watcher->raw_buffer) &&
+			   zval_circular_buffer_pop(&watcher->raw_buffer, &tmp) == SUCCESS) {
 			zval_ptr_dtor(&tmp);
 		}
 		circular_buffer_dtor(&watcher->raw_buffer);
@@ -242,9 +241,11 @@ static HashTable *fs_watcher_get_gc(zend_object *object, zval **table, int *n)
 
 	if (ASYNC_FS_WATCHER_IS_COALESCE(watcher)) {
 		zval *zv;
-		ZEND_HASH_FOREACH_VAL(&watcher->coalesce_ht, zv) {
+		ZEND_HASH_FOREACH_VAL(&watcher->coalesce_ht, zv)
+		{
 			zend_get_gc_buffer_add_zval(buf, zv);
-		} ZEND_HASH_FOREACH_END();
+		}
+		ZEND_HASH_FOREACH_END();
 	}
 
 	zend_get_gc_buffer_use(buf, table, n);
@@ -262,10 +263,10 @@ FS_WATCHER_METHOD(__construct)
 	bool coalesce = true;
 
 	ZEND_PARSE_PARAMETERS_START(1, 3)
-		Z_PARAM_STR(path)
-		Z_PARAM_OPTIONAL
-		Z_PARAM_BOOL(recursive)
-		Z_PARAM_BOOL(coalesce)
+	Z_PARAM_STR(path)
+	Z_PARAM_OPTIONAL
+	Z_PARAM_BOOL(recursive)
+	Z_PARAM_BOOL(coalesce)
 	ZEND_PARSE_PARAMETERS_END();
 
 	async_fs_watcher_t *watcher = THIS_WATCHER;
@@ -274,9 +275,8 @@ FS_WATCHER_METHOD(__construct)
 		watcher->watcher_flags |= ASYNC_FS_WATCHER_F_COALESCE;
 		zend_hash_init(&watcher->coalesce_ht, 8, NULL, ZVAL_PTR_DTOR, 0);
 	} else {
-		if (UNEXPECTED(circular_buffer_ctor(
-				&watcher->raw_buffer, 8, sizeof(zval),
-				&zend_std_persistent_allocator) == FAILURE)) {
+		if (UNEXPECTED(circular_buffer_ctor(&watcher->raw_buffer, 8, sizeof(zval), &zend_std_persistent_allocator) ==
+					   FAILURE)) {
 			async_throw_error("Failed to allocate event buffer");
 			RETURN_THROWS();
 		}
@@ -332,25 +332,25 @@ FS_WATCHER_METHOD(isClosed)
 
 static void fs_watcher_iterator_dtor(zend_object_iterator *iter)
 {
-	fs_watcher_iterator_t *iterator = (fs_watcher_iterator_t *)iter;
+	fs_watcher_iterator_t *iterator = (fs_watcher_iterator_t *) iter;
 	zval_ptr_dtor(&iterator->current);
 	zval_ptr_dtor(&iterator->it.data);
 }
 
 static zend_result fs_watcher_iterator_valid(zend_object_iterator *iter)
 {
-	const fs_watcher_iterator_t *iterator = (fs_watcher_iterator_t *)iter;
+	const fs_watcher_iterator_t *iterator = (fs_watcher_iterator_t *) iter;
 	return iterator->valid ? SUCCESS : FAILURE;
 }
 
 static zval *fs_watcher_iterator_get_current_data(zend_object_iterator *iter)
 {
-	return &((fs_watcher_iterator_t *)iter)->current;
+	return &((fs_watcher_iterator_t *) iter)->current;
 }
 
 static void fs_watcher_iterator_move_forward(zend_object_iterator *iter)
 {
-	fs_watcher_iterator_t *iterator = (fs_watcher_iterator_t *)iter;
+	fs_watcher_iterator_t *iterator = (fs_watcher_iterator_t *) iter;
 	async_fs_watcher_t *watcher = iterator->watcher;
 
 retry:
@@ -382,9 +382,7 @@ retry:
 		return;
 	}
 
-	zend_async_resume_when(
-		coroutine, watcher->event, false,
-		zend_async_waker_callback_resolve, NULL);
+	zend_async_resume_when(coroutine, watcher->event, false, zend_async_waker_callback_resolve, NULL);
 
 	if (UNEXPECTED(EG(exception))) {
 		zend_async_waker_clean(coroutine);
@@ -405,7 +403,7 @@ retry:
 
 static void fs_watcher_iterator_rewind(zend_object_iterator *iter)
 {
-	fs_watcher_iterator_t *iterator = (fs_watcher_iterator_t *)iter;
+	fs_watcher_iterator_t *iterator = (fs_watcher_iterator_t *) iter;
 	if (!iterator->started) {
 		iterator->started = true;
 		fs_watcher_iterator_move_forward(iter);
@@ -421,8 +419,7 @@ static const zend_object_iterator_funcs fs_watcher_iterator_funcs = {
 	.rewind = fs_watcher_iterator_rewind,
 };
 
-static zend_object_iterator *fs_watcher_get_iterator(
-	zend_class_entry *ce, zval *object, int by_ref)
+static zend_object_iterator *fs_watcher_get_iterator(zend_class_entry *ce, zval *object, int by_ref)
 {
 	if (UNEXPECTED(by_ref)) {
 		zend_throw_error(NULL, "Cannot iterate FileSystemWatcher by reference");
@@ -457,8 +454,7 @@ void async_register_fs_watcher_ce(void)
 {
 	async_ce_filesystem_event = register_class_Async_FileSystemEvent();
 
-	async_ce_fs_watcher = register_class_Async_FileSystemWatcher(
-		async_ce_awaitable, zend_ce_aggregate);
+	async_ce_fs_watcher = register_class_Async_FileSystemWatcher(async_ce_awaitable, zend_ce_aggregate);
 
 	async_ce_fs_watcher->create_object = fs_watcher_create_object;
 	async_ce_fs_watcher->get_iterator = fs_watcher_get_iterator;

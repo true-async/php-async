@@ -23,28 +23,23 @@
 
 /* TaskGroup-specific event flags (bits 11+) */
 #define ASYNC_TASK_GROUP_F_COMPLETED (1u << 11)
-#define ASYNC_TASK_GROUP_F_SEALED    (1u << 12)
-#define ASYNC_TASK_GROUP_F_TASK_SET  (1u << 13)
+#define ASYNC_TASK_GROUP_F_SEALED (1u << 12)
+#define ASYNC_TASK_GROUP_F_TASK_SET (1u << 13)
 
-#define ASYNC_TASK_GROUP_IS_COMPLETED(group) \
-	(((group)->event.flags & ASYNC_TASK_GROUP_F_COMPLETED) != 0)
-#define ASYNC_TASK_GROUP_SET_COMPLETED(group) \
-	((group)->event.flags |= ASYNC_TASK_GROUP_F_COMPLETED)
+#define ASYNC_TASK_GROUP_IS_COMPLETED(group) (((group)->event.flags & ASYNC_TASK_GROUP_F_COMPLETED) != 0)
+#define ASYNC_TASK_GROUP_SET_COMPLETED(group) ((group)->event.flags |= ASYNC_TASK_GROUP_F_COMPLETED)
 
-#define ASYNC_TASK_GROUP_IS_SEALED(group) \
-	(((group)->event.flags & ASYNC_TASK_GROUP_F_SEALED) != 0)
-#define ASYNC_TASK_GROUP_SET_SEALED(group) \
-	((group)->event.flags |= ASYNC_TASK_GROUP_F_SEALED)
+#define ASYNC_TASK_GROUP_IS_SEALED(group) (((group)->event.flags & ASYNC_TASK_GROUP_F_SEALED) != 0)
+#define ASYNC_TASK_GROUP_SET_SEALED(group) ((group)->event.flags |= ASYNC_TASK_GROUP_F_SEALED)
 
-#define ASYNC_TASK_GROUP_IS_TASK_SET(group) \
-	(((group)->event.flags & ASYNC_TASK_GROUP_F_TASK_SET) != 0)
-#define ASYNC_TASK_GROUP_SET_TASK_SET(group) \
-	((group)->event.flags |= ASYNC_TASK_GROUP_F_TASK_SET)
+#define ASYNC_TASK_GROUP_IS_TASK_SET(group) (((group)->event.flags & ASYNC_TASK_GROUP_F_TASK_SET) != 0)
+#define ASYNC_TASK_GROUP_SET_TASK_SET(group) ((group)->event.flags |= ASYNC_TASK_GROUP_F_TASK_SET)
 
 typedef struct _async_task_group_s async_task_group_t;
 typedef struct _task_group_waiter_event_s task_group_waiter_event_t;
 
-struct _async_task_group_s {
+struct _async_task_group_s
+{
 	/* Event (must be first) — TaskGroup IS an event (Awaitable).
 	 * group->event == all() semantics.
 	 * Flags used:
@@ -85,12 +80,13 @@ struct _async_task_group_s {
 };
 
 /* Iterator for foreach support */
-typedef struct {
+typedef struct
+{
 	zend_object_iterator it;
 	async_task_group_t *group;
-	zval current;       /* [result, error] array */
-	zval current_key;   /* string|int key */
-	uint32_t position;  /* current HashTable index for ordered iteration */
+	zval current;      /* [result, error] array */
+	zval current_key;  /* string|int key */
+	uint32_t position; /* current HashTable index for ordered iteration */
 	bool valid;
 	bool started;
 } task_group_iterator_t;
@@ -100,12 +96,10 @@ extern zend_class_entry *async_ce_task_group;
 extern zend_class_entry *async_ce_task_set;
 
 /* Convert zend_object → async_task_group_t */
-#define ASYNC_TASK_GROUP_FROM_OBJ(obj) \
-	((async_task_group_t *)((char *)(obj) - XtOffsetOf(async_task_group_t, std)))
+#define ASYNC_TASK_GROUP_FROM_OBJ(obj) ((async_task_group_t *) ((char *) (obj) - XtOffsetOf(async_task_group_t, std)))
 
 /* Convert zend_async_event_t → async_task_group_t (event is first field) */
-#define ASYNC_TASK_GROUP_FROM_EVENT(ev) \
-	((async_task_group_t *)(ev))
+#define ASYNC_TASK_GROUP_FROM_EVENT(ev) ((async_task_group_t *) (ev))
 
 /* API */
 zend_async_group_t *async_new_group(uint32_t concurrency, zend_object *scope);

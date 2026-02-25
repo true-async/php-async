@@ -22,39 +22,47 @@
 #include "zend_interfaces.h"
 
 /* Task entry states — stored as IS_PTR in unified tasks HashTable */
-typedef enum {
-	TASK_STATE_PENDING,    /* callable waiting in queue (owns zend_fcall_t) */
-	TASK_STATE_RUNNING,    /* coroutine executing */
-	TASK_STATE_ERROR       /* coroutine finished with exception */
+typedef enum
+{
+	TASK_STATE_PENDING, /* callable waiting in queue (owns zend_fcall_t) */
+	TASK_STATE_RUNNING, /* coroutine executing */
+	TASK_STATE_ERROR    /* coroutine finished with exception */
 } task_state_t;
 
-typedef struct {
+typedef struct
+{
 	task_state_t state;
-	union {
-		zend_fcall_t *fcall;       /* TASK_STATE_PENDING (owned, freed on transition or cancel) */
-		zend_object *coroutine;    /* TASK_STATE_RUNNING (ref-counted) */
-		zend_object *exception;    /* TASK_STATE_ERROR (ref-counted) */
+
+	union
+	{
+		zend_fcall_t *fcall;    /* TASK_STATE_PENDING (owned, freed on transition or cancel) */
+		zend_object *coroutine; /* TASK_STATE_RUNNING (ref-counted) */
+		zend_object *exception; /* TASK_STATE_ERROR (ref-counted) */
 	};
 } task_entry_t;
 
 /* Waiter types determine notification and lifetime semantics */
-typedef enum {
-	WAITER_TYPE_RACE,               /* resolve future on any completion (success or error) */
-	WAITER_TYPE_ANY,                /* resolve future on first success, reject when all failed */
-	WAITER_TYPE_ALL,                /* resolve future when all settled, reject on errors */
-	WAITER_TYPE_ALL_IGNORE_ERRORS,  /* resolve future when all settled, ignore errors */
-	WAITER_TYPE_ITERATOR            /* notify via callbacks on any completion (no future) */
+typedef enum
+{
+	WAITER_TYPE_RACE,              /* resolve future on any completion (success or error) */
+	WAITER_TYPE_ANY,               /* resolve future on first success, reject when all failed */
+	WAITER_TYPE_ALL,               /* resolve future when all settled, reject on errors */
+	WAITER_TYPE_ALL_IGNORE_ERRORS, /* resolve future when all settled, ignore errors */
+	WAITER_TYPE_ITERATOR           /* notify via callbacks on any completion (no future) */
 } task_group_waiter_type_t;
 
 /* Waiter event — union of event (for iterator) and future (for race/any/all).
  * zend_future_t has zend_async_event_t as first member, so cast to event always works.
  * For RACE/ANY/ALL: created via ZEND_ASYNC_NEW_FUTURE_EX, resolved by group, returned as Future.
  * For ITERATOR: uses event part only, notified via ZEND_ASYNC_CALLBACKS_NOTIFY. */
-struct _task_group_waiter_event_s {
-	union {
-		zend_async_event_t event;   /* ITERATOR: lightweight event */
-		zend_future_t future;       /* RACE/ANY/ALL: full future */
+struct _task_group_waiter_event_s
+{
+	union
+	{
+		zend_async_event_t event; /* ITERATOR: lightweight event */
+		zend_future_t future;     /* RACE/ANY/ALL: full future */
 	};
+
 	async_task_group_t *group;
 	task_group_waiter_type_t type;
 	zend_async_event_dispose_t original_dispose;
@@ -89,7 +97,7 @@ static bool waiter_event_stop(zend_async_event_t *event)
 
 static bool waiter_iterator_dispose(zend_async_event_t *event)
 {
-	task_group_waiter_event_t *waiter = (task_group_waiter_event_t *)event;
+	task_group_waiter_event_t *waiter = (task_group_waiter_event_t *) event;
 
 	task_group_waiter_event_remove(waiter);
 	zend_async_callbacks_free(event);
@@ -103,7 +111,7 @@ static bool waiter_iterator_dispose(zend_async_event_t *event)
 
 static bool waiter_future_dispose(zend_async_event_t *event)
 {
-	task_group_waiter_event_t *waiter = (task_group_waiter_event_t *)event;
+	task_group_waiter_event_t *waiter = (task_group_waiter_event_t *) event;
 
 	task_group_waiter_event_remove(waiter);
 
@@ -146,13 +154,13 @@ static task_group_waiter_event_t *task_group_waiter_iterator_new(async_task_grou
 }
 
 /* Create future waiter for race/any/all — extends zend_future_t */
-static task_group_waiter_event_t *task_group_waiter_future_new(
-	async_task_group_t *group, const task_group_waiter_type_t type)
+static task_group_waiter_event_t *task_group_waiter_future_new(async_task_group_t *group,
+															   const task_group_waiter_type_t type)
 {
 	const size_t extra_size = sizeof(task_group_waiter_event_t) - sizeof(zend_future_t);
 	zend_future_t *future = ZEND_ASYNC_NEW_FUTURE_EX(false, extra_size);
 
-	task_group_waiter_event_t *waiter = (task_group_waiter_event_t *)future;
+	task_group_waiter_event_t *waiter = (task_group_waiter_event_t *) future;
 	waiter->group = group;
 	waiter->type = type;
 
@@ -203,8 +211,10 @@ static bool task_group_all_settled(const async_task_group_t *group);
 static bool task_group_has_pending(const async_task_group_t *group);
 static HashTable *task_group_collect_results(const async_task_group_t *group);
 static zend_object *task_group_collect_composite_exception(const async_task_group_t *group);
-static void task_group_on_coroutine_complete(
-	zend_async_event_t *event, zend_async_event_callback_t *callback, void *result, zend_object *exception);
+static void task_group_on_coroutine_complete(zend_async_event_t *event,
+											 zend_async_event_callback_t *callback,
+											 void *result,
+											 zend_object *exception);
 
 ///////////////////////////////////////////////////////////
 /// task_entry_t lifecycle
@@ -247,7 +257,7 @@ static void task_entry_free(task_entry_t *entry)
 static void task_zval_dtor(zval *zv)
 {
 	if (Z_TYPE_P(zv) == IS_PTR) {
-		task_entry_free((task_entry_t *)Z_PTR_P(zv));
+		task_entry_free((task_entry_t *) Z_PTR_P(zv));
 	} else {
 		zval_ptr_dtor(zv);
 	}
@@ -259,12 +269,12 @@ static void task_zval_dtor(zval *zv)
 
 static zend_always_inline bool task_is_pending(const zval *zv)
 {
-	return Z_TYPE_P(zv) == IS_PTR && ((task_entry_t *)Z_PTR_P(zv))->state == TASK_STATE_PENDING;
+	return Z_TYPE_P(zv) == IS_PTR && ((task_entry_t *) Z_PTR_P(zv))->state == TASK_STATE_PENDING;
 }
 
 static zend_always_inline bool task_is_error(const zval *zv)
 {
-	return Z_TYPE_P(zv) == IS_PTR && ((task_entry_t *)Z_PTR_P(zv))->state == TASK_STATE_ERROR;
+	return Z_TYPE_P(zv) == IS_PTR && ((task_entry_t *) Z_PTR_P(zv))->state == TASK_STATE_ERROR;
 }
 
 static zend_always_inline bool task_is_completed(const zval *zv)
@@ -282,11 +292,13 @@ static zend_always_inline bool task_group_all_settled(const async_task_group_t *
 static bool task_group_has_pending(const async_task_group_t *group)
 {
 	zval *zv;
-	ZEND_HASH_FOREACH_VAL(&group->tasks, zv) {
+	ZEND_HASH_FOREACH_VAL(&group->tasks, zv)
+	{
 		if (task_is_pending(zv)) {
 			return true;
 		}
-	} ZEND_HASH_FOREACH_END();
+	}
+	ZEND_HASH_FOREACH_END();
 	return false;
 }
 
@@ -294,7 +306,8 @@ static bool task_group_has_pending(const async_task_group_t *group)
 /// Extended callback — holds task key reference
 ///////////////////////////////////////////////////////////
 
-typedef struct {
+typedef struct
+{
 	zend_coroutine_event_callback_t base;
 	async_task_group_t *group;
 	zval key;
@@ -302,7 +315,7 @@ typedef struct {
 
 static void task_group_callback_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event)
 {
-	task_group_coroutine_callback_t *cb = (task_group_coroutine_callback_t *)callback;
+	task_group_coroutine_callback_t *cb = (task_group_coroutine_callback_t *) callback;
 	zval_ptr_dtor(&cb->key);
 	efree(cb);
 }
@@ -337,7 +350,9 @@ static bool task_group_dispose(zend_async_event_t *event)
 }
 
 static bool task_group_replay(zend_async_event_t *event,
-	zend_async_event_callback_t *callback, zval *result, zend_object **exception)
+							  zend_async_event_callback_t *callback,
+							  zval *result,
+							  zend_object **exception)
 {
 	const async_task_group_t *group = ASYNC_TASK_GROUP_FROM_EVENT(event);
 
@@ -422,16 +437,18 @@ static void task_group_dtor_object(zend_object *object)
 		zend_object *composite = NULL;
 		zval *zv;
 
-		ZEND_HASH_FOREACH_VAL(&group->tasks, zv) {
+		ZEND_HASH_FOREACH_VAL(&group->tasks, zv)
+		{
 			if (task_is_error(zv)) {
 				if (!has_errors) {
 					composite = async_new_composite_exception();
 					has_errors = true;
 				}
 
-				async_composite_exception_add_exception(composite, ((task_entry_t *)Z_PTR_P(zv))->exception, false);
+				async_composite_exception_add_exception(composite, ((task_entry_t *) Z_PTR_P(zv))->exception, false);
 			}
-		} ZEND_HASH_FOREACH_END();
+		}
+		ZEND_HASH_FOREACH_END();
 
 		if (has_errors) {
 			ZEND_ASYNC_SCOPE_CATCH(&group->scope->scope, NULL, NULL, composite, true, false);
@@ -503,9 +520,10 @@ static HashTable *task_group_get_gc(zend_object *object, zval **table, int *n)
 
 	/* GC all task entries */
 	zval *zv;
-	ZEND_HASH_FOREACH_VAL(&group->tasks, zv) {
+	ZEND_HASH_FOREACH_VAL(&group->tasks, zv)
+	{
 		if (Z_TYPE_P(zv) == IS_PTR) {
-			task_entry_t *entry = (task_entry_t *)Z_PTR_P(zv);
+			task_entry_t *entry = (task_entry_t *) Z_PTR_P(zv);
 			switch (entry->state) {
 				case TASK_STATE_PENDING:
 					if (entry->fcall != NULL) {
@@ -525,13 +543,16 @@ static HashTable *task_group_get_gc(zend_object *object, zval **table, int *n)
 		} else {
 			zend_get_gc_buffer_add_zval(buf, zv);
 		}
-	} ZEND_HASH_FOREACH_END();
+	}
+	ZEND_HASH_FOREACH_END();
 
 	/* GC finally handlers */
 	if (group->finally_handlers != NULL) {
-		ZEND_HASH_FOREACH_VAL(group->finally_handlers, zv) {
+		ZEND_HASH_FOREACH_VAL(group->finally_handlers, zv)
+		{
 			zend_get_gc_buffer_add_zval(buf, zv);
-		} ZEND_HASH_FOREACH_END();
+		}
+		ZEND_HASH_FOREACH_END();
 	}
 
 	zend_get_gc_buffer_use(buf, table, n);
@@ -552,8 +573,7 @@ static void task_group_finally_handlers_dtor(finally_handlers_context_t *context
 }
 
 /* TaskSet: remove a delivered entry by key zval (IS_STRING or IS_LONG). */
-static zend_always_inline void task_set_remove_entry_by_zval(
-	async_task_group_t *group, const zval *key)
+static zend_always_inline void task_set_remove_entry_by_zval(async_task_group_t *group, const zval *key)
 {
 	if (!ASYNC_TASK_GROUP_IS_TASK_SET(group)) {
 		return;
@@ -566,8 +586,8 @@ static zend_always_inline void task_set_remove_entry_by_zval(
 }
 
 /* TaskSet: remove a delivered entry by hash key (for FOREACH_KEY_VAL loops). */
-static zend_always_inline void task_set_remove_entry(
-	async_task_group_t *group, zend_string *str_key, const zend_ulong num_key)
+static zend_always_inline void
+task_set_remove_entry(async_task_group_t *group, zend_string *str_key, const zend_ulong num_key)
 {
 	if (!ASYNC_TASK_GROUP_IS_TASK_SET(group)) {
 		return;
@@ -606,7 +626,7 @@ static void task_group_try_complete(async_task_group_t *group)
 				if (has_errors) {
 					zend_object *composite = task_group_collect_composite_exception(group);
 					ZEND_FUTURE_REJECT(&waiter->future, composite);
-					//ZEND_FUTURE_SET_EXCEPTION_CAUGHT(&waiter->future);
+					// ZEND_FUTURE_SET_EXCEPTION_CAUGHT(&waiter->future);
 					OBJ_RELEASE(composite);
 				} else {
 					HashTable *results = task_group_collect_results(group);
@@ -633,7 +653,7 @@ static void task_group_try_complete(async_task_group_t *group)
 			case WAITER_TYPE_ANY: {
 				zend_object *composite = task_group_collect_composite_exception(group);
 				ZEND_FUTURE_REJECT(&waiter->future, composite);
-				//ZEND_FUTURE_SET_EXCEPTION_CAUGHT(&waiter->future);
+				// ZEND_FUTURE_SET_EXCEPTION_CAUGHT(&waiter->future);
 				OBJ_RELEASE(composite);
 				task_group_waiter_event_remove(waiter);
 				break;
@@ -684,10 +704,11 @@ static void task_group_try_complete(async_task_group_t *group)
 
 static bool task_group_has_slot(const async_task_group_t *group)
 {
-	return group->concurrency == 0 || group->active_coroutines < (int32_t)group->concurrency;
+	return group->concurrency == 0 || group->active_coroutines < (int32_t) group->concurrency;
 }
 
-static void task_group_spawn_coroutine(async_task_group_t *group, zend_fcall_t *fcall, zval *key, task_entry_t *pending_entry)
+static void
+task_group_spawn_coroutine(async_task_group_t *group, zend_fcall_t *fcall, zval *key, task_entry_t *pending_entry)
 {
 	/* Create coroutine in group's scope */
 	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_SPAWN_WITH(&group->scope->scope);
@@ -757,7 +778,7 @@ static void task_group_drain(async_task_group_t *group)
 			break;
 		}
 
-		task_entry_t *entry = (task_entry_t *)Z_PTR_P(zv);
+		task_entry_t *entry = (task_entry_t *) Z_PTR_P(zv);
 
 		zval key_zv;
 		zend_hash_get_current_key_zval(&group->tasks, &key_zv);
@@ -773,10 +794,12 @@ static void task_group_drain(async_task_group_t *group)
 	}
 }
 
-static void task_group_on_coroutine_complete(
-	zend_async_event_t *event, zend_async_event_callback_t *callback, void *result, zend_object *exception)
+static void task_group_on_coroutine_complete(zend_async_event_t *event,
+											 zend_async_event_callback_t *callback,
+											 void *result,
+											 zend_object *exception)
 {
-	const task_group_coroutine_callback_t *group_callback = (task_group_coroutine_callback_t *)callback;
+	const task_group_coroutine_callback_t *group_callback = (task_group_coroutine_callback_t *) callback;
 	async_task_group_t *group = group_callback->group;
 	zval *slot;
 	task_entry_t *old_entry;
@@ -792,7 +815,7 @@ static void task_group_on_coroutine_complete(
 		goto done;
 	}
 
-	old_entry = (task_entry_t *)Z_PTR_P(slot);
+	old_entry = (task_entry_t *) Z_PTR_P(slot);
 
 	if (exception != NULL) {
 		/* Mark exception as handled on the coroutine so it won't propagate */
@@ -808,7 +831,7 @@ static void task_group_on_coroutine_complete(
 		ZEND_ASYNC_EVENT_CLR_EXCEPTION_HANDLED(&group->event);
 	} else {
 		/* Transition: RUNNING → success (replace IS_PTR with result zval) */
-		const zval *result_zv = (zval *)result;
+		const zval *result_zv = (zval *) result;
 		zval result_copy;
 
 		if (result_zv != NULL && Z_TYPE_P(result_zv) != IS_UNDEF) {
@@ -832,7 +855,7 @@ done:
 	/* Notify waiter events based on type.
 	 * Use waiter_notify_index for safe iteration — remove may shift vector. */
 	const bool is_success = (exception == NULL);
-	const zval *result_zval = (zval *)result;
+	const zval *result_zval = (zval *) result;
 
 	group->waiter_notify_index = 0;
 	while (group->waiter_notify_index < group->waiter_events_length) {
@@ -845,7 +868,7 @@ done:
 					ZEND_FUTURE_COMPLETE(&waiter->future, result_zval);
 				} else {
 					ZEND_FUTURE_REJECT(&waiter->future, exception);
-					//ZEND_FUTURE_SET_EXCEPTION_CAUGHT(&waiter->future);
+					// ZEND_FUTURE_SET_EXCEPTION_CAUGHT(&waiter->future);
 				}
 				task_set_remove_entry_by_zval(group, &group_callback->key);
 				task_group_waiter_event_remove(waiter);
@@ -891,7 +914,8 @@ static HashTable *task_group_collect_results(const async_task_group_t *group)
 	zend_string *str_key;
 	zend_ulong num_key;
 
-	ZEND_HASH_FOREACH_KEY_VAL(&group->tasks, num_key, str_key, zv) {
+	ZEND_HASH_FOREACH_KEY_VAL(&group->tasks, num_key, str_key, zv)
+	{
 		if (task_is_completed(zv)) {
 			zval copy;
 			ZVAL_COPY(&copy, zv);
@@ -901,7 +925,8 @@ static HashTable *task_group_collect_results(const async_task_group_t *group)
 				zend_hash_index_add_new(ht, num_key, &copy);
 			}
 		}
-	} ZEND_HASH_FOREACH_END();
+	}
+	ZEND_HASH_FOREACH_END();
 
 	return ht;
 }
@@ -909,11 +934,13 @@ static HashTable *task_group_collect_results(const async_task_group_t *group)
 static bool task_group_has_errors(const async_task_group_t *group)
 {
 	zval *zv;
-	ZEND_HASH_FOREACH_VAL(&group->tasks, zv) {
+	ZEND_HASH_FOREACH_VAL(&group->tasks, zv)
+	{
 		if (task_is_error(zv)) {
 			return true;
 		}
-	} ZEND_HASH_FOREACH_END();
+	}
+	ZEND_HASH_FOREACH_END();
 	return false;
 }
 
@@ -922,11 +949,13 @@ static zend_object *task_group_collect_composite_exception(const async_task_grou
 	zend_object *composite = async_new_composite_exception();
 	zval *zv;
 
-	ZEND_HASH_FOREACH_VAL(&group->tasks, zv) {
+	ZEND_HASH_FOREACH_VAL(&group->tasks, zv)
+	{
 		if (task_is_error(zv)) {
-			async_composite_exception_add_exception(composite, ((task_entry_t *)Z_PTR_P(zv))->exception, false);
+			async_composite_exception_add_exception(composite, ((task_entry_t *) Z_PTR_P(zv))->exception, false);
 		}
-	} ZEND_HASH_FOREACH_END();
+	}
+	ZEND_HASH_FOREACH_END();
 
 	return composite;
 }
@@ -938,17 +967,19 @@ static HashTable *task_group_collect_errors(const async_task_group_t *group)
 	zend_string *str_key;
 	zend_ulong num_key;
 
-	ZEND_HASH_FOREACH_KEY_VAL(&group->tasks, num_key, str_key, zv) {
+	ZEND_HASH_FOREACH_KEY_VAL(&group->tasks, num_key, str_key, zv)
+	{
 		if (task_is_error(zv)) {
 			zval err;
-			ZVAL_OBJ_COPY(&err, ((task_entry_t *)Z_PTR_P(zv))->exception);
+			ZVAL_OBJ_COPY(&err, ((task_entry_t *) Z_PTR_P(zv))->exception);
 			if (str_key != NULL) {
 				zend_hash_add_new(ht, str_key, &err);
 			} else {
 				zend_hash_index_add_new(ht, num_key, &err);
 			}
 		}
-	} ZEND_HASH_FOREACH_END();
+	}
+	ZEND_HASH_FOREACH_END();
 
 	return ht;
 }
@@ -959,7 +990,7 @@ static HashTable *task_group_collect_errors(const async_task_group_t *group)
 
 static void task_group_iterator_dtor(zend_object_iterator *iter)
 {
-	task_group_iterator_t *iterator = (task_group_iterator_t *)iter;
+	task_group_iterator_t *iterator = (task_group_iterator_t *) iter;
 	zval_ptr_dtor(&iterator->current);
 	zval_ptr_dtor(&iterator->current_key);
 	zval_ptr_dtor(&iter->data);
@@ -967,22 +998,22 @@ static void task_group_iterator_dtor(zend_object_iterator *iter)
 
 static zend_result task_group_iterator_valid(zend_object_iterator *iter)
 {
-	return ((task_group_iterator_t *)iter)->valid ? SUCCESS : FAILURE;
+	return ((task_group_iterator_t *) iter)->valid ? SUCCESS : FAILURE;
 }
 
 static zval *task_group_iterator_get_current_data(zend_object_iterator *iter)
 {
-	return &((task_group_iterator_t *)iter)->current;
+	return &((task_group_iterator_t *) iter)->current;
 }
 
 static void task_group_iterator_get_current_key(zend_object_iterator *iter, zval *key)
 {
-	task_group_iterator_t *iterator = (task_group_iterator_t *)iter;
+	task_group_iterator_t *iterator = (task_group_iterator_t *) iter;
 	ZVAL_COPY(key, &iterator->current_key);
 }
 
-static void task_group_iterator_set_current(task_group_iterator_t *iterator,
-	zval *key, zval *result, zend_object *error)
+static void
+task_group_iterator_set_current(task_group_iterator_t *iterator, zval *key, zval *result, zend_object *error)
 {
 	zval_ptr_dtor(&iterator->current);
 	zval_ptr_dtor(&iterator->current_key);
@@ -1017,7 +1048,7 @@ static void task_group_iterator_set_current(task_group_iterator_t *iterator,
 
 static void task_group_iterator_move_forward(zend_object_iterator *iter)
 {
-	task_group_iterator_t *iterator = (task_group_iterator_t *)iter;
+	task_group_iterator_t *iterator = (task_group_iterator_t *) iter;
 	async_task_group_t *group = iterator->group;
 	uint32_t idx;
 	zval *zv;
@@ -1029,7 +1060,8 @@ retry:
 	/* Walk tasks in spawn order, starting from current position */
 	idx = 0;
 
-	ZEND_HASH_FOREACH_KEY_VAL(&group->tasks, num_key, str_key, zv) {
+	ZEND_HASH_FOREACH_KEY_VAL(&group->tasks, num_key, str_key, zv)
+	{
 		if (idx < iterator->position) {
 			idx++;
 			continue;
@@ -1054,7 +1086,7 @@ retry:
 		}
 
 		if (task_is_error(zv)) {
-			task_entry_t *entry = (task_entry_t *)Z_PTR_P(zv);
+			task_entry_t *entry = (task_entry_t *) Z_PTR_P(zv);
 			zval key_zv;
 			if (str_key != NULL) {
 				ZVAL_STR_COPY(&key_zv, str_key);
@@ -1073,19 +1105,19 @@ retry:
 
 		/* PENDING or RUNNING — need to wait */
 		break;
-	} ZEND_HASH_FOREACH_END();
+	}
+	ZEND_HASH_FOREACH_END();
 
 	/* Check termination: past all elements */
 	if (iterator->position >= zend_hash_num_elements(&group->tasks)) {
-		if (ASYNC_TASK_GROUP_IS_SEALED(group) && group->active_coroutines == 0
-			&& !task_group_has_pending(group)) {
+		if (ASYNC_TASK_GROUP_IS_SEALED(group) && group->active_coroutines == 0 && !task_group_has_pending(group)) {
 			iterator->valid = false;
 			return;
 		}
 	}
 
 	/* Async — suspend and wait for next result */
-	current = (zend_coroutine_t *)ZEND_ASYNC_CURRENT_COROUTINE;
+	current = (zend_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
 
 	if (UNEXPECTED(current == NULL)) {
 		async_throw_error("TaskGroup iterator can only be used inside a coroutine");
@@ -1125,7 +1157,7 @@ retry:
 
 static void task_group_iterator_rewind(zend_object_iterator *iter)
 {
-	task_group_iterator_t *iterator = (task_group_iterator_t *)iter;
+	task_group_iterator_t *iterator = (task_group_iterator_t *) iter;
 	if (!iterator->started) {
 		iterator->started = true;
 		task_group_iterator_move_forward(iter);
@@ -1184,7 +1216,7 @@ zend_async_group_t *async_new_group(uint32_t concurrency, zend_object *scope_obj
 	group->concurrency = concurrency;
 
 	if (scope_obj != NULL) {
-		const async_scope_object_t *scope_object = (async_scope_object_t *)scope_obj;
+		const async_scope_object_t *scope_object = (async_scope_object_t *) scope_obj;
 		if (UNEXPECTED(scope_object->scope == NULL)) {
 			async_throw_error("Cannot use a disposed Scope for TaskGroup");
 			zval_ptr_dtor(&zv);
@@ -1202,10 +1234,10 @@ zend_async_group_t *async_new_group(uint32_t concurrency, zend_object *scope_obj
 		}
 
 		ZEND_ASYNC_EVENT_ADD_REF(&child_scope->event);
-		group->scope = (async_scope_t *)child_scope;
+		group->scope = (async_scope_t *) child_scope;
 	}
 
-	return (zend_async_group_t *)group;
+	return (zend_async_group_t *) group;
 }
 
 ///////////////////////////////////////////////////////////
@@ -1218,9 +1250,9 @@ METHOD(__construct)
 	zend_object *scope_obj = NULL;
 
 	ZEND_PARSE_PARAMETERS_START(0, 2)
-		Z_PARAM_OPTIONAL
-		Z_PARAM_LONG(concurrency)
-		Z_PARAM_OBJ_OF_CLASS_OR_NULL(scope_obj, async_ce_scope)
+	Z_PARAM_OPTIONAL
+	Z_PARAM_LONG(concurrency)
+	Z_PARAM_OBJ_OF_CLASS_OR_NULL(scope_obj, async_ce_scope)
 	ZEND_PARSE_PARAMETERS_END();
 
 	async_task_group_t *group = THIS_GROUP();
@@ -1229,10 +1261,10 @@ METHOD(__construct)
 		zend_argument_value_error(1, "must be greater than or equal to 0");
 		RETURN_THROWS();
 	}
-	group->concurrency = (uint32_t)concurrency;
+	group->concurrency = (uint32_t) concurrency;
 
 	if (scope_obj != NULL) {
-		const async_scope_object_t *scope_object = (async_scope_object_t *)scope_obj;
+		const async_scope_object_t *scope_object = (async_scope_object_t *) scope_obj;
 		if (UNEXPECTED(scope_object->scope == NULL)) {
 			async_throw_error("Cannot use a disposed Scope for TaskGroup");
 			RETURN_THROWS();
@@ -1251,13 +1283,18 @@ METHOD(__construct)
 		 * Without this, when all spawned coroutines complete, scope_dispose()
 		 * would free the scope while the TaskGroup still holds a pointer to it. */
 		ZEND_ASYNC_EVENT_ADD_REF(&child_scope->event);
-		group->scope = (async_scope_t *)child_scope;
+		group->scope = (async_scope_t *) child_scope;
 	}
 }
 
 /* Internal spawn implementation shared by spawn() and spawnWithKey() */
-static void task_group_do_spawn(async_task_group_t *group, zval *key_zv,
-	zend_fcall_info *fci, zend_fcall_info_cache *fcc, zval *args, int args_count, HashTable *named_args)
+static void task_group_do_spawn(async_task_group_t *group,
+								zval *key_zv,
+								zend_fcall_info *fci,
+								zend_fcall_info_cache *fcc,
+								zval *args,
+								int args_count,
+								HashTable *named_args)
 {
 	/* Check sealed/completed */
 	if (UNEXPECTED(ASYNC_TASK_GROUP_IS_SEALED(group))) {
@@ -1315,8 +1352,8 @@ METHOD(spawn)
 	zend_fcall_info_cache fcc;
 
 	ZEND_PARSE_PARAMETERS_START(1, -1)
-		Z_PARAM_FUNC(fci, fcc)
-		Z_PARAM_VARIADIC_WITH_NAMED(args, args_count, named_args)
+	Z_PARAM_FUNC(fci, fcc)
+	Z_PARAM_VARIADIC_WITH_NAMED(args, args_count, named_args)
 	ZEND_PARSE_PARAMETERS_END();
 
 	async_task_group_t *group = THIS_GROUP();
@@ -1337,9 +1374,9 @@ METHOD(spawnWithKey)
 	zend_fcall_info_cache fcc;
 
 	ZEND_PARSE_PARAMETERS_START(2, -1)
-		Z_PARAM_ZVAL(key)
-		Z_PARAM_FUNC(fci, fcc)
-		Z_PARAM_VARIADIC_WITH_NAMED(args, args_count, named_args)
+	Z_PARAM_ZVAL(key)
+	Z_PARAM_FUNC(fci, fcc)
+	Z_PARAM_VARIADIC_WITH_NAMED(args, args_count, named_args)
 	ZEND_PARSE_PARAMETERS_END();
 
 	async_task_group_t *group = THIS_GROUP();
@@ -1356,8 +1393,8 @@ METHOD(all)
 	bool ignore_errors = false;
 
 	ZEND_PARSE_PARAMETERS_START(0, 1)
-		Z_PARAM_OPTIONAL
-		Z_PARAM_BOOL(ignore_errors)
+	Z_PARAM_OPTIONAL
+	Z_PARAM_BOOL(ignore_errors)
 	ZEND_PARSE_PARAMETERS_END();
 
 	async_task_group_t *group = THIS_GROUP();
@@ -1370,7 +1407,7 @@ METHOD(all)
 		if (!ignore_errors && task_group_has_errors(group)) {
 			zend_object *composite = task_group_collect_composite_exception(group);
 			ZEND_FUTURE_REJECT(&waiter->future, composite);
-			//ZEND_FUTURE_SET_EXCEPTION_CAUGHT(&waiter->future);
+			// ZEND_FUTURE_SET_EXCEPTION_CAUGHT(&waiter->future);
 			OBJ_RELEASE(composite);
 		} else {
 			HashTable *results = task_group_collect_results(group);
@@ -1405,20 +1442,22 @@ METHOD(race)
 	zend_string *str_key;
 	zend_ulong num_key;
 
-	ZEND_HASH_FOREACH_KEY_VAL(&group->tasks, num_key, str_key, zv) {
+	ZEND_HASH_FOREACH_KEY_VAL(&group->tasks, num_key, str_key, zv)
+	{
 		if (task_is_completed(zv)) {
 			ZEND_FUTURE_COMPLETE(&waiter->future, zv);
 			task_set_remove_entry(group, str_key, num_key);
 			goto return_future;
 		}
 		if (task_is_error(zv)) {
-			const task_entry_t *entry = (task_entry_t *)Z_PTR_P(zv);
+			const task_entry_t *entry = (task_entry_t *) Z_PTR_P(zv);
 			ZEND_FUTURE_REJECT(&waiter->future, entry->exception);
-			//ZEND_FUTURE_SET_EXCEPTION_CAUGHT(&waiter->future);
+			// ZEND_FUTURE_SET_EXCEPTION_CAUGHT(&waiter->future);
 			task_set_remove_entry(group, str_key, num_key);
 			goto return_future;
 		}
-	} ZEND_HASH_FOREACH_END();
+	}
+	ZEND_HASH_FOREACH_END();
 
 return_future:
 	RETURN_OBJ(ZEND_ASYNC_NEW_FUTURE_OBJ(&waiter->future));
@@ -1443,19 +1482,21 @@ METHOD(any)
 	zend_string *str_key;
 	zend_ulong num_key;
 
-	ZEND_HASH_FOREACH_KEY_VAL(&group->tasks, num_key, str_key, zv) {
+	ZEND_HASH_FOREACH_KEY_VAL(&group->tasks, num_key, str_key, zv)
+	{
 		if (task_is_completed(zv)) {
 			ZEND_FUTURE_COMPLETE(&waiter->future, zv);
 			task_set_remove_entry(group, str_key, num_key);
 			goto return_future;
 		}
-	} ZEND_HASH_FOREACH_END();
+	}
+	ZEND_HASH_FOREACH_END();
 
 	/* All settled with errors only → reject immediately */
 	if (task_group_all_settled(group) && !task_group_has_pending(group)) {
 		zend_object *composite = task_group_collect_composite_exception(group);
 		ZEND_FUTURE_REJECT(&waiter->future, composite);
-		//ZEND_FUTURE_SET_EXCEPTION_CAUGHT(&waiter->future);
+		// ZEND_FUTURE_SET_EXCEPTION_CAUGHT(&waiter->future);
 		OBJ_RELEASE(composite);
 	}
 
@@ -1493,8 +1534,8 @@ METHOD(cancel)
 	zend_object *cancellation_obj = NULL;
 
 	ZEND_PARSE_PARAMETERS_START(0, 1)
-		Z_PARAM_OPTIONAL
-		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation_obj, ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION))
+	Z_PARAM_OPTIONAL
+	Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation_obj, ZEND_ASYNC_GET_EXCEPTION_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION))
 	ZEND_PARSE_PARAMETERS_END();
 
 	async_task_group_t *group = THIS_GROUP();
@@ -1519,8 +1560,8 @@ METHOD(cancel)
 			exception = async_new_exception(async_ce_cancellation_exception, "TaskGroup cancelled");
 		}
 
-		ZEND_ASYNC_SCOPE_CANCEL(&group->scope->scope, exception, true,
-			ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(&group->scope->scope));
+		ZEND_ASYNC_SCOPE_CANCEL(
+				&group->scope->scope, exception, true, ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(&group->scope->scope));
 	}
 
 	task_group_try_complete(group);
@@ -1548,10 +1589,10 @@ METHOD(dispose)
 
 	if (group->scope != NULL && false == group->scope->scope.try_to_dispose(&group->scope->scope)) {
 		zend_object *exception = async_new_exception(async_ce_cancellation_exception,
-			"Scope is being disposed due to TaskGroup disposal");
+													 "Scope is being disposed due to TaskGroup disposal");
 
-		ZEND_ASYNC_SCOPE_CANCEL(&group->scope->scope, exception, true,
-			ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(&group->scope->scope));
+		ZEND_ASYNC_SCOPE_CANCEL(
+				&group->scope->scope, exception, true, ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(&group->scope->scope));
 	}
 }
 
@@ -1637,7 +1678,7 @@ METHOD(finally)
 	zval *callback;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_ZVAL(callback)
+	Z_PARAM_ZVAL(callback)
 	ZEND_PARSE_PARAMETERS_END();
 
 	async_task_group_t *group = THIS_GROUP();
@@ -1685,11 +1726,7 @@ METHOD(getIterator)
 
 void async_register_task_group_ce(void)
 {
-	async_ce_task_group = register_class_Async_TaskGroup(
-		async_ce_awaitable,
-		zend_ce_countable,
-		zend_ce_aggregate
-	);
+	async_ce_task_group = register_class_Async_TaskGroup(async_ce_awaitable, zend_ce_countable, zend_ce_aggregate);
 
 	async_ce_task_group->create_object = task_group_create_object;
 	async_ce_task_group->get_iterator = task_group_get_iterator;
@@ -1716,11 +1753,7 @@ static zend_object *task_set_create_object(zend_class_entry *ce)
 
 void async_register_task_set_ce(void)
 {
-	async_ce_task_set = register_class_Async_TaskSet(
-		async_ce_awaitable,
-		zend_ce_countable,
-		zend_ce_aggregate
-	);
+	async_ce_task_set = register_class_Async_TaskSet(async_ce_awaitable, zend_ce_countable, zend_ce_aggregate);
 
 	async_ce_task_set->create_object = task_set_create_object;
 	async_ce_task_set->get_iterator = task_group_get_iterator;

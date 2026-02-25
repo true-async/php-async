@@ -67,9 +67,10 @@ static zend_object_handlers async_channel_handlers;
 // Waiter
 ///////////////////////////////////////////////////////////////////////////////
 
-typedef struct {
-	zend_coroutine_event_callback_t callback;  /* inherits from coroutine callback */
-	zend_future_t *future;                      /* NULL for coroutine waiter */
+typedef struct
+{
+	zend_coroutine_event_callback_t callback; /* inherits from coroutine callback */
+	zend_future_t *future;                    /* NULL for coroutine waiter */
 } channel_waiter_t;
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -92,7 +93,7 @@ static zend_always_inline bool channel_is_empty(async_channel_t *channel)
 static zend_always_inline bool channel_is_full(async_channel_t *channel)
 {
 	if (channel_is_buffered(channel)) {
-		return circular_buffer_count(&channel->buffer) >= (size_t)channel->capacity;
+		return circular_buffer_count(&channel->buffer) >= (size_t) channel->capacity;
 	}
 	return channel->rendezvous_has_value;
 }
@@ -138,7 +139,7 @@ static void channel_queue_push(zend_async_callbacks_vector_t *queue, channel_wai
 		queue->capacity = new_capacity;
 	}
 	waiter->callback.base.ref_count++;
-	queue->data[queue->length++] = (zend_async_event_callback_t *)waiter;
+	queue->data[queue->length++] = (zend_async_event_callback_t *) waiter;
 }
 
 static channel_waiter_t *channel_queue_pop(zend_async_callbacks_vector_t *queue)
@@ -146,7 +147,7 @@ static channel_waiter_t *channel_queue_pop(zend_async_callbacks_vector_t *queue)
 	if (queue->length == 0) {
 		return NULL;
 	}
-	channel_waiter_t *waiter = (channel_waiter_t *)queue->data[0];
+	channel_waiter_t *waiter = (channel_waiter_t *) queue->data[0];
 	queue->length--;
 	/* Swap with last element - O(1) instead of memmove O(n) */
 	queue->data[0] = queue->data[queue->length];
@@ -156,7 +157,7 @@ static channel_waiter_t *channel_queue_pop(zend_async_callbacks_vector_t *queue)
 static bool channel_queue_remove(zend_async_callbacks_vector_t *queue, channel_waiter_t *waiter)
 {
 	for (uint32_t i = 0; i < queue->length; i++) {
-		if (queue->data[i] == (zend_async_event_callback_t *)waiter) {
+		if (queue->data[i] == (zend_async_event_callback_t *) waiter) {
 			queue->length--;
 			queue->data[i] = queue->data[queue->length];
 			return true;
@@ -244,7 +245,8 @@ static void channel_wake_all(async_channel_t *channel, zend_object *exception)
 // Wait operations
 ///////////////////////////////////////////////////////////////////////////////
 
-static void channel_wait_for(async_channel_t *channel, zend_async_callbacks_vector_t *queue, zend_object *cancellation_token)
+static void
+channel_wait_for(async_channel_t *channel, zend_async_callbacks_vector_t *queue, zend_object *cancellation_token)
 {
 	if (cancellation_token != NULL && UNEXPECTED(async_resolve_cancel_token(cancellation_token))) {
 		return;
@@ -259,13 +261,18 @@ static void channel_wait_for(async_channel_t *channel, zend_async_callbacks_vect
 
 	channel_queue_push(queue, waiter);
 
-	zend_async_resume_when(ZEND_ASYNC_CURRENT_COROUTINE, &channel->channel.event,
-		false, zend_async_waker_callback_resolve, &waiter->callback);
+	zend_async_resume_when(ZEND_ASYNC_CURRENT_COROUTINE,
+						   &channel->channel.event,
+						   false,
+						   zend_async_waker_callback_resolve,
+						   &waiter->callback);
 
 	if (cancellation_token != NULL) {
 		zend_async_resume_when(ZEND_ASYNC_CURRENT_COROUTINE,
-			ZEND_ASYNC_OBJECT_TO_EVENT(cancellation_token),
-			false, zend_async_waker_callback_cancel, NULL);
+							   ZEND_ASYNC_OBJECT_TO_EVENT(cancellation_token),
+							   false,
+							   zend_async_waker_callback_cancel,
+							   NULL);
 	}
 
 	ZEND_ASYNC_SUSPEND();
@@ -279,11 +286,9 @@ static void channel_wait_for(async_channel_t *channel, zend_async_callbacks_vect
 	ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
 }
 
-#define CHANNEL_WAIT_FOR_DATA(ch, ct) \
-	channel_wait_for((ch), &(ch)->waiting_receivers, (ct))
+#define CHANNEL_WAIT_FOR_DATA(ch, ct) channel_wait_for((ch), &(ch)->waiting_receivers, (ct))
 
-#define CHANNEL_WAIT_FOR_SPACE(ch, ct) \
-	channel_wait_for((ch), &(ch)->waiting_senders, (ct))
+#define CHANNEL_WAIT_FOR_SPACE(ch, ct) channel_wait_for((ch), &(ch)->waiting_senders, (ct))
 
 ///////////////////////////////////////////////////////////////////////////////
 // Event handlers (for Awaitable interface)
@@ -318,10 +323,11 @@ static zend_string *channel_info(zend_async_event_t *event)
 {
 	const async_channel_t *channel = (async_channel_t *) event;
 
-	return zend_strpprintf(0, "Channel(capacity=%d, receivers=%u, senders=%u)",
-		channel->capacity,
-		channel->waiting_receivers.length,
-		channel->waiting_senders.length);
+	return zend_strpprintf(0,
+						   "Channel(capacity=%d, receivers=%u, senders=%u)",
+						   channel->capacity,
+						   channel->waiting_receivers.length,
+						   channel->waiting_senders.length);
 }
 
 static void channel_event_init(async_channel_t *channel)
@@ -353,7 +359,7 @@ static HashTable *async_channel_get_gc(zend_object *object, zval **table, int *n
 		circular_buffer_t *cb = &channel->buffer;
 		size_t idx = cb->tail;
 		while (idx != cb->head) {
-			zval *val = (zval *)((char *)cb->data + idx * cb->item_size);
+			zval *val = (zval *) ((char *) cb->data + idx * cb->item_size);
 			zend_get_gc_buffer_add_zval(buf, val);
 			idx = (idx + 1) & (cb->capacity - 1);
 		}
@@ -419,7 +425,8 @@ static void async_channel_free_object(zend_object *object)
 // Iterator
 ///////////////////////////////////////////////////////////////////////////////
 
-typedef struct {
+typedef struct
+{
 	zend_object_iterator it;
 	async_channel_t *channel;
 	zval current;
@@ -429,19 +436,19 @@ typedef struct {
 
 static void channel_iterator_dtor(zend_object_iterator *iter)
 {
-	channel_iterator_t *iterator = (channel_iterator_t *)iter;
+	channel_iterator_t *iterator = (channel_iterator_t *) iter;
 	zval_ptr_dtor(&iterator->current);
 	zval_ptr_dtor(&iter->data);
 }
 
 static zend_result channel_iterator_valid(zend_object_iterator *iter)
 {
-	return ((channel_iterator_t *)iter)->valid ? SUCCESS : FAILURE;
+	return ((channel_iterator_t *) iter)->valid ? SUCCESS : FAILURE;
 }
 
 static zval *channel_iterator_get_current_data(zend_object_iterator *iter)
 {
-	return &((channel_iterator_t *)iter)->current;
+	return &((channel_iterator_t *) iter)->current;
 }
 
 static void channel_iterator_get_current_key(zend_object_iterator *iter, zval *key)
@@ -451,7 +458,7 @@ static void channel_iterator_get_current_key(zend_object_iterator *iter, zval *k
 
 static void channel_iterator_move_forward(zend_object_iterator *iter)
 {
-	channel_iterator_t *iterator = (channel_iterator_t *)iter;
+	channel_iterator_t *iterator = (channel_iterator_t *) iter;
 	async_channel_t *channel = iterator->channel;
 
 	zval_ptr_dtor(&iterator->current);
@@ -489,7 +496,7 @@ retry:
 
 static void channel_iterator_rewind(zend_object_iterator *iter)
 {
-	channel_iterator_t *iterator = (channel_iterator_t *)iter;
+	channel_iterator_t *iterator = (channel_iterator_t *) iter;
 	if (!iterator->started) {
 		iterator->started = true;
 		channel_iterator_move_forward(iter);
@@ -534,8 +541,8 @@ METHOD(__construct)
 	zend_long capacity = 0;
 
 	ZEND_PARSE_PARAMETERS_START(0, 1)
-		Z_PARAM_OPTIONAL
-		Z_PARAM_LONG(capacity)
+	Z_PARAM_OPTIONAL
+	Z_PARAM_LONG(capacity)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (capacity < 0) {
@@ -544,12 +551,12 @@ METHOD(__construct)
 	}
 
 	async_channel_t *channel = THIS_CHANNEL;
-	channel->capacity = (int32_t)capacity;
+	channel->capacity = (int32_t) capacity;
 
 	if (capacity > 0) {
 		/* circular_buffer uses one slot as sentinel, so allocate capacity+1 */
-		if (circular_buffer_ctor(&channel->buffer, capacity + 1, sizeof(zval),
-				&zend_std_persistent_allocator) == FAILURE) {
+		if (circular_buffer_ctor(&channel->buffer, capacity + 1, sizeof(zval), &zend_std_persistent_allocator) ==
+			FAILURE) {
 			zend_throw_error(NULL, "Failed to allocate channel buffer");
 			RETURN_THROWS();
 		}
@@ -562,9 +569,9 @@ METHOD(send)
 	zend_object *cancellation_token = NULL;
 
 	ZEND_PARSE_PARAMETERS_START(1, 2)
-		Z_PARAM_ZVAL(value)
-		Z_PARAM_OPTIONAL
-		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation_token, async_ce_completable)
+	Z_PARAM_ZVAL(value)
+	Z_PARAM_OPTIONAL
+	Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation_token, async_ce_completable)
 	ZEND_PARSE_PARAMETERS_END();
 
 	ENSURE_COROUTINE_CONTEXT
@@ -604,7 +611,7 @@ METHOD(sendAsync)
 	zval *value;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_ZVAL(value)
+	Z_PARAM_ZVAL(value)
 	ZEND_PARSE_PARAMETERS_END();
 
 	async_channel_t *channel = THIS_CHANNEL;
@@ -637,8 +644,8 @@ METHOD(recv)
 	zend_object *cancellation_token = NULL;
 
 	ZEND_PARSE_PARAMETERS_START(0, 1)
-		Z_PARAM_OPTIONAL
-		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation_token, async_ce_completable)
+	Z_PARAM_OPTIONAL
+	Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation_token, async_ce_completable)
 	ZEND_PARSE_PARAMETERS_END();
 
 	ENSURE_COROUTINE_CONTEXT
@@ -702,14 +709,14 @@ METHOD(recvAsync)
 	} else {
 		/* Channel is empty but open - register pending future waiter */
 		channel_waiter_t *waiter = ecalloc(1, sizeof(channel_waiter_t));
-		waiter->callback.base.callback = NULL;  /* Not used for future waiters */
+		waiter->callback.base.callback = NULL; /* Not used for future waiters */
 		waiter->callback.base.ref_count = 1;
 		waiter->callback.coroutine = NULL;
 		waiter->callback.event = &channel->channel.event;
 		waiter->future = future;
 
 		channel_queue_push(&channel->waiting_receivers, waiter);
-		ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);  /* Release our ref, queue holds one */
+		ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base); /* Release our ref, queue holds one */
 	}
 
 	RETURN_OBJ(ZEND_ASYNC_NEW_FUTURE_OBJ(future));
@@ -784,11 +791,7 @@ void async_register_channel_ce(void)
 {
 	async_ce_channel_exception = register_class_Async_ChannelException(async_ce_async_exception);
 
-	async_ce_channel = register_class_Async_Channel(
-		async_ce_awaitable,
-		zend_ce_aggregate,
-		zend_ce_countable
-	);
+	async_ce_channel = register_class_Async_Channel(async_ce_awaitable, zend_ce_aggregate, zend_ce_countable);
 
 	async_ce_channel->create_object = async_channel_create_object;
 	async_ce_channel->get_iterator = channel_get_iterator;

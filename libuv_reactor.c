@@ -37,7 +37,7 @@
  * when libuv releases the signal, so zend_signal_deactivate() sees the expected
  * handler and does not emit a warning. */
 static struct sigaction async_saved_sigactions[NSIG];
-static bool async_signal_active[NSIG] = {false};
+static bool async_signal_active[NSIG] = { false };
 
 static void libuv_restore_signal_handler(int signum)
 {
@@ -72,12 +72,18 @@ static void uv_stat_to_zend_stat(const uv_stat_t *uv_statbuf, zend_stat_t *zend_
 static const char *io_type_name(const zend_async_io_type type)
 {
 	switch (type) {
-		case ZEND_ASYNC_IO_TYPE_PIPE: return "pipe";
-		case ZEND_ASYNC_IO_TYPE_FILE: return "file";
-		case ZEND_ASYNC_IO_TYPE_TCP:  return "tcp";
-		case ZEND_ASYNC_IO_TYPE_UDP:  return "udp";
-		case ZEND_ASYNC_IO_TYPE_TTY:  return "tty";
-		default: return "unknown";
+		case ZEND_ASYNC_IO_TYPE_PIPE:
+			return "pipe";
+		case ZEND_ASYNC_IO_TYPE_FILE:
+			return "file";
+		case ZEND_ASYNC_IO_TYPE_TCP:
+			return "tcp";
+		case ZEND_ASYNC_IO_TYPE_UDP:
+			return "udp";
+		case ZEND_ASYNC_IO_TYPE_TTY:
+			return "tty";
+		default:
+			return "unknown";
 	}
 }
 
@@ -86,34 +92,35 @@ static zend_string *libuv_poll_info(zend_async_event_t *event)
 	const zend_async_poll_event_t *poll = (zend_async_poll_event_t *) event;
 
 	if (poll->is_socket) {
-		return zend_strpprintf(0, "Poll(socket=" ZEND_LONG_FMT ", events=%s%s)",
-			(zend_long) poll->socket,
-			(poll->events & ASYNC_READABLE) ? "r" : "",
-			(poll->events & ASYNC_WRITABLE) ? "w" : "");
+		return zend_strpprintf(0,
+							   "Poll(socket=" ZEND_LONG_FMT ", events=%s%s)",
+							   (zend_long) poll->socket,
+							   (poll->events & ASYNC_READABLE) ? "r" : "",
+							   (poll->events & ASYNC_WRITABLE) ? "w" : "");
 	}
 
-	return zend_strpprintf(0, "Poll(fd=" ZEND_LONG_FMT ", events=%s%s)",
-		(zend_long) poll->file,
-		(poll->events & ASYNC_READABLE) ? "r" : "",
-		(poll->events & ASYNC_WRITABLE) ? "w" : "");
+	return zend_strpprintf(0,
+						   "Poll(fd=" ZEND_LONG_FMT ", events=%s%s)",
+						   (zend_long) poll->file,
+						   (poll->events & ASYNC_READABLE) ? "r" : "",
+						   (poll->events & ASYNC_WRITABLE) ? "w" : "");
 }
 
 static zend_string *libuv_poll_proxy_info(zend_async_event_t *event)
 {
 	const zend_async_poll_proxy_t *proxy = (zend_async_poll_proxy_t *) event;
 
-	return zend_strpprintf(0, "PollProxy(events=%s%s)",
-		(proxy->events & ASYNC_READABLE) ? "r" : "",
-		(proxy->events & ASYNC_WRITABLE) ? "w" : "");
+	return zend_strpprintf(0,
+						   "PollProxy(events=%s%s)",
+						   (proxy->events & ASYNC_READABLE) ? "r" : "",
+						   (proxy->events & ASYNC_WRITABLE) ? "w" : "");
 }
 
 static zend_string *libuv_timer_info(zend_async_event_t *event)
 {
 	const zend_async_timer_event_t *timer = (zend_async_timer_event_t *) event;
 
-	return zend_strpprintf(0, "Timer(timeout=%ums, %s)",
-		timer->timeout,
-		timer->is_periodic ? "periodic" : "once");
+	return zend_strpprintf(0, "Timer(timeout=%ums, %s)", timer->timeout, timer->is_periodic ? "periodic" : "once");
 }
 
 static zend_string *libuv_signal_info(zend_async_event_t *event)
@@ -134,8 +141,7 @@ static zend_string *libuv_filesystem_info(zend_async_event_t *event)
 {
 	const zend_async_filesystem_event_t *fs = (zend_async_filesystem_event_t *) event;
 
-	return zend_strpprintf(0, "FilesystemWatch(path=%s)",
-		fs->path ? ZSTR_VAL(fs->path) : "<null>");
+	return zend_strpprintf(0, "FilesystemWatch(path=%s)", fs->path ? ZSTR_VAL(fs->path) : "<null>");
 }
 
 static zend_string *libuv_dns_nameinfo_info(zend_async_event_t *event)
@@ -147,9 +153,10 @@ static zend_string *libuv_dns_addrinfo_info(zend_async_event_t *event)
 {
 	const zend_async_dns_addrinfo_t *addr = (zend_async_dns_addrinfo_t *) event;
 
-	return zend_strpprintf(0, "DNSAddrInfo(node=%s, service=%s)",
-		addr->node ? addr->node : "<null>",
-		addr->service ? addr->service : "<null>");
+	return zend_strpprintf(0,
+						   "DNSAddrInfo(node=%s, service=%s)",
+						   addr->node ? addr->node : "<null>",
+						   addr->service ? addr->service : "<null>");
 }
 
 static zend_string *libuv_exec_info(zend_async_event_t *event)
@@ -170,20 +177,19 @@ static zend_string *libuv_io_info(zend_async_event_t *event)
 	const zend_async_io_t *io = &aio->base;
 
 	if (io->type == ZEND_ASYNC_IO_TYPE_TCP || io->type == ZEND_ASYNC_IO_TYPE_UDP) {
-		return zend_strpprintf(0, "IO(type=%s, socket=" ZEND_LONG_FMT ")",
-			io_type_name(io->type), (zend_long) io->descriptor.socket);
+		return zend_strpprintf(
+				0, "IO(type=%s, socket=" ZEND_LONG_FMT ")", io_type_name(io->type), (zend_long) io->descriptor.socket);
 	}
 
-	return zend_strpprintf(0, "IO(type=%s, fd=" ZEND_LONG_FMT ")",
-		io_type_name(io->type), (zend_long) io->descriptor.fd);
+	return zend_strpprintf(
+			0, "IO(type=%s, fd=" ZEND_LONG_FMT ")", io_type_name(io->type), (zend_long) io->descriptor.fd);
 }
 
 static zend_string *libuv_listen_info(zend_async_event_t *event)
 {
 	const zend_async_listen_event_t *listen = (zend_async_listen_event_t *) event;
 
-	return zend_strpprintf(0, "Listen(host=%s, port=%d)",
-		listen->host ? listen->host : "<null>", listen->port);
+	return zend_strpprintf(0, "Listen(host=%s, port=%d)", listen->host ? listen->host : "<null>", listen->port);
 }
 
 static zend_string *libuv_task_info(zend_async_event_t *event)
@@ -1057,9 +1063,9 @@ static void libuv_global_signal_callback(uv_signal_t *handle, int signum)
 
 	if (p_sig.handler != SIG_DFL && p_sig.handler != SIG_IGN) {
 		if (p_sig.flags & SA_SIGINFO) {
-			((void (*)(int, siginfo_t*, void*))p_sig.handler)(signum, NULL, NULL);
+			((void (*)(int, siginfo_t *, void *)) p_sig.handler)(signum, NULL, NULL);
 		} else {
-			((void (*)(int))p_sig.handler)(signum);
+			((void (*)(int)) p_sig.handler)(signum);
 		}
 	}
 #endif
@@ -1770,7 +1776,7 @@ static bool libuv_process_event_dispose(zend_async_event_t *event)
 	// Remove from process_events hash before freeing to prevent UAF via stale hash pointer
 	const zend_process_t proc_handle = ((zend_async_process_event_t *) event)->process;
 	if ((uintptr_t) proc_handle != 0 && ASYNC_G(process_events) != NULL) {
-		zend_hash_index_del(ASYNC_G(process_events), (zend_ulong)(uintptr_t) proc_handle);
+		zend_hash_index_del(ASYNC_G(process_events), (zend_ulong) (uintptr_t) proc_handle);
 	}
 
 #ifdef PHP_WIN32
@@ -1877,8 +1883,7 @@ static void libuv_task_after_work_cb(uv_work_t *req, int status)
 	close_event(&task->base);
 
 	if (status == UV_ECANCELED) {
-		exception = async_new_exception(
-				async_ce_cancellation_exception, "Thread pool task was cancelled");
+		exception = async_new_exception(async_ce_cancellation_exception, "Thread pool task was cancelled");
 	}
 
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&task->base, NULL, exception);
@@ -1974,8 +1979,7 @@ static bool libuv_queue_task(zend_async_task_t *task)
 	wrapper->task = task;
 
 	/* Queue the work to libuv's thread pool */
-	int error = uv_queue_work(UVLOOP, &wrapper->uv_req,
-	                          libuv_task_work_cb, libuv_task_after_work_cb);
+	int error = uv_queue_work(UVLOOP, &wrapper->uv_req, libuv_task_work_cb, libuv_task_after_work_cb);
 
 	if (error < 0) {
 		pefree(wrapper, 0);
@@ -2041,8 +2045,8 @@ static bool libuv_filesystem_start(zend_async_event_t *event)
 		uv_flags |= UV_FS_EVENT_RECURSIVE;
 	}
 
-	const int error = uv_fs_event_start(
-			&fs_event->uv_handle, on_filesystem_event, ZSTR_VAL(fs_event->event.path), uv_flags);
+	const int error =
+			uv_fs_event_start(&fs_event->uv_handle, on_filesystem_event, ZSTR_VAL(fs_event->event.path), uv_flags);
 
 	if (error < 0) {
 		async_throw_error("Failed to start filesystem handle: %s", uv_strerror(error));
@@ -2947,12 +2951,11 @@ static bool libuv_io_event_stop(zend_async_event_t *event)
 {
 	EVENT_STOP_PROLOGUE(event);
 
-	async_io_t *io = (async_io_t *)event;
+	async_io_t *io = (async_io_t *) event;
 
 	/* Cancel pending pipe/TTY read if any */
-	if (io->active_req != NULL
-		&& (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE
-			|| io->base.type == ZEND_ASYNC_IO_TYPE_TTY)) {
+	if (io->active_req != NULL &&
+		(io->base.type == ZEND_ASYNC_IO_TYPE_PIPE || io->base.type == ZEND_ASYNC_IO_TYPE_TTY)) {
 		uv_read_stop(&io->handle.stream);
 		io->active_req = NULL;
 	}
@@ -2978,23 +2981,19 @@ static bool libuv_io_event_dispose(zend_async_event_t *event)
 
 	async_io_t *io = (async_io_t *) event;
 
-	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE
-			&& !(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
+	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE && !(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
 		io->base.state |= ZEND_ASYNC_IO_CLOSED;
 		io->handle.pipe.data = io;
 		uv_close((uv_handle_t *) &io->handle.pipe, io_close_cb);
-	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_TTY
-			&& !(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
+	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_TTY && !(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
 		io->base.state |= ZEND_ASYNC_IO_CLOSED;
 		io->handle.tty.data = io;
 		uv_close((uv_handle_t *) &io->handle.tty, io_close_cb);
-	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_TCP
-			&& !(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
+	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_TCP && !(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
 		io->base.state |= ZEND_ASYNC_IO_CLOSED;
 		io->handle.tcp.data = io;
 		uv_close((uv_handle_t *) &io->handle.tcp, io_close_cb);
-	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_UDP
-			&& !(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
+	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_UDP && !(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
 		io->base.state |= ZEND_ASYNC_IO_CLOSED;
 		io->handle.udp.data = io;
 		uv_close((uv_handle_t *) &io->handle.udp, io_close_cb);
@@ -3065,8 +3064,7 @@ static void io_pipe_read_cb(uv_stream_t *pipe_stream, ssize_t bytes_read, const 
 	} else {
 		req->base.transferred = -1;
 		req->base.exception = async_new_exception(
-				async_ce_input_output_exception,
-				"Pipe read error: %s", uv_strerror((int) bytes_read));
+				async_ce_input_output_exception, "Pipe read error: %s", uv_strerror((int) bytes_read));
 	}
 
 	req->base.completed = true;
@@ -3083,9 +3081,8 @@ static void io_pipe_write_cb(uv_write_t *write_request, int status)
 		req->base.transferred = (ssize_t) req->max_size;
 	} else {
 		req->base.transferred = -1;
-		req->base.exception = async_new_exception(
-				async_ce_input_output_exception,
-				"Pipe write error: %s", uv_strerror(status));
+		req->base.exception =
+				async_new_exception(async_ce_input_output_exception, "Pipe write error: %s", uv_strerror(status));
 	}
 
 	req->base.completed = true;
@@ -3116,8 +3113,7 @@ static void io_file_read_cb(uv_fs_t *fs_request)
 	} else {
 		req->base.transferred = -1;
 		req->base.exception = async_new_exception(
-				async_ce_input_output_exception,
-				"File read error: %s", uv_strerror((int) fs_request->result));
+				async_ce_input_output_exception, "File read error: %s", uv_strerror((int) fs_request->result));
 	}
 
 	req->base.completed = true;
@@ -3137,8 +3133,7 @@ static void io_file_write_cb(uv_fs_t *fs_request)
 	} else {
 		req->base.transferred = -1;
 		req->base.exception = async_new_exception(
-				async_ce_input_output_exception,
-				"File write error: %s", uv_strerror((int) fs_request->result));
+				async_ce_input_output_exception, "File write error: %s", uv_strerror((int) fs_request->result));
 	}
 
 	req->base.completed = true;
@@ -3157,8 +3152,7 @@ static void io_file_flush_cb(uv_fs_t *fs_request)
 	} else {
 		req->base.result = -1;
 		req->base.exception = async_new_exception(
-				async_ce_input_output_exception,
-				"File flush error: %s", uv_strerror((int) fs_request->result));
+				async_ce_input_output_exception, "File flush error: %s", uv_strerror((int) fs_request->result));
 	}
 
 	req->base.completed = true;
@@ -3181,8 +3175,7 @@ static void io_file_stat_cb(uv_fs_t *fs_request)
 		req->base.result = -1;
 		req->base.buf = NULL;
 		req->base.exception = async_new_exception(
-				async_ce_input_output_exception,
-				"File stat error: %s", uv_strerror((int) fs_request->result));
+				async_ce_input_output_exception, "File stat error: %s", uv_strerror((int) fs_request->result));
 	}
 
 	req->base.completed = true;
@@ -3194,8 +3187,8 @@ static void io_file_stat_cb(uv_fs_t *fs_request)
 /* }}} */
 
 /* {{{ libuv_io_create */
-static zend_async_io_t *libuv_io_create(
-		const zend_file_descriptor_t fd, const zend_async_io_type type, const uint32_t state)
+static zend_async_io_t *
+libuv_io_create(const zend_file_descriptor_t fd, const zend_async_io_type type, const uint32_t state)
 {
 	START_REACTOR_OR_RETURN_NULL;
 
@@ -3294,9 +3287,9 @@ static zend_async_io_t *libuv_io_create(
  * concurrency benefit. */
 static inline bool libuv_can_use_sync_io(void)
 {
-	return zend_hash_num_elements(&ASYNC_G(coroutines)) <= 1
-		&& !libuv_reactor_loop_alive();
+	return zend_hash_num_elements(&ASYNC_G(coroutines)) <= 1 && !libuv_reactor_loop_alive();
 }
+
 /* }}} */
 
 /* {{{ libuv_io_read */
@@ -3349,20 +3342,17 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, const size_t
 				return &req->base;
 			} else if (errno != EAGAIN) {
 				req->base.transferred = -1;
-				req->base.exception = async_new_exception(
-						async_ce_input_output_exception,
-						"Stream read error: %s", strerror(errno));
+				req->base.exception =
+						async_new_exception(async_ce_input_output_exception, "Stream read error: %s", strerror(errno));
 				req->base.completed = true;
 				return &req->base;
 			}
-
 		}
 #endif
 
 		io->active_req = req;
 
-		const int error = uv_read_start(
-				&io->handle.stream, io_pipe_alloc_cb, io_pipe_read_cb);
+		const int error = uv_read_start(&io->handle.stream, io_pipe_alloc_cb, io_pipe_read_cb);
 
 		if (UNEXPECTED(error < 0)) {
 			io->active_req = NULL;
@@ -3390,9 +3380,8 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, const size_t
 			io->base.state |= ZEND_ASYNC_IO_EOF;
 		} else {
 			req->base.transferred = -1;
-			req->base.exception = async_new_exception(
-					async_ce_input_output_exception,
-					"File read error: %s", strerror(errno));
+			req->base.exception =
+					async_new_exception(async_ce_input_output_exception, "File read error: %s", strerror(errno));
 		}
 
 		req->base.completed = true;
@@ -3403,8 +3392,8 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, const size_t
 	const uv_buf_t read_buffer = uv_buf_init(req->base.buf, (unsigned int) max_size);
 	req->fs_req.data = req;
 
-	const int error = uv_fs_read(UVLOOP, &req->fs_req, io->crt_fd,
-			&read_buffer, 1, io->handle.file.offset, io_file_read_cb);
+	const int error =
+			uv_fs_read(UVLOOP, &req->fs_req, io->crt_fd, &read_buffer, 1, io->handle.file.offset, io_file_read_cb);
 
 	if (UNEXPECTED(error < 0)) {
 		async_throw_error("Failed to start file read: %s", uv_strerror(error));
@@ -3454,8 +3443,7 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 				} else {
 					req->base.transferred = -1;
 					req->base.exception = async_new_exception(
-							async_ce_input_output_exception,
-							"Stream write error: %s", strerror(errno));
+							async_ce_input_output_exception, "Stream write error: %s", strerror(errno));
 				}
 				req->base.completed = true;
 				return &req->base;
@@ -3467,8 +3455,7 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 		const uv_buf_t write_buffer = uv_buf_init((char *) buf, (unsigned int) count);
 		req->write_req.data = req;
 
-		const int error = uv_write(
-				&req->write_req, &io->handle.stream, &write_buffer, 1, io_pipe_write_cb);
+		const int error = uv_write(&req->write_req, &io->handle.stream, &write_buffer, 1, io_pipe_write_cb);
 
 		if (UNEXPECTED(error < 0)) {
 			async_throw_error("Failed to start stream write: %s", uv_strerror(error));
@@ -3492,9 +3479,8 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 			io->handle.file.offset += result;
 		} else {
 			req->base.transferred = -1;
-			req->base.exception = async_new_exception(
-					async_ce_input_output_exception,
-					"File write error: %s", strerror(errno));
+			req->base.exception =
+					async_new_exception(async_ce_input_output_exception, "File write error: %s", strerror(errno));
 		}
 
 		req->base.completed = true;
@@ -3505,8 +3491,8 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 	const uv_buf_t write_buffer = uv_buf_init((char *) buf, (unsigned int) count);
 	req->fs_req.data = req;
 
-	const int error = uv_fs_write(UVLOOP, &req->fs_req, io->crt_fd,
-			&write_buffer, 1, io->handle.file.offset, io_file_write_cb);
+	const int error =
+			uv_fs_write(UVLOOP, &req->fs_req, io->crt_fd, &write_buffer, 1, io->handle.file.offset, io_file_write_cb);
 
 	if (UNEXPECTED(error < 0)) {
 		async_throw_error("Failed to start file write: %s", uv_strerror(error));
@@ -3658,9 +3644,7 @@ static zend_async_io_req_t *libuv_io_stat(zend_async_io_t *io_base, zend_stat_t 
 		req->base.result = zend_fstat(io->crt_fd, stat_buffer);
 		req->base.completed = true;
 		if (UNEXPECTED(req->base.result != 0)) {
-			req->base.exception = async_new_exception(
-					async_ce_input_output_exception,
-					"Pipe stat error: fstat failed");
+			req->base.exception = async_new_exception(async_ce_input_output_exception, "Pipe stat error: fstat failed");
 		}
 		return &req->base;
 	}
@@ -3948,8 +3932,8 @@ static void udp_recv_alloc_cb(uv_handle_t *udp_handle, size_t suggested_size, uv
 	output->len = (unsigned int) req->max_size;
 }
 
-static void udp_recv_cb(uv_udp_t *udp_handle, ssize_t nread, const uv_buf_t *buf,
-		const struct sockaddr *addr, unsigned flags)
+static void
+udp_recv_cb(uv_udp_t *udp_handle, ssize_t nread, const uv_buf_t *buf, const struct sockaddr *addr, unsigned flags)
 {
 	async_io_t *io = (async_io_t *) udp_handle->data;
 	async_udp_req_t *req = (async_udp_req_t *) io->active_req;
@@ -3970,7 +3954,8 @@ static void udp_recv_cb(uv_udp_t *udp_handle, ssize_t nread, const uv_buf_t *buf
 		req->base.transferred = nread;
 		if (addr != NULL) {
 			memcpy(&req->base.addr, addr, sizeof(struct sockaddr_storage));
-			req->base.addr_len = (addr->sa_family == AF_INET) ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
+			req->base.addr_len =
+					(addr->sa_family == AF_INET) ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
 		}
 	}
 
@@ -3993,8 +3978,8 @@ static void udp_req_dispose(zend_async_udp_req_t *base_req)
 	pefree(req, 0);
 }
 
-static zend_async_udp_req_t *libuv_udp_sendto(zend_async_io_t *io_base, const char *buf,
-		size_t count, const struct sockaddr *addr, socklen_t addr_len)
+static zend_async_udp_req_t *libuv_udp_sendto(
+		zend_async_io_t *io_base, const char *buf, size_t count, const struct sockaddr *addr, socklen_t addr_len)
 {
 	async_io_t *io = (async_io_t *) io_base;
 
@@ -4109,8 +4094,8 @@ static int libuv_io_set_option(zend_async_io_t *io_base, zend_async_socket_optio
 	return result;
 }
 
-static int libuv_udp_set_membership(zend_async_io_t *io_base, const char *multicast_addr,
-		const char *interface_addr, bool join)
+static int
+libuv_udp_set_membership(zend_async_io_t *io_base, const char *multicast_addr, const char *interface_addr, bool join)
 {
 	async_io_t *io = (async_io_t *) io_base;
 
@@ -4149,11 +4134,20 @@ void async_libuv_reactor_register(void)
 
 	zend_async_socket_listening_register(LIBUV_REACTOR_NAME, false, libuv_socket_listen);
 
-	zend_async_io_register(LIBUV_REACTOR_NAME, false,
-			libuv_io_create, libuv_io_read, libuv_io_write,
-			libuv_io_close, libuv_io_await, libuv_io_flush, libuv_io_stat,
-			libuv_io_seek, libuv_udp_sendto, libuv_udp_recvfrom,
-			libuv_io_set_option, libuv_udp_set_membership);
+	zend_async_io_register(LIBUV_REACTOR_NAME,
+						   false,
+						   libuv_io_create,
+						   libuv_io_read,
+						   libuv_io_write,
+						   libuv_io_close,
+						   libuv_io_await,
+						   libuv_io_flush,
+						   libuv_io_stat,
+						   libuv_io_seek,
+						   libuv_udp_sendto,
+						   libuv_udp_recvfrom,
+						   libuv_io_set_option,
+						   libuv_udp_set_membership);
 
 	zend_async_thread_pool_register(LIBUV_REACTOR_NAME, false, libuv_queue_task);
 }

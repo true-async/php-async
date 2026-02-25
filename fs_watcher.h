@@ -21,22 +21,20 @@
 #include "internal/circular_buffer.h"
 
 /* Watcher-specific flags (stored in watcher_flags) */
-#define ASYNC_FS_WATCHER_F_COALESCE  (1u << 0)
+#define ASYNC_FS_WATCHER_F_COALESCE (1u << 0)
 
-#define ASYNC_FS_WATCHER_IS_CLOSED(w) \
-	((w)->event == NULL || ZEND_ASYNC_EVENT_IS_CLOSED((w)->event))
+#define ASYNC_FS_WATCHER_IS_CLOSED(w) ((w)->event == NULL || ZEND_ASYNC_EVENT_IS_CLOSED((w)->event))
 
-#define ASYNC_FS_WATCHER_IS_COALESCE(w) \
-	(((w)->watcher_flags & ASYNC_FS_WATCHER_F_COALESCE) != 0)
+#define ASYNC_FS_WATCHER_IS_COALESCE(w) (((w)->watcher_flags & ASYNC_FS_WATCHER_F_COALESCE) != 0)
 
 /* Cast event* back to zend_async_filesystem_event_t* */
 #define ASYNC_FS_WATCHER_FS_EVENT(w) \
-	((zend_async_filesystem_event_t *)((char *)(w)->event \
-		- XtOffsetOf(zend_async_filesystem_event_t, base)))
+	((zend_async_filesystem_event_t *) ((char *) (w)->event - XtOffsetOf(zend_async_filesystem_event_t, base)))
 
 typedef struct _async_fs_watcher_s async_fs_watcher_t;
 
-struct _async_fs_watcher_s {
+struct _async_fs_watcher_s
+{
 	/* REF pattern: reference to reactor's filesystem event (Awaitable support) */
 	ZEND_ASYNC_EVENT_REF_FIELDS
 
@@ -45,7 +43,8 @@ struct _async_fs_watcher_s {
 
 	/* Storage: coalesce mode uses HashTable, raw mode uses circular_buffer.
 	 * Both store zval(FileSystemEvent objects). */
-	union {
+	union
+	{
 		HashTable coalesce_ht;
 		circular_buffer_t raw_buffer;
 	};
@@ -58,7 +57,8 @@ struct _async_fs_watcher_s {
 };
 
 /* Iterator for foreach support */
-typedef struct {
+typedef struct
+{
 	zend_object_iterator it;
 	async_fs_watcher_t *watcher;
 	zval current;
@@ -71,8 +71,7 @@ extern zend_class_entry *async_ce_fs_watcher;
 extern zend_class_entry *async_ce_filesystem_event;
 
 /* Convert zend_object → async_fs_watcher_t */
-#define ASYNC_FS_WATCHER_FROM_OBJ(obj) \
-	((async_fs_watcher_t *)((char *)(obj) - XtOffsetOf(async_fs_watcher_t, std)))
+#define ASYNC_FS_WATCHER_FROM_OBJ(obj) ((async_fs_watcher_t *) ((char *) (obj) - XtOffsetOf(async_fs_watcher_t, std)))
 
 /* API */
 void async_register_fs_watcher_ce(void);

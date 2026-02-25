@@ -23,14 +23,12 @@
 /// Iterator completion event
 ///////////////////////////////////////////////////////////////////
 
-static bool completion_event_add_callback(
-		zend_async_event_t *event, zend_async_event_callback_t *callback)
+static bool completion_event_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
 {
 	return zend_async_callbacks_push(event, callback);
 }
 
-static bool completion_event_del_callback(
-		zend_async_event_t *event, zend_async_event_callback_t *callback)
+static bool completion_event_del_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
 {
 	return zend_async_callbacks_remove(event, callback);
 }
@@ -309,7 +307,7 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 		if (iterator->hash_iterator == -1) {
 			iterator->position = 0;
 			ZEND_ASSERT(!(GC_FLAGS(Z_ARRVAL(iterator->array)) & GC_IMMUTABLE) &&
-				"Iterator array must not be immutable; caller must SEPARATE_ARRAY before passing");
+						"Iterator array must not be immutable; caller must SEPARATE_ARRAY before passing");
 			zend_hash_internal_pointer_reset_ex(Z_ARRVAL(iterator->array), &iterator->position);
 			iterator->hash_iterator = zend_hash_iterator_add(Z_ARRVAL(iterator->array), iterator->position);
 		}
@@ -543,9 +541,8 @@ void async_iterator_run(async_iterator_t *iterator)
 	iterate(iterator);
 	async_iterator_apply_exception(iterator);
 
-	if (iterator->state == ASYNC_ITERATOR_FINISHED
-		&& iterator->active_coroutines == 0
-		&& iterator->completion_event != NULL) {
+	if (iterator->state == ASYNC_ITERATOR_FINISHED && iterator->active_coroutines == 0 &&
+		iterator->completion_event != NULL) {
 
 		zend_async_event_t *event = iterator->completion_event;
 		iterator->completion_event = NULL;
@@ -573,9 +570,8 @@ void async_iterator_run_in_coroutine(async_iterator_t *iterator, int32_t priorit
 
 	iterator_coroutine->extended_data = iterator;
 	iterator_coroutine->internal_entry = coroutine_entry;
-	iterator_coroutine->extended_dispose = throw_exception
-		? coroutine_extended_dispose_with_exception
-		: coroutine_extended_dispose;
+	iterator_coroutine->extended_dispose =
+			throw_exception ? coroutine_extended_dispose_with_exception : coroutine_extended_dispose;
 }
 
 void async_iterator_apply_exception(async_iterator_t *iterator)

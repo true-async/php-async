@@ -524,8 +524,9 @@ static void dump_deadlock_info(const zend_long real_coroutines)
 	}
 
 	php_printf("\n=== DEADLOCK REPORT START ===\n"
-		"Coroutines waiting: " ZEND_LONG_FMT ", active_events: %u\n\n",
-		real_coroutines, ZEND_ASYNC_G(active_event_count));
+			   "Coroutines waiting: " ZEND_LONG_FMT ", active_events: %u\n\n",
+			   real_coroutines,
+			   ZEND_ASYNC_G(active_event_count));
 
 	zval *value;
 	ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), value)
@@ -1249,8 +1250,7 @@ static zend_always_inline void scheduler_next_tick(void)
 	const bool is_next_coroutine = circular_buffer_is_not_empty(&ASYNC_G(coroutine_queue));
 
 	if (UNEXPECTED(false == has_handles && false == is_next_coroutine &&
-				   zend_hash_num_elements(&ASYNC_G(coroutines)) > 0 &&
-				   circular_buffer_is_empty(&ASYNC_G(microtasks)) &&
+				   zend_hash_num_elements(&ASYNC_G(coroutines)) > 0 && circular_buffer_is_empty(&ASYNC_G(microtasks)) &&
 				   resolve_deadlocks())) {
 		switch_to_scheduler(transfer);
 	}
@@ -1535,8 +1535,7 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 			if (UNEXPECTED(false == has_handles && false == was_executed &&
 						   zend_hash_num_elements(&ASYNC_G(coroutines)) > 0 &&
 						   circular_buffer_is_empty(coroutine_queue) &&
-						   circular_buffer_is_empty(&ASYNC_G(microtasks)) &&
-						   resolve_deadlocks())) {
+						   circular_buffer_is_empty(&ASYNC_G(microtasks)) && resolve_deadlocks())) {
 				break;
 			}
 

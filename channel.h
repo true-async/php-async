@@ -21,7 +21,8 @@
 #include "internal/circular_buffer.h"
 
 /* Channel event types passed as result in notify */
-typedef enum {
+typedef enum
+{
 	ASYNC_CHANNEL_EVENT_DATA_PUSHED = 1,
 	ASYNC_CHANNEL_EVENT_DATA_POPPED = 2,
 	ASYNC_CHANNEL_EVENT_CLOSED = 3
@@ -29,7 +30,8 @@ typedef enum {
 
 typedef struct _async_channel_s async_channel_t;
 
-struct _async_channel_s {
+struct _async_channel_s
+{
 	/* ABI structure (must be first) */
 	zend_async_channel_t channel;
 
@@ -44,8 +46,8 @@ struct _async_channel_s {
 	bool rendezvous_has_value;
 
 	/* Waiting queues (like Go's recvq/sendq) */
-	zend_async_callbacks_vector_t waiting_receivers;  /* coroutines waiting for data */
-	zend_async_callbacks_vector_t waiting_senders;    /* coroutines waiting for space */
+	zend_async_callbacks_vector_t waiting_receivers; /* coroutines waiting for data */
+	zend_async_callbacks_vector_t waiting_senders;   /* coroutines waiting for space */
 
 	/* PHP object handle (must be last for final class) */
 	zend_object std;
@@ -56,12 +58,10 @@ extern zend_class_entry *async_ce_channel;
 extern zend_class_entry *async_ce_channel_exception;
 
 /* Convert zend_object to async_channel_t */
-#define ASYNC_CHANNEL_FROM_OBJ(obj) \
-	((async_channel_t *)((char *)(obj) - XtOffsetOf(async_channel_t, std)))
+#define ASYNC_CHANNEL_FROM_OBJ(obj) ((async_channel_t *) ((char *) (obj) - XtOffsetOf(async_channel_t, std)))
 
 /* Convert zend_async_channel_t to async_channel_t */
-#define ASYNC_CHANNEL_FROM_ZEND(zend_channel) \
-	((async_channel_t *)(zend_channel))
+#define ASYNC_CHANNEL_FROM_ZEND(zend_channel) ((async_channel_t *) (zend_channel))
 
 /* Registration function */
 void async_register_channel_ce(void);

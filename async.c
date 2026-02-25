@@ -776,11 +776,11 @@ PHP_FUNCTION(Async_iterate)
 	bool cancel_pending = true;
 
 	ZEND_PARSE_PARAMETERS_START(2, 4)
-		Z_PARAM_ZVAL(iterable)
-		Z_PARAM_FUNC(fci, fcc)
-		Z_PARAM_OPTIONAL
-		Z_PARAM_LONG(concurrency)
-		Z_PARAM_BOOL(cancel_pending)
+	Z_PARAM_ZVAL(iterable)
+	Z_PARAM_FUNC(fci, fcc)
+	Z_PARAM_OPTIONAL
+	Z_PARAM_LONG(concurrency)
+	Z_PARAM_BOOL(cancel_pending)
 	ZEND_PARSE_PARAMETERS_END();
 
 	SCHEDULER_LAUNCH;
@@ -831,7 +831,7 @@ PHP_FUNCTION(Async_iterate)
 	Z_TRY_ADDREF(fcall->fci.function_name);
 
 	zend_async_iterator_t *iterator = ZEND_ASYNC_NEW_ITERATOR_SCOPE(
-		array, zend_iterator, fcall, NULL, iterator_scope, (unsigned int) concurrency, ZEND_COROUTINE_NORMAL);
+			array, zend_iterator, fcall, NULL, iterator_scope, (unsigned int) concurrency, ZEND_COROUTINE_NORMAL);
 
 	if (UNEXPECTED(iterator == NULL || EG(exception))) {
 		iterator_scope->try_to_dispose(iterator_scope);
@@ -876,8 +876,7 @@ PHP_FUNCTION(Async_iterate)
 	// Wait for the iterator completion event
 	iterator->completion_event = async_iterator_completion_event_create();
 	ZEND_ASYNC_WAKER_NEW(coroutine);
-	zend_async_resume_when(coroutine,
-		iterator->completion_event, false, zend_async_waker_callback_resolve, NULL);
+	zend_async_resume_when(coroutine, iterator->completion_event, false, zend_async_waker_callback_resolve, NULL);
 	ZEND_ASYNC_SUSPEND();
 
 	if (UNEXPECTED(EG(exception))) {
@@ -891,12 +890,11 @@ PHP_FUNCTION(Async_iterate)
 
 		if (cancel_pending) {
 			// Cancel all pending coroutines in the iterator scope
-			ZEND_ASYNC_SCOPE_CANCEL(
-				iterator_scope,
-				async_new_exception(async_ce_cancellation_exception,
-					"Cancellation of pending coroutines after iterator completion"),
-				true,
-				ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(iterator_scope));
+			ZEND_ASYNC_SCOPE_CANCEL(iterator_scope,
+									async_new_exception(async_ce_cancellation_exception,
+														"Cancellation of pending coroutines after iterator completion"),
+									true,
+									ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(iterator_scope));
 		}
 
 		if (UNEXPECTED(EG(exception))) {
@@ -979,7 +977,8 @@ PHP_FUNCTION(Async_exec)
 /// Signal API
 ///////////////////////////////////////////////////////////////
 
-typedef struct {
+typedef struct
+{
 	zend_async_event_callback_t base;
 	zend_future_t *future;
 	zend_async_signal_event_t *signal_event;
@@ -990,7 +989,7 @@ typedef struct {
 
 static void async_signal_callback_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event)
 {
-	async_signal_callback_t * const signal_cb = (async_signal_callback_t *) callback;
+	async_signal_callback_t *const signal_cb = (async_signal_callback_t *) callback;
 
 	if (signal_cb->cancellation_obj != NULL) {
 		OBJ_RELEASE(signal_cb->cancellation_obj);
@@ -1064,7 +1063,8 @@ static void async_signal_event_callback_fn(zend_async_event_t *event,
 		const int signum = signal_cb->signal_event->signal;
 		zend_object *enum_case = NULL;
 
-		if (EXPECTED(zend_enum_get_case_by_value(&enum_case, async_ce_signal, (zend_long) signum, NULL, false) == SUCCESS)) {
+		if (EXPECTED(zend_enum_get_case_by_value(&enum_case, async_ce_signal, (zend_long) signum, NULL, false) ==
+					 SUCCESS)) {
 			zval result_zval;
 			ZVAL_OBJ(&result_zval, enum_case);
 			ZEND_FUTURE_COMPLETE(signal_cb->future, &result_zval);
@@ -1086,9 +1086,9 @@ PHP_FUNCTION(Async_signal)
 	zend_object *cancellation = NULL;
 
 	ZEND_PARSE_PARAMETERS_START(1, 2)
-		Z_PARAM_OBJ_OF_CLASS(signal_enum, async_ce_signal)
-		Z_PARAM_OPTIONAL
-		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_completable)
+	Z_PARAM_OBJ_OF_CLASS(signal_enum, async_ce_signal)
+	Z_PARAM_OPTIONAL
+	Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_completable)
 	ZEND_PARSE_PARAMETERS_END();
 
 	SCHEDULER_LAUNCH;
@@ -1099,10 +1099,10 @@ PHP_FUNCTION(Async_signal)
 
 	/* If cancellation is already completed, return a rejected Future */
 	if (cancellation != NULL) {
-		zend_async_event_t * const cancel_event = ZEND_ASYNC_OBJECT_TO_EVENT(cancellation);
+		zend_async_event_t *const cancel_event = ZEND_ASYNC_OBJECT_TO_EVENT(cancellation);
 
 		if (ZEND_ASYNC_EVENT_IS_CLOSED(cancel_event)) {
-			zend_future_t * const future = async_new_future(false, 0);
+			zend_future_t *const future = async_new_future(false, 0);
 			if (UNEXPECTED(future == NULL)) {
 				async_throw_error("Failed to create future for signal");
 				RETURN_THROWS();
@@ -1119,7 +1119,7 @@ PHP_FUNCTION(Async_signal)
 				ZEND_FUTURE_REJECT(future, cancel_exception);
 			}
 
-			zend_object * const future_obj = async_new_future_obj(future);
+			zend_object *const future_obj = async_new_future_obj(future);
 			if (UNEXPECTED(future_obj == NULL)) {
 				RETURN_THROWS();
 			}
@@ -1129,20 +1129,20 @@ PHP_FUNCTION(Async_signal)
 	}
 
 	/* 1. Create signal event — may fail, nothing to clean up yet */
-	zend_async_signal_event_t * const signal_event = ZEND_ASYNC_NEW_SIGNAL_EVENT(signum);
+	zend_async_signal_event_t *const signal_event = ZEND_ASYNC_NEW_SIGNAL_EVENT(signum);
 	if (UNEXPECTED(signal_event == NULL)) {
 		async_throw_error("Failed to create signal event for signal %d", signum);
 		RETURN_THROWS();
 	}
 
 	/* 2. Create signal callback — ecalloc never fails (aborts on OOM) */
-	async_signal_callback_t * const signal_cb = ecalloc(1, sizeof(async_signal_callback_t));
+	async_signal_callback_t *const signal_cb = ecalloc(1, sizeof(async_signal_callback_t));
 	signal_cb->base.callback = async_signal_event_callback_fn;
 	signal_cb->base.dispose = async_signal_callback_dispose;
 	signal_cb->signal_event = signal_event;
 
 	/* 3. Create future — if fails, clean up signal event and callback */
-	zend_future_t * const future = async_new_future(false, 0);
+	zend_future_t *const future = async_new_future(false, 0);
 	if (UNEXPECTED(future == NULL)) {
 		efree(signal_cb);
 		signal_event->base.dispose(&signal_event->base);
@@ -1157,12 +1157,12 @@ PHP_FUNCTION(Async_signal)
 
 	/* Wire cancellation if provided */
 	if (cancellation != NULL) {
-		zend_async_event_t * const cancel_event = ZEND_ASYNC_OBJECT_TO_EVENT(cancellation);
+		zend_async_event_t *const cancel_event = ZEND_ASYNC_OBJECT_TO_EVENT(cancellation);
 
 		/* Hold a reference to cancellation object so it stays alive */
 		GC_ADDREF(cancellation);
 
-		async_signal_callback_t * const cancel_cb = ecalloc(1, sizeof(async_signal_callback_t));
+		async_signal_callback_t *const cancel_cb = ecalloc(1, sizeof(async_signal_callback_t));
 		cancel_cb->base.callback = async_signal_cancellation_callback_fn;
 		cancel_cb->base.dispose = async_signal_callback_dispose;
 		cancel_cb->future = future;
@@ -1177,7 +1177,7 @@ PHP_FUNCTION(Async_signal)
 
 	/* Start cancellation event — if fails, destroy everything and throw */
 	if (cancellation != NULL) {
-		zend_async_event_t * const cancel_event = ZEND_ASYNC_OBJECT_TO_EVENT(cancellation);
+		zend_async_event_t *const cancel_event = ZEND_ASYNC_OBJECT_TO_EVENT(cancellation);
 
 		if (UNEXPECTED(!cancel_event->start(cancel_event))) {
 			signal_event->base.dispose(&signal_event->base);
@@ -1185,7 +1185,7 @@ PHP_FUNCTION(Async_signal)
 		}
 	}
 
-	zend_object * const future_obj = async_new_future_obj(future);
+	zend_object *const future_obj = async_new_future_obj(future);
 	if (UNEXPECTED(future_obj == NULL)) {
 		signal_event->base.dispose(&signal_event->base);
 		RETURN_THROWS();
@@ -1193,7 +1193,7 @@ PHP_FUNCTION(Async_signal)
 
 	/* Start signal event — if fails, reject future and return it */
 	if (UNEXPECTED(!signal_event->base.start(&signal_event->base))) {
-		zend_object * exception = NULL;
+		zend_object *exception = NULL;
 		if (EG(exception)) {
 			exception = EG(exception);
 			GC_ADDREF(exception);
@@ -1264,8 +1264,6 @@ void async_register_awaitable_ce(void)
 	async_ce_awaitable = register_class_Async_Awaitable();
 	async_ce_completable = register_class_Async_Completable(async_ce_awaitable);
 }
-
-
 
 void async_register_circuit_breaker_ce(void)
 {
@@ -1409,7 +1407,8 @@ static PHP_GINIT_FUNCTION(async)
 }
 
 /* {{{ PHP_GSHUTDOWN_FUNCTION */
-static PHP_GSHUTDOWN_FUNCTION(async){
+static PHP_GSHUTDOWN_FUNCTION(async)
+{
 #ifdef PHP_WIN32
 #endif
 } /* }}} */
@@ -1417,7 +1416,8 @@ static PHP_GSHUTDOWN_FUNCTION(async){
 /* INI entries */
 
 PHP_INI_BEGIN()
-	STD_PHP_INI_BOOLEAN("async.debug_deadlock", "1", PHP_INI_ALL, OnUpdateBool, debug_deadlock, zend_async_globals, async_globals)
+STD_PHP_INI_BOOLEAN(
+		"async.debug_deadlock", "1", PHP_INI_ALL, OnUpdateBool, debug_deadlock, zend_async_globals, async_globals)
 PHP_INI_END()
 
 /* Module registration */

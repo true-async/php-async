@@ -1109,64 +1109,66 @@ static zend_object *async_new_channel_obj_stub(zend_async_channel_t *channel)
 	return NULL;
 }
 
-
 ///////////////////////////////////////////////////////////////////////////////
 // Pool API wrappers
 ///////////////////////////////////////////////////////////////////////////////
 
-static zend_async_pool_t *async_new_pool(
-		zend_async_pool_factory_fn factory,
-		zend_async_pool_destructor_fn destructor,
-		zend_async_pool_healthcheck_fn healthcheck,
-		zend_async_pool_before_acquire_fn before_acquire,
-		zend_async_pool_before_release_fn before_release,
-		uint32_t min_size,
-		uint32_t max_size,
-		uint32_t healthcheck_interval_ms,
-		size_t extra_size)
+static zend_async_pool_t *async_new_pool(zend_async_pool_factory_fn factory,
+										 zend_async_pool_destructor_fn destructor,
+										 zend_async_pool_healthcheck_fn healthcheck,
+										 zend_async_pool_before_acquire_fn before_acquire,
+										 zend_async_pool_before_release_fn before_release,
+										 uint32_t min_size,
+										 uint32_t max_size,
+										 uint32_t healthcheck_interval_ms,
+										 size_t extra_size)
 {
-	async_pool_t *pool = zend_async_pool_create_internal(
-		factory, destructor, healthcheck, before_acquire, before_release,
-		min_size, max_size, healthcheck_interval_ms);
+	async_pool_t *pool = zend_async_pool_create_internal(factory,
+														 destructor,
+														 healthcheck,
+														 before_acquire,
+														 before_release,
+														 min_size,
+														 max_size,
+														 healthcheck_interval_ms);
 	return pool ? &pool->base : NULL;
 }
 
 static zend_object *async_new_pool_obj(zend_async_pool_t *pool)
 {
-	return async_pool_create_object_for_pool((async_pool_t *)pool);
+	return async_pool_create_object_for_pool((async_pool_t *) pool);
 }
 
 static bool async_pool_acquire_wrapper(zend_async_pool_t *pool, zval *result, zend_long timeout_ms)
 {
-	return zend_async_pool_acquire((async_pool_t *)pool, result, timeout_ms);
+	return zend_async_pool_acquire((async_pool_t *) pool, result, timeout_ms);
 }
 
 static bool async_pool_try_acquire_wrapper(zend_async_pool_t *pool, zval *result)
 {
-	return zend_async_pool_try_acquire((async_pool_t *)pool, result);
+	return zend_async_pool_try_acquire((async_pool_t *) pool, result);
 }
 
 static void async_pool_release_wrapper(zend_async_pool_t *pool, zval *resource)
 {
-	zend_async_pool_release((async_pool_t *)pool, resource);
+	zend_async_pool_release((async_pool_t *) pool, resource);
 }
 
 static void async_pool_close_wrapper(zend_async_pool_t *pool)
 {
-	zend_async_pool_close((async_pool_t *)pool);
+	zend_async_pool_close((async_pool_t *) pool);
 }
 
 void async_pool_api_register(void)
 {
-	zend_async_pool_api_register(
-		PHP_ASYNC_NAME_VERSION,
-		false,
-		async_new_pool,
-		async_new_pool_obj,
-		async_pool_acquire_wrapper,
-		async_pool_try_acquire_wrapper,
-		async_pool_release_wrapper,
-		async_pool_close_wrapper);
+	zend_async_pool_api_register(PHP_ASYNC_NAME_VERSION,
+								 false,
+								 async_new_pool,
+								 async_new_pool_obj,
+								 async_pool_acquire_wrapper,
+								 async_pool_try_acquire_wrapper,
+								 async_pool_release_wrapper,
+								 async_pool_close_wrapper);
 }
 
 /* Resolves a fired cancellation token into an appropriate exception.
@@ -1194,8 +1196,8 @@ bool async_resolve_cancel_token(zend_object *token)
 
 	/* Always wrap in OperationCanceledException so the caller can distinguish
 	 * a cancellation-token exception from an exception thrown by the awaitable itself. */
-	zend_object *cancel_exc = async_new_exception(
-			ZEND_ASYNC_GET_CE(ZEND_ASYNC_EXCEPTION_OPERATION_CANCELLED), "Operation has been cancelled");
+	zend_object *cancel_exc = async_new_exception(ZEND_ASYNC_GET_CE(ZEND_ASYNC_EXCEPTION_OPERATION_CANCELLED),
+												  "Operation has been cancelled");
 
 	if (exception != NULL) {
 		zend_exception_set_previous(cancel_exc, exception);

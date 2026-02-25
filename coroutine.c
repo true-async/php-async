@@ -838,9 +838,10 @@ bool async_coroutine_cancel(zend_coroutine_t *zend_coroutine,
 	// for an event but has not yet switched. Canceling such a coroutine
 	// is performed in the usual way.
 	//
-	if (UNEXPECTED(zend_coroutine == ZEND_ASYNC_CURRENT_COROUTINE
-	&& false == (zend_coroutine->waker != NULL && zend_coroutine->waker->status == ZEND_ASYNC_WAKER_WAITING)
-	)) {
+	if (UNEXPECTED(
+				zend_coroutine == ZEND_ASYNC_CURRENT_COROUTINE &&
+				false ==
+						(zend_coroutine->waker != NULL && zend_coroutine->waker->status == ZEND_ASYNC_WAKER_WAITING))) {
 
 		ZEND_COROUTINE_SET_CANCELLED(zend_coroutine);
 
@@ -1016,20 +1017,20 @@ static zend_string *coroutine_info(zend_async_event_t *event)
 
 	if (ZEND_COROUTINE_SUSPENDED(&coroutine->coroutine)) {
 		result = zend_strpprintf(0,
-							   "Coroutine %d spawned at %s:%d, suspended at %s:%d (%s)",
-							   coroutine->std.handle,
-							   coroutine->coroutine.filename ? ZSTR_VAL(coroutine->coroutine.filename) : "",
-							   coroutine->coroutine.lineno,
-							   coroutine->waker.filename ? ZSTR_VAL(coroutine->waker.filename) : "",
-							   coroutine->waker.lineno,
-							   ZSTR_VAL(zend_coroutine_name));
+								 "Coroutine %d spawned at %s:%d, suspended at %s:%d (%s)",
+								 coroutine->std.handle,
+								 coroutine->coroutine.filename ? ZSTR_VAL(coroutine->coroutine.filename) : "",
+								 coroutine->coroutine.lineno,
+								 coroutine->waker.filename ? ZSTR_VAL(coroutine->waker.filename) : "",
+								 coroutine->waker.lineno,
+								 ZSTR_VAL(zend_coroutine_name));
 	} else {
 		result = zend_strpprintf(0,
-							   "Coroutine %d spawned at %s:%d (%s)",
-							   coroutine->std.handle,
-							   coroutine->coroutine.filename ? ZSTR_VAL(coroutine->coroutine.filename) : "",
-							   coroutine->coroutine.lineno,
-							   ZSTR_VAL(zend_coroutine_name));
+								 "Coroutine %d spawned at %s:%d (%s)",
+								 coroutine->std.handle,
+								 coroutine->coroutine.filename ? ZSTR_VAL(coroutine->coroutine.filename) : "",
+								 coroutine->coroutine.lineno,
+								 ZSTR_VAL(zend_coroutine_name));
 	}
 
 	zend_string_release(zend_coroutine_name);
@@ -1443,7 +1444,7 @@ METHOD(getTrace)
 
 	// Generate the backtrace using Zend's built-in function
 	// skip_last = 0 (skip zero frames from the end of the trace)
-	zend_fetch_debug_backtrace(return_value, 0, (int)options, (int)limit);
+	zend_fetch_debug_backtrace(return_value, 0, (int) options, (int) limit);
 
 	// Restore original VM stack and execute data
 	EG(vm_stack) = orig_vm_stack;

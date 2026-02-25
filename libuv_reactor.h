@@ -116,7 +116,8 @@ struct _async_trigger_event_t
 	uv_async_t uv_handle;
 };
 
-typedef struct _libuv_work_wrapper_s {
+typedef struct _libuv_work_wrapper_s
+{
 	uv_work_t uv_req;
 	zend_async_task_t *task;
 } libuv_work_wrapper_t;
@@ -126,13 +127,17 @@ struct _async_io_t
 	zend_async_io_t base;
 	int crt_fd;
 	async_io_req_t *active_req;
-	union {
+
+	union
+	{
 		uv_stream_t stream;
 		uv_pipe_t pipe;
 		uv_tty_t tty;
 		uv_tcp_t tcp;
 		uv_udp_t udp;
-		struct {
+
+		struct
+		{
 			zend_off_t offset;
 		} file;
 	} handle;
@@ -143,7 +148,9 @@ struct _async_io_req_t
 	zend_async_io_req_t base;
 	async_io_t *io;
 	size_t max_size;
-	union {
+
+	union
+	{
 		uv_write_t write_req;
 		uv_fs_t fs_req;
 	};

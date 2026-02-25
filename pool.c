@@ -84,7 +84,7 @@ static void pool_queue_push(zend_async_callbacks_vector_t *queue, zend_async_poo
 		queue->capacity = new_capacity;
 	}
 	waiter->callback.base.ref_count++;
-	queue->data[queue->length++] = (zend_async_event_callback_t *)waiter;
+	queue->data[queue->length++] = (zend_async_event_callback_t *) waiter;
 }
 
 static zend_async_pool_waiter_t *pool_queue_pop(zend_async_callbacks_vector_t *queue)
@@ -92,7 +92,7 @@ static zend_async_pool_waiter_t *pool_queue_pop(zend_async_callbacks_vector_t *q
 	if (queue->length == 0) {
 		return NULL;
 	}
-	zend_async_pool_waiter_t *waiter = (zend_async_pool_waiter_t *)queue->data[0];
+	zend_async_pool_waiter_t *waiter = (zend_async_pool_waiter_t *) queue->data[0];
 	queue->length--;
 	/* Swap with last element - O(1) */
 	queue->data[0] = queue->data[queue->length];
@@ -102,7 +102,7 @@ static zend_async_pool_waiter_t *pool_queue_pop(zend_async_callbacks_vector_t *q
 static bool pool_queue_remove(zend_async_callbacks_vector_t *queue, zend_async_pool_waiter_t *waiter)
 {
 	for (uint32_t i = 0; i < queue->length; i++) {
-		if (queue->data[i] == (zend_async_event_callback_t *)waiter) {
+		if (queue->data[i] == (zend_async_event_callback_t *) waiter) {
 			queue->length--;
 			queue->data[i] = queue->data[queue->length];
 			return true;
@@ -383,13 +383,15 @@ static void pool_wait_for_resource(async_pool_t *pool, zend_long timeout_ms)
 
 	pool_queue_push(&pool->waiters, waiter);
 
-	zend_async_resume_when(ZEND_ASYNC_CURRENT_COROUTINE, &base->event,
-		false, zend_async_waker_callback_resolve, &waiter->callback);
+	zend_async_resume_when(
+			ZEND_ASYNC_CURRENT_COROUTINE, &base->event, false, zend_async_waker_callback_resolve, &waiter->callback);
 
 	if (timeout_ms > 0) {
 		zend_async_resume_when(ZEND_ASYNC_CURRENT_COROUTINE,
-			&ZEND_ASYNC_NEW_TIMER_EVENT(timeout_ms, false)->base,
-			true, zend_async_waker_callback_timeout, NULL);
+							   &ZEND_ASYNC_NEW_TIMER_EVENT(timeout_ms, false)->base,
+							   true,
+							   zend_async_waker_callback_timeout,
+							   NULL);
 	}
 
 	ZEND_ASYNC_SUSPEND();
@@ -501,10 +503,11 @@ static zend_string *pool_info(zend_async_event_t *event)
 {
 	const async_pool_t *pool = (async_pool_t *) event;
 
-	return zend_strpprintf(0, "Pool(idle=%zu, active=%u, max=%u)",
-		circular_buffer_count(&pool->idle),
-		pool->active_count,
-		pool->base.max_size);
+	return zend_strpprintf(0,
+						   "Pool(idle=%zu, active=%u, max=%u)",
+						   circular_buffer_count(&pool->idle),
+						   pool->active_count,
+						   pool->base.max_size);
 }
 
 static void pool_event_init(async_pool_t *pool)
@@ -571,13 +574,12 @@ static bool pool_call_healthcheck(async_pool_t *pool, zval *resource)
 	return is_healthy;
 }
 
-static void pool_healthcheck_timer_callback(
-	zend_async_event_t *timer_event,
-	zend_async_event_callback_t *callback,
-	void *result,
-	zend_object *exception
-) {
-	async_pool_t *pool = (async_pool_t *)callback;
+static void pool_healthcheck_timer_callback(zend_async_event_t *timer_event,
+											zend_async_event_callback_t *callback,
+											void *result,
+											zend_object *exception)
+{
+	async_pool_t *pool = (async_pool_t *) callback;
 	zend_async_pool_t *base = &pool->base;
 
 	if (ZEND_ASYNC_POOL_IS_CLOSED(pool)) {
@@ -586,8 +588,8 @@ static void pool_healthcheck_timer_callback(
 
 	/* Check if healthcheck is set */
 	bool has_healthcheck = (base->handler_flags & ZEND_ASYNC_POOL_F_HEALTHCHECK_INTERNAL)
-		? (base->healthcheck.internal != NULL)
-		: (base->healthcheck.fcall != NULL);
+			? (base->healthcheck.internal != NULL)
+			: (base->healthcheck.fcall != NULL);
 
 	if (!has_healthcheck) {
 		return;
@@ -635,8 +637,8 @@ static void pool_start_healthcheck_timer(async_pool_t *pool)
 
 	/* Check if healthcheck is set */
 	bool has_healthcheck = (base->handler_flags & ZEND_ASYNC_POOL_F_HEALTHCHECK_INTERNAL)
-		? (base->healthcheck.internal != NULL)
-		: (base->healthcheck.fcall != NULL);
+			? (base->healthcheck.internal != NULL)
+			: (base->healthcheck.fcall != NULL);
 
 	if (!has_healthcheck) {
 		return;
@@ -649,7 +651,7 @@ static void pool_start_healthcheck_timer(async_pool_t *pool)
 	}
 
 	/* Use pool pointer as callback data */
-	zend_async_event_callback_t *callback = (zend_async_event_callback_t *)pool;
+	zend_async_event_callback_t *callback = (zend_async_event_callback_t *) pool;
 	callback->callback = pool_healthcheck_timer_callback;
 	callback->ref_count = 1;
 
@@ -671,16 +673,15 @@ static void pool_stop_healthcheck_timer(async_pool_t *pool)
 ///////////////////////////////////////////////////////////////////////////////
 
 /* Create pool with PHP callables (fcall) */
-async_pool_t *zend_async_pool_create(
-	zend_fcall_t *factory,
-	zend_fcall_t *destructor,
-	zend_fcall_t *healthcheck,
-	zend_fcall_t *before_acquire,
-	zend_fcall_t *before_release,
-	uint32_t min_size,
-	uint32_t max_size,
-	uint32_t healthcheck_interval_ms
-) {
+async_pool_t *zend_async_pool_create(zend_fcall_t *factory,
+									 zend_fcall_t *destructor,
+									 zend_fcall_t *healthcheck,
+									 zend_fcall_t *before_acquire,
+									 zend_fcall_t *before_release,
+									 uint32_t min_size,
+									 uint32_t max_size,
+									 uint32_t healthcheck_interval_ms)
+{
 	async_pool_t *pool = ecalloc(1, sizeof(async_pool_t));
 	zend_async_pool_t *base = &pool->base;
 
@@ -726,16 +727,15 @@ async_pool_t *zend_async_pool_create(
 }
 
 /* Create pool with internal C handlers */
-async_pool_t *zend_async_pool_create_internal(
-	zend_async_pool_factory_fn factory,
-	zend_async_pool_destructor_fn destructor,
-	zend_async_pool_healthcheck_fn healthcheck,
-	zend_async_pool_before_acquire_fn before_acquire,
-	zend_async_pool_before_release_fn before_release,
-	uint32_t min_size,
-	uint32_t max_size,
-	uint32_t healthcheck_interval_ms
-) {
+async_pool_t *zend_async_pool_create_internal(zend_async_pool_factory_fn factory,
+											  zend_async_pool_destructor_fn destructor,
+											  zend_async_pool_healthcheck_fn healthcheck,
+											  zend_async_pool_before_acquire_fn before_acquire,
+											  zend_async_pool_before_release_fn before_release,
+											  uint32_t min_size,
+											  uint32_t max_size,
+											  uint32_t healthcheck_interval_ms)
+{
 	async_pool_t *pool = ecalloc(1, sizeof(async_pool_t));
 	zend_async_pool_t *base = &pool->base;
 
@@ -743,11 +743,9 @@ async_pool_t *zend_async_pool_create_internal(
 	pool_event_init(pool);
 
 	/* Callbacks - all internal C handlers */
-	base->handler_flags = ZEND_ASYNC_POOL_F_FACTORY_INTERNAL
-		| ZEND_ASYNC_POOL_F_DESTRUCTOR_INTERNAL
-		| ZEND_ASYNC_POOL_F_HEALTHCHECK_INTERNAL
-		| ZEND_ASYNC_POOL_F_BEFORE_ACQUIRE_INTERNAL
-		| ZEND_ASYNC_POOL_F_BEFORE_RELEASE_INTERNAL;
+	base->handler_flags = ZEND_ASYNC_POOL_F_FACTORY_INTERNAL | ZEND_ASYNC_POOL_F_DESTRUCTOR_INTERNAL |
+			ZEND_ASYNC_POOL_F_HEALTHCHECK_INTERNAL | ZEND_ASYNC_POOL_F_BEFORE_ACQUIRE_INTERNAL |
+			ZEND_ASYNC_POOL_F_BEFORE_RELEASE_INTERNAL;
 
 	base->factory.internal = factory;
 	base->destructor.internal = destructor;
@@ -1058,7 +1056,7 @@ static HashTable *async_pool_get_gc(zend_object *object, zval **table, int *num)
 	circular_buffer_t *cb = &obj->pool->idle;
 	size_t idx = cb->tail;
 	while (idx != cb->head) {
-		zval *val = (zval *)((char *)cb->data + idx * cb->item_size);
+		zval *val = (zval *) ((char *) cb->data + idx * cb->item_size);
 		zend_get_gc_buffer_add_zval(buf, val);
 		idx = (idx + 1) & (cb->capacity - 1);
 	}
@@ -1073,24 +1071,24 @@ static HashTable *async_pool_get_gc(zend_object *object, zval **table, int *num)
 
 METHOD(__construct)
 {
-	zend_fcall_info fci_factory = {0}, fci_destructor = {0}, fci_healthcheck = {0};
-	zend_fcall_info fci_before_acquire = {0}, fci_before_release = {0};
-	zend_fcall_info_cache fcc_factory = {0}, fcc_destructor = {0}, fcc_healthcheck = {0};
-	zend_fcall_info_cache fcc_before_acquire = {0}, fcc_before_release = {0};
+	zend_fcall_info fci_factory = { 0 }, fci_destructor = { 0 }, fci_healthcheck = { 0 };
+	zend_fcall_info fci_before_acquire = { 0 }, fci_before_release = { 0 };
+	zend_fcall_info_cache fcc_factory = { 0 }, fcc_destructor = { 0 }, fcc_healthcheck = { 0 };
+	zend_fcall_info_cache fcc_before_acquire = { 0 }, fcc_before_release = { 0 };
 	zend_long min = 0;
 	zend_long max = 10;
 	zend_long healthcheck_interval = 0;
 
 	ZEND_PARSE_PARAMETERS_START(1, 8)
-		Z_PARAM_FUNC(fci_factory, fcc_factory)
-		Z_PARAM_OPTIONAL
-		Z_PARAM_FUNC_OR_NULL(fci_destructor, fcc_destructor)
-		Z_PARAM_FUNC_OR_NULL(fci_healthcheck, fcc_healthcheck)
-		Z_PARAM_FUNC_OR_NULL(fci_before_acquire, fcc_before_acquire)
-		Z_PARAM_FUNC_OR_NULL(fci_before_release, fcc_before_release)
-		Z_PARAM_LONG(min)
-		Z_PARAM_LONG(max)
-		Z_PARAM_LONG(healthcheck_interval)
+	Z_PARAM_FUNC(fci_factory, fcc_factory)
+	Z_PARAM_OPTIONAL
+	Z_PARAM_FUNC_OR_NULL(fci_destructor, fcc_destructor)
+	Z_PARAM_FUNC_OR_NULL(fci_healthcheck, fcc_healthcheck)
+	Z_PARAM_FUNC_OR_NULL(fci_before_acquire, fcc_before_acquire)
+	Z_PARAM_FUNC_OR_NULL(fci_before_release, fcc_before_release)
+	Z_PARAM_LONG(min)
+	Z_PARAM_LONG(max)
+	Z_PARAM_LONG(healthcheck_interval)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (min < 0) {
@@ -1151,16 +1149,14 @@ METHOD(__construct)
 	}
 
 	async_pool_obj_t *obj = THIS_POOL_OBJ;
-	obj->pool = zend_async_pool_create(
-		factory,
-		destructor,
-		healthcheck,
-		before_acquire,
-		before_release,
-		(uint32_t)min,
-		(uint32_t)max,
-		(uint32_t)healthcheck_interval
-	);
+	obj->pool = zend_async_pool_create(factory,
+									   destructor,
+									   healthcheck,
+									   before_acquire,
+									   before_release,
+									   (uint32_t) min,
+									   (uint32_t) max,
+									   (uint32_t) healthcheck_interval);
 
 	if (EG(exception)) {
 		RETURN_THROWS();
@@ -1175,8 +1171,8 @@ METHOD(acquire)
 	zend_long timeout = 0;
 
 	ZEND_PARSE_PARAMETERS_START(0, 1)
-		Z_PARAM_OPTIONAL
-		Z_PARAM_LONG(timeout)
+	Z_PARAM_OPTIONAL
+	Z_PARAM_LONG(timeout)
 	ZEND_PARSE_PARAMETERS_END();
 
 	ENSURE_COROUTINE_CONTEXT
@@ -1213,7 +1209,7 @@ METHOD(release)
 	zval *resource;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_ZVAL(resource)
+	Z_PARAM_ZVAL(resource)
 	ZEND_PARSE_PARAMETERS_END();
 
 	async_pool_obj_t *obj = THIS_POOL_OBJ;
@@ -1298,7 +1294,7 @@ METHOD(setCircuitBreakerStrategy)
 	zend_object *strategy_obj = NULL;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_OBJ_OF_CLASS_OR_NULL(strategy_obj, async_ce_circuit_breaker_strategy)
+	Z_PARAM_OBJ_OF_CLASS_OR_NULL(strategy_obj, async_ce_circuit_breaker_strategy)
 	ZEND_PARSE_PARAMETERS_END();
 
 	async_pool_obj_t *obj = THIS_POOL_OBJ;
