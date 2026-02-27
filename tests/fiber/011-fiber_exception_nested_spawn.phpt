@@ -27,7 +27,8 @@ $coroutine = spawn(function() {
         return "fiber recovered";
     });
 
-    $result = $fiber->start();
+    $fiber->start();
+    $result = $fiber->getReturn();
     echo "Result: " . $result . "\n";
 
     return "done";

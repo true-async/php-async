@@ -29,14 +29,16 @@ $coroutine = spawn(function() {
     $fiber2->start();
 
     echo "Resume F2\n";
-    $r2 = $fiber2->resume();
+    $fiber2->resume();
+    $r2 = $fiber2->getReturn();
     echo "F2 result: " . $r2 . "\n";
 
     echo "Resume F1 (1)\n";
     $fiber1->resume();
 
     echo "Resume F1 (2)\n";
-    $r1 = $fiber1->resume();
+    $fiber1->resume();
+    $r1 = $fiber1->getReturn();
     echo "F1 result: " . $r1 . "\n";
 
     return "done";

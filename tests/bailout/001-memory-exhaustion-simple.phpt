@@ -35,6 +35,4 @@ After spawn
 Before memory exhaustion
 
 Fatal error: Allowed memory size of %d bytes exhausted%s(tried to allocate %d bytes) in %s on line %d
-
-Warning: Graceful shutdown mode was started in %s on line %d
 Shutdown function called

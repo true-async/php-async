@@ -11,7 +11,8 @@ $c = spawn(function() {
         return "done";
     });
 
-    $result = $fiber->start();
+    $fiber->start();
+    $result = $fiber->getReturn();
     echo "Fiber completed: {$result}\n";
 
     // Get coroutine after fiber is terminated

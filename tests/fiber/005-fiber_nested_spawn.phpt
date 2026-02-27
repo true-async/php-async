@@ -26,7 +26,8 @@ $coroutine = spawn(function() {
         return "fiber done";
     });
 
-    $result = $fiber->start();
+    $fiber->start();
+    $result = $fiber->getReturn();
     echo "Fiber completed: " . $result . "\n";
 
     return "outer done";

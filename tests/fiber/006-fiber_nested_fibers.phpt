@@ -22,13 +22,15 @@ $coroutine = spawn(function() {
         $val = $inner->start();
         echo "Inner suspended: " . $val . "\n";
 
-        $result = $inner->resume();
+        $inner->resume();
+        $result = $inner->getReturn();
         echo "Inner result: " . $result . "\n";
 
         return "outer done";
     });
 
-    $result = $outer->start();
+    $outer->start();
+    $result = $outer->getReturn();
     echo "Outer result: " . $result . "\n";
 
     return "complete";

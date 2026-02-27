@@ -25,7 +25,8 @@ $coroutine = spawn(function() {
     echo "R1: " . $fiber->start() . "\n";
     echo "R2: " . $fiber->resume("resume-1") . "\n";
     echo "R3: " . $fiber->resume("resume-2") . "\n";
-    echo "R4: " . $fiber->resume("resume-3") . "\n";
+    $fiber->resume("resume-3");
+    echo "R4: " . $fiber->getReturn() . "\n";
 
     return "done";
 });
