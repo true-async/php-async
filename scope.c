@@ -1450,6 +1450,10 @@ static zend_always_inline bool try_to_handle_exception(async_scope_t *current_sc
 		return false; // No exception handlers defined
 	}
 
+	if (UNEXPECTED(ZEND_ASYNC_SCOPE_IS_BAILOUT(&current_scope->scope))) {
+		return false;
+	}
+
 	if (ZEND_ASYNC_IS_SCHEDULER_CONTEXT || coroutine == NULL) {
 
 		// Handlers from userland PHP can’t be invoked from the microtask context,
@@ -1570,6 +1574,13 @@ static bool async_scope_call_finally_handlers(async_scope_t *scope)
 
 	HashTable *finally_handlers = scope->finally_handlers;
 	scope->finally_handlers = NULL;
+
+	// During bailout, don't call finally handlers — just destroy them
+	if (UNEXPECTED(ZEND_ASYNC_SCOPE_IS_BAILOUT(&scope->scope))) {
+		zend_array_destroy(finally_handlers);
+		return false;
+	}
+
 	finally_handlers_context_t *finally_context = ecalloc(1, sizeof(finally_handlers_context_t));
 	finally_context->target = scope;
 	finally_context->scope = &scope->scope;

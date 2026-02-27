@@ -42,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Async\signal()` function**: One-shot signal handler that returns a `Future` resolved when the specified signal is received. Supports optional `Cancellation` for early cancellation.
 
 ### Changed
+- **Bailout handling**: Added `ZEND_ASYNC_EVENT_F_BAILOUT` flag (bit 11) on `zend_async_event_t`. During bailout (e.g. OOM), PHP-level handlers are no longer called — finally handlers on coroutines and scopes are destroyed without execution, scope exception handlers (`try_to_handle_exception`) are skipped. C-level callbacks (`ZEND_ASYNC_CALLBACKS_NOTIFY`) continue to work normally. Convenience macros: `ZEND_COROUTINE_SET_BAILOUT`/`ZEND_COROUTINE_IS_BAILOUT`, `ZEND_ASYNC_SCOPE_SET_BAILOUT`/`ZEND_ASYNC_SCOPE_IS_BAILOUT`.
 - **Breaking Change: `onFinally()` renamed to `finally()`** on both `Async\Coroutine` and `Async\Scope` classes,
   aligning with the Promise/A+ convention (`.then()`, `.catch()`, `.finally()`).
   - **Migration**: Replace `->onFinally(function() { ... })` with `->finally(function() { ... })`.

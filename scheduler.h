@@ -35,8 +35,9 @@ bool async_scheduler_launch(void);
  * The Scheduler's logic runs directly within the coroutine that called suspend.
  */
 bool async_scheduler_coroutine_suspend(void);
-bool async_scheduler_main_coroutine_suspend(void);
+bool async_scheduler_main_coroutine_suspend(bool with_bailout);
 bool async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine);
+void bailout_all_coroutines(void);
 
 /* Fiber context creation */
 async_fiber_context_t *async_fiber_context_create(void);

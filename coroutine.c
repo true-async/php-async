@@ -347,9 +347,12 @@ static HashTable *async_coroutine_object_gc(zend_object *object, zval **table, i
 
 	async_fiber_context_t *fiber_context = coroutine->fiber_context;
 
-	/* Check if we should traverse execution stack (similar to fibers) */
-	if (fiber_context == NULL ||
-		(fiber_context->context.status != ZEND_FIBER_STATUS_SUSPENDED || !fiber_context->execute_data)) {
+	/* Check if we should traverse execution stack (similar to fibers).
+	 * In coroutine mode, fiber_context->context.status stays INIT,
+	 * so we check: skip if running (current coroutine) or finished. */
+	if (fiber_context == NULL || !fiber_context->execute_data
+		|| ZEND_ASYNC_CURRENT_COROUTINE == &coroutine->coroutine
+		|| ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine)) {
 		zend_get_gc_buffer_use(buf, table, num);
 		return NULL;
 	}
@@ -532,6 +535,7 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 	}
 	zend_catch
 	{
+		ZEND_ASYNC_WAKER_DESTROY(&coroutine->coroutine);
 		should_start_graceful_shutdown = true;
 		is_bailout = true;
 	}
@@ -734,8 +738,9 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
  * (example zend_async_waker_clean).
  *
  * @param from_main For main coroutine
+ * @param is_bailout Whether this is called during bailout
  */
-bool async_coroutine_suspend(const bool from_main)
+bool async_coroutine_suspend(const bool from_main, const bool is_bailout)
 {
 	if (UNEXPECTED(from_main)) {
 		// If the Scheduler was never used, it means no coroutines were created,
@@ -744,7 +749,7 @@ bool async_coroutine_suspend(const bool from_main)
 			return true;
 		}
 
-		return async_scheduler_main_coroutine_suspend();
+		return async_scheduler_main_coroutine_suspend(is_bailout);
 	}
 
 	return async_scheduler_coroutine_suspend();
@@ -1282,6 +1287,14 @@ static zend_always_inline void coroutine_call_finally_handlers(async_coroutine_t
 {
 	HashTable *finally_handlers = coroutine->finally_handlers;
 	coroutine->finally_handlers = NULL;
+
+	// During bailout, don't call finally handlers — just destroy them
+	if (UNEXPECTED(ZEND_COROUTINE_IS_BAILOUT(&coroutine->coroutine)
+		|| (coroutine->coroutine.scope != NULL && ZEND_ASYNC_SCOPE_IS_BAILOUT(coroutine->coroutine.scope)))) {
+		zend_array_destroy(finally_handlers);
+		return;
+	}
+
 	finally_handlers_context_t *finally_context = ecalloc(1, sizeof(finally_handlers_context_t));
 	finally_context->coroutine = coroutine;
 	finally_context->scope = coroutine->coroutine.scope;
