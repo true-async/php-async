@@ -23,6 +23,8 @@ proc_close($proc);
 echo "STDOUT: [$stdout]\n";
 echo "STDERR: [$stderr]\n";
 ?>
+--XLEAK--
+Fatal error path leaks due to zend_bailout() longjmp skipping cleanup
 --EXPECTF--
 STDOUT: [
 Fatal error: ob_start(): Cannot use output buffering in output buffering display handlers in Command line code on line 1
