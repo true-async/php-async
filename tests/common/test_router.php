@@ -196,6 +196,22 @@ switch ($path) {
         }
         break;
         
+    case '/upload':
+        if ($method === 'POST' && !empty($_FILES)) {
+            header('Content-Type: text/plain');
+            $file = $_FILES['file'] ?? null;
+            if ($file) {
+                echo "{$file['name']}|{$file['type']}|{$file['size']}";
+            } else {
+                echo "No file received";
+            }
+        } else {
+            http_response_code(400);
+            header('Content-Type: text/plain');
+            echo "Expected POST with file upload";
+        }
+        break;
+
     default:
         http_response_code(404);
         header('Content-Type: text/html; charset=UTF-8');
