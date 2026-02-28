@@ -130,6 +130,7 @@ struct _async_io_t
 {
 	zend_async_io_t base;
 	int crt_fd;
+	int orig_fd;   /* original stdio fd (0/1/2) when dup'd, or -1 */
 	async_io_req_t *active_req;
 
 	union

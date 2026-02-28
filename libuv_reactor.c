@@ -3409,14 +3409,33 @@ libuv_io_create(const zend_file_descriptor_t fd, const zend_async_io_type type, 
 
 	async_io_t *io = pecalloc(1, sizeof(async_io_t), 0);
 
+	io->orig_fd = -1;
+
+#ifndef PHP_WIN32
+	/* Unix only: libuv asserts fd > STDERR_FILENO in uv__close().
+	 * Dup stdio fds so libuv can safely close the copy. */
+	zend_file_descriptor_t io_fd = fd;
+	if ((type == ZEND_ASYNC_IO_TYPE_PIPE || type == ZEND_ASYNC_IO_TYPE_TTY)
+			&& fd >= 0 && fd <= STDERR_FILENO) {
+		io_fd = dup(fd);
+		if (io_fd < 0) {
+			pefree(io, 0);
+			return NULL;
+		}
+		io->orig_fd = fd;
+	}
+#else
+	zend_file_descriptor_t io_fd = fd;
+#endif
+
 	/* Set descriptor based on type.
 	 * zend_file_descriptor_t is always a CRT fd (int) on all platforms. */
 	if (type == ZEND_ASYNC_IO_TYPE_TCP || type == ZEND_ASYNC_IO_TYPE_UDP) {
-		io->base.descriptor.socket = (zend_socket_t) fd;
-		io->crt_fd = fd;
+		io->base.descriptor.socket = (zend_socket_t) io_fd;
+		io->crt_fd = io_fd;
 	} else {
-		io->base.descriptor.fd = fd;
-		io->crt_fd = fd;
+		io->base.descriptor.fd = io_fd;
+		io->crt_fd = io_fd;
 	}
 
 	io->base.type = type;
@@ -3736,6 +3755,13 @@ static int libuv_io_close(zend_async_io_t *io_base)
 		zend_async_callbacks_free(&io->base.event);
 		io->handle.stream.data = io;
 		uv_close((uv_handle_t *) &io->handle.stream, io_close_cb);
+
+		/* Close the original stdio fd that was dup'd in libuv_io_create */
+		if (io->orig_fd >= 0) {
+			close(io->orig_fd);
+			io->orig_fd = -1;
+		}
+
 		return 1;
 	}
 
