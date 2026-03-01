@@ -3473,8 +3473,8 @@ libuv_io_create(const zend_file_descriptor_t fd, const zend_async_io_type type, 
 
 		io->handle.pipe.data = io;
 	} else if (type == ZEND_ASYNC_IO_TYPE_TTY) {
-		int readable = (state & ZEND_ASYNC_IO_READABLE) ? 1 : 0;
-		int error = uv_tty_init(UVLOOP, &io->handle.tty, io->crt_fd, readable);
+		const int readable = (state & ZEND_ASYNC_IO_READABLE) ? 1 : 0;
+		const int error = uv_tty_init(UVLOOP, &io->handle.tty, io->crt_fd, readable);
 
 		if (UNEXPECTED(error < 0)) {
 			async_throw_error("Failed to initialize TTY handle: %s", uv_strerror(error));
@@ -3484,7 +3484,7 @@ libuv_io_create(const zend_file_descriptor_t fd, const zend_async_io_type type, 
 
 		io->handle.tty.data = io;
 	} else if (type == ZEND_ASYNC_IO_TYPE_TCP) {
-		int error = uv_tcp_init(UVLOOP, &io->handle.tcp);
+		const int error = uv_tcp_init(UVLOOP, &io->handle.tcp);
 
 		if (UNEXPECTED(error < 0)) {
 			async_throw_error("Failed to initialize TCP handle: %s", uv_strerror(error));
@@ -3494,7 +3494,7 @@ libuv_io_create(const zend_file_descriptor_t fd, const zend_async_io_type type, 
 
 		io->handle.tcp.data = io;
 	} else if (type == ZEND_ASYNC_IO_TYPE_UDP) {
-		int error = uv_udp_init(UVLOOP, &io->handle.udp);
+		const int error = uv_udp_init(UVLOOP, &io->handle.udp);
 
 		if (UNEXPECTED(error < 0)) {
 			async_throw_error("Failed to initialize UDP handle: %s", uv_strerror(error));
