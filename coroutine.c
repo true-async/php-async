@@ -569,6 +569,22 @@ exit:
 
 void async_coroutine_finalize(async_coroutine_t *coroutine)
 {
+	// Set up a fake execute_data frame so exceptions thrown during finalization
+	// carry correct file/line information pointing to the coroutine closure.
+	// Only applicable to userland coroutines with a resolved function handler.
+	zend_execute_data fake_frame = {0};
+	const zend_fcall_t *const fcall = coroutine->coroutine.fcall;
+	const bool has_fake_frame = fcall != NULL
+		&& fcall->fci_cache.function_handler != NULL
+		&& fcall->fci_cache.function_handler->type == ZEND_USER_FUNCTION;
+
+	if (has_fake_frame) {
+		fake_frame.func = fcall->fci_cache.function_handler;
+		fake_frame.opline = fake_frame.func->op_array.opcodes;
+		fake_frame.prev_execute_data = EG(current_execute_data);
+		EG(current_execute_data) = &fake_frame;
+	}
+
 	// Before finalizing the coroutine
 	// we check that we're properly finishing the coroutine's execution.
 	// The coroutine must not be in the queue!
@@ -697,6 +713,10 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 		do_bailout = true;
 	}
 	zend_end_try();
+
+	if (has_fake_frame) {
+		EG(current_execute_data) = fake_frame.prev_execute_data;
+	}
 
 	if (UNEXPECTED(*exception_ptr && (zend_is_graceful_exit(*exception_ptr) || zend_is_unwind_exit(*exception_ptr)))) {
 		zend_clear_exception();
