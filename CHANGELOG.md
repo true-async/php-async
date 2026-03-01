@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.6.0]
 
 ### Fixed
+- **Reactor deadlock on pending file I/O requests**: `uv_fs_read`, `uv_fs_write`, `uv_fs_fsync`, and `uv_fs_fstat` are libuv requests (not handles) that keep `uv_loop_alive()` true but were invisible to `ZEND_ASYNC_ACTIVE_EVENT_COUNT`. The reactor loop exited prematurely (`has_handles && active_event_count > 0` → false) while file I/O callbacks were still pending, causing deadlocks in async file writes (e.g. `CURLOPT_FILE` with async I/O). Fixed by adding `ZEND_ASYNC_INCREASE_EVENT_COUNT` after successful `uv_fs_*` submission and `ZEND_ASYNC_DECREASE_EVENT_COUNT` in their completion callbacks (`io_file_read_cb`, `io_file_write_cb`, `io_file_flush_cb`, `io_file_stat_cb`).
 - **Generator segfault in fiber-coroutine mode**: Generators running inside fiber coroutines were not marked with `ZEND_GENERATOR_IN_FIBER` because `EG(active_fiber)` is not set in coroutine mode. This caused shutdown destructors to close generators while the coroutine was still suspended, leading to a NULL `execute_data` dereference in `zend_generator_resume`. Fixed by also checking `ZEND_ASYNC_CURRENT_COROUTINE` with `ZEND_COROUTINE_IS_FIBER` when setting the `IN_FIBER` flag on generators.
 
 ### Added

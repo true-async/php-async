@@ -3333,6 +3333,7 @@ static void io_file_read_cb(uv_fs_t *fs_request)
 
 	req->base.completed = true;
 	uv_fs_req_cleanup(fs_request);
+	ZEND_ASYNC_DECREASE_EVENT_COUNT(&io->base.event);
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
 	IF_EXCEPTION_STOP_REACTOR;
 }
@@ -3353,6 +3354,7 @@ static void io_file_write_cb(uv_fs_t *fs_request)
 
 	req->base.completed = true;
 	uv_fs_req_cleanup(fs_request);
+	ZEND_ASYNC_DECREASE_EVENT_COUNT(&io->base.event);
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
 	IF_EXCEPTION_STOP_REACTOR;
 }
@@ -3372,6 +3374,7 @@ static void io_file_flush_cb(uv_fs_t *fs_request)
 
 	req->base.completed = true;
 	uv_fs_req_cleanup(fs_request);
+	ZEND_ASYNC_DECREASE_EVENT_COUNT(&io->base.event);
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
 	IF_EXCEPTION_STOP_REACTOR;
 }
@@ -3395,6 +3398,7 @@ static void io_file_stat_cb(uv_fs_t *fs_request)
 
 	req->base.completed = true;
 	uv_fs_req_cleanup(fs_request);
+	ZEND_ASYNC_DECREASE_EVENT_COUNT(&io->base.event);
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
 	IF_EXCEPTION_STOP_REACTOR;
 }
@@ -3635,6 +3639,7 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, const size_t
 		return NULL;
 	}
 
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(&io->base.event);
 	return &req->base;
 }
 
@@ -3734,6 +3739,7 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 		return NULL;
 	}
 
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(&io->base.event);
 	return &req->base;
 }
 
@@ -3822,6 +3828,7 @@ static zend_async_io_req_t *libuv_io_flush(zend_async_io_t *io_base)
 		return NULL;
 	}
 
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(&io->base.event);
 	return &req->base;
 }
 
@@ -3905,6 +3912,7 @@ static zend_async_io_req_t *libuv_io_stat(zend_async_io_t *io_base, zend_stat_t 
 		return NULL;
 	}
 
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(&io->base.event);
 	return &req->base;
 }
 
