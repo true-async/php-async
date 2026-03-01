@@ -68,13 +68,13 @@ being driven after `curl_easy_pause(CURLPAUSE_CONT)`:
 
 ### Workarounds Tested (all insufficient for < 8.11.1)
 
-| Approach | Result |
-|---|---|
-| `curl_multi_socket_action(CURL_SOCKET_TIMEOUT)` after unpause | ~80% pass |
-| Manual `curl_timer_cb(multi, 0, NULL)` to force 0ms timer | ~94% pass |
-| `CURLINFO_ACTIVESOCKET` + `CURL_CSELECT_IN\|OUT` | ~92% pass (socket sometimes BAD) |
-| Track socket via `curl_socket_cb` + direct socket action | ~82–92% pass (socket removed from sockhash during pause) |
-| `curl_multi_perform()` | ~74% pass (must not mix with multi_socket API) |
+| Approach                                                      | Result                                                   |
+|---------------------------------------------------------------|----------------------------------------------------------|
+| `curl_multi_socket_action(CURL_SOCKET_TIMEOUT)` after unpause | ~80% pass                                                |
+| Manual `curl_timer_cb(multi, 0, NULL)` to force 0ms timer     | ~94% pass                                                |
+| `CURLINFO_ACTIVESOCKET` + `CURL_CSELECT_IN\|OUT`              | ~92% pass (socket sometimes BAD)                         |
+| Track socket via `curl_socket_cb` + direct socket action      | ~82–92% pass (socket removed from sockhash during pause) |
+| `curl_multi_perform()`                                        | ~74% pass (must not mix with multi_socket API)           |
 
 ### Solution Applied
 
