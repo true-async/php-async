@@ -110,6 +110,7 @@ PhpStorm stubs for autocompletion and inline docs are available in [`ide-stubs/`
 - **[Documentation](https://true-async.github.io/)** — full reference and guides
 - **[Supported Functions](https://true-async.github.io/docs/reference/supported-functions.html)** — complete list of async-aware PHP functions
 - **[Download & Installation](https://true-async.github.io/download.html)** — packages and build instructions
+- **[cURL Integration Notes](CURL-INTEGRATION.md)** — known libcurl bugs, minimum version requirements, and architecture details
 
 ---
 
