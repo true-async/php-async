@@ -29,7 +29,8 @@ $managerFiber = new Fiber(function() use ($workerFiber) {
 });
 
 echo "Starting manager\n";
-$result = $managerFiber->start();
+$managerFiber->start();
+$result = $managerFiber->getReturn();
 
 echo "Manager terminated with: $result\n";
 echo "Worker is: " . ($workerFiber->isSuspended() ? "suspended" : "other") . "\n";

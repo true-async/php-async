@@ -31,7 +31,8 @@ try {
     echo "Fiber suspended with: " . $result . "\n";
     
     echo "Resuming Fiber\n";
-    $result = $fiber->resume("resume value");
+    $fiber->resume("resume value");
+    $result = $fiber->getReturn();
     echo "Fiber returned: " . $result . "\n";
     
 } catch (Async\AsyncException $e) {

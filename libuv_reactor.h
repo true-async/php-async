@@ -105,6 +105,10 @@ struct _async_exec_event_t
 	uv_pipe_t *stdout_pipe;
 	uv_pipe_t *stderr_pipe;
 	uv_process_options_t options;
+	/* Line parser state: pending incomplete line between chunks. */
+	char *line_buf;
+	size_t line_buf_len;   /* bytes used */
+	size_t line_buf_cap;   /* allocated capacity */
 #ifdef PHP_WIN32
 	char *quoted_cmd;
 #endif
@@ -126,6 +130,7 @@ struct _async_io_t
 {
 	zend_async_io_t base;
 	int crt_fd;
+	int orig_fd;   /* original stdio fd (0/1/2) when dup'd, or -1 */
 	async_io_req_t *active_req;
 
 	union

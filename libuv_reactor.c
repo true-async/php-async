@@ -2448,6 +2448,184 @@ static void exec_alloc_cb(uv_handle_t *handle, size_t suggested_size, uv_buf_t *
 	buf->len = exec->output_len;
 }
 
+/**
+ * @brief Append raw data to a zval string without line splitting.
+ *
+ * If @p target is not IS_STRING, it is replaced with a new string;
+ * otherwise the existing string is extended in place.
+ *
+ * Used by SHELL_EXEC mode (stdout) and exec_std_err_read_cb (stderr).
+ *
+ * @param target Destination zval.
+ * @param data   Pointer to the data to append.
+ * @param len    Number of bytes to append.
+ */
+static zend_always_inline void exec_accumulate_zval(zval *target, const char *data, size_t len)
+{
+	if (Z_TYPE_P(target) != IS_STRING) {
+		zval_ptr_dtor(target);
+		ZVAL_NEW_STR(target, zend_string_init(data, len, 0));
+	} else {
+		zend_string *string = Z_STR_P(target);
+		string = zend_string_extend(string, ZSTR_LEN(string) + len, 0);
+		memcpy(ZSTR_VAL(string) + ZSTR_LEN(string) - len, data, len);
+		ZSTR_VAL(string)[ZSTR_LEN(string)] = '\0';
+		ZVAL_STR(target, string);
+	}
+}
+
+/* ---- On-the-fly line parser for exec/system output ----
+ *
+ * A simple two-state finite automaton that processes an arbitrary byte stream
+ * delivered in chunks by libuv:
+ *
+ *   PENDING  --[\n]--> EMIT --> PENDING --> ...
+ *            --[EOF]--> FLUSH PENDING (finalized in libuv_exec)
+ *
+ * Memory strategy:
+ *   - line_buf is allocated on first use at EXEC_LINE_BUF_INIT_CAP (8 KB)
+ *     and doubled when necessary.  It is reused across lines (only
+ *     line_buf_len is reset) and freed in libuv_exec_dispose.
+ *   - When a complete line fits within a single chunk and there is no
+ *     pending data, it is emitted directly from the read buffer (zero-copy).
+ */
+
+#define EXEC_LINE_BUF_INIT_CAP 8192
+
+/**
+ * @brief Strip trailing whitespace from a line.
+ *
+ * Uses isspace() for full compatibility with the POPEN path's
+ * strip_trailing_whitespace() in ext/standard/exec.c.
+ * The '\\n' delimiter is already excluded by the caller.
+ *
+ * @param line Pointer to the line data.
+ * @param len  Length of the line in bytes.
+ * @return     New length after stripping.
+ */
+static zend_always_inline size_t exec_strip_trailing_ws(const char *line, size_t len)
+{
+	while (len > 0 && isspace((unsigned char) line[len - 1])) {
+		len--;
+	}
+	return len;
+}
+
+/**
+ * @brief Append data to the pending-line buffer.
+ *
+ * Allocates EXEC_LINE_BUF_INIT_CAP (8 KB) on first use and doubles the
+ * capacity when needed.  The buffer is reused across lines — only
+ * line_buf_len is reset after each emit; the allocation persists until
+ * libuv_exec_dispose frees it.
+ *
+ * @param event The exec event whose line_buf to append to.
+ * @param data  Pointer to the data to append.
+ * @param len   Number of bytes to append.
+ */
+static zend_always_inline void exec_line_buf_append(async_exec_event_t *event, const char *data, size_t len)
+{
+	if (len == 0) {
+		return;
+	}
+
+	const size_t needed = event->line_buf_len + len;
+
+	if (event->line_buf == NULL) {
+		event->line_buf_cap = (EXEC_LINE_BUF_INIT_CAP > needed)
+							  ? EXEC_LINE_BUF_INIT_CAP : needed;
+		event->line_buf = emalloc(event->line_buf_cap);
+	} else if (needed > event->line_buf_cap) {
+		while (event->line_buf_cap < needed) {
+			event->line_buf_cap *= 2;
+		}
+		event->line_buf = erealloc(event->line_buf, event->line_buf_cap);
+	}
+
+	memcpy(event->line_buf + event->line_buf_len, data, len);
+	event->line_buf_len = needed;
+}
+
+/**
+ * @brief Emit one completed line to the appropriate target.
+ *
+ * Strips trailing whitespace and then, depending on exec_mode:
+ *   - EXEC/SYSTEM:  stores the stripped line in result_buffer, overwriting
+ *                    the previous value (only the last completed line is kept).
+ *   - EXEC_ARRAY:   appends the stripped line to the result_buffer array and
+ *                    updates return_value to track the last emitted line.
+ *
+ * @param exec The exec event containing mode and output targets.
+ * @param line Pointer to the line data (newline delimiter already excluded).
+ * @param len  Length of the line in bytes.
+ */
+static zend_always_inline void exec_emit_completed_line(
+	const zend_async_exec_event_t *exec, const char *line, size_t len)
+{
+	len = exec_strip_trailing_ws(line, len);
+
+	switch (exec->exec_mode) {
+		case ZEND_ASYNC_EXEC_MODE_EXEC:
+		case ZEND_ASYNC_EXEC_MODE_SYSTEM:
+			zval_ptr_dtor(exec->result_buffer);
+			ZVAL_STRINGL(exec->result_buffer, line, len);
+			break;
+
+		case ZEND_ASYNC_EXEC_MODE_EXEC_ARRAY:
+			add_next_index_stringl(exec->result_buffer, line, len);
+			break;
+
+		default:
+			break;
+	}
+}
+
+/**
+ * @brief Process a raw chunk from the child process stdout.
+ *
+ * Scans the chunk left-to-right for '\\n' delimiters.  For each complete line
+ * found, calls exec_emit_completed_line().  Any trailing data after the last
+ * '\\n' (or the entire chunk if no '\\n' is present) is appended to the
+ * pending-line buffer (line_buf) for the next invocation.
+ *
+ * When a complete line fits within the chunk and no pending data exists,
+ * it is emitted directly from the read buffer without copying (zero-copy).
+ *
+ * @param event The exec event with line parser state (line_buf).
+ * @param data  Pointer to the raw chunk data delivered by libuv.
+ * @param len   Number of bytes in the chunk.
+ */
+static void exec_process_chunk(async_exec_event_t *event, const char *data, size_t len)
+{
+	const zend_async_exec_event_t *exec = &event->event;
+	const char *seg_start = data;
+	const char *end = data + len;
+	const char *nl;
+
+	/* Use memchr() for newline scanning — glibc implements it with SIMD,
+	 * which is 10-30x faster than a byte-by-byte loop on large buffers. */
+	while ((nl = memchr(seg_start, '\n', end - seg_start)) != NULL) {
+		const size_t seg_len = nl - seg_start;
+
+		if (event->line_buf_len > 0) {
+			/* Pending data exists — combine and emit. */
+			exec_line_buf_append(event, seg_start, seg_len);
+			exec_emit_completed_line(exec, event->line_buf, event->line_buf_len);
+			event->line_buf_len = 0;
+		} else {
+			/* Zero-copy: emit directly from the read buffer. */
+			exec_emit_completed_line(exec, seg_start, seg_len);
+		}
+
+		seg_start = nl + 1;
+	}
+
+	/* Remaining data after the last '\n' — append to pending. */
+	if (seg_start < end) {
+		exec_line_buf_append(event, seg_start, end - seg_start);
+	}
+}
+
 static void exec_read_cb(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
 {
 	async_exec_event_t *event = stream->data;
@@ -2455,39 +2633,22 @@ static void exec_read_cb(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf
 
 	if (nread > 0) {
 		switch (exec->exec_mode) {
-			case ZEND_ASYNC_EXEC_MODE_EXEC: // exec - save only last line
-				zval_ptr_dtor(exec->return_value);
-				ZVAL_STR(exec->return_value, zend_string_init(buf->base, nread, 0));
+			case ZEND_ASYNC_EXEC_MODE_EXEC:
+			case ZEND_ASYNC_EXEC_MODE_EXEC_ARRAY:
+				exec_process_chunk(event, buf->base, nread);
 				break;
 
-			case ZEND_ASYNC_EXEC_MODE_SYSTEM: // system - output all lines and save last
+			case ZEND_ASYNC_EXEC_MODE_SYSTEM:
 				PHPWRITE(buf->base, nread);
-				zval_ptr_dtor(exec->return_value);
-				ZVAL_STR(exec->return_value, zend_string_init(buf->base, nread, 0));
+				exec_process_chunk(event, buf->base, nread);
 				break;
 
-			case ZEND_ASYNC_EXEC_MODE_EXEC_ARRAY: // exec - save all lines to array
-				if (Z_TYPE_P(exec->result_buffer) == IS_ARRAY) {
-					add_next_index_stringl(exec->result_buffer, buf->base, nread);
-				}
-				break;
-
-			case ZEND_ASYNC_EXEC_MODE_PASSTHRU: // passthru - output binary
+			case ZEND_ASYNC_EXEC_MODE_PASSTHRU:
 				PHPWRITE(buf->base, nread);
 				break;
 
-			case ZEND_ASYNC_EXEC_MODE_SHELL_EXEC: // shell - output all lines
-
-				if (Z_TYPE_P(exec->result_buffer) != IS_STRING) {
-					ZVAL_NEW_STR(exec->result_buffer, zend_string_init(buf->base, nread, 0));
-				} else {
-					zend_string *string = Z_STR_P(exec->result_buffer);
-					string = zend_string_extend(string, ZSTR_LEN(string) + nread, 0);
-					memcpy(ZSTR_VAL(string) + ZSTR_LEN(string) - nread, buf->base, nread);
-					ZSTR_VAL(string)[ZSTR_LEN(string)] = '\0';
-					ZVAL_STR(exec->result_buffer, string);
-				}
-
+			case ZEND_ASYNC_EXEC_MODE_SHELL_EXEC:
+				exec_accumulate_zval(exec->result_buffer, buf->base, nread);
 				break;
 
 			default:
@@ -2512,11 +2673,9 @@ static void exec_read_cb(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf
 		stream->data = stream;
 		uv_close((uv_handle_t *) stream, libuv_close_handle_cb);
 
-		if (exec->terminated != true) {
-			exec->terminated = true;
-			ZEND_ASYNC_DECREASE_EVENT_COUNT(&event->event.base);
-			ZEND_ASYNC_CALLBACKS_NOTIFY(&event->event.base, NULL, NULL);
-		}
+		// Do NOT notify here. Pipe EOF often arrives before exec_on_exit,
+		// so notifying here would wake the coroutine with exit_code still 0.
+		// Let exec_on_exit be the sole notification point.
 	}
 }
 
@@ -2532,21 +2691,10 @@ static void exec_std_err_read_cb(uv_stream_t *stream, ssize_t nread, const uv_bu
 	zend_async_exec_event_t *exec = &event->event;
 
 	if (nread > 0) {
-
 		if (exec->std_error != NULL) {
-			if (Z_TYPE_P(exec->std_error) != IS_STRING) {
-				ZVAL_NEW_STR(exec->std_error, zend_string_init(buf->base, nread, 0));
-			} else {
-				zend_string *string = Z_STR_P(exec->std_error);
-				string = zend_string_extend(string, ZSTR_LEN(string) + nread, 0);
-				memcpy(ZSTR_VAL(string) + ZSTR_LEN(string) - nread, buf->base, nread);
-				ZSTR_VAL(string)[ZSTR_LEN(string)] = '\0';
-				ZVAL_STR(exec->std_error, string);
-			}
+			exec_accumulate_zval(exec->std_error, buf->base, nread);
 		}
-
 	} else if (nread < 0) {
-
 		event->stderr_pipe->data = NULL;
 		event->stderr_pipe = NULL;
 
@@ -2617,6 +2765,13 @@ static bool libuv_exec_dispose(zend_async_event_t *event)
 		efree(exec->event.output_buffer);
 		exec->event.output_buffer = NULL;
 		exec->event.output_len = 0;
+	}
+
+	if (exec->line_buf != NULL) {
+		efree(exec->line_buf);
+		exec->line_buf = NULL;
+		exec->line_buf_len = 0;
+		exec->line_buf_cap = 0;
 	}
 
 	if (exec->process != NULL && !uv_is_closing((uv_handle_t *) exec->process)) {
@@ -2808,10 +2963,70 @@ static int libuv_exec(zend_async_exec_mode exec_mode,
 		return -1;
 	}
 
+	/* Finalize the on-the-fly line parser: flush pending (incomplete) line.
+	 *
+	 * State after the callback:
+	 * - line_buf / line_buf_len: pending data (no '\n' seen yet)
+	 * - EXEC/SYSTEM: result_buffer (tmp_return_buffer) = last completed line
+	 * - EXEC_ARRAY:  result_buffer = array with all completed lines
+	 */
+	const async_exec_event_t *exec_wrapper = (const async_exec_event_t *) exec_event;
+
+	if (exec_mode == ZEND_ASYNC_EXEC_MODE_EXEC || exec_mode == ZEND_ASYNC_EXEC_MODE_SYSTEM) {
+		if (return_value != NULL) {
+			if (exec_wrapper->line_buf_len > 0) {
+				/* Pending is the final line. */
+				const size_t len = exec_strip_trailing_ws(
+					exec_wrapper->line_buf, exec_wrapper->line_buf_len);
+				zval_ptr_dtor(return_value);
+				ZVAL_STRINGL(return_value, exec_wrapper->line_buf, len);
+			} else if (Z_TYPE(tmp_return_buffer) == IS_STRING) {
+				/* No pending — last completed line is the answer. */
+				zval_ptr_dtor(return_value);
+				ZVAL_COPY_VALUE(return_value, &tmp_return_buffer);
+				ZVAL_UNDEF(&tmp_return_buffer);
+			} else {
+				zval_ptr_dtor(return_value);
+				ZVAL_EMPTY_STRING(return_value);
+			}
+		}
+	} else if (exec_mode == ZEND_ASYNC_EXEC_MODE_EXEC_ARRAY) {
+		if (exec_wrapper->line_buf_len > 0) {
+			/* Pending is the final line — add to array and set return_value. */
+			const size_t len = exec_strip_trailing_ws(
+				exec_wrapper->line_buf, exec_wrapper->line_buf_len);
+			if (return_buffer != NULL) {
+				add_next_index_stringl(return_buffer, exec_wrapper->line_buf, len);
+			}
+			if (return_value != NULL) {
+				zval_ptr_dtor(return_value);
+				ZVAL_STRINGL(return_value, exec_wrapper->line_buf, len);
+			}
+		} else if (return_value != NULL) {
+			/* No pending — return_value = last element of the array, or "". */
+			zval_ptr_dtor(return_value);
+			if (return_buffer != NULL && Z_TYPE_P(return_buffer) == IS_ARRAY) {
+				const uint32_t count = zend_hash_num_elements(Z_ARRVAL_P(return_buffer));
+				if (count > 0) {
+					const zval *last = zend_hash_index_find(Z_ARRVAL_P(return_buffer), count - 1);
+					if (last != NULL) {
+						ZVAL_COPY(return_value, last);
+					} else {
+						ZVAL_EMPTY_STRING(return_value);
+					}
+				} else {
+					ZVAL_EMPTY_STRING(return_value);
+				}
+			} else {
+				ZVAL_EMPTY_STRING(return_value);
+			}
+		}
+	}
+
 	zval_ptr_dtor(&tmp_return_value);
 	zval_ptr_dtor(&tmp_return_buffer);
 
-	int exit_code = (int) exec_event->exit_code;
+	const int exit_code = (int) exec_event->exit_code;
 	exec_event->base.dispose(&exec_event->base);
 
 	return exit_code;
@@ -3194,14 +3409,33 @@ libuv_io_create(const zend_file_descriptor_t fd, const zend_async_io_type type, 
 
 	async_io_t *io = pecalloc(1, sizeof(async_io_t), 0);
 
+	io->orig_fd = -1;
+
+#ifndef PHP_WIN32
+	/* Unix only: libuv asserts fd > STDERR_FILENO in uv__close().
+	 * Dup stdio fds so libuv can safely close the copy. */
+	zend_file_descriptor_t io_fd = fd;
+	if ((type == ZEND_ASYNC_IO_TYPE_PIPE || type == ZEND_ASYNC_IO_TYPE_TTY)
+			&& fd >= 0 && fd <= STDERR_FILENO) {
+		io_fd = dup(fd);
+		if (io_fd < 0) {
+			pefree(io, 0);
+			return NULL;
+		}
+		io->orig_fd = fd;
+	}
+#else
+	zend_file_descriptor_t io_fd = fd;
+#endif
+
 	/* Set descriptor based on type.
 	 * zend_file_descriptor_t is always a CRT fd (int) on all platforms. */
 	if (type == ZEND_ASYNC_IO_TYPE_TCP || type == ZEND_ASYNC_IO_TYPE_UDP) {
-		io->base.descriptor.socket = (zend_socket_t) fd;
-		io->crt_fd = fd;
+		io->base.descriptor.socket = (zend_socket_t) io_fd;
+		io->crt_fd = io_fd;
 	} else {
-		io->base.descriptor.fd = fd;
-		io->crt_fd = fd;
+		io->base.descriptor.fd = io_fd;
+		io->crt_fd = io_fd;
 	}
 
 	io->base.type = type;
@@ -3521,6 +3755,13 @@ static int libuv_io_close(zend_async_io_t *io_base)
 		zend_async_callbacks_free(&io->base.event);
 		io->handle.stream.data = io;
 		uv_close((uv_handle_t *) &io->handle.stream, io_close_cb);
+
+		/* Close the original stdio fd that was dup'd in libuv_io_create */
+		if (io->orig_fd >= 0) {
+			close(io->orig_fd);
+			io->orig_fd = -1;
+		}
+
 		return 1;
 	}
 

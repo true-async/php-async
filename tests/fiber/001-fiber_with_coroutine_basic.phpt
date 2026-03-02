@@ -18,7 +18,8 @@ $coroutine = spawn(function() {
     });
 
     echo "Starting fiber\n";
-    $result = $fiber->start();
+    $fiber->start();
+    $result = $fiber->getReturn();
     echo "Fiber returned: " . $result . "\n";
 
     return "coroutine result";

@@ -37,7 +37,8 @@ try {
     echo "Fiber suspended with: " . $fiberResult . "\n";
     
     echo "Resuming Fiber\n";
-    $fiberResult = $fiber->resume("resume data");
+    $fiber->resume("resume data");
+    $fiberResult = $fiber->getReturn();
     echo "Fiber completed with: " . $fiberResult . "\n";
     
     echo "Getting coroutine result\n";

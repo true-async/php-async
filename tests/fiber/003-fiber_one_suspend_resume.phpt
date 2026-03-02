@@ -19,7 +19,8 @@ $coroutine = spawn(function() {
     $suspended = $fiber->start();
     echo "Fiber suspended with: " . $suspended . "\n";
 
-    $result = $fiber->resume("resume value");
+    $fiber->resume("resume value");
+    $result = $fiber->getReturn();
     echo "Fiber returned: " . $result . "\n";
 
     return "complete";

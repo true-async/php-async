@@ -23,7 +23,7 @@ spawn(function () {
     
     $output = system($php . ' -r "echo \"Hello from async system\n\";"', $return_var);
     
-    echo "Output: " . $output;
+    echo "Output: " . $output . "\n";
     echo "Return code: " . $return_var . "\n";
     echo "System test completed successfully\n";
 });

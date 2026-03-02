@@ -1364,11 +1364,24 @@ static zend_object *async_timeout_create(const zend_ulong ms, const bool is_peri
 	return &object->std;
 }
 
+static zend_object *async_timeout_object_create(zend_class_entry *ce)
+{
+	async_timeout_object_t *object = zend_object_alloc(sizeof(async_timeout_object_t), ce);
+
+	zend_object_std_init(&object->std, ce);
+	object_properties_init(&object->std, ce);
+
+	object->std.handlers = &async_timeout_handlers;
+	object->event = NULL;
+
+	return &object->std;
+}
+
 void async_register_timeout_ce(void)
 {
 	async_ce_timeout = register_class_Async_Timeout(async_ce_completable);
 
-	async_ce_timeout->create_object = NULL;
+	async_ce_timeout->create_object = async_timeout_object_create;
 
 	async_timeout_handlers = std_object_handlers;
 
@@ -1467,6 +1480,17 @@ PHP_MINFO_FUNCTION(async)
 	DISPLAY_INI_ENTRIES();
 }
 
+PHP_RSHUTDOWN_FUNCTION(async)
+{
+	if (ASYNC_G(root_context) != NULL) {
+		async_context_t *root_context = (async_context_t *) ASYNC_G(root_context);
+		ASYNC_G(root_context) = NULL;
+		OBJ_RELEASE(&root_context->std);
+	}
+
+	return SUCCESS;
+}
+
 PHP_RINIT_FUNCTION(async) /* {{{ */
 {
 	// async_host_name_list_ctor();
@@ -1487,7 +1511,7 @@ zend_module_entry async_module_entry = { STANDARD_MODULE_HEADER,
 										 PHP_MINIT(async),
 										 PHP_MSHUTDOWN(async),
 										 PHP_RINIT(async),
-										 NULL,
+										 PHP_RSHUTDOWN(async),
 										 PHP_MINFO(async),
 										 PHP_ASYNC_VERSION,
 										 PHP_MODULE_GLOBALS(async),

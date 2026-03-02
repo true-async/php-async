@@ -35,7 +35,8 @@ $c = spawn(function() {
     $result = $node1->fiber->start();
     echo "Got: " . ($result === $node2 ? "node2" : "other") . "\n";
 
-    $result = $node1->fiber->resume();
+    $node1->fiber->resume();
+    $result = $node1->fiber->getReturn();
     echo "Got: " . ($result === $node1 ? "node1" : "other") . "\n";
 
     // Break references and trigger GC

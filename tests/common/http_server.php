@@ -15,6 +15,7 @@ class AsyncTestServerInfo {
 
 function async_test_server_start(?string $router = null): AsyncTestServerInfo {
     $php_executable = getenv('TEST_PHP_EXECUTABLE') ?: PHP_BINARY;
+    $php_executable = realpath($php_executable) ?: $php_executable;
     
     // Use the common test router by default
     if ($router === null) {

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.6.0]
 
+### Fixed
+- **Generator segfault in fiber-coroutine mode**: Generators running inside fiber coroutines were not marked with `ZEND_GENERATOR_IN_FIBER` because `EG(active_fiber)` is not set in coroutine mode. This caused shutdown destructors to close generators while the coroutine was still suspended, leading to a NULL `execute_data` dereference in `zend_generator_resume`. Fixed by also checking `ZEND_ASYNC_CURRENT_COROUTINE` with `ZEND_COROUTINE_IS_FIBER` when setting the `IN_FIBER` flag on generators.
+
 ### Added
 - **`Async\OperationCanceledException`**: New exception class extending `AsyncCancellation`, thrown when an awaited operation is interrupted by a cancellation token. The original exception from the token is always available via `$previous`. This allows distinguishing token-triggered cancellations from exceptions thrown by the awaitable itself. Affects all cancellable APIs: `await()`, `await_*()` family, `Future::await()`, `Channel::send()`/`recv()`, `Scope::awaitCompletion()`/`awaitAfterCancellation()`, and `signal()`.
 - **TaskGroup** (`Async\TaskGroup`): Task pool with queue, concurrency control, and structured completion via `all()`, `race()`, `any()`, `awaitCompletion()`, `cancel()`, `seal()`, `finally()`, and `foreach` iteration
@@ -42,6 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Async\signal()` function**: One-shot signal handler that returns a `Future` resolved when the specified signal is received. Supports optional `Cancellation` for early cancellation.
 
 ### Changed
+- **Bailout handling**: Added `ZEND_ASYNC_EVENT_F_BAILOUT` flag (bit 11) on `zend_async_event_t`. During bailout (e.g. OOM), PHP-level handlers are no longer called — finally handlers on coroutines and scopes are destroyed without execution, scope exception handlers (`try_to_handle_exception`) are skipped. C-level callbacks (`ZEND_ASYNC_CALLBACKS_NOTIFY`) continue to work normally. Convenience macros: `ZEND_COROUTINE_SET_BAILOUT`/`ZEND_COROUTINE_IS_BAILOUT`, `ZEND_ASYNC_SCOPE_SET_BAILOUT`/`ZEND_ASYNC_SCOPE_IS_BAILOUT`.
+- **Removed "Graceful shutdown mode" warning**: The `Warning: Graceful shutdown mode was started` message is no longer emitted during bailout (OOM/stack overflow). The graceful shutdown still happens, but without the warning output.
 - **Breaking Change: `onFinally()` renamed to `finally()`** on both `Async\Coroutine` and `Async\Scope` classes,
   aligning with the Promise/A+ convention (`.then()`, `.catch()`, `.finally()`).
   - **Migration**: Replace `->onFinally(function() { ... })` with `->finally(function() { ... })`.
@@ -54,6 +59,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **TaskGroup completion semantics**: `ASYNC_TASK_GROUP_F_COMPLETED` flag is now set only when the group is both sealed and all tasks are settled. `finally()` handlers fire only in this terminal state. Calling `finally()` on an already-completed group invokes the callback synchronously.
 
 ### Fixed
+- **exec() output not split into lines in async path**: The libuv read callback delivered raw byte chunks to the output array instead of splitting by newlines and stripping trailing whitespace like the POPEN path does. Implemented an on-the-fly line parser with zero-copy optimization and 8 KB reusable buffer (doubling strategy). Uses `memchr()` for SIMD-accelerated newline scanning. Fully matches POPEN path behavior including `isspace()` trailing whitespace stripping.
+- **exec() exit code race condition**: Pipe EOF notification (`exec_read_cb`) often arrived before `exec_on_exit`, waking the coroutine with `exit_code` still 0. Fixed by making `exec_on_exit` the sole notification point.
+- **exec() not routed through async path**: Changed routing condition from `ZEND_ASYNC_IS_ACTIVE` to `ZEND_ASYNC_ON` + `ZEND_ASYNC_SCHEDULER_INIT()` so exec functions use the async path when the scheduler is available.
 - **Deadlock in `proc_close()` when spawning many concurrent processes on Windows**: Windows Job Objects send `JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO` in addition to `JOB_OBJECT_MSG_EXIT_PROCESS` for every single-process job that exits. The IOCP watcher thread was treating both messages as process-exit events, pushing the same `process_event` to `pid_queue` twice and decrementing `countWaitingDescriptors` an extra time per process. With enough concurrent processes, the counter reached zero prematurely, triggering `libuv_stop_process_watcher()` too early and destroying `pid_queue` — leaving coroutines suspended in `proc_close()` with no event to wake them. Fixed by ignoring `JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO` in the switch statement since it always accompanies `EXIT_PROCESS` for single-process jobs.
 - **Use-after-free in `zend_exception_set_previous` calls**: When `exception == add_previous` (same object), `zend_exception_set_previous` calls `OBJ_RELEASE` which frees the object while other pointers (e.g. `EG(exception)`) still reference it. Added identity checks before all `zend_exception_set_previous` calls where the two arguments could alias the same object. Affected files: `scheduler.c`, `exceptions.c`, `zend_common.c`, `future.c`.
 - **Memory leak of `Async\DeadlockError` in scheduler fiber exit path**: In `fiber_entry`, when the scheduler fiber finalized, `exit_exception` from `ZEND_ASYNC_EXIT_EXCEPTION` was not propagated when `EG(exception) == NULL` — the exception was silently lost. Added `async_rethrow_exception(exit_exception)` for this case.

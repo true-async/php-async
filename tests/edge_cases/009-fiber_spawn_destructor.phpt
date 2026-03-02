@@ -34,7 +34,8 @@ class FiberSpawner {
                 $result = $fiber->start();
                 echo "Fiber suspended with: " . $result . "\n";
                 
-                $result = $fiber->resume("resume in destructor");
+                $fiber->resume("resume in destructor");
+                $result = $fiber->getReturn();
                 echo "Fiber completed with: " . $result . "\n";
                 
             } elseif ($this->name === 'SpawnInDestructor') {

@@ -26,7 +26,8 @@ $coroutine = spawn(function() {
     $val = $fiber->start();
     echo "Suspended: " . $val . "\n";
 
-    $result = $fiber->throw(new Exception("thrown error"));
+    $fiber->throw(new Exception("thrown error"));
+    $result = $fiber->getReturn();
     echo "Result: " . $result . "\n";
 
     return "done";
