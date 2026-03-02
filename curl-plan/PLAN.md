@@ -4,14 +4,14 @@
 
 ### Implemented (async-aware)
 
-| Component | Location | Pattern |
-|-----------|----------|---------|
-| `curl_exec()` | `curl_async.c:472` | `curl_async_perform()` — multi_socket + waker |
-| `curl_multi_exec()` | `curl_async.c:860` | `curl_async_multi_perform()` |
-| `curl_multi_select()` | `curl_async.c:877` | `curl_async_select()` — waker + timeout |
-| Write `PHP_CURL_FILE` | `curl_async.c:1285` | PAUSE → async IO write → unpause |
-| Write `PHP_CURL_USER` | `curl_async.c:1492` | PAUSE → spawn coroutine → unpause |
-| CURLFile upload read | `curl_async.c:1018` | sync (curl<8.11.1) / async PAUSE (curl>=8.11.1) |
+| Component             | Location            | Pattern                                         |
+|-----------------------|---------------------|-------------------------------------------------|
+| `curl_exec()`         | `curl_async.c:472`  | `curl_async_perform()` — multi_socket + waker   |
+| `curl_multi_exec()`   | `curl_async.c:860`  | `curl_async_multi_perform()`                    |
+| `curl_multi_select()` | `curl_async.c:877`  | `curl_async_select()` — waker + timeout         |
+| Write `PHP_CURL_FILE` | `curl_async.c:1285` | PAUSE → async IO write → unpause                |
+| Write `PHP_CURL_USER` | `curl_async.c:1492` | PAUSE → spawn coroutine → unpause               |
+| CURLFile upload read  | `curl_async.c:1018` | sync (curl<8.11.1) / async PAUSE (curl>=8.11.1) |
 
 ### Existing Tests (22 total)
 

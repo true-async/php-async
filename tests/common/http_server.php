@@ -308,6 +308,15 @@ function route_test_request($method, $path, $full_request) {
             } else {
                 return http_test_response(405, "Method Not Allowed");
             }
+
+        case '/put':
+            if ($method === 'PUT') {
+                $body_start = strpos($full_request, "\r\n\r\n");
+                $body = $body_start !== false ? substr($full_request, $body_start + 4) : '';
+                return http_test_response(200, "PUT received: " . strlen($body) . " bytes");
+            } else {
+                return http_test_response(405, "Method Not Allowed");
+            }
             
         case '/headers':
             // Return request headers as response

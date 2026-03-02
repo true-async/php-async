@@ -196,6 +196,18 @@ switch ($path) {
         }
         break;
         
+    case '/put':
+        if ($method === 'PUT') {
+            $body = file_get_contents('php://input');
+            header('Content-Type: text/plain');
+            echo "PUT received: " . strlen($body) . " bytes";
+        } else {
+            http_response_code(405);
+            header('Allow: PUT');
+            echo "Method Not Allowed";
+        }
+        break;
+
     case '/upload':
         if ($method === 'POST' && !empty($_FILES)) {
             header('Content-Type: text/plain');
