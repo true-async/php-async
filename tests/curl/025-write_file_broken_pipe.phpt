@@ -2,6 +2,8 @@
 Async curl_write: CURLOPT_FILE to broken pipe triggers write error
 --EXTENSIONS--
 curl
+--INI--
+error_reporting=E_ALL & ~E_NOTICE
 --FILE--
 <?php
 require_once __DIR__ . '/../common/http_server.php';
