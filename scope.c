@@ -1081,6 +1081,7 @@ static bool scope_dispose(zend_async_event_t *scope_event)
 	if (ZEND_ASYNC_EVENT_REFCOUNT(scope_event) > 1) {
 		ZEND_ASYNC_EVENT_DEL_REF(scope_event);
 		ZEND_ASYNC_CALLBACKS_NOTIFY(scope_event, NULL, NULL);
+		zend_async_callbacks_free(&scope->scope.event);
 		return true;
 	}
 
@@ -1090,8 +1091,19 @@ static bool scope_dispose(zend_async_event_t *scope_event)
 
 	ZEND_ASYNC_SCOPE_SET_DISPOSING(&scope->scope);
 
-	ZEND_ASSERT(scope->coroutines.length == 0 && scope->scope.scopes.length == 0 &&
-				"Scope should be empty before disposal");
+	ZEND_ASSERT(scope->coroutines.length == 0 && "Scope should be empty before disposal");
+
+	// Dispose all child scopes
+	for (uint32_t i = 0; i < scope->scope.scopes.length; ++i) {
+		async_scope_t *child_scope = (async_scope_t *) scope->scope.scopes.data[i];
+		// We are breaking the link between the parent and the child; it is no longer needed.
+		child_scope->scope.parent_scope = NULL;
+		child_scope->scope.event.dispose(&child_scope->scope.event);
+		if (UNEXPECTED(EG(exception))) {
+			ZEND_ASYNC_SCOPE_CLR_DISPOSING(&scope->scope);
+			return false;
+		}
+	}
 
 	zend_object *critical_exception = NULL;
 

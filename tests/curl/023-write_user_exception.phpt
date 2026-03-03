@@ -19,15 +19,12 @@ $coroutine = spawn(function() use ($server) {
         throw new RuntimeException("callback error");
     });
 
-    $result = curl_exec($ch);
-    $errno = curl_errno($ch);
-    $error = curl_error($ch);
-
-    echo "curl_exec returned: " . ($result ? "true" : "false") . "\n";
-    echo "errno: $errno\n";
-    // CURLE_WRITE_ERROR = 23
-    echo "is write error: " . ($errno === 23 ? "yes" : "no") . "\n";
-    echo "error contains 'writing': " . (str_contains($error, 'riting') ? "yes" : "no") . "\n";
+    try {
+        curl_exec($ch);
+        echo "no exception\n";
+    } catch (RuntimeException $e) {
+        echo "caught: " . $e->getMessage() . "\n";
+    }
 });
 
 await($coroutine);
@@ -36,8 +33,5 @@ async_test_server_stop($server);
 echo "Done\n";
 ?>
 --EXPECTF--
-curl_exec returned: false
-errno: 23
-is write error: yes
-error contains 'writing': yes
+caught: callback error
 Done

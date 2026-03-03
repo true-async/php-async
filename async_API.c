@@ -103,6 +103,11 @@ zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object *scope_provider, 
 		return NULL;
 	}
 
+	if (UNEXPECTED(ZEND_ASYNC_SCHEDULER != NULL && scope == ZEND_ASYNC_SCHEDULER->scope)) {
+		async_throw_error("You cannot use the Scheduler scope to create coroutines");
+		return NULL;
+	}
+
 	async_coroutine_t *coroutine = (async_coroutine_t *) async_new_coroutine(scope);
 	if (UNEXPECTED(coroutine == NULL)) {
 		return NULL;

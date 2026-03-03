@@ -88,10 +88,15 @@ static void fiber_context_cleanup(zend_fiber_context *context);
 
 void async_scheduler_startup(void)
 {
+	//root_function.common.function_name = zend_string_init("async-scheduler", sizeof("async-scheduler") - 1, 1);
 }
 
 void async_scheduler_shutdown(void)
 {
+	//if (root_function.common.function_name) {
+	//	zend_string_release_ex(root_function.common.function_name, 1);
+	//	root_function.common.function_name = NULL;
+	//}
 }
 
 ///////////////////////////////////////////////////////////
@@ -1225,6 +1230,8 @@ bool async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine)
 		coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 		ZEND_ASSERT(coroutine != NULL && "The current coroutine must be initialized");
 	}
+
+	ZEND_ASSERT(coroutine != ZEND_ASYNC_SCHEDULER && "A Scheduler coroutine cannot be enqueued");
 
 	// If the transfer is NULL, it means that the coroutine is being resumed
 	// That's why we're adding it to the queue.
