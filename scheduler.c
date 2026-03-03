@@ -747,6 +747,8 @@ static void cancel_queued_coroutines(void)
 
 	zend_object *cancellation_exception = async_new_exception(async_ce_cancellation_exception, "Graceful shutdown");
 
+	ZEND_ASYNC_SCHEDULER_CONTEXT = true;
+
 	ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), current)
 	{
 		zend_coroutine_t *coroutine = Z_PTR_P(current);
@@ -772,7 +774,9 @@ static void cancel_queued_coroutines(void)
 	}
 	ZEND_HASH_FOREACH_END();
 
+	ZEND_ASYNC_SCHEDULER_CONTEXT = false;
 	OBJ_RELEASE(cancellation_exception);
+	process_resumed_coroutines();
 
 	zend_exception_restore_fast(exception, prev_exception);
 }

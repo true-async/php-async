@@ -43,4 +43,5 @@ async_test_server_stop($server);
 echo "Done\n";
 ?>
 --EXPECTF--
-%ADone
+Exception: Read callback error
+Done
