@@ -3519,14 +3519,17 @@ libuv_io_create(const zend_file_descriptor_t fd, const zend_async_io_type type, 
 
 /* }}} */
 
+#ifdef PHP_WIN32
 /* {{{ libuv_can_use_sync_io
  * Returns true when there is at most one coroutine and no active events
  * in the reactor, meaning async I/O would only add overhead with no
- * concurrency benefit. */
+ * concurrency benefit.  Used on Windows where libuv async I/O goes through
+ * a helper process, making synchronous calls much cheaper. */
 static inline bool libuv_can_use_sync_io(void)
 {
 	return zend_hash_num_elements(&ASYNC_G(coroutines)) <= 1 && !libuv_reactor_loop_alive();
 }
+#endif
 
 /* }}} */
 
@@ -3553,38 +3556,26 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, const size_t
 
 	req->base.buf = pemalloc(max_size, 0);
 
-#ifndef PHP_WIN32
-	/* Sync fallback: use blocking I/O when there is at most one coroutine
-	 * and no active events in the reactor. */
-	const bool sync_io = libuv_can_use_sync_io();
-#else
-	const bool sync_io = false;
-#endif
-
 	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE || io->base.type == ZEND_ASYNC_IO_TYPE_TTY) {
-#ifndef PHP_WIN32
-		if (sync_io) {
-			ssize_t result;
-			do {
-				result = read(io->crt_fd, req->base.buf, max_size);
-			} while (result == -1 && errno == EINTR);
+#ifdef PHP_WIN32
+		/* Sync fallback: on Windows libuv async I/O goes through a helper
+		 * process, so a direct blocking call is much cheaper when there is
+		 * at most one coroutine and no active reactor events. */
+		if (libuv_can_use_sync_io()) {
+			const int result = _read(io->crt_fd, req->base.buf, (unsigned int) max_size);
 
 			if (result > 0) {
 				req->base.transferred = result;
-				req->base.completed = true;
-				return &req->base;
 			} else if (result == 0) {
 				req->base.transferred = 0;
 				io->base.state |= ZEND_ASYNC_IO_EOF;
-				req->base.completed = true;
-				return &req->base;
-			} else if (errno != EAGAIN) {
+			} else {
 				req->base.transferred = -1;
 				req->base.exception =
 						async_new_exception(async_ce_input_output_exception, "Stream read error: %s", strerror(errno));
-				req->base.completed = true;
-				return &req->base;
 			}
+			req->base.completed = true;
+			return &req->base;
 		}
 #endif
 
@@ -3603,12 +3594,11 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, const size_t
 	}
 
 	/* FILE path */
-#ifndef PHP_WIN32
-	if (sync_io) {
-		ssize_t result;
-		do {
-			result = pread(io->crt_fd, req->base.buf, max_size, io->handle.file.offset);
-		} while (result == -1 && errno == EINTR);
+#ifdef PHP_WIN32
+	if (libuv_can_use_sync_io()) {
+		/* Windows lacks pread(); seek + read is safe here (single coroutine). */
+		_lseeki64(io->crt_fd, io->handle.file.offset, SEEK_SET);
+		const int result = _read(io->crt_fd, req->base.buf, (unsigned int) max_size);
 
 		if (result > 0) {
 			req->base.transferred = result;
@@ -3660,34 +3650,23 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 	req->io = io;
 	req->max_size = count;
 
-#ifndef PHP_WIN32
-	/* Sync fallback: use blocking I/O when there is at most one coroutine
-	 * and no active events in the reactor. */
-	const bool sync_io = libuv_can_use_sync_io();
-#else
-	const bool sync_io = false;
-#endif
-
 	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE || io->base.type == ZEND_ASYNC_IO_TYPE_TTY) {
-#ifndef PHP_WIN32
-		if (sync_io) {
-			ssize_t result;
-			do {
-				result = write(io->crt_fd, buf, count);
-			} while (result == -1 && errno == EINTR);
+#ifdef PHP_WIN32
+		/* Sync fallback: on Windows libuv async I/O goes through a helper
+		 * process, so a direct blocking call is much cheaper when there is
+		 * at most one coroutine and no active reactor events. */
+		if (libuv_can_use_sync_io()) {
+			const int result = _write(io->crt_fd, buf, (unsigned int) count);
 
-			if (result >= 0 || errno != EAGAIN) {
-				if (result >= 0) {
-					req->base.transferred = result;
-				} else {
-					req->base.transferred = -1;
-					req->base.exception = async_new_exception(
-							async_ce_input_output_exception, "Stream write error: %s", strerror(errno));
-				}
-				req->base.completed = true;
-				return &req->base;
+			if (result >= 0) {
+				req->base.transferred = result;
+			} else {
+				req->base.transferred = -1;
+				req->base.exception = async_new_exception(
+						async_ce_input_output_exception, "Stream write error: %s", strerror(errno));
 			}
-			/* EAGAIN/EWOULDBLOCK on non-blocking fd: fall through to async path */
+			req->base.completed = true;
+			return &req->base;
 		}
 #endif
 
@@ -3706,12 +3685,11 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 	}
 
 	/* FILE path */
-#ifndef PHP_WIN32
-	if (sync_io) {
-		ssize_t result;
-		do {
-			result = pwrite(io->crt_fd, buf, count, io->handle.file.offset);
-		} while (result == -1 && errno == EINTR);
+#ifdef PHP_WIN32
+	if (libuv_can_use_sync_io()) {
+		/* Windows lacks pwrite(); seek + write is safe here (single coroutine). */
+		_lseeki64(io->crt_fd, io->handle.file.offset, SEEK_SET);
+		const int result = _write(io->crt_fd, buf, (unsigned int) count);
 
 		if (result >= 0) {
 			req->base.transferred = result;
