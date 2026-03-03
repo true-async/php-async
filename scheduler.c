@@ -88,15 +88,15 @@ static void fiber_context_cleanup(zend_fiber_context *context);
 
 void async_scheduler_startup(void)
 {
-	//root_function.common.function_name = zend_string_init("async-scheduler", sizeof("async-scheduler") - 1, 1);
+	root_function.common.function_name = zend_string_init("{core}scheduler", sizeof("{core}scheduler") - 1, 1);
 }
 
 void async_scheduler_shutdown(void)
 {
-	//if (root_function.common.function_name) {
-	//	zend_string_release_ex(root_function.common.function_name, 1);
-	//	root_function.common.function_name = NULL;
-	//}
+	if (root_function.common.function_name) {
+		zend_string_release_ex(root_function.common.function_name, 1);
+		root_function.common.function_name = NULL;
+	}
 }
 
 ///////////////////////////////////////////////////////////
