@@ -1413,6 +1413,11 @@ bool async_scheduler_coroutine_suspend(void)
 		}
 	}
 
+	if (UNEXPECTED(ZEND_ASYNC_IS_SCHEDULER_CONTEXT)) {
+		async_throw_error("A coroutine cannot be stopped from the Scheduler context");
+		return false;
+	}
+
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
 	//
