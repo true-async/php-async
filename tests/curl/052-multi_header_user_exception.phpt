@@ -1,5 +1,5 @@
 --TEST--
-Async curl multi: exception in CURLOPT_WRITEFUNCTION propagates to curl_multi_exec
+Async curl multi: exception in CURLOPT_HEADERFUNCTION propagates to curl_multi_exec
 --EXTENSIONS--
 curl
 --FILE--
@@ -16,9 +16,13 @@ $coroutine = spawn(function() use ($server) {
 
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, "http://localhost:{$server->port}/");
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-    curl_setopt($ch, CURLOPT_WRITEFUNCTION, function($ch, $data) {
-        throw new RuntimeException("multi callback error");
+    curl_setopt($ch, CURLOPT_HEADERFUNCTION, function($ch, $header) {
+        if (stripos($header, 'Content-Type') !== false) {
+            throw new RuntimeException("multi header callback error");
+        }
+        return strlen($header);
     });
 
     curl_multi_add_handle($mh, $ch);
@@ -35,17 +39,6 @@ $coroutine = spawn(function() use ($server) {
         echo "caught: " . $e->getMessage() . "\n";
     }
 
-    // After catching, transfer result is still available
-    while ($info = curl_multi_info_read($mh)) {
-        if ($info['msg'] === CURLMSG_DONE) {
-            $errno = $info['result'];
-            echo "Transfer result: " . ($errno === CURLE_WRITE_ERROR ? "CURLE_WRITE_ERROR" : "errno=$errno") . "\n";
-        }
-    }
-
-    $errno = curl_errno($ch);
-    echo "curl_errno: " . ($errno === CURLE_WRITE_ERROR ? "CURLE_WRITE_ERROR" : "errno=$errno") . "\n";
-
     curl_multi_remove_handle($mh, $ch);
     curl_multi_close($mh);
 });
@@ -56,7 +49,5 @@ async_test_server_stop($server);
 echo "Done\n";
 ?>
 --EXPECTF--
-caught: multi callback error
-Transfer result: CURLE_WRITE_ERROR
-curl_errno: CURLE_WRITE_ERROR
+caught: multi header callback error
 Done

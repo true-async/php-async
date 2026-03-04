@@ -1,7 +1,9 @@
 --TEST--
-Async curl multi: exception in CURLOPT_WRITEFUNCTION propagates to curl_multi_exec
+Async curl multi: CURLOPT_FILE to broken pipe triggers write error
 --EXTENSIONS--
 curl
+--INI--
+error_reporting=E_ALL & ~E_NOTICE
 --FILE--
 <?php
 require_once __DIR__ . '/../common/http_server.php';
@@ -12,30 +14,27 @@ use function Async\await;
 $server = async_test_server_start();
 
 $coroutine = spawn(function() use ($server) {
+    // Create a socket pair, close the read end -> writes get EPIPE
+    $pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
+    $fp = $pair[0];
+    fclose($pair[1]);
+
     $mh = curl_multi_init();
 
     $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, "http://localhost:{$server->port}/");
+    curl_setopt($ch, CURLOPT_URL, "http://localhost:{$server->port}/large");
+    curl_setopt($ch, CURLOPT_FILE, $fp);
     curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-    curl_setopt($ch, CURLOPT_WRITEFUNCTION, function($ch, $data) {
-        throw new RuntimeException("multi callback error");
-    });
 
     curl_multi_add_handle($mh, $ch);
 
-    try {
-        $active = null;
-        do {
-            $status = curl_multi_exec($mh, $active);
-            if ($status !== CURLM_OK) break;
-            if ($active > 0) curl_multi_select($mh, 1.0);
-        } while ($active > 0);
-        echo "no exception\n";
-    } catch (RuntimeException $e) {
-        echo "caught: " . $e->getMessage() . "\n";
-    }
+    $active = null;
+    do {
+        $status = curl_multi_exec($mh, $active);
+        if ($status !== CURLM_OK) break;
+        if ($active > 0) curl_multi_select($mh, 1.0);
+    } while ($active > 0);
 
-    // After catching, transfer result is still available
     while ($info = curl_multi_info_read($mh)) {
         if ($info['msg'] === CURLMSG_DONE) {
             $errno = $info['result'];
@@ -48,6 +47,7 @@ $coroutine = spawn(function() use ($server) {
 
     curl_multi_remove_handle($mh, $ch);
     curl_multi_close($mh);
+    fclose($fp);
 });
 
 await($coroutine);
@@ -56,7 +56,6 @@ async_test_server_stop($server);
 echo "Done\n";
 ?>
 --EXPECTF--
-caught: multi callback error
 Transfer result: CURLE_WRITE_ERROR
 curl_errno: CURLE_WRITE_ERROR
 Done

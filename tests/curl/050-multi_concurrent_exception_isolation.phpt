@@ -11,7 +11,7 @@ use function Async\await_all;
 
 $server = async_test_server_start();
 
-// Coroutine 1: throws exception in WRITEFUNCTION
+// Coroutine 1: throws exception in WRITEFUNCTION — should propagate
 $c1 = spawn(function() use ($server) {
     $mh = curl_multi_init();
 
@@ -24,6 +24,7 @@ $c1 = spawn(function() use ($server) {
 
     curl_multi_add_handle($mh, $ch);
 
+    // Exception propagates from curl_multi_exec — don't catch it here
     $active = null;
     do {
         $status = curl_multi_exec($mh, $active);
@@ -31,18 +32,8 @@ $c1 = spawn(function() use ($server) {
         if ($active > 0) curl_multi_select($mh, 1.0);
     } while ($active > 0);
 
-    // In multi mode, check error via curl_multi_info_read
-    $transfer_errno = 0;
-    while ($info = curl_multi_info_read($mh)) {
-        if ($info['msg'] === CURLMSG_DONE) {
-            $transfer_errno = $info['result'];
-        }
-    }
-
     curl_multi_remove_handle($mh, $ch);
     curl_multi_close($mh);
-
-    return ['coro' => 1, 'errno' => $transfer_errno];
 });
 
 // Coroutine 2: normal operation, should complete successfully
@@ -78,13 +69,17 @@ $c2 = spawn(function() use ($server) {
     curl_multi_remove_handle($mh, $ch2);
     curl_multi_close($mh);
 
-    return ['coro' => 2, 'r1' => $r1, 'r2' => $r2, 'e1' => $e1, 'e2' => $e2];
+    return ['r1' => $r1, 'r2' => $r2, 'e1' => $e1, 'e2' => $e2];
 });
 
 [$results, $exceptions] = await_all([$c1, $c2]);
 
-// Coroutine 1 should have CURLE_WRITE_ERROR
-echo "Coro 1 errno: " . ($results[0]['errno'] === CURLE_WRITE_ERROR ? "CURLE_WRITE_ERROR" : $results[0]['errno']) . "\n";
+// Coroutine 1 should have thrown — exception in $exceptions
+if (isset($exceptions[0]) && $exceptions[0] instanceof RuntimeException) {
+    echo "Coro 1 exception: " . $exceptions[0]->getMessage() . "\n";
+} else {
+    echo "Coro 1: no exception (unexpected)\n";
+}
 
 // Coroutine 2 should succeed regardless
 echo "Coro 2 r1: {$results[1]['r1']}\n";
@@ -96,7 +91,7 @@ async_test_server_stop($server);
 echo "Done\n";
 ?>
 --EXPECTF--
-Coro 1 errno: CURLE_WRITE_ERROR
+Coro 1 exception: coro1 callback error
 Coro 2 r1: Hello World
 Coro 2 r2: {"message":"Hello JSON","status":"ok"}
 Coro 2 e1: 0
