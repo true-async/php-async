@@ -11,9 +11,10 @@ use function Async\await_all;
 
 $server = async_test_server_start();
 
+$results = [];
 $coroutines = [];
 for ($c = 0; $c < 3; $c++) {
-    $coroutines[] = spawn(function() use ($server, $c) {
+    $coroutines[] = spawn(function() use ($server, $c, &$results) {
         $ch = curl_init();
         $fp = fopen('/dev/null', 'w');
 
@@ -24,11 +25,15 @@ for ($c = 0; $c < 3; $c++) {
         }
 
         fclose($fp);
-        echo "coroutine $c done\n";
+        $results[$c] = "coroutine $c done";
     });
 }
 
 await_all($coroutines);
+ksort($results);
+foreach ($results as $line) {
+    echo $line . "\n";
+}
 echo "PASS: concurrent reuse\n";
 
 async_test_server_stop($server);
