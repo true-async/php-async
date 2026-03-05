@@ -105,6 +105,9 @@ struct _async_exec_event_t
 	uv_pipe_t *stdout_pipe;
 	uv_pipe_t *stderr_pipe;
 	uv_process_options_t options;
+	/* Coroutine that initiated the exec — needed for PHPWRITE_CORO
+	 * so that PASSTHRU/SYSTEM output goes through the correct OB stack. */
+	zend_coroutine_t *coroutine;
 	/* Line parser state: pending incomplete line between chunks. */
 	char *line_buf;
 	size_t line_buf_len;   /* bytes used */

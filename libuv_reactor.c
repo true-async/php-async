@@ -2639,12 +2639,12 @@ static void exec_read_cb(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf
 				break;
 
 			case ZEND_ASYNC_EXEC_MODE_SYSTEM:
-				PHPWRITE(buf->base, nread);
+				PHPWRITE_CORO(buf->base, nread, event->coroutine);
 				exec_process_chunk(event, buf->base, nread);
 				break;
 
 			case ZEND_ASYNC_EXEC_MODE_PASSTHRU:
-				PHPWRITE(buf->base, nread);
+				PHPWRITE_CORO(buf->base, nread, event->coroutine);
 				break;
 
 			case ZEND_ASYNC_EXEC_MODE_SHELL_EXEC:
@@ -2841,14 +2841,17 @@ static zend_async_exec_event_t *libuv_new_exec_event(zend_async_exec_mode exec_m
 
 	exec->process = pecalloc(sizeof(uv_process_t), 1, 0);
 	exec->stdout_pipe = pecalloc(sizeof(uv_pipe_t), 1, 0);
-	exec->stderr_pipe = pecalloc(sizeof(uv_pipe_t), 1, 0);
 
 	exec->process->data = exec;
 	exec->stdout_pipe->data = exec;
-	exec->stderr_pipe->data = exec;
 
 	uv_pipe_init(UVLOOP, exec->stdout_pipe, 0);
-	uv_pipe_init(UVLOOP, exec->stderr_pipe, 0);
+
+	if (std_error != NULL) {
+		exec->stderr_pipe = pecalloc(sizeof(uv_pipe_t), 1, 0);
+		exec->stderr_pipe->data = exec;
+		uv_pipe_init(UVLOOP, exec->stderr_pipe, 0);
+	}
 
 	options->exit_cb = exec_on_exit;
 #ifdef PHP_WIN32
@@ -2863,11 +2866,15 @@ static zend_async_exec_event_t *libuv_new_exec_event(zend_async_exec_mode exec_m
 	options->args = (char *[]){ "sh", "-c", (char *) cmd, NULL };
 #endif
 
-	options->stdio = (uv_stdio_container_t[]){
-		{ .flags = UV_IGNORE, .data = { .stream = NULL } },
-		{ .data.stream = (uv_stream_t *) exec->stdout_pipe, .flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE },
-		{ .data.stream = (uv_stream_t *) exec->stderr_pipe, .flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE }
-	};
+	uv_stdio_container_t stdio[3];
+	stdio[0] = (uv_stdio_container_t){ .flags = UV_IGNORE, .data = { .stream = NULL } };
+	stdio[1] = (uv_stdio_container_t){ .data.stream = (uv_stream_t *) exec->stdout_pipe, .flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE };
+	if (exec->stderr_pipe != NULL) {
+		stdio[2] = (uv_stdio_container_t){ .data.stream = (uv_stream_t *) exec->stderr_pipe, .flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE };
+	} else {
+		stdio[2] = (uv_stdio_container_t){ .flags = UV_INHERIT_FD, .data = { .fd = 2 } };
+	}
+	options->stdio = stdio;
 
 	options->stdio_count = 3;
 
@@ -2891,7 +2898,9 @@ static zend_async_exec_event_t *libuv_new_exec_event(zend_async_exec_mode exec_m
 	}
 
 	uv_read_start((uv_stream_t *) exec->stdout_pipe, exec_alloc_cb, exec_read_cb);
-	uv_read_start((uv_stream_t *) exec->stderr_pipe, exec_std_err_alloc_cb, exec_std_err_read_cb);
+	if (exec->stderr_pipe != NULL) {
+		uv_read_start((uv_stream_t *) exec->stderr_pipe, exec_std_err_alloc_cb, exec_std_err_read_cb);
+	}
 
 	ZEND_ASYNC_INCREASE_EVENT_COUNT(&exec->event.base);
 
@@ -2945,6 +2954,9 @@ static int libuv_exec(zend_async_exec_mode exec_mode,
 	if (UNEXPECTED(EG(exception))) {
 		return -1;
 	}
+
+	/* Store coroutine for PHPWRITE_CORO in exec_read_cb */
+	((async_exec_event_t *) exec_event)->coroutine = coroutine;
 
 	ZEND_ASYNC_WAKER_NEW(coroutine);
 	if (UNEXPECTED(EG(exception))) {
