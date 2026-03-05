@@ -3333,7 +3333,13 @@ static void io_file_read_cb(uv_fs_t *fs_request)
 	if (fs_request->result >= 0) {
 		req->base.transferred = (ssize_t) fs_request->result;
 		if (fs_request->result > 0) {
-			io->handle.file.offset += fs_request->result;
+			/* Update tracked offset from kernel position. */
+			const zend_off_t pos = lseek(io->crt_fd, 0, SEEK_CUR);
+			if (pos >= 0) {
+				io->handle.file.offset = pos;
+			} else {
+				io->handle.file.offset += fs_request->result;
+			}
 		}
 	} else {
 		req->base.transferred = -1;
@@ -3355,7 +3361,13 @@ static void io_file_write_cb(uv_fs_t *fs_request)
 
 	if (fs_request->result >= 0) {
 		req->base.transferred = (ssize_t) fs_request->result;
-		io->handle.file.offset += fs_request->result;
+		/* Update tracked offset from kernel position. */
+		const zend_off_t pos = lseek(io->crt_fd, 0, SEEK_CUR);
+		if (pos >= 0) {
+			io->handle.file.offset = pos;
+		} else {
+			io->handle.file.offset += fs_request->result;
+		}
 	} else {
 		req->base.transferred = -1;
 		req->base.exception = async_new_exception(
@@ -3633,8 +3645,10 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, const size_t
 	const uv_buf_t read_buffer = uv_buf_init(req->base.buf, (unsigned int) max_size);
 	req->fs_req.data = req;
 
+	/* Use offset=-1 so libuv calls read() instead of pread().
+	 * This moves the kernel file offset, keeping dup'd fds in sync. */
 	const int error =
-			uv_fs_read(UVLOOP, &req->fs_req, io->crt_fd, &read_buffer, 1, io->handle.file.offset, io_file_read_cb);
+			uv_fs_read(UVLOOP, &req->fs_req, io->crt_fd, &read_buffer, 1, -1, io_file_read_cb);
 
 	if (UNEXPECTED(error < 0)) {
 		async_throw_error("Failed to start file read: %s", uv_strerror(error));
@@ -3721,8 +3735,11 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 	const uv_buf_t write_buffer = uv_buf_init((char *) buf, (unsigned int) count);
 	req->fs_req.data = req;
 
+	/* Use offset=-1 so libuv calls write() instead of pwrite().
+	 * This moves the kernel file offset, which is essential when
+	 * multiple fds share the same open file description (e.g. dup/redirect). */
 	const int error =
-			uv_fs_write(UVLOOP, &req->fs_req, io->crt_fd, &write_buffer, 1, io->handle.file.offset, io_file_write_cb);
+			uv_fs_write(UVLOOP, &req->fs_req, io->crt_fd, &write_buffer, 1, -1, io_file_write_cb);
 
 	if (UNEXPECTED(error < 0)) {
 		async_throw_error("Failed to start file write: %s", uv_strerror(error));
@@ -3832,6 +3849,8 @@ static void libuv_io_seek(zend_async_io_t *io_base, const zend_off_t offset)
 
 	if (io->base.type == ZEND_ASYNC_IO_TYPE_FILE) {
 		io->handle.file.offset = offset;
+		/* Also move the kernel offset so dup'd fds stay in sync. */
+		lseek(io->crt_fd, offset, SEEK_SET);
 		io->base.state &= ~ZEND_ASYNC_IO_EOF;
 	}
 }
