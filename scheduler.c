@@ -1313,8 +1313,10 @@ static zend_always_inline bool scheduler_next_tick(void)
 {
 	zend_fiber_transfer *transfer = NULL;
 	bool *in_scheduler_context = &ZEND_ASYNC_SCHEDULER_CONTEXT;
+	zend_coroutine_t **acting_coroutine = &ZEND_ASYNC_ACTING_COROUTINE;
 
 	*in_scheduler_context = true;
+	*acting_coroutine = NULL;
 
 	zend_object **exception_ptr = &EG(exception);
 	zend_object *prev_exception = NULL;
@@ -1613,12 +1615,14 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 
 		const circular_buffer_t *coroutine_queue = &ASYNC_G(coroutine_queue);
 		circular_buffer_t *resumed_coroutines = &ASYNC_G(resumed_coroutines);
+		zend_coroutine_t **acting_coroutine = &ZEND_ASYNC_ACTING_COROUTINE;
 
 		do {
 
 			TRY_HANDLE_EXCEPTION();
 
 			*in_scheduler_context = true;
+			*acting_coroutine = NULL;
 
 			ZEND_ASSERT(circular_buffer_is_not_empty(resumed_coroutines) == 0 && "resumed_coroutines should be 0");
 
