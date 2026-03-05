@@ -3770,11 +3770,12 @@ static int libuv_io_close(zend_async_io_t *io_base)
 		io->handle.stream.data = io;
 		uv_close((uv_handle_t *) &io->handle.stream, io_close_cb);
 
-		/* Close the original stdio fd that was dup'd in libuv_io_create */
-		if (io->orig_fd >= 0) {
+		/* Close the original stdio fd that was dup'd in libuv_io_create,
+		 * unless PRESERVE_FD is set (e.g. stdout/stderr kept open for shutdown output). */
+		if (io->orig_fd >= 0 && !(io->base.state & ZEND_ASYNC_IO_PRESERVE_FD)) {
 			close(io->orig_fd);
-			io->orig_fd = -1;
 		}
+		io->orig_fd = -1;
 
 		return 1;
 	}
