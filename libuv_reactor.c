@@ -3320,9 +3320,7 @@ static void io_file_read_cb(uv_fs_t *fs_request)
 
 	if (fs_request->result >= 0) {
 		req->base.transferred = (ssize_t) fs_request->result;
-		if (fs_request->result == 0) {
-			io->base.state |= ZEND_ASYNC_IO_EOF;
-		} else {
+		if (fs_request->result > 0) {
 			io->handle.file.offset += fs_request->result;
 		}
 	} else {
@@ -3506,8 +3504,12 @@ libuv_io_create(const zend_file_descriptor_t fd, const zend_async_io_type type, 
 	} else {
 		/* FILE type */
 		if (state & ZEND_ASYNC_IO_APPEND) {
-			const zend_off_t end = zend_lseek(io->crt_fd, 0, SEEK_END);
-			io->handle.file.offset = (end >= 0) ? end : 0;
+			zend_stat_t st;
+			if (zend_fstat(io->crt_fd, &st) == 0 && st.st_size > 0) {
+				io->handle.file.offset = st.st_size;
+			} else {
+				io->handle.file.offset = 0;
+			}
 		} else {
 			const zend_off_t pos = zend_lseek(io->crt_fd, 0, SEEK_CUR);
 			io->handle.file.offset = (pos >= 0) ? pos : 0;
@@ -3605,7 +3607,6 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, const size_t
 			io->handle.file.offset += result;
 		} else if (result == 0) {
 			req->base.transferred = 0;
-			io->base.state |= ZEND_ASYNC_IO_EOF;
 		} else {
 			req->base.transferred = -1;
 			req->base.exception =
