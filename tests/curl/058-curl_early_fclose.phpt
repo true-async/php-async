@@ -10,10 +10,11 @@ use function Async\spawn;
 use function Async\await;
 
 $server = async_test_server_start();
+$nullDevice = PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null';
 
-await(spawn(function() use ($server) {
+await(spawn(function() use ($server, $nullDevice) {
     $ch = curl_init();
-    $fp = fopen('/dev/null', 'w');
+    $fp = fopen($nullDevice, 'w');
 
     curl_setopt($ch, CURLOPT_URL, "http://localhost:{$server->port}/");
     curl_setopt($ch, CURLOPT_FILE, $fp);
@@ -23,7 +24,7 @@ await(spawn(function() use ($server) {
     fclose($fp);
 
     // Second request after fclose — must not crash
-    $fp2 = fopen('/dev/null', 'w');
+    $fp2 = fopen($nullDevice, 'w');
     curl_setopt($ch, CURLOPT_FILE, $fp2);
     curl_exec($ch);
     fclose($fp2);

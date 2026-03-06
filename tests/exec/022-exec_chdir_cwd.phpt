@@ -5,13 +5,16 @@ exec() respects virtual CWD after chdir()
 
 use function Async\spawn;
 
-$tmpdir = sys_get_temp_dir() . '/php_exec_cwd_test_' . getmypid();
+$cmd = PHP_OS_FAMILY === 'Windows' ? 'cd' : 'pwd';
+$tmpdir = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'php_exec_cwd_test_' . getmypid();
 mkdir($tmpdir);
 
-spawn(function () use ($tmpdir) {
+spawn(function () use ($tmpdir, $cmd) {
     chdir($tmpdir);
-    exec('pwd', $output, $rc);
-    var_dump(trim($output[0]) === $tmpdir);
+    exec($cmd, $output, $rc);
+    $result = str_replace('\\', '/', trim($output[0]));
+    $expected = str_replace('\\', '/', $tmpdir);
+    var_dump($result === $expected);
     var_dump($rc);
     rmdir($tmpdir);
 });

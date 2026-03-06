@@ -10,13 +10,14 @@ use function Async\spawn;
 use function Async\await_all;
 
 $server = async_test_server_start();
+$nullDevice = PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null';
 
 $results = [];
 $coroutines = [];
 for ($c = 0; $c < 3; $c++) {
-    $coroutines[] = spawn(function() use ($server, $c, &$results) {
+    $coroutines[] = spawn(function() use ($server, $c, &$results, $nullDevice) {
         $ch = curl_init();
-        $fp = fopen('/dev/null', 'w');
+        $fp = fopen($nullDevice, 'w');
 
         for ($i = 0; $i < 5; $i++) {
             curl_setopt($ch, CURLOPT_URL, "http://localhost:{$server->port}/");

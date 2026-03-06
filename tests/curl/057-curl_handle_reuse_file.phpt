@@ -10,10 +10,11 @@ use function Async\spawn;
 use function Async\await;
 
 $server = async_test_server_start();
+$nullDevice = PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null';
 
-await(spawn(function() use ($server) {
+await(spawn(function() use ($server, $nullDevice) {
     $ch = curl_init();
-    $fp = fopen('/dev/null', 'w');
+    $fp = fopen($nullDevice, 'w');
 
     for ($i = 0; $i < 10; $i++) {
         curl_setopt($ch, CURLOPT_URL, "http://localhost:{$server->port}/");
