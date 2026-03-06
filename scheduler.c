@@ -926,7 +926,6 @@ static void async_scheduler_dtor(void)
 	zend_hash_destroy(&ASYNC_G(coroutines));
 	zend_hash_init(&ASYNC_G(coroutines), 0, NULL, NULL, 0);
 
-	ZEND_ASYNC_GRACEFUL_SHUTDOWN = false;
 	ZEND_ASYNC_SCHEDULER_CONTEXT = false;
 }
 
@@ -987,6 +986,8 @@ bool async_scheduler_launch(void)
 	}
 
 	fiber_pool_init();
+
+	ZEND_ASYNC_GRACEFUL_SHUTDOWN = false;
 
 	if (UNEXPECTED(EG(exception) != NULL)) {
 		return false;
