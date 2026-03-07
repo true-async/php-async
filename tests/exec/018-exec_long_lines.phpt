@@ -10,23 +10,11 @@ if (!function_exists("exec")) echo "skip exec() is not available";
 use function Async\spawn;
 
 spawn(function () {
-    $php = getenv('TEST_PHP_EXECUTABLE');
-    if ($php === false) {
-        die("skip no php executable defined");
-    }
-
     $output = [];
     $return_var = null;
 
     // Generate a line longer than the 8KB initial buffer (10000 chars)
-    $code = 'echo str_repeat("A", 10000) . "\n" . str_repeat("B", 10000) . "\n" . "short\n";';
-
-    if (PHP_OS_FAMILY === 'Windows') {
-        // Windows cmd.exe: use double quotes around code, no shell escaping needed for -r
-        exec($php . ' -r "' . $code . '"', $output, $return_var);
-    } else {
-        exec($php . ' -r ' . escapeshellarg($code), $output, $return_var);
-    }
+    exec(PHP_BINARY . ' -r "echo str_repeat(\'A\', 10000) . PHP_EOL . str_repeat(\'B\', 10000) . PHP_EOL . \'short\' . PHP_EOL;"', $output, $return_var);
 
     echo "Count: " . count($output) . "\n";
     echo "Line0 len: " . strlen($output[0]) . "\n";
