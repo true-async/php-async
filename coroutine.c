@@ -584,7 +584,9 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 	// we check that we're properly finishing the coroutine's execution.
 	// The coroutine must not be in the queue!
 	if (UNEXPECTED(ZEND_ASYNC_WAKER_IN_QUEUE(coroutine->coroutine.waker))) {
+		ZEND_ASYNC_ACT_AS_START(&coroutine->coroutine);
 		zend_error(E_CORE_WARNING, "Attempt to finalize a coroutine that is still in the queue");
+		ZEND_ASYNC_ACT_AS_END();
 	}
 
 	ZEND_COROUTINE_SET_FINISHED(&coroutine->coroutine);
@@ -598,6 +600,7 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 	zend_object **exception_ptr = &EG(exception);
 	zend_object *prev_exception = NULL;
 	zend_object **prev_exception_ptr = &prev_exception;
+	ZEND_ASYNC_ACT_AS_START(&coroutine->coroutine);
 
 	zend_try
 	{
@@ -726,6 +729,7 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 	}
 
 	coroutine->fiber_context = NULL;
+	ZEND_ASYNC_ACT_AS_END();
 
 	if (UNEXPECTED(do_bailout)) {
 		zend_bailout();
