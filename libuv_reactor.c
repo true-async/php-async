@@ -3621,13 +3621,15 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, const size_t
 	/* FILE path */
 #ifdef PHP_WIN32
 	if (libuv_can_use_sync_io()) {
-		/* Windows lacks pread(); seek + read is safe here (single coroutine). */
-		_lseeki64(io->crt_fd, io->handle.file.offset, SEEK_SET);
+		/* Read at the current kernel position — do NOT seek to the tracked
+		 * offset, because dup'd fds share the kernel position and another
+		 * fd may have advanced it. */
 		const int result = _read(io->crt_fd, req->base.buf, (unsigned int) max_size);
 
 		if (result > 0) {
 			req->base.transferred = result;
-			io->handle.file.offset += result;
+			const zend_off_t pos = _lseeki64(io->crt_fd, 0, SEEK_CUR);
+			io->handle.file.offset = (pos >= 0) ? pos : io->handle.file.offset + result;
 		} else if (result == 0) {
 			req->base.transferred = 0;
 		} else {
@@ -3713,13 +3715,16 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 	/* FILE path */
 #ifdef PHP_WIN32
 	if (libuv_can_use_sync_io()) {
-		/* Windows lacks pwrite(); seek + write is safe here (single coroutine). */
-		_lseeki64(io->crt_fd, io->handle.file.offset, SEEK_SET);
+		/* Write at the current kernel position — do NOT seek to the tracked
+		 * offset, because dup'd fds share the kernel position and another
+		 * fd may have advanced it.  _write() with _O_APPEND handles
+		 * append mode automatically. */
 		const int result = _write(io->crt_fd, buf, (unsigned int) count);
 
 		if (result >= 0) {
 			req->base.transferred = result;
-			io->handle.file.offset += result;
+			const zend_off_t pos = _lseeki64(io->crt_fd, 0, SEEK_CUR);
+			io->handle.file.offset = (pos >= 0) ? pos : io->handle.file.offset + result;
 		} else {
 			req->base.transferred = -1;
 			req->base.exception =
