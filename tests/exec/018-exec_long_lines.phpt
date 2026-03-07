@@ -20,7 +20,13 @@ spawn(function () {
 
     // Generate a line longer than the 8KB initial buffer (10000 chars)
     $code = 'echo str_repeat("A", 10000) . "\n" . str_repeat("B", 10000) . "\n" . "short\n";';
-    exec($php . ' -r ' . escapeshellarg($code), $output, $return_var);
+
+    if (PHP_OS_FAMILY === 'Windows') {
+        // Windows cmd.exe: use double quotes around code, no shell escaping needed for -r
+        exec($php . ' -r "' . $code . '"', $output, $return_var);
+    } else {
+        exec($php . ' -r ' . escapeshellarg($code), $output, $return_var);
+    }
 
     echo "Count: " . count($output) . "\n";
     echo "Line0 len: " . strlen($output[0]) . "\n";
