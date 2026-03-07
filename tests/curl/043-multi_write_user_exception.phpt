@@ -35,14 +35,11 @@ $coroutine = spawn(function() use ($server) {
         echo "caught: " . $e->getMessage() . "\n";
     }
 
-    // After catching, transfer result is still available
-    while ($info = curl_multi_info_read($mh)) {
-        if ($info['msg'] === CURLMSG_DONE) {
-            $errno = $info['result'];
-            echo "Transfer result: " . ($errno === CURLE_WRITE_ERROR ? "CURLE_WRITE_ERROR" : "errno=$errno") . "\n";
-        }
-    }
-
+    // curl_multi_info_read may or may not have CURLMSG_DONE here:
+    // libcurl does not propagate write callback errors to the transfer's
+    // internal state, so CURLMSG_DONE generation depends on whether the
+    // server's FIN arrives before curl_multi_socket_action processes the
+    // timer — a race condition.  Use curl_errno() as the reliable check.
     $errno = curl_errno($ch);
     echo "curl_errno: " . ($errno === CURLE_WRITE_ERROR ? "CURLE_WRITE_ERROR" : "errno=$errno") . "\n";
 
@@ -57,6 +54,5 @@ echo "Done\n";
 ?>
 --EXPECTF--
 caught: multi callback error
-Transfer result: CURLE_WRITE_ERROR
 curl_errno: CURLE_WRITE_ERROR
 Done

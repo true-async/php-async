@@ -2,6 +2,10 @@
 Async curl multi: CURLOPT_FILE to broken pipe triggers write error
 --EXTENSIONS--
 curl
+--SKIPIF--
+<?php
+if (PHP_OS_FAMILY === 'Windows') die('skip Unix domain sockets not available on Windows');
+?>
 --INI--
 error_reporting=E_ALL & ~E_NOTICE
 --FILE--
