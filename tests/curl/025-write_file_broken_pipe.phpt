@@ -1,5 +1,10 @@
 --TEST--
 Async curl_write: CURLOPT_FILE to broken pipe triggers write error
+--SKIPIF--
+<?php
+if (!extension_loaded('curl')) die("skip curl not available");
+if (PHP_OS_FAMILY === 'Windows') die("skip STREAM_PF_UNIX required for immediate broken pipe");
+?>
 --EXTENSIONS--
 curl
 --INI--
