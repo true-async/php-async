@@ -307,6 +307,16 @@ static zend_always_inline bool switch_to_scheduler(zend_fiber_transfer *transfer
 	}
 }
 
+static zend_always_inline bool switch_to_scheduler_with_bailout(void)
+{
+	async_coroutine_t *async_coroutine = (async_coroutine_t *) ZEND_ASYNC_SCHEDULER;
+	ZEND_ASSERT(async_coroutine != NULL && "Scheduler coroutine is not initialized");
+
+	fiber_context_update_before_suspend();
+	ZEND_ASYNC_CURRENT_COROUTINE = &async_coroutine->coroutine;
+	return fiber_switch_context_ex(async_coroutine, ZEND_FIBER_FLAG_BAILOUT);
+}
+
 static zend_always_inline void return_to_main(zend_fiber_transfer *transfer)
 {
 	transfer->context = ASYNC_G(main_transfer)->context;
@@ -1165,7 +1175,12 @@ bool async_scheduler_main_coroutine_suspend(const bool with_bailout)
 		// Destroy main Fiber context.
 		efree(async_fiber_context);
 
-		switch_to_scheduler(NULL);
+		if (UNEXPECTED(with_bailout)) {
+			start_graceful_shutdown();
+			switch_to_scheduler_with_bailout();
+		} else {
+			switch_to_scheduler(NULL);
+		}
 	}
 	zend_catch
 	{
@@ -1612,6 +1627,7 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 		const circular_buffer_t *coroutine_queue = &ASYNC_G(coroutine_queue);
 		circular_buffer_t *resumed_coroutines = &ASYNC_G(resumed_coroutines);
 		zend_coroutine_t **acting_coroutine = &ZEND_ASYNC_ACTING_COROUTINE;
+		bool *is_graceful_shutdown = &ZEND_ASYNC_GRACEFUL_SHUTDOWN;
 
 		do {
 
@@ -1697,6 +1713,22 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 				break;
 			}
 
+#ifdef PHP_DEBUG
+			/**
+			 * This code is intended to stop the EventLoop in case of a bailout situation or when shutdown has started.
+			 * In the case of a bailout, a situation is possible
+			 * where descriptors remain in the reactor that were not properly removed.
+			 */
+			if (UNEXPECTED(*is_graceful_shutdown &&
+				*heartbeat_handler == NULL &&
+				circular_buffer_is_empty(&ASYNC_G(microtasks)) &&
+				zend_hash_num_elements(&ASYNC_G(coroutines)) == 0 &&
+				circular_buffer_is_empty(coroutine_queue)
+				))
+			{
+				break;
+			}
+#endif
 		} while (zend_hash_num_elements(&ASYNC_G(coroutines)) > 0 ||
 				 circular_buffer_is_not_empty(&ASYNC_G(microtasks)) || ZEND_ASYNC_REACTOR_LOOP_ALIVE());
 
