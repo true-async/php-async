@@ -3603,7 +3603,9 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, const size_t
 
 			if (result > 0) {
 				req->base.transferred = result;
-			} else if (result == 0) {
+			} else if (result == 0 || errno == EBADF) {
+				/* EBADF on pipes: treat as EOF (e.g. proc_open pipe
+				 * where child never writes to this descriptor). */
 				req->base.transferred = 0;
 				io->base.state |= ZEND_ASYNC_IO_EOF;
 			} else {
