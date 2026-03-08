@@ -2632,6 +2632,18 @@ static void exec_read_cb(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf
 	zend_async_exec_event_t *exec = &event->event;
 
 	if (nread > 0) {
+#ifdef PHP_WIN32
+		/* libuv pipes are binary; emulate text-mode \r\n → \n conversion
+		 * that the old VCWD_POPEN path did automatically. */
+		ssize_t j = 0;
+		for (ssize_t i = 0; i < nread; i++) {
+			if (buf->base[i] == '\r' && i + 1 < nread && buf->base[i + 1] == '\n') {
+				continue;
+			}
+			buf->base[j++] = buf->base[i];
+		}
+		nread = j;
+#endif
 		switch (exec->exec_mode) {
 			case ZEND_ASYNC_EXEC_MODE_EXEC:
 			case ZEND_ASYNC_EXEC_MODE_EXEC_ARRAY:
@@ -2857,7 +2869,7 @@ static zend_async_exec_event_t *libuv_new_exec_event(zend_async_exec_mode exec_m
 #ifdef PHP_WIN32
 	options->flags = UV_PROCESS_WINDOWS_VERBATIM_ARGUMENTS;
 	options->file = "cmd.exe";
-	size_t cmd_buffer_size = strlen(cmd) + 2;
+	size_t cmd_buffer_size = strlen(cmd) + 3;
 	exec->quoted_cmd = emalloc(cmd_buffer_size);
 	snprintf(exec->quoted_cmd, cmd_buffer_size, "\"%s\"", cmd);
 	options->args = (char *[]){ "cmd.exe", "/s", "/c", exec->quoted_cmd, NULL };
