@@ -2,6 +2,10 @@
 Async curl: CURLOPT_READFUNCTION reads from TCP socket (sync IO fallback in scheduler context)
 --EXTENSIONS--
 curl
+--SKIPIF--
+<?php
+if (PHP_OS_FAMILY === 'Windows') die('skip file:// READFUNCTION sync callback cannot await socket data on Windows');
+?>
 --FILE--
 <?php
 use function Async\spawn;
