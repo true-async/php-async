@@ -89,6 +89,36 @@ These 4 tests currently FAIL due to the 15 false-positive memory leak reports:
 No test modifications needed — once the fix is in place, the leak reports disappear
 and the tests pass as-is.
 
+## Analyze all PHP_STREAM_AS_STDIO call sites
+
+### Problem
+
+When async IO is active, `php_stdiop_cast(PHP_STREAM_AS_STDIO)` creates a `FILE*` via
+`fdopen()`. Since the fd is owned by libuv, we currently `dup()` the fd before `fdopen()`
+to avoid dual ownership (see `plain_wrapper.c`, `php_stdiop_cast`, marked as TEMPORARY).
+
+This is a workaround. A proper solution requires analyzing **all** code paths that call
+`php_stream_cast(PHP_STREAM_AS_STDIO)` to understand how the resulting `FILE*` is used:
+
+- Is `fwrite(fp)` used, or does the caller go through `php_stream_write()`?
+- Does the caller close the `FILE*` independently?
+- Can the caller work with async IO directly instead of requiring a `FILE*`?
+
+### Known call sites to audit
+
+- `ext/curl/interface.c` — `curl_setopt(CURLOPT_FILE, ...)` casts stream to `FILE*`,
+  but async curl write path uses `php_stream_write()`, not `fwrite(fp)`.
+- Any extension using `php_stream_cast(PHP_STREAM_AS_STDIO)` in combination with
+  C library functions that expect `FILE*`.
+
+### Goal
+
+Eliminate the `dup()` workaround by ensuring async IO streams either:
+1. Never need `PHP_STREAM_AS_STDIO` cast (preferred), or
+2. Have a well-defined ownership model for the `FILE*` copy.
+
+---
+
 ### How to verify
 
 1. **Quick check** — run the 4 failing tests:
