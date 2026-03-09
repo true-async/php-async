@@ -156,6 +156,7 @@ struct _async_io_req_t
 	zend_async_io_req_t base;
 	async_io_t *io;
 	size_t max_size;
+	bool buf_owned;
 
 	union
 	{

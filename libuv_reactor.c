@@ -2633,16 +2633,21 @@ static void exec_read_cb(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf
 
 	if (nread > 0) {
 #ifdef PHP_WIN32
-		/* libuv pipes are binary; emulate text-mode \r\n → \n conversion
-		 * that the old VCWD_POPEN path did automatically. */
-		ssize_t j = 0;
-		for (ssize_t i = 0; i < nread; i++) {
-			if (buf->base[i] == '\r' && i + 1 < nread && buf->base[i + 1] == '\n') {
-				continue;
+		/* shell_exec uses VCWD_POPEN("rt") — text mode — so CRT strips \r\n → \n.
+		 * Replicate that for the async path.
+		 * passthru is raw binary — never modify data.
+		 * exec/system/exec_array use VCWD_POPEN("rb") and strip \r via
+		 * exec_strip_trailing_ws per line, so no pre-conversion needed. */
+		if (exec->exec_mode == ZEND_ASYNC_EXEC_MODE_SHELL_EXEC) {
+			ssize_t j = 0;
+			for (ssize_t i = 0; i < nread; i++) {
+				if (buf->base[i] == '\r' && i + 1 < nread && buf->base[i + 1] == '\n') {
+					continue;
+				}
+				buf->base[j++] = buf->base[i];
 			}
-			buf->base[j++] = buf->base[i];
+			nread = j;
 		}
-		nread = j;
 #endif
 		switch (exec->exec_mode) {
 			case ZEND_ASYNC_EXEC_MODE_EXEC:
@@ -3250,7 +3255,7 @@ static void libuv_io_req_dispose(zend_async_io_req_t *base_req)
 {
 	async_io_req_t *req = (async_io_req_t *) base_req;
 
-	if (req->base.buf != NULL) {
+	if (req->buf_owned && req->base.buf != NULL) {
 		pefree(req->base.buf, 0);
 	}
 
@@ -3571,13 +3576,19 @@ static inline bool libuv_can_use_sync_io(void)
 /* }}} */
 
 /* {{{ libuv_io_read */
-static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, const size_t max_size)
+static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, char *buf, size_t max_size)
 {
 	async_io_t *io = (async_io_t *) io_base;
 
 	if (UNEXPECTED(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
 		async_throw_error("Cannot read from closed IO handle");
 		return NULL;
+	}
+
+	/* _read() and uv_buf_t.len are 32-bit on Windows; cap to INT_MAX so the
+	 * caller's loop (e.g. _php_stream_write_buffer) can retry the remainder. */
+	if (max_size > INT_MAX) {
+		max_size = INT_MAX;
 	}
 
 	async_io_req_t *req = pecalloc(1, sizeof(async_io_req_t), 0);
@@ -3591,7 +3602,13 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, const size_t
 		return &req->base;
 	}
 
-	req->base.buf = pemalloc(max_size, 0);
+	if (buf != NULL) {
+		req->base.buf = buf;
+		req->buf_owned = false;
+	} else {
+		req->base.buf = pemalloc(max_size, 0);
+		req->buf_owned = true;
+	}
 
 	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE || io->base.type == ZEND_ASYNC_IO_TYPE_TTY) {
 #ifdef PHP_WIN32
@@ -3698,7 +3715,8 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 		 * process, so a direct blocking call is much cheaper when there is
 		 * at most one coroutine and no active reactor events. */
 		if (libuv_can_use_sync_io()) {
-			const int result = _write(io->crt_fd, buf, (unsigned int) count);
+			const unsigned int write_size = (count > INT_MAX) ? (unsigned int) INT_MAX : (unsigned int) count;
+			const int result = _write(io->crt_fd, buf, write_size);
 
 			if (result >= 0) {
 				req->base.transferred = result;
@@ -3712,7 +3730,7 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 		}
 #endif
 
-		const uv_buf_t write_buffer = uv_buf_init((char *) buf, (unsigned int) count);
+		const uv_buf_t write_buffer = uv_buf_init((char *) buf, (unsigned int) (count > INT_MAX ? INT_MAX : count));
 		req->write_req.data = req;
 
 		const int error = uv_write(&req->write_req, &io->handle.stream, &write_buffer, 1, io_pipe_write_cb);
@@ -3733,7 +3751,8 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 		 * offset, because dup'd fds share the kernel position and another
 		 * fd may have advanced it.  _write() with _O_APPEND handles
 		 * append mode automatically. */
-		const int result = _write(io->crt_fd, buf, (unsigned int) count);
+		const unsigned int write_size = (count > INT_MAX) ? (unsigned int) INT_MAX : (unsigned int) count;
+		const int result = _write(io->crt_fd, buf, write_size);
 
 		if (result >= 0) {
 			req->base.transferred = result;
@@ -3750,7 +3769,7 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 	}
 #endif
 
-	const uv_buf_t write_buffer = uv_buf_init((char *) buf, (unsigned int) count);
+	const uv_buf_t write_buffer = uv_buf_init((char *) buf, (unsigned int) (count > INT_MAX ? INT_MAX : count));
 	req->fs_req.data = req;
 
 	/* offset=-1 tells libuv to use write() instead of pwrite(), which
@@ -3800,7 +3819,11 @@ static int libuv_io_close(zend_async_io_t *io_base)
 		/* Close the original stdio fd that was dup'd in libuv_io_create,
 		 * unless PRESERVE_FD is set (e.g. stdout/stderr kept open for shutdown output). */
 		if (io->orig_fd >= 0 && !(io->base.state & ZEND_ASYNC_IO_PRESERVE_FD)) {
+#ifdef PHP_WIN32
+			_close(io->orig_fd);
+#else
 			close(io->orig_fd);
+#endif
 		}
 		io->orig_fd = -1;
 
