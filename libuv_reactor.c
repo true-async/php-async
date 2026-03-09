@@ -3351,7 +3351,7 @@ static void io_file_read_cb(uv_fs_t *fs_request)
 		req->base.transferred = (ssize_t) fs_request->result;
 		if (fs_request->result > 0) {
 			/* Update tracked offset from kernel position. */
-			const zend_off_t pos = lseek(io->crt_fd, 0, SEEK_CUR);
+			const zend_off_t pos = zend_lseek(io->crt_fd, 0, SEEK_CUR);
 			if (pos >= 0) {
 				io->handle.file.offset = pos;
 			} else {
@@ -3382,13 +3382,13 @@ static void io_file_write_cb(uv_fs_t *fs_request)
 #ifdef PHP_WIN32
 		/* When an explicit offset was passed to uv_fs_write (append mode),
 		 * WriteFile+OVERLAPPED does not advance the kernel file position,
-		 * so lseek(SEEK_CUR) would return a stale value. */
+		 * so zend_lseek(SEEK_CUR) would return a stale value. */
 		if (io->base.state & ZEND_ASYNC_IO_APPEND) {
 			io->handle.file.offset += fs_request->result;
 		} else
 #endif
 		{
-			const zend_off_t pos = lseek(io->crt_fd, 0, SEEK_CUR);
+			const zend_off_t pos = zend_lseek(io->crt_fd, 0, SEEK_CUR);
 			io->handle.file.offset = (pos >= 0) ? pos : io->handle.file.offset + fs_request->result;
 		}
 	} else {
@@ -3549,11 +3549,20 @@ libuv_io_create(const zend_file_descriptor_t fd, const zend_async_io_type type, 
 
 		io->handle.udp.data = io;
 	} else {
-		/* FILE type — use the current kernel file position.
-		 * For append mode on Windows, plain_wrapper.c already called
-		 * _lseeki64(fd, 0, SEEK_END) to match Unix O_APPEND behavior. */
-		const zend_off_t pos = zend_lseek(io->crt_fd, 0, SEEK_CUR);
-		io->handle.file.offset = (pos >= 0) ? pos : 0;
+		/* FILE type: initialise the tracked offset.
+		 * For append mode we need to know the current EOF so that
+		 * uv_fs_write can target it explicitly (on Windows _O_APPEND
+		 * is a CRT flag invisible to WriteFile).  After reading EOF
+		 * we restore the fd to 0 so that ftell() returns 0 on open,
+		 * matching POSIX O_APPEND semantics. */
+		if (state & ZEND_ASYNC_IO_APPEND) {
+			const zend_off_t eof = zend_lseek(io->crt_fd, 0, SEEK_END);
+			io->handle.file.offset = (eof >= 0) ? eof : 0;
+			zend_lseek(io->crt_fd, 0, SEEK_SET);
+		} else {
+			const zend_off_t pos = zend_lseek(io->crt_fd, 0, SEEK_CUR);
+			io->handle.file.offset = (pos >= 0) ? pos : 0;
+		}
 	}
 
 	return &io->base;
@@ -3659,7 +3668,7 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, char *buf, s
 
 		if (result > 0) {
 			req->base.transferred = result;
-			const zend_off_t pos = _lseeki64(io->crt_fd, 0, SEEK_CUR);
+			const zend_off_t pos = zend_lseek(io->crt_fd, 0, SEEK_CUR);
 			io->handle.file.offset = (pos >= 0) ? pos : io->handle.file.offset + result;
 		} else if (result == 0) {
 			req->base.transferred = 0;
@@ -3756,7 +3765,7 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 
 		if (result >= 0) {
 			req->base.transferred = result;
-			const zend_off_t pos = _lseeki64(io->crt_fd, 0, SEEK_CUR);
+			const zend_off_t pos = zend_lseek(io->crt_fd, 0, SEEK_CUR);
 			io->handle.file.offset = (pos >= 0) ? pos : io->handle.file.offset + result;
 		} else {
 			req->base.transferred = -1;
@@ -3775,11 +3784,16 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 	/* offset=-1 tells libuv to use write() instead of pwrite(), which
 	 * advances the kernel file offset — important for dup'd descriptors.
 	 *
-	 * On Windows the CRT _O_APPEND flag is invisible to WriteFile(),
-	 * so we pass the tracked end-of-file offset explicitly. */
+	 * On Windows, WriteFile via libuv ignores CRT _O_APPEND, so we must
+	 * query the real EOF right before submitting the write request.
+	 * This is safe because the event loop is single-threaded — no other
+	 * coroutine can interleave between lseek and uv_fs_write dispatch. */
 #ifdef PHP_WIN32
-	const int64_t offset = (io->base.state & ZEND_ASYNC_IO_APPEND)
-		? (int64_t) io->handle.file.offset : -1;
+	int64_t offset = -1;
+	if (io->base.state & ZEND_ASYNC_IO_APPEND) {
+		const zend_off_t eof = zend_lseek(io->crt_fd, 0, SEEK_END);
+		offset = (eof >= 0) ? (int64_t) eof : (int64_t) io->handle.file.offset;
+	}
 #else
 	const int64_t offset = -1;
 #endif
@@ -3894,16 +3908,27 @@ static zend_async_io_req_t *libuv_io_flush(zend_async_io_t *io_base)
 /* }}} */
 
 /* {{{ libuv_io_seek */
-static void libuv_io_seek(zend_async_io_t *io_base, const zend_off_t offset)
+static zend_off_t libuv_io_seek(zend_async_io_t *io_base, const zend_off_t offset, const int whence)
 {
 	async_io_t *io = (async_io_t *) io_base;
 
-	if (io->base.type == ZEND_ASYNC_IO_TYPE_FILE) {
-		io->handle.file.offset = offset;
-		/* Also move the kernel offset so dup'd fds stay in sync. */
-		lseek(io->crt_fd, offset, SEEK_SET);
-		io->base.state &= ~ZEND_ASYNC_IO_EOF;
+	if (io->base.type != ZEND_ASYNC_IO_TYPE_FILE) {
+		return (zend_off_t)-1;
 	}
+
+	io->base.state &= ~ZEND_ASYNC_IO_EOF;
+
+	const zend_off_t result = zend_lseek(io->crt_fd, offset, whence);
+
+	/* For append-mode files the write offset is managed exclusively
+	 * by write completions (always EOF); seeks only reposition reads.
+	 * Updating the write offset here would corrupt subsequent appends
+	 * (e.g. after fseek(0) the next write would go to position 0). */
+	if (EXPECTED(!(io->base.state & ZEND_ASYNC_IO_APPEND))) {
+		io->handle.file.offset = result;
+	}
+
+	return result;
 }
 
 /* }}} */
