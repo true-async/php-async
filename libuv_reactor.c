@@ -2968,7 +2968,7 @@ static int libuv_exec(zend_async_exec_mode exec_mode,
 									  cwd,
 									  env);
 
-	if (UNEXPECTED(EG(exception))) {
+	if (UNEXPECTED(exec_event == NULL)) {
 		return -1;
 	}
 
