@@ -112,9 +112,6 @@ struct _async_exec_event_t
 	char *line_buf;
 	size_t line_buf_len;   /* bytes used */
 	size_t line_buf_cap;   /* allocated capacity */
-#ifdef PHP_WIN32
-	char *quoted_cmd;
-#endif
 };
 
 struct _async_trigger_event_t

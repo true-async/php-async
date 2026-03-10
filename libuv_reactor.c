@@ -22,6 +22,7 @@
 
 #ifdef PHP_WIN32
 #include "win32/unistd.h"
+#include "win32/codepage.h"
 #else
 #include <sys/wait.h>
 #include <signal.h>
@@ -2816,13 +2817,6 @@ static bool libuv_exec_dispose(zend_async_event_t *event)
 		uv_close(handle, libuv_close_handle_cb);
 	}
 
-#ifdef PHP_WIN32
-	if (exec->quoted_cmd != NULL) {
-		efree(exec->quoted_cmd);
-		exec->quoted_cmd = NULL;
-	}
-#endif
-
 	// Free the event itself
 	pefree(event, 0);
 	return true;
@@ -2874,13 +2868,34 @@ static zend_async_exec_event_t *libuv_new_exec_event(zend_async_exec_mode exec_m
 #ifdef PHP_WIN32
 	options->flags = UV_PROCESS_WINDOWS_VERBATIM_ARGUMENTS;
 	options->file = "cmd.exe";
-	size_t cmd_buffer_size = strlen(cmd) + 3;
-	exec->quoted_cmd = emalloc(cmd_buffer_size);
-	snprintf(exec->quoted_cmd, cmd_buffer_size, "\"%s\"", cmd);
-	options->args = (char *[]){ "cmd.exe", "/s", "/c", exec->quoted_cmd, NULL };
+
+	/* uv_spawn expects UTF-8 strings. Convert cmd from the current code page
+	 * (which may be e.g. CP1251) to UTF-8 via UTF-16 intermediate. */
+	wchar_t *cmd_w = php_win32_cp_any_to_w(cmd);
+	char *utf8_cmd = cmd_w ? php_win32_cp_w_to_utf8(cmd_w) : NULL;
+	free(cmd_w);
+
+	const char *spawn_cmd = utf8_cmd ? utf8_cmd : cmd;
+	const size_t cmd_buffer_size = strlen(spawn_cmd) + 3;
+	char *quoted_cmd = emalloc(cmd_buffer_size);
+	snprintf(quoted_cmd, cmd_buffer_size, "\"%s\"", spawn_cmd);
+	options->args = (char *[]){ "cmd.exe", "/s", "/c", quoted_cmd, NULL };
+
+	/* Convert cwd to UTF-8 as well. */
+	char *utf8_cwd = NULL;
+	if (cwd != NULL && cwd[0] != '\0') {
+		wchar_t *cwd_w = php_win32_cp_any_to_w(cwd);
+		utf8_cwd = cwd_w ? php_win32_cp_w_to_utf8(cwd_w) : NULL;
+		free(cwd_w);
+		options->cwd = utf8_cwd ? utf8_cwd : cwd;
+	}
 #else
 	options->file = "/bin/sh";
 	options->args = (char *[]){ "sh", "-c", (char *) cmd, NULL };
+
+	if (cwd != NULL && cwd[0] != '\0') {
+		options->cwd = cwd;
+	}
 #endif
 
 	uv_stdio_container_t stdio[3];
@@ -2895,15 +2910,17 @@ static zend_async_exec_event_t *libuv_new_exec_event(zend_async_exec_mode exec_m
 
 	options->stdio_count = 3;
 
-	if (cwd != NULL && cwd[0] != '\0') {
-		options->cwd = cwd;
-	}
-
 	if (env != NULL) {
 		options->env = (char **) env;
 	}
 
 	const int result = uv_spawn(UVLOOP, exec->process, options);
+
+#ifdef PHP_WIN32
+	efree(quoted_cmd);
+	free(utf8_cmd);
+	free(utf8_cwd);
+#endif
 
 	if (result) {
 		php_error_docref(NULL, E_WARNING, "Failed to spawn process: %s", uv_strerror(result));
