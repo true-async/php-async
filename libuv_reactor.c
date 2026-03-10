@@ -3214,9 +3214,8 @@ static bool libuv_io_event_stop(zend_async_event_t *event)
 
 	async_io_t *io = (async_io_t *) event;
 
-	/* Cancel pending pipe/TTY read if any */
-	if (io->active_req != NULL &&
-		(io->base.type == ZEND_ASYNC_IO_TYPE_PIPE || io->base.type == ZEND_ASYNC_IO_TYPE_TTY)) {
+	/* Cancel pending stream read if any */
+	if (io->active_req != NULL && ZEND_ASYNC_IO_IS_STREAM(io->base.type)) {
 		uv_read_stop(&io->handle.stream);
 		io->active_req = NULL;
 	}
@@ -3481,8 +3480,7 @@ libuv_io_create(const zend_file_descriptor_t fd, const zend_async_io_type type, 
 	/* Unix only: libuv asserts fd > STDERR_FILENO in uv__close().
 	 * Dup stdio fds so libuv can safely close the copy. */
 	zend_file_descriptor_t io_fd = fd;
-	if ((type == ZEND_ASYNC_IO_TYPE_PIPE || type == ZEND_ASYNC_IO_TYPE_TTY)
-			&& fd >= 0 && fd <= STDERR_FILENO) {
+	if (ZEND_ASYNC_IO_IS_STREAM(type) && fd >= 0 && fd <= STDERR_FILENO) {
 		io_fd = dup(fd);
 		if (io_fd < 0) {
 			pefree(io, 0);
@@ -3546,11 +3544,25 @@ libuv_io_create(const zend_file_descriptor_t fd, const zend_async_io_type type, 
 
 		io->handle.tty.data = io;
 	} else if (type == ZEND_ASYNC_IO_TYPE_TCP) {
-		const int error = uv_tcp_init(UVLOOP, &io->handle.tcp);
+		int error = uv_tcp_init(UVLOOP, &io->handle.tcp);
 
 		if (UNEXPECTED(error < 0)) {
 			async_throw_error("Failed to initialize TCP handle: %s", uv_strerror(error));
 			pefree(io, 0);
+			return NULL;
+		}
+
+#ifdef PHP_WIN32
+		const uv_os_sock_t sock = (uv_os_sock_t) _get_osfhandle(io_fd);
+#else
+		const uv_os_sock_t sock = (uv_os_sock_t) io_fd;
+#endif
+		error = uv_tcp_open(&io->handle.tcp, sock);
+
+		if (UNEXPECTED(error < 0)) {
+			async_throw_error("Failed to open TCP handle: %s", uv_strerror(error));
+			io->handle.tcp.data = io;
+			uv_close((uv_handle_t *) &io->handle.tcp, io_close_cb);
 			return NULL;
 		}
 
@@ -3636,7 +3648,7 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, char *buf, s
 		req->buf_owned = true;
 	}
 
-	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE || io->base.type == ZEND_ASYNC_IO_TYPE_TTY) {
+	if (ZEND_ASYNC_IO_IS_STREAM(io->base.type)) {
 #ifdef PHP_WIN32
 		/* Sync fallback: on Windows libuv async I/O goes through a helper
 		 * process, so a direct blocking call is much cheaper when there is
@@ -3735,7 +3747,7 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 	req->io = io;
 	req->max_size = count;
 
-	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE || io->base.type == ZEND_ASYNC_IO_TYPE_TTY) {
+	if (ZEND_ASYNC_IO_IS_STREAM(io->base.type)) {
 #ifdef PHP_WIN32
 		/* Sync fallback: on Windows libuv async I/O goes through a helper
 		 * process, so a direct blocking call is much cheaper when there is
@@ -3841,7 +3853,7 @@ static int libuv_io_close(zend_async_io_t *io_base)
 
 	io->base.state |= ZEND_ASYNC_IO_CLOSED;
 
-	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE || io->base.type == ZEND_ASYNC_IO_TYPE_TTY) {
+	if (ZEND_ASYNC_IO_IS_STREAM(io->base.type)) {
 		uv_read_stop(&io->handle.stream);
 		zend_async_callbacks_free(&io->base.event);
 		io->handle.stream.data = io;
@@ -3896,7 +3908,7 @@ static zend_async_io_req_t *libuv_io_flush(zend_async_io_t *io_base)
 	}
 
 	/* Pipes and TTYs have no disk buffer to flush — return instant success */
-	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE || io->base.type == ZEND_ASYNC_IO_TYPE_TTY) {
+	if (ZEND_ASYNC_IO_IS_STREAM(io->base.type)) {
 		async_io_req_t *req = pecalloc(1, sizeof(async_io_req_t), 0);
 		req->base.dispose = libuv_io_req_dispose;
 		req->io = io;
@@ -3988,7 +4000,7 @@ static zend_async_io_req_t *libuv_io_stat(zend_async_io_t *io_base, zend_stat_t 
 	}
 
 	/* Pipes and TTYs: synchronous fstat — return instant result */
-	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE || io->base.type == ZEND_ASYNC_IO_TYPE_TTY) {
+	if (ZEND_ASYNC_IO_IS_STREAM(io->base.type)) {
 		async_io_req_t *req = pecalloc(1, sizeof(async_io_req_t), 0);
 		req->base.dispose = libuv_io_req_dispose;
 		req->io = io;
