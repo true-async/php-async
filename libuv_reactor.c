@@ -3196,6 +3196,7 @@ zend_async_trigger_event_t *libuv_new_trigger_event(size_t extra_size)
 /// Async IO API
 /////////////////////////////////////////////////////////////////////////////////
 
+static bool libuv_io_close(zend_async_io_t *io_base);
 static void io_close_cb(uv_handle_t *pipe_handle);
 
 /* {{{ IO event methods */
@@ -3232,6 +3233,13 @@ static bool libuv_io_event_dispose(zend_async_event_t *event)
 		return true;
 	}
 
+	async_io_t *io = (async_io_t *) event;
+
+	/* Close the IO handle if not already closed. */
+	if (!(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
+		libuv_io_close(&io->base);
+	}
+
 	if (event->loop_ref_count > 0) {
 		event->loop_ref_count = 1;
 		event->stop(event);
@@ -3239,25 +3247,9 @@ static bool libuv_io_event_dispose(zend_async_event_t *event)
 
 	zend_async_callbacks_free(event);
 
-	async_io_t *io = (async_io_t *) event;
-
-	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE && !(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
-		io->base.state |= ZEND_ASYNC_IO_CLOSED;
-		io->handle.pipe.data = io;
-		uv_close((uv_handle_t *) &io->handle.pipe, io_close_cb);
-	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_TTY && !(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
-		io->base.state |= ZEND_ASYNC_IO_CLOSED;
-		io->handle.tty.data = io;
-		uv_close((uv_handle_t *) &io->handle.tty, io_close_cb);
-	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_TCP && !(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
-		io->base.state |= ZEND_ASYNC_IO_CLOSED;
-		io->handle.tcp.data = io;
-		uv_close((uv_handle_t *) &io->handle.tcp, io_close_cb);
-	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_UDP && !(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
-		io->base.state |= ZEND_ASYNC_IO_CLOSED;
-		io->handle.udp.data = io;
-		uv_close((uv_handle_t *) &io->handle.udp, io_close_cb);
-	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_FILE) {
+	/* STREAM types: uv_close is async, pefree happens in io_close_cb.
+	 * FILE type: no uv handle, free immediately. */
+	if (!ZEND_ASYNC_IO_IS_STREAM(io->base.type) && io->base.type != ZEND_ASYNC_IO_TYPE_UDP) {
 		pefree(io, 0);
 	}
 
@@ -3843,40 +3835,38 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 /* }}} */
 
 /* {{{ libuv_io_close */
-static int libuv_io_close(zend_async_io_t *io_base)
+static bool libuv_io_close(zend_async_io_t *io_base)
 {
 	async_io_t *io = (async_io_t *) io_base;
 
 	if (io->base.state & ZEND_ASYNC_IO_CLOSED) {
-		return 0;
+		return true;
 	}
 
 	io->base.state |= ZEND_ASYNC_IO_CLOSED;
 
 	if (ZEND_ASYNC_IO_IS_STREAM(io->base.type)) {
 		uv_read_stop(&io->handle.stream);
-		zend_async_callbacks_free(&io->base.event);
 		io->handle.stream.data = io;
 		uv_close((uv_handle_t *) &io->handle.stream, io_close_cb);
-
-		/* Close the original stdio fd that was dup'd in libuv_io_create,
-		 * unless PRESERVE_FD is set (e.g. stdout/stderr kept open for shutdown output). */
-		if (io->orig_fd >= 0 && !(io->base.state & ZEND_ASYNC_IO_PRESERVE_FD)) {
-#ifdef PHP_WIN32
-			_close(io->orig_fd);
-#else
-			close(io->orig_fd);
-#endif
-		}
-		io->orig_fd = -1;
-
-		return 1;
+	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_UDP) {
+		io->handle.udp.data = io;
+		uv_close((uv_handle_t *) &io->handle.udp, io_close_cb);
 	}
+	/* FILE type: no uv handle to close. */
 
-	/* FILE: libuv does not own the fd */
-	zend_async_callbacks_free(&io->base.event);
-	pefree(io, 0);
-	return 0;
+	/* Close the original stdio fd that was dup'd in libuv_io_create,
+	 * unless PRESERVE_FD is set (e.g. stdout/stderr kept open for shutdown output). */
+	if (io->orig_fd >= 0 && !(io->base.state & ZEND_ASYNC_IO_PRESERVE_FD)) {
+#ifdef PHP_WIN32
+		_close(io->orig_fd);
+#else
+		close(io->orig_fd);
+#endif
+	}
+	io->orig_fd = -1;
+
+	return true;
 }
 
 /* }}} */
