@@ -3844,14 +3844,17 @@ static bool libuv_io_close(zend_async_io_t *io_base)
 	}
 
 	io->base.state |= ZEND_ASYNC_IO_CLOSED;
+	bool need_close_handle = false;
 
 	if (ZEND_ASYNC_IO_IS_STREAM(io->base.type)) {
 		uv_read_stop(&io->handle.stream);
 		io->handle.stream.data = io;
 		uv_close((uv_handle_t *) &io->handle.stream, io_close_cb);
+		need_close_handle = true;
 	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_UDP) {
 		io->handle.udp.data = io;
 		uv_close((uv_handle_t *) &io->handle.udp, io_close_cb);
+		need_close_handle = true;
 	}
 	/* FILE type: no uv handle to close. */
 
@@ -3865,6 +3868,12 @@ static bool libuv_io_close(zend_async_io_t *io_base)
 #endif
 	}
 	io->orig_fd = -1;
+
+	if (need_close_handle && false == ZEND_ASYNC_IS_SCHEDULER_CONTEXT) {
+		ZEND_ASYNC_SCHEDULER_CONTEXT = true;
+		libuv_reactor_execute(true);
+		ZEND_ASYNC_SCHEDULER_CONTEXT = false;
+	}
 
 	return true;
 }
