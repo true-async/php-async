@@ -89,6 +89,65 @@ These 4 tests currently FAIL due to the 15 false-positive memory leak reports:
 No test modifications needed — once the fix is in place, the leak reports disappear
 and the tests pass as-is.
 
+## Windows: stream_select() does not support pipes
+
+### Problem
+
+Test `ext/standard/tests/streams/proc_open_bug64438.phpt` fails on Windows.
+
+The test creates pipes via `proc_open`, calls `stream_set_blocking(false)`, then uses
+`stream_select()` + `fread()` in a loop. Expected: 2 entries per pipe:
+`[Read 4097 bytes, Closing pipe]`. Actual: 3 entries: `[Read 0 bytes, Read 4097 bytes, Closing pipe]`.
+
+### Root cause
+
+`select()` on Windows works **only with Winsock sockets**, not pipes.
+`stream_select()` on pipes returns a false positive — reports "readable" when no data is available.
+
+Before async this was masked: `stream_set_blocking(false)` on Windows pipes **always failed**
+(returned -1 in `plain_wrapper.c`), so `is_blocked` stayed `1`. `fread()` entered the
+`PeekNamedPipe` wait loop (up to 32 sec) and waited for data — compensating for unreliable `stream_select`.
+
+With async IO, `stream_set_blocking(false)` now works (`plain_wrapper.c:1082-1086` sets
+`is_blocked=0` when `async_io != NULL`). Now `fread()` with `PeekNamedPipe` sees 0 available
+bytes and returns 0 immediately (correct non-blocking behavior), exposing the `stream_select` bug.
+
+### Conclusion
+
+This is **not an async IO bug** — it is a Windows `select()` limitation. Our code correctly
+implements non-blocking reads. The test relied on `stream_set_blocking(false)` silently failing,
+which hid the `stream_select` pipe incompatibility.
+
+### Possible solutions
+
+1. Mark the test as `XFAIL` on Windows with async (minimal change)
+2. Implement `stream_select` for Windows pipes via `PeekNamedPipe`/`WaitForMultipleObjects`
+   instead of `select()` (proper fix, but significant work)
+
+---
+
+## Windows: bug51056 — TCP timing issue
+
+### Problem
+
+Test `ext/standard/tests/streams/bug51056.phpt` fails on Windows.
+
+Server writes 8 bytes, `usleep(50000)`, 301 bytes, `usleep(50000)`, 8 bytes.
+Client reads with `fread($fp, 256)`. Expected 4 reads: 8, 256, 45, 8.
+Actual: 3 reads: 8, 256, 53 (last 45+8 merged).
+
+### Root cause
+
+The test uses `fsockopen()` → `php_stream_socket_ops` → `php_sockop_read`.
+There is **no async IO integration** in `xp_socket.c`. This is a TCP socket, not a pipe.
+
+The issue is TCP timing: 50ms `usleep` between writes is not enough to separate TCP segments
+(Nagle's algorithm). The last two writes arrive as a single TCP segment on the client side.
+
+**Not an async IO bug.**
+
+---
+
 ## Analyze all PHP_STREAM_AS_STDIO call sites
 
 ### Problem
