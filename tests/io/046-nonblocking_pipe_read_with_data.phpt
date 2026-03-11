@@ -29,13 +29,19 @@ $coroutine = spawn(function() {
         return "fail";
     }
 
-    // Give child a moment to write
-    usleep(50000);
-
-    // Set non-blocking, then read — data should be available
+    // Set non-blocking, then poll for data with retries
+    // (CI runners may be slow to start the child process)
     stream_set_blocking($pipes[1], false);
 
-    $data = fread($pipes[1], 1024);
+    $data = '';
+    for ($i = 0; $i < 10; $i++) {
+        usleep(50000); // 50ms
+        $chunk = fread($pipes[1], 1024);
+        if ($chunk !== '' && $chunk !== false) {
+            $data = $chunk;
+            break;
+        }
+    }
     echo "read: '$data'\n";
     echo "has data: " . ($data !== '' && $data !== false ? "yes" : "no") . "\n";
 
