@@ -298,14 +298,20 @@ static void libuv_reactor_stop_with_exception(void)
 void libuv_reactor_detach_io(void)
 {
 	if (!ASYNC_G(reactor_started)) {
+		fprintf(stderr, "[DETACH_IO] reactor not started, skipping\n");
 		return;
 	}
 
 	/* Detach all outstanding IO handles from their owners (e.g. php_stream)
 	 * and close/free them. Preserve the original fd so the stream can
 	 * continue working synchronously after detach. */
+	fprintf(stderr, "[DETACH_IO] detaching %d IO handles\n",
+		zend_hash_num_elements(&ASYNC_G(active_io_handles)));
 	zend_async_io_t *io_handle;
 	ZEND_HASH_FOREACH_PTR(&ASYNC_G(active_io_handles), io_handle) {
+		fprintf(stderr, "[DETACH_IO]   handle=%p fd=%d on_detach=%p\n",
+			io_handle, ((async_io_t *)io_handle)->orig_fd,
+			io_handle->on_detach);
 		if (io_handle->on_detach != NULL) {
 			io_handle->on_detach(io_handle, io_handle->on_detach_arg);
 			io_handle->on_detach = NULL;
