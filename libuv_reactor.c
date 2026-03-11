@@ -294,34 +294,49 @@ static void libuv_reactor_stop_with_exception(void)
 
 /* }}} */
 
+/* {{{ libuv_reactor_detach_io */
+void libuv_reactor_detach_io(void)
+{
+	if (!ASYNC_G(reactor_started)) {
+		return;
+	}
+
+	/* Detach all outstanding IO handles from their owners (e.g. php_stream)
+	 * and close/free them. Preserve the original fd so the stream can
+	 * continue working synchronously after detach. */
+	zend_async_io_t *io_handle;
+	ZEND_HASH_FOREACH_PTR(&ASYNC_G(active_io_handles), io_handle) {
+		if (io_handle->on_detach != NULL) {
+			io_handle->on_detach(io_handle, io_handle->on_detach_arg);
+			io_handle->on_detach = NULL;
+		}
+		((async_io_t *) io_handle)->orig_fd = -1;
+		ZEND_ASYNC_IO_CLOSE(io_handle);
+		io_handle->event.dispose(&io_handle->event);
+	} ZEND_HASH_FOREACH_END();
+
+	if (uv_loop_alive(UVLOOP) != 0) {
+		uv_run(UVLOOP, UV_RUN_ONCE);
+	}
+}
+
+/* }}} */
+
 /* {{{ libuv_reactor_shutdown */
 bool libuv_reactor_shutdown(void)
 {
 	if (EXPECTED(ASYNC_G(reactor_started))) {
 
-		/* Detach all outstanding IO handles from their owners (e.g. php_stream)
-		 * and close/free them. Preserve the original fd so the stream can
-		 * continue working synchronously after detach. */
-		zend_async_io_t *io_handle;
-		ZEND_HASH_FOREACH_PTR(&ASYNC_G(active_io_handles), io_handle) {
-			if (io_handle->on_detach != NULL) {
-				io_handle->on_detach(io_handle, io_handle->on_detach_arg);
-				io_handle->on_detach = NULL;
-			}
-			((async_io_t *) io_handle)->orig_fd = -1;
-			ZEND_ASYNC_IO_CLOSE(io_handle);
-			io_handle->event.dispose(&io_handle->event);
-		} ZEND_HASH_FOREACH_END();
-
-		if (uv_loop_alive(UVLOOP) != 0) {
-			// need to finish handlers
-			uv_run(UVLOOP, UV_RUN_ONCE);
-		}
-
 		// Cleanup global signal management structures
 		libuv_cleanup_signal_handlers();
 		libuv_cleanup_signal_events();
 		libuv_cleanup_process_events();
+
+		/* Drain pending uv_close callbacks (e.g. poll events disposed
+		 * during shutdown_executor via curl free_obj). */
+		if (uv_loop_alive(UVLOOP) != 0) {
+			uv_run(UVLOOP, UV_RUN_NOWAIT);
+		}
 
 		uv_loop_close(UVLOOP);
 		ASYNC_G(reactor_started) = false;
@@ -551,8 +566,13 @@ static bool libuv_poll_dispose(zend_async_event_t *event)
 		poll->proxies = NULL;
 	}
 
-	/* Use poll-specific callback for poll events that may need descriptor cleanup */
-	uv_close((uv_handle_t *) &poll->uv_handle, libuv_close_poll_handle_cb);
+	/* Use poll-specific callback for poll events that may need descriptor cleanup.
+	 * If the reactor is already shut down, uv_close cannot run — free directly. */
+	if (UNEXPECTED(!ASYNC_G(reactor_started))) {
+		pefree(poll, 0);
+	} else {
+		uv_close((uv_handle_t *) &poll->uv_handle, libuv_close_poll_handle_cb);
+	}
 	return true;
 }
 
@@ -4511,6 +4531,7 @@ void async_libuv_reactor_register(void)
 								false,
 								libuv_reactor_startup,
 								libuv_reactor_shutdown,
+								libuv_reactor_detach_io,
 								libuv_reactor_execute,
 								libuv_reactor_loop_alive,
 								libuv_new_socket_event,
