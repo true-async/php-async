@@ -279,6 +279,7 @@ bool libuv_reactor_startup(void)
 	}
 
 	uv_loop_set_data(UVLOOP, ASYNC_GLOBALS);
+	zend_hash_init(&ASYNC_G(active_io_handles), 16, NULL, NULL, 0);
 	ASYNC_G(reactor_started) = true;
 	return true;
 }
@@ -298,6 +299,20 @@ bool libuv_reactor_shutdown(void)
 {
 	if (EXPECTED(ASYNC_G(reactor_started))) {
 
+		/* Detach all outstanding IO handles from their owners (e.g. php_stream)
+		 * and close/free them. Preserve the original fd so the stream can
+		 * continue working synchronously after detach. */
+		zend_async_io_t *io_handle;
+		ZEND_HASH_FOREACH_PTR(&ASYNC_G(active_io_handles), io_handle) {
+			if (io_handle->on_detach != NULL) {
+				io_handle->on_detach(io_handle, io_handle->on_detach_arg);
+				io_handle->on_detach = NULL;
+			}
+			((async_io_t *) io_handle)->orig_fd = -1;
+			ZEND_ASYNC_IO_CLOSE(io_handle);
+			io_handle->event.dispose(&io_handle->event);
+		} ZEND_HASH_FOREACH_END();
+
 		if (uv_loop_alive(UVLOOP) != 0) {
 			// need to finish handlers
 			uv_run(UVLOOP, UV_RUN_ONCE);
@@ -310,6 +325,7 @@ bool libuv_reactor_shutdown(void)
 
 		uv_loop_close(UVLOOP);
 		ASYNC_G(reactor_started) = false;
+		zend_hash_destroy(&ASYNC_G(active_io_handles));
 	}
 	return true;
 }
@@ -3235,6 +3251,15 @@ static bool libuv_io_event_dispose(zend_async_event_t *event)
 
 	async_io_t *io = (async_io_t *) event;
 
+	/* Notify the owner (e.g. plain_wrapper) so it can clear its pointer. */
+	if (io->base.on_detach != NULL) {
+		io->base.on_detach(&io->base, io->base.on_detach_arg);
+		io->base.on_detach = NULL;
+	}
+
+	/* Remove from the active IO tracking table. */
+	zend_hash_index_del(&ASYNC_G(active_io_handles), async_ptr_to_index(io));
+
 	/* Close the IO handle if not already closed. */
 	if (!(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
 		libuv_io_close(&io->base);
@@ -3582,6 +3607,8 @@ libuv_io_create(const zend_file_descriptor_t fd, const zend_async_io_type type, 
 			io->handle.file.offset = (pos >= 0) ? pos : 0;
 		}
 	}
+
+	zend_hash_index_add_new_ptr(&ASYNC_G(active_io_handles), async_ptr_to_index(io), io);
 
 	return &io->base;
 }
