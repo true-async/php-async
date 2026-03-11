@@ -1190,7 +1190,7 @@ bool async_scheduler_main_coroutine_suspend(const bool with_bailout)
 
 	ZEND_ASYNC_CURRENT_COROUTINE = NULL;
 	ZEND_ASSERT(ZEND_ASYNC_ACTIVE_COROUTINE_COUNT == 0 && "The active coroutine counter must be 0 at this point");
-	ZEND_ASYNC_DEACTIVATE;
+	ZEND_ASYNC_INITIALIZE;
 
 	if (ASYNC_G(main_transfer)) {
 		efree(ASYNC_G(main_transfer));
