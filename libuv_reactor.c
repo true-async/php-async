@@ -3843,6 +3843,12 @@ static bool libuv_io_close(zend_async_io_t *io_base)
 	io->base.state |= ZEND_ASYNC_IO_CLOSED;
 	bool need_close_handle = false;
 
+	/* If the reactor is already shut down (e.g. bailout during memory
+	 * exhaustion followed by executor_globals_dtor), skip libuv calls. */
+	if (UNEXPECTED(!ASYNC_G(reactor_started))) {
+		goto close_orig_fd;
+	}
+
 	if (ZEND_ASYNC_IO_IS_STREAM(io->base.type)) {
 		uv_read_stop(&io->handle.stream);
 		io->handle.stream.data = io;
@@ -3857,6 +3863,7 @@ static bool libuv_io_close(zend_async_io_t *io_base)
 	}
 	/* FILE type: no uv handle to close. */
 
+close_orig_fd:
 	/* Close the original stdio fd that was dup'd in libuv_io_create,
 	 * unless PRESERVE_FD is set (e.g. stdout/stderr kept open for shutdown output). */
 	if (io->orig_fd >= 0 && !(io->base.state & ZEND_ASYNC_IO_PRESERVE_FD)) {
