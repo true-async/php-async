@@ -97,9 +97,48 @@ With libcurl >= 8.11.1, the async path is used and works 100% reliably.
 
 ---
 
+## Timer Callback Regression (libcurl 8.10.x)
+
+### Symptom
+
+`curl_exec()` hangs indefinitely when connecting to unreachable hosts (e.g. `192.0.2.1`),
+even with `CURLOPT_TIMEOUT` and `CURLOPT_CONNECTTIMEOUT` set. The timeout never fires
+in the `multi_socket` API.
+
+### Root Cause
+
+A regression introduced in libcurl 8.10.0 causes `CURLMOPT_TIMERFUNCTION` to not be
+called again after `curl_multi_socket_action(CURL_SOCKET_TIMEOUT)`. The sequence:
+
+1. curl registers a connect socket and requests a timeout timer (e.g. 2000ms)
+2. Timer fires → `curl_multi_socket_action(CURL_SOCKET_TIMEOUT)` is called
+3. curl returns `running_handles=1` — does **not** complete the transfer
+4. curl does **not** call `CURLMOPT_TIMERFUNCTION` to request a new timer
+5. The socket never becomes writable (host unreachable) → deadlock
+
+In working versions (e.g. 8.5.0), step 4 correctly re-arms the timer with a short
+interval (~35ms), which fires again and completes the transfer with `CURLE_OPERATION_TIMEDOUT`.
+
+### Affected Versions
+
+- **Broken**: libcurl 8.10.0 – 8.11.0
+- **Working**: libcurl ≤ 8.9.1, libcurl ≥ 8.11.1
+- Related: [curl#15154](https://github.com/curl/curl/issues/15154) — "curl_multi still breaks in 8.10.1 with libev"
+- Related: [curl#15639](https://github.com/curl/curl/issues/15639) — Regression in multi-curl async calls (8.9.1 → 8.10.0/8.11.0)
+- Fix: [curl#15627](https://github.com/curl/curl/pull/15627) — merged into curl 8.11.1
+
+### Recommendation
+
+Avoid libcurl 8.10.x for any `multi_socket`-based integration. Use libcurl 8.5.0
+(as in CI) or >= 8.11.1.
+
+---
+
 ## References
 
 - [curl#15627](https://github.com/curl/curl/pull/15627) — Fix for `CURLMOPT_TIMERFUNCTION` not being called (merged Nov 2024, curl 8.11.1)
+- [curl#15154](https://github.com/curl/curl/issues/15154) — curl_multi breaks in 8.10.1 with libev
+- [curl#15639](https://github.com/curl/curl/issues/15639) — Regression in multi-curl async calls (8.9.1 → 8.10.0/8.11.0)
 - [curl#5299](https://github.com/curl/curl/issues/5299) — `CURLINFO_ACTIVESOCKET` reliability issues
 - libcurl `multi_socket` API: https://curl.se/libcurl/c/libcurl-multi.html
 - libcurl pause/unpause: https://curl.se/libcurl/c/curl_easy_pause.html
