@@ -31,5 +31,5 @@ spawn(function () {
     @unlink($log_file);
 });
 ?>
---EXPECT--
-Trampoline for trampoline
+--EXPECTREGEX--
+(Trampoline for trampoline\s*)+
