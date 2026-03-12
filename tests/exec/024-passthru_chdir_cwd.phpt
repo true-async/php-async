@@ -11,7 +11,7 @@ if (ini_get("opcache.jit") && ini_get("opcache.jit") !== "0" && ini_get("opcache
 use function Async\spawn;
 
 $cmd = PHP_OS_FAMILY === 'Windows' ? 'cd' : 'pwd';
-$tmpdir = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'php_exec_cwd_test_' . getmypid();
+$tmpdir = realpath(sys_get_temp_dir()) . DIRECTORY_SEPARATOR . 'php_exec_cwd_test_' . getmypid();
 mkdir($tmpdir);
 
 spawn(function () use ($tmpdir, $cmd) {
