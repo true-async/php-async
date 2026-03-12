@@ -99,6 +99,7 @@ circular_buffer_t fiber_context_pool;
 /* The reactor */
 uv_loop_t uvloop;
 bool reactor_started;
+HashTable active_io_handles; /* tracks all IO handles issued by the reactor */
 
 /* Global signal management for all platforms */
 HashTable *signal_handlers; /* signum -> uv_signal_t* */

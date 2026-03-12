@@ -832,6 +832,8 @@ bool async_coroutine_cancel(zend_coroutine_t *zend_coroutine,
 {
 	transfer_error = error != NULL ? transfer_error : false;
 
+	ZEND_ASSERT(zend_coroutine != ZEND_ASYNC_SCHEDULER && "A Scheduler coroutine cannot be canceled");
+
 	// If the coroutine finished, do nothing.
 	if (ZEND_COROUTINE_IS_FINISHED(zend_coroutine)) {
 		if (transfer_error && error != NULL) {

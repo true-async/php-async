@@ -22,6 +22,7 @@
 
 #ifdef PHP_WIN32
 #include "win32/unistd.h"
+#include "win32/codepage.h"
 #else
 #include <sys/wait.h>
 #include <signal.h>
@@ -278,6 +279,7 @@ bool libuv_reactor_startup(void)
 	}
 
 	uv_loop_set_data(UVLOOP, ASYNC_GLOBALS);
+	zend_hash_init(&ASYNC_G(active_io_handles), 16, NULL, NULL, 0);
 	ASYNC_G(reactor_started) = true;
 	return true;
 }
@@ -292,23 +294,53 @@ static void libuv_reactor_stop_with_exception(void)
 
 /* }}} */
 
+/* {{{ libuv_reactor_detach_io */
+void libuv_reactor_detach_io(void)
+{
+	if (!ASYNC_G(reactor_started)) {
+		return;
+	}
+
+	/* Detach all outstanding IO handles from their owners (e.g. php_stream)
+	 * and close/free them. Preserve the original fd so the stream can
+	 * continue working synchronously after detach. */
+	zend_async_io_t *io_handle;
+	ZEND_HASH_FOREACH_PTR(&ASYNC_G(active_io_handles), io_handle) {
+		if (io_handle->on_detach != NULL) {
+			io_handle->on_detach(io_handle, io_handle->on_detach_arg);
+			io_handle->on_detach = NULL;
+		}
+		((async_io_t *) io_handle)->orig_fd = -1;
+		ZEND_ASYNC_IO_CLOSE(io_handle);
+		io_handle->event.dispose(&io_handle->event);
+	} ZEND_HASH_FOREACH_END();
+
+	if (uv_loop_alive(UVLOOP) != 0) {
+		uv_run(UVLOOP, UV_RUN_ONCE);
+	}
+}
+
+/* }}} */
+
 /* {{{ libuv_reactor_shutdown */
 bool libuv_reactor_shutdown(void)
 {
 	if (EXPECTED(ASYNC_G(reactor_started))) {
-
-		if (uv_loop_alive(UVLOOP) != 0) {
-			// need to finish handlers
-			uv_run(UVLOOP, UV_RUN_ONCE);
-		}
 
 		// Cleanup global signal management structures
 		libuv_cleanup_signal_handlers();
 		libuv_cleanup_signal_events();
 		libuv_cleanup_process_events();
 
+		/* Drain pending uv_close callbacks (e.g. poll events disposed
+		 * during shutdown_executor via curl free_obj). */
+		if (uv_loop_alive(UVLOOP) != 0) {
+			uv_run(UVLOOP, UV_RUN_NOWAIT);
+		}
+
 		uv_loop_close(UVLOOP);
 		ASYNC_G(reactor_started) = false;
+		zend_hash_destroy(&ASYNC_G(active_io_handles));
 	}
 	return true;
 }
@@ -534,8 +566,13 @@ static bool libuv_poll_dispose(zend_async_event_t *event)
 		poll->proxies = NULL;
 	}
 
-	/* Use poll-specific callback for poll events that may need descriptor cleanup */
-	uv_close((uv_handle_t *) &poll->uv_handle, libuv_close_poll_handle_cb);
+	/* Use poll-specific callback for poll events that may need descriptor cleanup.
+	 * If the reactor is already shut down, uv_close cannot run — free directly. */
+	if (UNEXPECTED(!ASYNC_G(reactor_started))) {
+		pefree(poll, 0);
+	} else {
+		uv_close((uv_handle_t *) &poll->uv_handle, libuv_close_poll_handle_cb);
+	}
 	return true;
 }
 
@@ -2632,6 +2669,23 @@ static void exec_read_cb(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf
 	zend_async_exec_event_t *exec = &event->event;
 
 	if (nread > 0) {
+#ifdef PHP_WIN32
+		/* shell_exec uses VCWD_POPEN("rt") — text mode — so CRT strips \r\n → \n.
+		 * Replicate that for the async path.
+		 * passthru is raw binary — never modify data.
+		 * exec/system/exec_array use VCWD_POPEN("rb") and strip \r via
+		 * exec_strip_trailing_ws per line, so no pre-conversion needed. */
+		if (exec->exec_mode == ZEND_ASYNC_EXEC_MODE_SHELL_EXEC) {
+			ssize_t j = 0;
+			for (ssize_t i = 0; i < nread; i++) {
+				if (buf->base[i] == '\r' && i + 1 < nread && buf->base[i + 1] == '\n') {
+					continue;
+				}
+				buf->base[j++] = buf->base[i];
+			}
+			nread = j;
+		}
+#endif
 		switch (exec->exec_mode) {
 			case ZEND_ASYNC_EXEC_MODE_EXEC:
 			case ZEND_ASYNC_EXEC_MODE_EXEC_ARRAY:
@@ -2639,12 +2693,12 @@ static void exec_read_cb(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf
 				break;
 
 			case ZEND_ASYNC_EXEC_MODE_SYSTEM:
-				PHPWRITE(buf->base, nread);
+				PHPWRITE_CORO(buf->base, nread, event->coroutine);
 				exec_process_chunk(event, buf->base, nread);
 				break;
 
 			case ZEND_ASYNC_EXEC_MODE_PASSTHRU:
-				PHPWRITE(buf->base, nread);
+				PHPWRITE_CORO(buf->base, nread, event->coroutine);
 				break;
 
 			case ZEND_ASYNC_EXEC_MODE_SHELL_EXEC:
@@ -2799,13 +2853,6 @@ static bool libuv_exec_dispose(zend_async_event_t *event)
 		uv_close(handle, libuv_close_handle_cb);
 	}
 
-#ifdef PHP_WIN32
-	if (exec->quoted_cmd != NULL) {
-		efree(exec->quoted_cmd);
-		exec->quoted_cmd = NULL;
-	}
-#endif
-
 	// Free the event itself
 	pefree(event, 0);
 	return true;
@@ -2841,45 +2888,75 @@ static zend_async_exec_event_t *libuv_new_exec_event(zend_async_exec_mode exec_m
 
 	exec->process = pecalloc(sizeof(uv_process_t), 1, 0);
 	exec->stdout_pipe = pecalloc(sizeof(uv_pipe_t), 1, 0);
-	exec->stderr_pipe = pecalloc(sizeof(uv_pipe_t), 1, 0);
 
 	exec->process->data = exec;
 	exec->stdout_pipe->data = exec;
-	exec->stderr_pipe->data = exec;
 
 	uv_pipe_init(UVLOOP, exec->stdout_pipe, 0);
-	uv_pipe_init(UVLOOP, exec->stderr_pipe, 0);
+
+	if (std_error != NULL) {
+		exec->stderr_pipe = pecalloc(sizeof(uv_pipe_t), 1, 0);
+		exec->stderr_pipe->data = exec;
+		uv_pipe_init(UVLOOP, exec->stderr_pipe, 0);
+	}
 
 	options->exit_cb = exec_on_exit;
 #ifdef PHP_WIN32
 	options->flags = UV_PROCESS_WINDOWS_VERBATIM_ARGUMENTS;
 	options->file = "cmd.exe";
-	size_t cmd_buffer_size = strlen(cmd) + 2;
-	exec->quoted_cmd = emalloc(cmd_buffer_size);
-	snprintf(exec->quoted_cmd, cmd_buffer_size, "\"%s\"", cmd);
-	options->args = (char *[]){ "cmd.exe", "/s", "/c", exec->quoted_cmd, NULL };
+
+	/* uv_spawn expects UTF-8 strings. Convert cmd from the current code page
+	 * (which may be e.g. CP1251) to UTF-8 via UTF-16 intermediate. */
+	wchar_t *cmd_w = php_win32_cp_any_to_w(cmd);
+	char *utf8_cmd = cmd_w ? php_win32_cp_w_to_utf8(cmd_w) : NULL;
+	free(cmd_w);
+
+	const char *spawn_cmd = utf8_cmd ? utf8_cmd : cmd;
+	const size_t cmd_buffer_size = strlen(spawn_cmd) + 3;
+	char *quoted_cmd = emalloc(cmd_buffer_size);
+	snprintf(quoted_cmd, cmd_buffer_size, "\"%s\"", spawn_cmd);
+	options->args = (char *[]){ "cmd.exe", "/s", "/c", quoted_cmd, NULL };
+
+	/* Convert cwd to UTF-8 as well. */
+	char *utf8_cwd = NULL;
+	if (cwd != NULL && cwd[0] != '\0') {
+		wchar_t *cwd_w = php_win32_cp_any_to_w(cwd);
+		utf8_cwd = cwd_w ? php_win32_cp_w_to_utf8(cwd_w) : NULL;
+		free(cwd_w);
+		options->cwd = utf8_cwd ? utf8_cwd : cwd;
+	}
 #else
 	options->file = "/bin/sh";
 	options->args = (char *[]){ "sh", "-c", (char *) cmd, NULL };
-#endif
-
-	options->stdio = (uv_stdio_container_t[]){
-		{ .flags = UV_IGNORE, .data = { .stream = NULL } },
-		{ .data.stream = (uv_stream_t *) exec->stdout_pipe, .flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE },
-		{ .data.stream = (uv_stream_t *) exec->stderr_pipe, .flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE }
-	};
-
-	options->stdio_count = 3;
 
 	if (cwd != NULL && cwd[0] != '\0') {
 		options->cwd = cwd;
 	}
+#endif
+
+	uv_stdio_container_t stdio[3];
+	stdio[0] = (uv_stdio_container_t){ .flags = UV_IGNORE, .data = { .stream = NULL } };
+	stdio[1] = (uv_stdio_container_t){ .data.stream = (uv_stream_t *) exec->stdout_pipe, .flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE };
+	if (exec->stderr_pipe != NULL) {
+		stdio[2] = (uv_stdio_container_t){ .data.stream = (uv_stream_t *) exec->stderr_pipe, .flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE };
+	} else {
+		stdio[2] = (uv_stdio_container_t){ .flags = UV_INHERIT_FD, .data = { .fd = 2 } };
+	}
+	options->stdio = stdio;
+
+	options->stdio_count = 3;
 
 	if (env != NULL) {
 		options->env = (char **) env;
 	}
 
 	const int result = uv_spawn(UVLOOP, exec->process, options);
+
+#ifdef PHP_WIN32
+	efree(quoted_cmd);
+	free(utf8_cmd);
+	free(utf8_cwd);
+#endif
 
 	if (result) {
 		php_error_docref(NULL, E_WARNING, "Failed to spawn process: %s", uv_strerror(result));
@@ -2891,7 +2968,9 @@ static zend_async_exec_event_t *libuv_new_exec_event(zend_async_exec_mode exec_m
 	}
 
 	uv_read_start((uv_stream_t *) exec->stdout_pipe, exec_alloc_cb, exec_read_cb);
-	uv_read_start((uv_stream_t *) exec->stderr_pipe, exec_std_err_alloc_cb, exec_std_err_read_cb);
+	if (exec->stderr_pipe != NULL) {
+		uv_read_start((uv_stream_t *) exec->stderr_pipe, exec_std_err_alloc_cb, exec_std_err_read_cb);
+	}
 
 	ZEND_ASYNC_INCREASE_EVENT_COUNT(&exec->event.base);
 
@@ -2942,9 +3021,12 @@ static int libuv_exec(zend_async_exec_mode exec_mode,
 									  cwd,
 									  env);
 
-	if (UNEXPECTED(EG(exception))) {
+	if (UNEXPECTED(exec_event == NULL)) {
 		return -1;
 	}
+
+	/* Store coroutine for PHPWRITE_CORO in exec_read_cb */
+	((async_exec_event_t *) exec_event)->coroutine = coroutine;
 
 	ZEND_ASYNC_WAKER_NEW(coroutine);
 	if (UNEXPECTED(EG(exception))) {
@@ -3150,6 +3232,7 @@ zend_async_trigger_event_t *libuv_new_trigger_event(size_t extra_size)
 /// Async IO API
 /////////////////////////////////////////////////////////////////////////////////
 
+static bool libuv_io_close(zend_async_io_t *io_base);
 static void io_close_cb(uv_handle_t *pipe_handle);
 
 /* {{{ IO event methods */
@@ -3168,9 +3251,8 @@ static bool libuv_io_event_stop(zend_async_event_t *event)
 
 	async_io_t *io = (async_io_t *) event;
 
-	/* Cancel pending pipe/TTY read if any */
-	if (io->active_req != NULL &&
-		(io->base.type == ZEND_ASYNC_IO_TYPE_PIPE || io->base.type == ZEND_ASYNC_IO_TYPE_TTY)) {
+	/* Cancel pending stream read if any */
+	if (io->active_req != NULL && ZEND_ASYNC_IO_IS_STREAM(io->base.type)) {
 		uv_read_stop(&io->handle.stream);
 		io->active_req = NULL;
 	}
@@ -3187,6 +3269,22 @@ static bool libuv_io_event_dispose(zend_async_event_t *event)
 		return true;
 	}
 
+	async_io_t *io = (async_io_t *) event;
+
+	/* Notify the owner (e.g. plain_wrapper) so it can clear its pointer. */
+	if (io->base.on_detach != NULL) {
+		io->base.on_detach(&io->base, io->base.on_detach_arg);
+		io->base.on_detach = NULL;
+	}
+
+	/* Remove from the active IO tracking table. */
+	zend_hash_index_del(&ASYNC_G(active_io_handles), async_ptr_to_index(io));
+
+	/* Close the IO handle if not already closed. */
+	if (!(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
+		libuv_io_close(&io->base);
+	}
+
 	if (event->loop_ref_count > 0) {
 		event->loop_ref_count = 1;
 		event->stop(event);
@@ -3194,27 +3292,7 @@ static bool libuv_io_event_dispose(zend_async_event_t *event)
 
 	zend_async_callbacks_free(event);
 
-	async_io_t *io = (async_io_t *) event;
-
-	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE && !(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
-		io->base.state |= ZEND_ASYNC_IO_CLOSED;
-		io->handle.pipe.data = io;
-		uv_close((uv_handle_t *) &io->handle.pipe, io_close_cb);
-	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_TTY && !(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
-		io->base.state |= ZEND_ASYNC_IO_CLOSED;
-		io->handle.tty.data = io;
-		uv_close((uv_handle_t *) &io->handle.tty, io_close_cb);
-	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_TCP && !(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
-		io->base.state |= ZEND_ASYNC_IO_CLOSED;
-		io->handle.tcp.data = io;
-		uv_close((uv_handle_t *) &io->handle.tcp, io_close_cb);
-	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_UDP && !(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
-		io->base.state |= ZEND_ASYNC_IO_CLOSED;
-		io->handle.udp.data = io;
-		uv_close((uv_handle_t *) &io->handle.udp, io_close_cb);
-	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_FILE) {
-		pefree(io, 0);
-	}
+	pefree(io, 0);
 
 	return true;
 }
@@ -3226,7 +3304,7 @@ static void libuv_io_req_dispose(zend_async_io_req_t *base_req)
 {
 	async_io_req_t *req = (async_io_req_t *) base_req;
 
-	if (req->base.buf != NULL) {
+	if (req->buf_owned && req->base.buf != NULL) {
 		pefree(req->base.buf, 0);
 	}
 
@@ -3307,7 +3385,8 @@ static void io_pipe_write_cb(uv_write_t *write_request, int status)
 
 static void io_close_cb(uv_handle_t *pipe_handle)
 {
-	pefree(pipe_handle->data, 0);
+	async_io_t *io = (async_io_t *) pipe_handle->data;
+	io->base.event.dispose(&io->base.event);
 }
 
 /* }}} */
@@ -3320,10 +3399,14 @@ static void io_file_read_cb(uv_fs_t *fs_request)
 
 	if (fs_request->result >= 0) {
 		req->base.transferred = (ssize_t) fs_request->result;
-		if (fs_request->result == 0) {
-			io->base.state |= ZEND_ASYNC_IO_EOF;
-		} else {
-			io->handle.file.offset += fs_request->result;
+		if (fs_request->result > 0) {
+			/* Update tracked offset from kernel position. */
+			const zend_off_t pos = zend_lseek(io->crt_fd, 0, SEEK_CUR);
+			if (pos >= 0) {
+				io->handle.file.offset = pos;
+			} else {
+				io->handle.file.offset += fs_request->result;
+			}
 		}
 	} else {
 		req->base.transferred = -1;
@@ -3333,6 +3416,7 @@ static void io_file_read_cb(uv_fs_t *fs_request)
 
 	req->base.completed = true;
 	uv_fs_req_cleanup(fs_request);
+	ZEND_ASYNC_DECREASE_EVENT_COUNT(&io->base.event);
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
 	IF_EXCEPTION_STOP_REACTOR;
 }
@@ -3344,7 +3428,19 @@ static void io_file_write_cb(uv_fs_t *fs_request)
 
 	if (fs_request->result >= 0) {
 		req->base.transferred = (ssize_t) fs_request->result;
-		io->handle.file.offset += fs_request->result;
+
+#ifdef PHP_WIN32
+		/* When an explicit offset was passed to uv_fs_write (append mode),
+		 * WriteFile+OVERLAPPED does not advance the kernel file position,
+		 * so zend_lseek(SEEK_CUR) would return a stale value. */
+		if (io->base.state & ZEND_ASYNC_IO_APPEND) {
+			io->handle.file.offset += fs_request->result;
+		} else
+#endif
+		{
+			const zend_off_t pos = zend_lseek(io->crt_fd, 0, SEEK_CUR);
+			io->handle.file.offset = (pos >= 0) ? pos : io->handle.file.offset + fs_request->result;
+		}
 	} else {
 		req->base.transferred = -1;
 		req->base.exception = async_new_exception(
@@ -3353,6 +3449,7 @@ static void io_file_write_cb(uv_fs_t *fs_request)
 
 	req->base.completed = true;
 	uv_fs_req_cleanup(fs_request);
+	ZEND_ASYNC_DECREASE_EVENT_COUNT(&io->base.event);
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
 	IF_EXCEPTION_STOP_REACTOR;
 }
@@ -3372,6 +3469,7 @@ static void io_file_flush_cb(uv_fs_t *fs_request)
 
 	req->base.completed = true;
 	uv_fs_req_cleanup(fs_request);
+	ZEND_ASYNC_DECREASE_EVENT_COUNT(&io->base.event);
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
 	IF_EXCEPTION_STOP_REACTOR;
 }
@@ -3395,6 +3493,7 @@ static void io_file_stat_cb(uv_fs_t *fs_request)
 
 	req->base.completed = true;
 	uv_fs_req_cleanup(fs_request);
+	ZEND_ASYNC_DECREASE_EVENT_COUNT(&io->base.event);
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
 	IF_EXCEPTION_STOP_REACTOR;
 }
@@ -3415,8 +3514,7 @@ libuv_io_create(const zend_file_descriptor_t fd, const zend_async_io_type type, 
 	/* Unix only: libuv asserts fd > STDERR_FILENO in uv__close().
 	 * Dup stdio fds so libuv can safely close the copy. */
 	zend_file_descriptor_t io_fd = fd;
-	if ((type == ZEND_ASYNC_IO_TYPE_PIPE || type == ZEND_ASYNC_IO_TYPE_TTY)
-			&& fd >= 0 && fd <= STDERR_FILENO) {
+	if (ZEND_ASYNC_IO_IS_STREAM(type) && fd >= 0 && fd <= STDERR_FILENO) {
 		io_fd = dup(fd);
 		if (io_fd < 0) {
 			pefree(io, 0);
@@ -3469,8 +3567,8 @@ libuv_io_create(const zend_file_descriptor_t fd, const zend_async_io_type type, 
 
 		io->handle.pipe.data = io;
 	} else if (type == ZEND_ASYNC_IO_TYPE_TTY) {
-		int readable = (state & ZEND_ASYNC_IO_READABLE) ? 1 : 0;
-		int error = uv_tty_init(UVLOOP, &io->handle.tty, io->crt_fd, readable);
+		const int readable = (state & ZEND_ASYNC_IO_READABLE) ? 1 : 0;
+		const int error = uv_tty_init(UVLOOP, &io->handle.tty, io->crt_fd, readable);
 
 		if (UNEXPECTED(error < 0)) {
 			async_throw_error("Failed to initialize TTY handle: %s", uv_strerror(error));
@@ -3488,9 +3586,23 @@ libuv_io_create(const zend_file_descriptor_t fd, const zend_async_io_type type, 
 			return NULL;
 		}
 
+#ifdef PHP_WIN32
+		const uv_os_sock_t sock = (uv_os_sock_t) _get_osfhandle(io_fd);
+#else
+		const uv_os_sock_t sock = (uv_os_sock_t) io_fd;
+#endif
+		error = uv_tcp_open(&io->handle.tcp, sock);
+
+		if (UNEXPECTED(error < 0)) {
+			async_throw_error("Failed to open TCP handle: %s", uv_strerror(error));
+			io->handle.tcp.data = io;
+			uv_close((uv_handle_t *) &io->handle.tcp, io_close_cb);
+			return NULL;
+		}
+
 		io->handle.tcp.data = io;
 	} else if (type == ZEND_ASYNC_IO_TYPE_UDP) {
-		int error = uv_udp_init(UVLOOP, &io->handle.udp);
+		const int error = uv_udp_init(UVLOOP, &io->handle.udp);
 
 		if (UNEXPECTED(error < 0)) {
 			async_throw_error("Failed to initialize UDP handle: %s", uv_strerror(error));
@@ -3500,40 +3612,57 @@ libuv_io_create(const zend_file_descriptor_t fd, const zend_async_io_type type, 
 
 		io->handle.udp.data = io;
 	} else {
-		/* FILE type */
+		/* FILE type: initialise the tracked offset.
+		 * For append mode we need to know the current EOF so that
+		 * uv_fs_write can target it explicitly (on Windows _O_APPEND
+		 * is a CRT flag invisible to WriteFile).  After reading EOF
+		 * we restore the fd to 0 so that ftell() returns 0 on open,
+		 * matching POSIX O_APPEND semantics. */
 		if (state & ZEND_ASYNC_IO_APPEND) {
-			const zend_off_t end = zend_lseek(io->crt_fd, 0, SEEK_END);
-			io->handle.file.offset = (end >= 0) ? end : 0;
+			const zend_off_t eof = zend_lseek(io->crt_fd, 0, SEEK_END);
+			io->handle.file.offset = (eof >= 0) ? eof : 0;
+			zend_lseek(io->crt_fd, 0, SEEK_SET);
 		} else {
 			const zend_off_t pos = zend_lseek(io->crt_fd, 0, SEEK_CUR);
 			io->handle.file.offset = (pos >= 0) ? pos : 0;
 		}
 	}
 
+	zend_hash_index_add_new_ptr(&ASYNC_G(active_io_handles), async_ptr_to_index(io), io);
+
 	return &io->base;
 }
 
 /* }}} */
 
+#ifdef PHP_WIN32
 /* {{{ libuv_can_use_sync_io
  * Returns true when there is at most one coroutine and no active events
  * in the reactor, meaning async I/O would only add overhead with no
- * concurrency benefit. */
+ * concurrency benefit.  Used on Windows where libuv async I/O goes through
+ * a helper process, making synchronous calls much cheaper. */
 static inline bool libuv_can_use_sync_io(void)
 {
 	return zend_hash_num_elements(&ASYNC_G(coroutines)) <= 1 && !libuv_reactor_loop_alive();
 }
+#endif
 
 /* }}} */
 
 /* {{{ libuv_io_read */
-static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, const size_t max_size)
+static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, char *buf, size_t max_size)
 {
 	async_io_t *io = (async_io_t *) io_base;
 
 	if (UNEXPECTED(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
 		async_throw_error("Cannot read from closed IO handle");
 		return NULL;
+	}
+
+	/* _read() and uv_buf_t.len are 32-bit on Windows; cap to INT_MAX so the
+	 * caller's loop (e.g. _php_stream_write_buffer) can retry the remainder. */
+	if (max_size > INT_MAX) {
+		max_size = INT_MAX;
 	}
 
 	async_io_req_t *req = pecalloc(1, sizeof(async_io_req_t), 0);
@@ -3547,40 +3676,36 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, const size_t
 		return &req->base;
 	}
 
-	req->base.buf = pemalloc(max_size, 0);
+	if (buf != NULL) {
+		req->base.buf = buf;
+		req->buf_owned = false;
+	} else {
+		req->base.buf = pemalloc(max_size, 0);
+		req->buf_owned = true;
+	}
 
-#ifndef PHP_WIN32
-	/* Sync fallback: use blocking I/O when there is at most one coroutine
-	 * and no active events in the reactor. */
-	const bool sync_io = libuv_can_use_sync_io();
-#else
-	const bool sync_io = false;
-#endif
-
-	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE || io->base.type == ZEND_ASYNC_IO_TYPE_TTY) {
-#ifndef PHP_WIN32
-		if (sync_io) {
-			ssize_t result;
-			do {
-				result = read(io->crt_fd, req->base.buf, max_size);
-			} while (result == -1 && errno == EINTR);
+	if (ZEND_ASYNC_IO_IS_STREAM(io->base.type)) {
+#ifdef PHP_WIN32
+		/* Sync fallback: on Windows libuv async I/O goes through a helper
+		 * process, so a direct blocking call is much cheaper when there is
+		 * at most one coroutine and no active reactor events. */
+		if (libuv_can_use_sync_io()) {
+			const int result = _read(io->crt_fd, req->base.buf, (unsigned int) max_size);
 
 			if (result > 0) {
 				req->base.transferred = result;
-				req->base.completed = true;
-				return &req->base;
-			} else if (result == 0) {
+			} else if (result == 0 || errno == EBADF) {
+				/* EBADF on pipes: treat as EOF (e.g. proc_open pipe
+				 * where child never writes to this descriptor). */
 				req->base.transferred = 0;
 				io->base.state |= ZEND_ASYNC_IO_EOF;
-				req->base.completed = true;
-				return &req->base;
-			} else if (errno != EAGAIN) {
+			} else {
 				req->base.transferred = -1;
 				req->base.exception =
 						async_new_exception(async_ce_input_output_exception, "Stream read error: %s", strerror(errno));
-				req->base.completed = true;
-				return &req->base;
 			}
+			req->base.completed = true;
+			return &req->base;
 		}
 #endif
 
@@ -3599,19 +3724,19 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, const size_t
 	}
 
 	/* FILE path */
-#ifndef PHP_WIN32
-	if (sync_io) {
-		ssize_t result;
-		do {
-			result = pread(io->crt_fd, req->base.buf, max_size, io->handle.file.offset);
-		} while (result == -1 && errno == EINTR);
+#ifdef PHP_WIN32
+	if (libuv_can_use_sync_io()) {
+		/* Read at the current kernel position — do NOT seek to the tracked
+		 * offset, because dup'd fds share the kernel position and another
+		 * fd may have advanced it. */
+		const int result = _read(io->crt_fd, req->base.buf, (unsigned int) max_size);
 
 		if (result > 0) {
 			req->base.transferred = result;
-			io->handle.file.offset += result;
+			const zend_off_t pos = zend_lseek(io->crt_fd, 0, SEEK_CUR);
+			io->handle.file.offset = (pos >= 0) ? pos : io->handle.file.offset + result;
 		} else if (result == 0) {
 			req->base.transferred = 0;
-			io->base.state |= ZEND_ASYNC_IO_EOF;
 		} else {
 			req->base.transferred = -1;
 			req->base.exception =
@@ -3626,8 +3751,10 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, const size_t
 	const uv_buf_t read_buffer = uv_buf_init(req->base.buf, (unsigned int) max_size);
 	req->fs_req.data = req;
 
+	/* Use offset=-1 so libuv calls read() instead of pread().
+	 * This moves the kernel file offset, keeping dup'd fds in sync. */
 	const int error =
-			uv_fs_read(UVLOOP, &req->fs_req, io->crt_fd, &read_buffer, 1, io->handle.file.offset, io_file_read_cb);
+			uv_fs_read(UVLOOP, &req->fs_req, io->crt_fd, &read_buffer, 1, -1, io_file_read_cb);
 
 	if (UNEXPECTED(error < 0)) {
 		async_throw_error("Failed to start file read: %s", uv_strerror(error));
@@ -3635,6 +3762,7 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, const size_t
 		return NULL;
 	}
 
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(&io->base.event);
 	return &req->base;
 }
 
@@ -3655,38 +3783,28 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 	req->io = io;
 	req->max_size = count;
 
-#ifndef PHP_WIN32
-	/* Sync fallback: use blocking I/O when there is at most one coroutine
-	 * and no active events in the reactor. */
-	const bool sync_io = libuv_can_use_sync_io();
-#else
-	const bool sync_io = false;
-#endif
+	if (ZEND_ASYNC_IO_IS_STREAM(io->base.type)) {
+#ifdef PHP_WIN32
+		/* Sync fallback: on Windows libuv async I/O goes through a helper
+		 * process, so a direct blocking call is much cheaper when there is
+		 * at most one coroutine and no active reactor events. */
+		if (libuv_can_use_sync_io()) {
+			const unsigned int write_size = (count > INT_MAX) ? (unsigned int) INT_MAX : (unsigned int) count;
+			const int result = _write(io->crt_fd, buf, write_size);
 
-	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE || io->base.type == ZEND_ASYNC_IO_TYPE_TTY) {
-#ifndef PHP_WIN32
-		if (sync_io) {
-			ssize_t result;
-			do {
-				result = write(io->crt_fd, buf, count);
-			} while (result == -1 && errno == EINTR);
-
-			if (result >= 0 || errno != EAGAIN) {
-				if (result >= 0) {
-					req->base.transferred = result;
-				} else {
-					req->base.transferred = -1;
-					req->base.exception = async_new_exception(
-							async_ce_input_output_exception, "Stream write error: %s", strerror(errno));
-				}
-				req->base.completed = true;
-				return &req->base;
+			if (result >= 0) {
+				req->base.transferred = result;
+			} else {
+				req->base.transferred = -1;
+				req->base.exception = async_new_exception(
+						async_ce_input_output_exception, "Stream write error: %s", strerror(errno));
 			}
-			/* EAGAIN/EWOULDBLOCK on non-blocking fd: fall through to async path */
+			req->base.completed = true;
+			return &req->base;
 		}
 #endif
 
-		const uv_buf_t write_buffer = uv_buf_init((char *) buf, (unsigned int) count);
+		const uv_buf_t write_buffer = uv_buf_init((char *) buf, (unsigned int) (count > INT_MAX ? INT_MAX : count));
 		req->write_req.data = req;
 
 		const int error = uv_write(&req->write_req, &io->handle.stream, &write_buffer, 1, io_pipe_write_cb);
@@ -3701,16 +3819,19 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 	}
 
 	/* FILE path */
-#ifndef PHP_WIN32
-	if (sync_io) {
-		ssize_t result;
-		do {
-			result = pwrite(io->crt_fd, buf, count, io->handle.file.offset);
-		} while (result == -1 && errno == EINTR);
+#ifdef PHP_WIN32
+	if (libuv_can_use_sync_io()) {
+		/* Write at the current kernel position — do NOT seek to the tracked
+		 * offset, because dup'd fds share the kernel position and another
+		 * fd may have advanced it.  _write() with _O_APPEND handles
+		 * append mode automatically. */
+		const unsigned int write_size = (count > INT_MAX) ? (unsigned int) INT_MAX : (unsigned int) count;
+		const int result = _write(io->crt_fd, buf, write_size);
 
 		if (result >= 0) {
 			req->base.transferred = result;
-			io->handle.file.offset += result;
+			const zend_off_t pos = zend_lseek(io->crt_fd, 0, SEEK_CUR);
+			io->handle.file.offset = (pos >= 0) ? pos : io->handle.file.offset + result;
 		} else {
 			req->base.transferred = -1;
 			req->base.exception =
@@ -3722,11 +3843,28 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 	}
 #endif
 
-	const uv_buf_t write_buffer = uv_buf_init((char *) buf, (unsigned int) count);
+	const uv_buf_t write_buffer = uv_buf_init((char *) buf, (unsigned int) (count > INT_MAX ? INT_MAX : count));
 	req->fs_req.data = req;
 
+	/* offset=-1 tells libuv to use write() instead of pwrite(), which
+	 * advances the kernel file offset — important for dup'd descriptors.
+	 *
+	 * On Windows, WriteFile via libuv ignores CRT _O_APPEND, so we must
+	 * query the real EOF right before submitting the write request.
+	 * This is safe because the event loop is single-threaded — no other
+	 * coroutine can interleave between lseek and uv_fs_write dispatch. */
+#ifdef PHP_WIN32
+	int64_t offset = -1;
+	if (io->base.state & ZEND_ASYNC_IO_APPEND) {
+		const zend_off_t eof = zend_lseek(io->crt_fd, 0, SEEK_END);
+		offset = (eof >= 0) ? (int64_t) eof : (int64_t) io->handle.file.offset;
+	}
+#else
+	const int64_t offset = -1;
+#endif
+
 	const int error =
-			uv_fs_write(UVLOOP, &req->fs_req, io->crt_fd, &write_buffer, 1, io->handle.file.offset, io_file_write_cb);
+			uv_fs_write(UVLOOP, &req->fs_req, io->crt_fd, &write_buffer, 1, offset, io_file_write_cb);
 
 	if (UNEXPECTED(error < 0)) {
 		async_throw_error("Failed to start file write: %s", uv_strerror(error));
@@ -3734,41 +3872,63 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 		return NULL;
 	}
 
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(&io->base.event);
 	return &req->base;
 }
 
 /* }}} */
 
 /* {{{ libuv_io_close */
-static int libuv_io_close(zend_async_io_t *io_base)
+static bool libuv_io_close(zend_async_io_t *io_base)
 {
 	async_io_t *io = (async_io_t *) io_base;
 
 	if (io->base.state & ZEND_ASYNC_IO_CLOSED) {
-		return 0;
+		return true;
 	}
 
 	io->base.state |= ZEND_ASYNC_IO_CLOSED;
+	bool need_close_handle = false;
 
-	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE || io->base.type == ZEND_ASYNC_IO_TYPE_TTY) {
-		uv_read_stop(&io->handle.stream);
-		zend_async_callbacks_free(&io->base.event);
-		io->handle.stream.data = io;
-		uv_close((uv_handle_t *) &io->handle.stream, io_close_cb);
-
-		/* Close the original stdio fd that was dup'd in libuv_io_create */
-		if (io->orig_fd >= 0) {
-			close(io->orig_fd);
-			io->orig_fd = -1;
-		}
-
-		return 1;
+	/* If the reactor is already shut down (e.g. bailout during memory
+	 * exhaustion followed by executor_globals_dtor), skip libuv calls. */
+	if (UNEXPECTED(!ASYNC_G(reactor_started))) {
+		goto close_orig_fd;
 	}
 
-	/* FILE: libuv does not own the fd */
-	zend_async_callbacks_free(&io->base.event);
-	pefree(io, 0);
-	return 0;
+	if (ZEND_ASYNC_IO_IS_STREAM(io->base.type)) {
+		uv_read_stop(&io->handle.stream);
+		io->handle.stream.data = io;
+		ZEND_ASYNC_EVENT_ADD_REF(&io->base.event);
+		uv_close((uv_handle_t *) &io->handle.stream, io_close_cb);
+		need_close_handle = true;
+	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_UDP) {
+		io->handle.udp.data = io;
+		ZEND_ASYNC_EVENT_ADD_REF(&io->base.event);
+		uv_close((uv_handle_t *) &io->handle.udp, io_close_cb);
+		need_close_handle = true;
+	}
+	/* FILE type: no uv handle to close. */
+
+close_orig_fd:
+	/* Close the original stdio fd that was dup'd in libuv_io_create,
+	 * unless PRESERVE_FD is set (e.g. stdout/stderr kept open for shutdown output). */
+	if (io->orig_fd >= 0 && !(io->base.state & ZEND_ASYNC_IO_PRESERVE_FD)) {
+#ifdef PHP_WIN32
+		_close(io->orig_fd);
+#else
+		close(io->orig_fd);
+#endif
+	}
+	io->orig_fd = -1;
+
+	if (need_close_handle && false == ZEND_ASYNC_IS_SCHEDULER_CONTEXT) {
+		ZEND_ASYNC_SCHEDULER_CONTEXT = true;
+		libuv_reactor_execute(true);
+		ZEND_ASYNC_SCHEDULER_CONTEXT = false;
+	}
+
+	return true;
 }
 
 /* }}} */
@@ -3800,7 +3960,7 @@ static zend_async_io_req_t *libuv_io_flush(zend_async_io_t *io_base)
 	}
 
 	/* Pipes and TTYs have no disk buffer to flush — return instant success */
-	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE || io->base.type == ZEND_ASYNC_IO_TYPE_TTY) {
+	if (ZEND_ASYNC_IO_IS_STREAM(io->base.type)) {
 		async_io_req_t *req = pecalloc(1, sizeof(async_io_req_t), 0);
 		req->base.dispose = libuv_io_req_dispose;
 		req->io = io;
@@ -3822,20 +3982,34 @@ static zend_async_io_req_t *libuv_io_flush(zend_async_io_t *io_base)
 		return NULL;
 	}
 
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(&io->base.event);
 	return &req->base;
 }
 
 /* }}} */
 
 /* {{{ libuv_io_seek */
-static void libuv_io_seek(zend_async_io_t *io_base, const zend_off_t offset)
+static zend_off_t libuv_io_seek(zend_async_io_t *io_base, const zend_off_t offset, const int whence)
 {
 	async_io_t *io = (async_io_t *) io_base;
 
-	if (io->base.type == ZEND_ASYNC_IO_TYPE_FILE) {
-		io->handle.file.offset = offset;
-		io->base.state &= ~ZEND_ASYNC_IO_EOF;
+	if (io->base.type != ZEND_ASYNC_IO_TYPE_FILE) {
+		return (zend_off_t)-1;
 	}
+
+	io->base.state &= ~ZEND_ASYNC_IO_EOF;
+
+	const zend_off_t result = zend_lseek(io->crt_fd, offset, whence);
+
+	/* For append-mode files the write offset is managed exclusively
+	 * by write completions (always EOF); seeks only reposition reads.
+	 * Updating the write offset here would corrupt subsequent appends
+	 * (e.g. after fseek(0) the next write would go to position 0). */
+	if (EXPECTED(!(io->base.state & ZEND_ASYNC_IO_APPEND))) {
+		io->handle.file.offset = result;
+	}
+
+	return result;
 }
 
 /* }}} */
@@ -3878,7 +4052,7 @@ static zend_async_io_req_t *libuv_io_stat(zend_async_io_t *io_base, zend_stat_t 
 	}
 
 	/* Pipes and TTYs: synchronous fstat — return instant result */
-	if (io->base.type == ZEND_ASYNC_IO_TYPE_PIPE || io->base.type == ZEND_ASYNC_IO_TYPE_TTY) {
+	if (ZEND_ASYNC_IO_IS_STREAM(io->base.type)) {
 		async_io_req_t *req = pecalloc(1, sizeof(async_io_req_t), 0);
 		req->base.dispose = libuv_io_req_dispose;
 		req->io = io;
@@ -3905,6 +4079,7 @@ static zend_async_io_req_t *libuv_io_stat(zend_async_io_t *io_base, zend_stat_t 
 		return NULL;
 	}
 
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(&io->base.event);
 	return &req->base;
 }
 
@@ -4356,6 +4531,7 @@ void async_libuv_reactor_register(void)
 								false,
 								libuv_reactor_startup,
 								libuv_reactor_shutdown,
+								libuv_reactor_detach_io,
 								libuv_reactor_execute,
 								libuv_reactor_loop_alive,
 								libuv_new_socket_event,

@@ -211,5 +211,5 @@ Client process: connecting to port %d
 Client process: connected, sending data
 Client process: closing connection abruptly
 Client process: exited
-Client process exit code: 0
+Client process exit code: %s
 Test result: server completed

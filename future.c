@@ -1015,7 +1015,7 @@ FUTURE_METHOD(completed)
 	if (value != NULL) {
 		ZEND_FUTURE_COMPLETE(future, value);
 	} else {
-		zval null_val;
+		zval null_val = {0};
 		ZVAL_NULL(&null_val);
 		ZEND_FUTURE_COMPLETE(future, &null_val);
 	}

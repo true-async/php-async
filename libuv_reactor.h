@@ -105,13 +105,13 @@ struct _async_exec_event_t
 	uv_pipe_t *stdout_pipe;
 	uv_pipe_t *stderr_pipe;
 	uv_process_options_t options;
+	/* Coroutine that initiated the exec — needed for PHPWRITE_CORO
+	 * so that PASSTHRU/SYSTEM output goes through the correct OB stack. */
+	zend_coroutine_t *coroutine;
 	/* Line parser state: pending incomplete line between chunks. */
 	char *line_buf;
 	size_t line_buf_len;   /* bytes used */
 	size_t line_buf_cap;   /* allocated capacity */
-#ifdef PHP_WIN32
-	char *quoted_cmd;
-#endif
 };
 
 struct _async_trigger_event_t
@@ -153,6 +153,7 @@ struct _async_io_req_t
 	zend_async_io_req_t base;
 	async_io_t *io;
 	size_t max_size;
+	bool buf_owned;
 
 	union
 	{

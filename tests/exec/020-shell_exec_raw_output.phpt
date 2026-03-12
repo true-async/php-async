@@ -1,5 +1,5 @@
 --TEST--
-shell_exec() async preserves raw output including whitespace
+shell_exec() async preserves whitespace in output
 --SKIPIF--
 <?php
 if (!function_exists("shell_exec")) echo "skip shell_exec() is not available";
@@ -15,12 +15,11 @@ spawn(function () {
         die("skip no php executable defined");
     }
 
-    // shell_exec() returns raw output without any line processing
-    $raw = shell_exec($php . ' -r "echo \"line1\\r\\nline2\\n  spaces  \\n\";"');
+    // shell_exec() returns output with \r\n → \n conversion on Windows (text mode),
+    // matching the behavior of standard PHP popen().
+    $raw = shell_exec($php . ' -r "echo \"line1\\nline2\\n  spaces  \\n\";"');
 
-    // Verify raw bytes are preserved
     echo "Length: " . strlen($raw) . "\n";
-    echo "Has CR: " . (strpos($raw, "\r") !== false ? "yes" : "no") . "\n";
     echo "Lines: " . substr_count($raw, "\n") . "\n";
 
     // Trailing spaces should NOT be stripped (shell_exec is raw)
@@ -29,7 +28,6 @@ spawn(function () {
 });
 ?>
 --EXPECT--
-Length: 24
-Has CR: yes
+Length: 23
 Lines: 3
 Line3 raw: "  spaces  "
