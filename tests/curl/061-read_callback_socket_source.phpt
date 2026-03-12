@@ -5,7 +5,7 @@ curl
 --SKIPIF--
 <?php
 if (PHP_OS_FAMILY === 'Windows') die('skip file:// READFUNCTION sync callback cannot await socket data on Windows');
-die('skip Temporarily disabled: sync READFUNCTION path returns empty on some curl versions with --repeat');
+die('skip Temporarily disabled: sync READFUNCTION can block the event loop on macOS/FreeBSD');
 ?>
 --FILE--
 <?php
