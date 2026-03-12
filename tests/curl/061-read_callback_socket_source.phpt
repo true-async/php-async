@@ -18,6 +18,8 @@ if (!$serverSock) {
 }
 $serverAddr = stream_socket_get_name($serverSock, false);
 
+sleep(2);
+
 /* Spawn a coroutine that accepts one connection and sends data */
 $producer = spawn(function() use ($serverSock) {
     $client = stream_socket_accept($serverSock, 5);
