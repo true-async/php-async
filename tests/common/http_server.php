@@ -192,19 +192,23 @@ function remove_directory($dir) {
     if (is_dir($dir) === false) {
         return;
     }
-    
+
     // On Windows, give the process time to release the directory
     if (PHP_OS_FAMILY === 'Windows') {
         usleep(100000); // 100ms delay
     }
-    
-    $files = new RecursiveIteratorIterator(
-        new RecursiveDirectoryIterator($dir, RecursiveDirectoryIterator::SKIP_DOTS),
-        RecursiveIteratorIterator::CHILD_FIRST
-    );
-    foreach ($files as $fileinfo) {
-        $todo = ($fileinfo->isDir() ? 'rmdir' : 'unlink');
-        @$todo($fileinfo->getRealPath());
+
+    try {
+        $files = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($dir, RecursiveDirectoryIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::CHILD_FIRST
+        );
+        foreach ($files as $fileinfo) {
+            $todo = ($fileinfo->isDir() ? 'rmdir' : 'unlink');
+            @$todo($fileinfo->getRealPath());
+        }
+    } catch (\UnexpectedValueException) {
+        // Directory may have been removed by the terminated server process
     }
     @rmdir($dir);
 }
