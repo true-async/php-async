@@ -529,6 +529,13 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 			zval_ptr_dtor(&coroutine->coroutine.fcall->fci.function_name);
 			ZVAL_UNDEF(&coroutine->coroutine.fcall->fci.function_name);
 			coroutine->coroutine.fcall->fci.retval = NULL;
+
+			/* Sync fiber_context->execute_data after closure is freed,
+			 * so that zend_get_executed_filename_ex() in finally handlers
+			 * does not dereference the freed closure's op_array. */
+			if (coroutine->fiber_context != NULL) {
+				coroutine->fiber_context->execute_data = EG(current_execute_data);
+			}
 		} else {
 			coroutine->coroutine.internal_entry();
 		}
