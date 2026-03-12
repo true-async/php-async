@@ -13,9 +13,9 @@ jobs:
         with:
           path: async
 
-      - name: Clone php-src (true-async)
+      - name: Clone php-src (true-async-stable)
         run: |
-          git clone --depth=1 --branch=true-async https://github.com/true-async/php-src php-src
+          git clone --depth=1 --branch=true-async-stable https://github.com/true-async/php-src php-src
 
       - name: Get php-src commit hash
         id: php-src-hash
@@ -31,7 +31,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /var/cache/apt/archives
-          key: ${{ runner.os }}-apt-packages-debug-exec
+          key: ${{ runner.os }}-apt-packages-debug-exec-v2
           restore-keys: |
             ${{ runner.os }}-apt-packages-
 
@@ -43,7 +43,7 @@ jobs:
             libgmp-dev libicu-dev libtidy-dev libsasl2-dev \
             libzip-dev libbz2-dev libsqlite3-dev libonig-dev libcurl4-openssl-dev \
             libxml2-dev libxslt1-dev libpq-dev libreadline-dev libldap2-dev libsodium-dev \
-            libargon2-dev firebird-dev cmake
+            libargon2-dev firebird-dev valgrind cmake
 
       - name: Cache LibUV 1.45.0
         id: cache-libuv
@@ -91,7 +91,7 @@ jobs:
             php-src/scripts
             php-src/include
             php-src/run-tests.php
-          key: ${{ runner.os }}-php-build-asan-${{ steps.php-src-hash.outputs.hash }}
+          key: ${{ runner.os }}-php-build-asan-stable-${{ steps.php-src-hash.outputs.hash }}
 
       - name: Configure PHP (cache miss)
         if: steps.cache-php.outputs.cache-hit != 'true'
@@ -100,21 +100,51 @@ jobs:
           ./buildconf -f
           ./configure \
             --enable-zts \
+            --enable-fpm \
             --with-pdo-mysql=mysqlnd \
             --with-mysqli=mysqlnd \
+            --with-pgsql \
+            --with-pdo-pgsql \
             --with-pdo-sqlite \
+            --enable-intl \
             --without-pear \
+            --with-zip \
             --with-zlib \
+            --enable-soap \
+            --enable-xmlreader \
+            --with-xsl \
+            --with-tidy \
+            --enable-sysvsem \
+            --enable-sysvshm \
+            --enable-shmop \
+            --enable-pcntl \
             --with-readline \
             --enable-mbstring \
             --with-curl \
+            --with-gettext \
             --enable-sockets \
             --with-bz2 \
             --with-openssl \
+            --with-gmp \
             --enable-bcmath \
+            --enable-calendar \
+            --enable-ftp \
+            --enable-sysvmsg \
+            --with-ffi \
             --enable-zend-test \
+            --enable-dl-test=shared \
+            --with-ldap \
+            --with-ldap-sasl \
+            --with-password-argon2 \
+            --with-mhash \
+            --with-sodium \
+            --enable-dba \
+            --with-cdb \
+            --enable-flatfile \
+            --enable-inifile \
             --with-config-file-path=/etc \
             --with-config-file-scan-dir=/etc/php.d \
+            --with-pdo-firebird \
             --enable-address-sanitizer \
             --enable-async
 
@@ -128,7 +158,6 @@ jobs:
         if: steps.cache-php.outputs.cache-hit == 'true'
         working-directory: php-src
         run: |
-          # Remove old async object files to force rebuild
           find ext/async -name '*.lo' -o -name '*.o' -o -name '*.dep' | xargs rm -f 2>/dev/null || true
           make -j"$(nproc)"
 
@@ -143,35 +172,40 @@ jobs:
             echo "opcache.protect_memory=1"
           } > /etc/php.d/opcache.ini
 
-      - name: Run debug script (no opcache/jit/observer)
+      - name: Run failing phpt tests (matching build.yml flags)
+        working-directory: php-src/ext/async
+        run: |
+          /usr/local/bin/php -v
+          /usr/local/bin/php ../../run-tests.php \
+            -d opcache.enable_cli=1 \
+            -d opcache.jit_buffer_size=64M \
+            -d opcache.jit=tracing \
+            -d zend_test.observer.enabled=1 \
+            -d zend_test.observer.show_output=0 \
+            -P -q -x -j4 \
+            --no-progress \
+            --offline \
+            --show-diff \
+            --set-timeout 120 \
+            --repeat 2 \
+            tests/exec/017-exec_unicode_binary.phpt \
+            tests/exec/018-exec_long_lines.phpt \
+            tests/exec/022-exec_chdir_cwd.phpt 2>&1
+
+      - name: Run debug script (no repeat, single process)
         working-directory: php-src/ext/async
         run: |
           echo "=== Plain run ==="
-          ASAN_OPTIONS=detect_leaks=0 /usr/local/bin/php tests/debug_exec.php 2>&1
+          /usr/local/bin/php tests/debug_exec.php 2>&1
 
       - name: Run debug script (opcache + jit + observer)
         working-directory: php-src/ext/async
         run: |
           echo "=== With opcache + jit + observer ==="
-          ASAN_OPTIONS=detect_leaks=0 /usr/local/bin/php \
+          /usr/local/bin/php \
             -d opcache.enable_cli=1 \
             -d opcache.jit_buffer_size=64M \
             -d opcache.jit=tracing \
             -d zend_test.observer.enabled=1 \
             -d zend_test.observer.show_output=0 \
             tests/debug_exec.php 2>&1
-
-      - name: Run failing phpt tests individually
-        working-directory: php-src/ext/async
-        run: |
-          echo "=== Test 017 ==="
-          ASAN_OPTIONS=detect_leaks=0 /usr/local/bin/php \
-            -d opcache.enable_cli=1 \
-            -d opcache.jit_buffer_size=64M \
-            -d opcache.jit=tracing \
-            -d zend_test.observer.enabled=1 \
-            -d zend_test.observer.show_output=0 \
-            ../../run-tests.php --show-diff -P \
-            tests/exec/017-exec_unicode_binary.phpt \
-            tests/exec/018-exec_long_lines.phpt \
-            tests/exec/022-exec_chdir_cwd.phpt 2>&1
