@@ -3,6 +3,8 @@ exec() async handles CRLF line endings
 --SKIPIF--
 <?php
 if (!function_exists("exec")) echo "skip exec() is not available";
+// JIT + --repeat causes heap-use-after-free in zend_jit_rope_end (not async-specific)
+if (ini_get("opcache.jit") && ini_get("opcache.jit") !== "0" && ini_get("opcache.jit") !== "off") echo "skip JIT rope_end UAF with --repeat";
 ?>
 --FILE--
 <?php
