@@ -1,0 +1,158 @@
+name: Debug exec() pipe corruption
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout php-async repo
+        uses: actions/checkout@v4
+        with:
+          path: async
+
+      - name: Clone php-src (true-async)
+        run: |
+          git clone --depth=1 --branch=true-async https://github.com/true-async/php-src php-src
+
+      - name: Get php-src commit hash
+        id: php-src-hash
+        run: |
+          echo "hash=$(git -C php-src rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache APT packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-apt-packages-debug-exec
+          restore-keys: |
+            ${{ runner.os }}-apt-packages-
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc g++ autoconf bison re2c \
+            libgmp-dev libicu-dev libtidy-dev libsasl2-dev \
+            libzip-dev libbz2-dev libsqlite3-dev libonig-dev libcurl4-openssl-dev \
+            libxml2-dev libxslt1-dev libpq-dev libreadline-dev libldap2-dev libsodium-dev \
+            libargon2-dev firebird-dev cmake
+
+      - name: Cache LibUV 1.45.0
+        id: cache-libuv
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/lib/libuv*
+            /usr/local/include/uv*
+            /usr/local/lib/pkgconfig/libuv.pc
+          key: ${{ runner.os }}-libuv-1.45.0-release
+
+      - name: Install LibUV >= 1.45.0
+        run: |
+          if [ "${{ steps.cache-libuv.outputs.cache-hit }}" == "true" ]; then
+            sudo ldconfig
+          else
+            wget https://github.com/libuv/libuv/archive/v1.45.0.tar.gz
+            tar -xzf v1.45.0.tar.gz
+            cd libuv-1.45.0 && mkdir build && cd build
+            cmake .. -DCMAKE_BUILD_TYPE=Release
+            make -j$(nproc)
+            sudo make install
+            sudo ldconfig
+          fi
+
+      - name: Cache compiled php-src
+        id: cache-php
+        uses: actions/cache@v4
+        with:
+          path: php-src
+          key: ${{ runner.os }}-php-src-asan-${{ steps.php-src-hash.outputs.hash }}
+
+      - name: Configure PHP (cache miss)
+        if: steps.cache-php.outputs.cache-hit != 'true'
+        working-directory: php-src
+        run: |
+          ./buildconf -f
+          ./configure \
+            --enable-zts \
+            --with-pdo-mysql=mysqlnd \
+            --with-mysqli=mysqlnd \
+            --with-pdo-sqlite \
+            --without-pear \
+            --with-zlib \
+            --with-readline \
+            --enable-mbstring \
+            --with-curl \
+            --enable-sockets \
+            --with-bz2 \
+            --with-openssl \
+            --enable-bcmath \
+            --enable-zend-test \
+            --with-config-file-path=/etc \
+            --with-config-file-scan-dir=/etc/php.d \
+            --enable-address-sanitizer \
+            --enable-async
+
+      - name: Build PHP (cache miss)
+        if: steps.cache-php.outputs.cache-hit != 'true'
+        working-directory: php-src
+        run: |
+          make -j"$(nproc)"
+
+      - name: Copy php-async extension into php-src
+        run: |
+          cp -r async/* php-src/ext/async/
+
+      - name: Rebuild async extension only
+        working-directory: php-src
+        run: |
+          # Remove old async object files to force rebuild
+          find ext/async -name '*.lo' -o -name '*.o' -o -name '*.dep' | xargs rm -f 2>/dev/null || true
+          make -j"$(nproc)"
+
+      - name: Install PHP
+        working-directory: php-src
+        run: |
+          sudo make install
+          sudo mkdir -p /etc/php.d
+          sudo chmod 777 /etc/php.d
+          {
+            echo "opcache.enable_cli=1"
+            echo "opcache.protect_memory=1"
+          } > /etc/php.d/opcache.ini
+
+      - name: Run debug script (no opcache/jit/observer)
+        working-directory: php-src/ext/async
+        run: |
+          echo "=== Plain run ==="
+          ASAN_OPTIONS=detect_leaks=0 /usr/local/bin/php tests/debug_exec.php 2>&1
+
+      - name: Run debug script (opcache + jit + observer)
+        working-directory: php-src/ext/async
+        run: |
+          echo "=== With opcache + jit + observer ==="
+          ASAN_OPTIONS=detect_leaks=0 /usr/local/bin/php \
+            -d opcache.enable_cli=1 \
+            -d opcache.jit_buffer_size=64M \
+            -d opcache.jit=tracing \
+            -d zend_test.observer.enabled=1 \
+            -d zend_test.observer.show_output=0 \
+            tests/debug_exec.php 2>&1
+
+      - name: Run failing phpt tests individually
+        working-directory: php-src/ext/async
+        run: |
+          echo "=== Test 017 ==="
+          ASAN_OPTIONS=detect_leaks=0 /usr/local/bin/php \
+            -d opcache.enable_cli=1 \
+            -d opcache.jit_buffer_size=64M \
+            -d opcache.jit=tracing \
+            -d zend_test.observer.enabled=1 \
+            -d zend_test.observer.show_output=0 \
+            ../../run-tests.php --show-diff -P \
+            tests/exec/017-exec_unicode_binary.phpt \
+            tests/exec/018-exec_long_lines.phpt \
+            tests/exec/022-exec_chdir_cwd.phpt 2>&1
