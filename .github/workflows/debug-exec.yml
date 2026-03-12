@@ -22,6 +22,11 @@ jobs:
         run: |
           echo "hash=$(git -C php-src rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
+      - name: Copy php-async extension into php-src
+        run: |
+          mkdir -p php-src/ext/async
+          cp -r async/* php-src/ext/async/
+
       - name: Cache APT packages
         uses: actions/cache@v4
         with:
@@ -68,8 +73,25 @@ jobs:
         id: cache-php
         uses: actions/cache@v4
         with:
-          path: php-src
-          key: ${{ runner.os }}-php-src-asan-${{ steps.php-src-hash.outputs.hash }}
+          path: |
+            php-src/Makefile
+            php-src/main
+            php-src/Zend
+            php-src/sapi
+            php-src/ext
+            php-src/TSRM
+            php-src/config.h
+            php-src/config.nice
+            php-src/config.status
+            php-src/configure
+            php-src/buildconf
+            php-src/libs
+            php-src/libtool
+            php-src/build
+            php-src/scripts
+            php-src/include
+            php-src/run-tests.php
+          key: ${{ runner.os }}-php-build-asan-${{ steps.php-src-hash.outputs.hash }}
 
       - name: Configure PHP (cache miss)
         if: steps.cache-php.outputs.cache-hit != 'true'
@@ -96,17 +118,14 @@ jobs:
             --enable-address-sanitizer \
             --enable-async
 
-      - name: Build PHP (cache miss)
+      - name: Full build (cache miss)
         if: steps.cache-php.outputs.cache-hit != 'true'
         working-directory: php-src
         run: |
           make -j"$(nproc)"
 
-      - name: Copy php-async extension into php-src
-        run: |
-          cp -r async/* php-src/ext/async/
-
-      - name: Rebuild async extension only
+      - name: Rebuild async extension (cache hit)
+        if: steps.cache-php.outputs.cache-hit == 'true'
         working-directory: php-src
         run: |
           # Remove old async object files to force rebuild
