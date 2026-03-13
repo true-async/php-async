@@ -86,8 +86,22 @@ static void fiber_context_cleanup(zend_fiber_context *context);
 /// MODULE INIT/SHUTDOWN
 ///////////////////////////////////////////////////////////
 
+static zend_always_inline void process_resumed_coroutines(void);
+
+static void async_reactor_tick(void)
+{
+	ZEND_ASYNC_SCHEDULER_CONTEXT = true;
+	ZEND_ASYNC_REACTOR_EXECUTE(true);
+	ZEND_ASYNC_SCHEDULER_CONTEXT = false;
+
+	if (circular_buffer_is_not_empty(&ASYNC_G(resumed_coroutines))) {
+		process_resumed_coroutines();
+	}
+}
+
 void async_scheduler_startup(void)
 {
+	zend_async_reactor_tick_fn = async_reactor_tick;
 }
 
 void async_scheduler_shutdown(void)
