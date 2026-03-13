@@ -294,39 +294,12 @@ static void libuv_reactor_stop_with_exception(void)
 
 /* }}} */
 
-/* {{{ libuv_reactor_detach_io */
-void libuv_reactor_detach_io(void)
-{
-	if (!ASYNC_G(reactor_started)) {
-		return;
-	}
-
-	/* Detach all outstanding IO handles from their owners (e.g. php_stream)
-	 * and close/free them. Preserve the original fd so the stream can
-	 * continue working synchronously after detach. */
-	zend_async_io_t *io_handle;
-	ZEND_HASH_FOREACH_PTR(&ASYNC_G(active_io_handles), io_handle) {
-		if (io_handle->on_detach != NULL) {
-			io_handle->on_detach(io_handle, io_handle->on_detach_arg);
-			io_handle->on_detach = NULL;
-		}
-		((async_io_t *) io_handle)->orig_fd = -1;
-		ZEND_ASYNC_IO_CLOSE(io_handle);
-		io_handle->event.dispose(&io_handle->event);
-	} ZEND_HASH_FOREACH_END();
-
-	if (uv_loop_alive(UVLOOP) != 0) {
-		uv_run(UVLOOP, UV_RUN_ONCE);
-	}
-}
-
 /* }}} */
 
 /* {{{ libuv_reactor_shutdown */
 bool libuv_reactor_shutdown(void)
 {
 	if (EXPECTED(ASYNC_G(reactor_started))) {
-
 		// Cleanup global signal management structures
 		libuv_cleanup_signal_handlers();
 		libuv_cleanup_signal_events();
@@ -334,11 +307,12 @@ bool libuv_reactor_shutdown(void)
 
 		/* Drain pending uv_close callbacks (e.g. poll events disposed
 		 * during shutdown_executor via curl free_obj). */
-		if (uv_loop_alive(UVLOOP) != 0) {
+		int alive = uv_loop_alive(UVLOOP);
+		if (alive != 0) {
 			uv_run(UVLOOP, UV_RUN_NOWAIT);
 		}
 
-		uv_loop_close(UVLOOP);
+		int close_result = uv_loop_close(UVLOOP);
 		ASYNC_G(reactor_started) = false;
 		zend_hash_destroy(&ASYNC_G(active_io_handles));
 	}
@@ -4531,7 +4505,6 @@ void async_libuv_reactor_register(void)
 								false,
 								libuv_reactor_startup,
 								libuv_reactor_shutdown,
-								libuv_reactor_detach_io,
 								libuv_reactor_execute,
 								libuv_reactor_loop_alive,
 								libuv_new_socket_event,

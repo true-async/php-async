@@ -1461,7 +1461,7 @@ bool async_scheduler_coroutine_suspend(void)
 		}
 
 		bool *in_scheduler_context = &ZEND_ASYNC_SCHEDULER_CONTEXT;
-		bool prev_in_scheduler_context = *in_scheduler_context;
+		const bool prev_in_scheduler_context = *in_scheduler_context;
 
 		*in_scheduler_context = true;
 		start_waker_events(waker);
