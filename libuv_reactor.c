@@ -3862,7 +3862,6 @@ static bool libuv_io_close(zend_async_io_t *io_base)
 	}
 
 	io->base.state |= ZEND_ASYNC_IO_CLOSED;
-	bool need_close_handle = false;
 
 	/* If the reactor is already shut down (e.g. bailout during memory
 	 * exhaustion followed by executor_globals_dtor), skip libuv calls. */
@@ -3875,12 +3874,10 @@ static bool libuv_io_close(zend_async_io_t *io_base)
 		io->handle.stream.data = io;
 		ZEND_ASYNC_EVENT_ADD_REF(&io->base.event);
 		uv_close((uv_handle_t *) &io->handle.stream, io_close_cb);
-		need_close_handle = true;
 	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_UDP) {
 		io->handle.udp.data = io;
 		ZEND_ASYNC_EVENT_ADD_REF(&io->base.event);
 		uv_close((uv_handle_t *) &io->handle.udp, io_close_cb);
-		need_close_handle = true;
 	}
 	/* FILE type: no uv handle to close. */
 
@@ -3895,12 +3892,6 @@ close_orig_fd:
 #endif
 	}
 	io->orig_fd = -1;
-
-	if (need_close_handle && false == ZEND_ASYNC_IS_SCHEDULER_CONTEXT) {
-		ZEND_ASYNC_SCHEDULER_CONTEXT = true;
-		libuv_reactor_execute(true);
-		ZEND_ASYNC_SCHEDULER_CONTEXT = false;
-	}
 
 	return true;
 }
