@@ -1470,6 +1470,11 @@ bool async_scheduler_coroutine_suspend(void)
 		// Fast return path without placing the coroutine in the queue.
 		if (UNEXPECTED(waker->status == ZEND_ASYNC_WAKER_RESULT)) {
 			zend_hash_clean(&waker->events);
+
+			if (circular_buffer_is_not_empty(&ASYNC_G(resumed_coroutines))) {
+				process_resumed_coroutines();
+			}
+
 			goto resuming;
 		}
 
