@@ -312,7 +312,7 @@ bool libuv_reactor_shutdown(void)
 			uv_run(UVLOOP, UV_RUN_NOWAIT);
 		}
 
-		int close_result = uv_loop_close(UVLOOP);
+		uv_loop_close(UVLOOP);
 		ASYNC_G(reactor_started) = false;
 		zend_hash_destroy(&ASYNC_G(active_io_handles));
 	}
