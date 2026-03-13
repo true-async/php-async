@@ -5,7 +5,7 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.0]
+## [0.6.0] - 2026-03-14
 
 ### Fixed
 - **Async file IO position tracking**: Replaced bare `lseek`/`_lseeki64` with `zend_lseek` across reactor. Rewrote `libuv_io_seek` to accept `whence` and return position, eliminating double lseek in `php_stdiop_seek`. Fixed append-mode offset init and fseek behavior. On Windows, append writes now query real EOF via `lseek(SEEK_END)` before dispatch to avoid stale cached offsets.
