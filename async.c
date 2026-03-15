@@ -37,6 +37,7 @@
 #include "async_arginfo.h"
 #include "zend_interfaces.h"
 #include "libuv_reactor.h"
+#include "thread.h"
 
 zend_class_entry *async_ce_awaitable = NULL;
 zend_class_entry *async_ce_completable = NULL;
@@ -139,6 +140,75 @@ PHP_FUNCTION(Async_spawn_with)
 	coroutine->coroutine.fcall = fcall;
 
 	RETURN_OBJ_COPY(&coroutine->std);
+}
+
+PHP_FUNCTION(Async_spawn_thread)
+{
+	THROW_IF_ASYNC_OFF;
+	THROW_IF_SCHEDULER_CONTEXT;
+
+	zend_fcall_info fci;
+	zend_fcall_info_cache fcc;
+	bool inherit = true;
+	zval *bootloader_zv = NULL;
+
+	ZEND_PARSE_PARAMETERS_START(1, 3)
+	Z_PARAM_FUNC(fci, fcc)
+	Z_PARAM_OPTIONAL
+	Z_PARAM_BOOL(inherit)
+	Z_PARAM_OBJECT_OF_CLASS_OR_NULL(bootloader_zv, zend_ce_closure)
+	ZEND_PARSE_PARAMETERS_END();
+
+	SCHEDULER_LAUNCH;
+
+	const uint32_t thread_flags = inherit ? ZEND_THREAD_F_INHERIT : 0;
+
+	zend_async_thread_event_t *thread_event =
+		ZEND_ASYNC_NEW_THREAD_EVENT_EX(NULL, NULL, thread_flags, 0);
+
+	if (UNEXPECTED(thread_event == NULL)) {
+		RETURN_THROWS();
+	}
+
+	/* Store the task closure */
+	zend_fcall_t *fcall = ecalloc(1, sizeof(zend_fcall_t));
+	fcall->fci = fci;
+	fcall->fci_cache = fcc;
+	Z_TRY_ADDREF(fcall->fci.function_name);
+	thread_event->fcall = fcall;
+
+	/* Store the bootloader closure if provided */
+	if (bootloader_zv != NULL) {
+		zend_fcall_info boot_fci;
+		zend_fcall_info_cache boot_fcc;
+		if (zend_fcall_info_init(bootloader_zv, 0, &boot_fci, &boot_fcc, NULL, NULL) == SUCCESS) {
+			zend_fcall_t *boot_fcall = ecalloc(1, sizeof(zend_fcall_t));
+			boot_fcall->fci = boot_fci;
+			boot_fcall->fci_cache = boot_fcc;
+			Z_TRY_ADDREF(boot_fcall->fci.function_name);
+			thread_event->bootloader = boot_fcall;
+		}
+	}
+
+	/* Create the Thread PHP object — takes ownership of the event (ref_count=1) */
+	zend_object *obj = async_ce_thread->create_object(async_ce_thread);
+	async_thread_object_t *thread_obj = async_thread_object_from_obj(obj);
+	thread_obj->thread_event = thread_event;
+
+	/* Set event reference so ZEND_ASYNC_OBJECT_TO_EVENT() can resolve from this object */
+	ZEND_ASYNC_EVENT_REF_SET(thread_obj,
+		XtOffsetOf(async_thread_object_t, std), &thread_event->base);
+
+	/* Record spawn location */
+	zend_apply_current_filename_and_line(&thread_event->filename, &thread_event->lineno);
+
+	/* Start the thread */
+	if (UNEXPECTED(!thread_event->base.start(&thread_event->base))) {
+		OBJ_RELEASE(obj);
+		RETURN_THROWS();
+	}
+
+	RETURN_OBJ(obj);
 }
 
 PHP_FUNCTION(Async_suspend)
@@ -1452,6 +1522,7 @@ ZEND_MINIT_FUNCTION(async)
 	async_register_task_group_ce();
 	async_register_task_set_ce();
 	async_register_future_ce();
+	async_register_thread_ce();
 
 	async_scheduler_startup();
 	async_api_register();

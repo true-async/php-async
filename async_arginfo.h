@@ -12,6 +12,12 @@ ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_Async_spawn_with, 0, 2, Async\\Co
 	ZEND_ARG_VARIADIC_TYPE_INFO(0, args, IS_MIXED, 0)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_Async_spawn_thread, 0, 1, Async\\Thread, 0)
+	ZEND_ARG_OBJ_INFO(0, task, Closure, 0)
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, inherit, _IS_BOOL, 0, "true")
+	ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, bootloader, Closure, 1, "null")
+ZEND_END_ARG_INFO()
+
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_suspend, 0, 0, IS_VOID, 0)
 ZEND_END_ARG_INFO()
 
@@ -136,6 +142,7 @@ ZEND_END_ARG_INFO()
 
 ZEND_FUNCTION(Async_spawn);
 ZEND_FUNCTION(Async_spawn_with);
+ZEND_FUNCTION(Async_spawn_thread);
 ZEND_FUNCTION(Async_suspend);
 ZEND_FUNCTION(Async_protect);
 ZEND_FUNCTION(Async_await);
@@ -163,6 +170,7 @@ ZEND_METHOD(Async_Timeout, isCancelled);
 static const zend_function_entry ext_functions[] = {
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "spawn"), zif_Async_spawn, arginfo_Async_spawn, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "spawn_with"), zif_Async_spawn_with, arginfo_Async_spawn_with, 0, NULL, NULL)
+	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "spawn_thread"), zif_Async_spawn_thread, arginfo_Async_spawn_thread, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "suspend"), zif_Async_suspend, arginfo_Async_suspend, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "protect"), zif_Async_protect, arginfo_Async_protect, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "await"), zif_Async_await, arginfo_Async_await, 0, NULL, NULL)

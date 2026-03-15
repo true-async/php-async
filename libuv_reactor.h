@@ -19,6 +19,7 @@
 #define LIBUV_REACTOR_VERSION "0.8.0"
 #define LIBUV_REACTOR_NAME "Libuv Reactor 0.8.0"
 #include <Zend/zend_async_API.h>
+#include "thread.h"
 
 #ifdef PHP_WIN32
 #include "libuv/uv.h"
@@ -96,6 +97,8 @@ struct _async_thread_event_t
 {
 	zend_async_thread_event_t event;
 	uv_thread_t uv_handle;
+	uv_async_t uv_notify;     /* Cross-thread notification handle */
+	async_thread_snapshot_t *snapshot;  /* Code snapshot for child thread */
 };
 
 struct _async_exec_event_t

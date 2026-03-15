@@ -15,10 +15,18 @@
 */
 #include "libuv_reactor.h"
 #include <Zend/zend_async_API.h>
+#include <Zend/zend_autoload.h>
+#include <main/php_main.h>
+#include <main/php_globals.h>
+#include <main/SAPI.h>
 
 #include "exceptions.h"
 #include "php_async.h"
 #include "zend_common.h"
+
+#ifdef ZTS
+#include "TSRM.h"
+#endif
 
 #ifdef PHP_WIN32
 #include "win32/unistd.h"
@@ -1856,14 +1864,305 @@ zend_async_process_event_t *libuv_new_process_event(zend_process_t process_handl
 /// Thread API
 /////////////////////////////////////////////////////////////////////////////////
 
-/* {{{ libuv_new_thread_event */
-zend_async_thread_event_t *libuv_new_thread_event(zend_async_thread_entry_t entry, void *arg, size_t extra_size)
+/* {{{ libuv_thread_notify_cb - called on parent loop when child thread finishes */
+static void libuv_thread_notify_cb(uv_async_t *handle)
 {
-	// TODO: libuv_new_thread_event
-	//  We need to design a mechanism for creating a Thread and running a function
-	//  in another thread in such a way that it can be awaited like an event.
-	//
-	return NULL;
+	async_thread_event_t *thread = handle->data;
+
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&thread->event.base,
+		&thread->event.result, thread->event.exception);
+
+	thread->event.base.stop(&thread->event.base);
+
+	IF_EXCEPTION_STOP_REACTOR;
+}
+
+/* }}} */
+
+/* {{{ libuv_thread_entry - the function that runs in the new OS thread */
+static void libuv_thread_entry(void *arg)
+{
+	async_thread_event_t *thread = (async_thread_event_t *) arg;
+
+	/* Record OS thread ID */
+#ifdef _WIN32
+	zend_atomic_int64_store(&thread->event.thread_id, (int64_t) GetCurrentThreadId());
+#else
+	zend_atomic_int64_store(&thread->event.thread_id, (int64_t) pthread_self());
+#endif
+
+	if (thread->event.internal_entry != NULL) {
+		/* C thread: run the internal entry directly */
+		thread->event.internal_entry(thread->event.internal_arg,
+			thread->event.base.extra_offset > sizeof(async_thread_event_t)
+				? thread->event.base.extra_offset - sizeof(async_thread_event_t) : 0);
+		thread->event.exit_code = 0;
+	} else if (thread->event.fcall != NULL) {
+		/* PHP thread entry point */
+#ifdef ZTS
+		/* 1. Initialize TSRM resources and full PHP request lifecycle */
+		ts_resource(0);
+		TSRMLS_CACHE_UPDATE();
+
+		if (UNEXPECTED(php_request_startup() == FAILURE)) {
+			thread->event.exit_code = -1;
+			ts_free_thread();
+			goto notify_parent;
+		}
+
+		/* 2. Suppress HTTP-specific behavior in child thread */
+		PG(during_request_startup) = 0;
+		SG(headers_sent) = 1;
+		SG(request_info).no_headers = 1;
+
+		/* 3. Load code snapshot from parent thread */
+		if (thread->snapshot) {
+			async_thread_snapshot_load(thread->snapshot);
+		}
+
+		/* 4. Run bootloader if provided */
+		if (thread->event.bootloader != NULL) {
+			zval boot_retval;
+			ZVAL_UNDEF(&boot_retval);
+			thread->event.bootloader->fci.retval = &boot_retval;
+			zend_call_function(&thread->event.bootloader->fci, &thread->event.bootloader->fci_cache);
+			zval_ptr_dtor(&boot_retval);
+
+			if (EG(exception)) {
+				/* TODO: serialize exception for parent thread */
+				zend_clear_exception();
+				thread->event.exit_code = -1;
+				goto thread_shutdown;
+			}
+		}
+
+		/* 5. Call the task closure */
+		zend_fcall_t *fcall = thread->event.fcall;
+		zval retval;
+		ZVAL_UNDEF(&retval);
+		fcall->fci.retval = &retval;
+
+		if (zend_call_function(&fcall->fci, &fcall->fci_cache) == SUCCESS) {
+			if (!Z_ISUNDEF(retval)) {
+				/* TODO: transfer result to parent thread (serialization) */
+				zval_ptr_dtor(&retval);
+			}
+			thread->event.exit_code = 0;
+		} else {
+			thread->event.exit_code = -1;
+		}
+
+		if (EG(exception)) {
+			/* TODO: serialize exception for parent thread */
+			zend_clear_exception();
+			thread->event.exit_code = -1;
+		}
+
+thread_shutdown:
+		php_request_shutdown(NULL);
+		ts_free_thread();
+#else
+		/* Without ZTS, threads share globals — not safe for PHP execution */
+		thread->event.exit_code = -1;
+#endif
+	}
+
+notify_parent:
+	/* Notify the parent event loop that the thread has finished */
+	uv_async_send(&thread->uv_notify);
+}
+
+/* }}} */
+
+/* {{{ libuv_thread_event_start */
+static bool libuv_thread_event_start(zend_async_event_t *event)
+{
+	EVENT_START_PROLOGUE(event);
+
+	async_thread_event_t *thread = (async_thread_event_t *) event;
+
+	const int ret = uv_thread_create(&thread->uv_handle, libuv_thread_entry, thread);
+
+	if (UNEXPECTED(ret != 0)) {
+		async_throw_error("Failed to create thread: %s", uv_strerror(ret));
+		return false;
+	}
+
+	event->loop_ref_count++;
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(event);
+	return true;
+}
+
+/* }}} */
+
+/* {{{ libuv_thread_event_stop */
+static bool libuv_thread_event_stop(zend_async_event_t *event)
+{
+	EVENT_STOP_PROLOGUE(event);
+
+	async_thread_event_t *thread = (async_thread_event_t *) event;
+
+	/* Wait for thread to finish (should already be done by this point) */
+	uv_thread_join(&thread->uv_handle);
+
+	ZEND_ASYNC_EVENT_SET_CLOSED(event);
+	event->loop_ref_count = 0;
+	ZEND_ASYNC_DECREASE_EVENT_COUNT(event);
+	return true;
+}
+
+/* }}} */
+
+/* {{{ libuv_thread_event_dispose */
+static bool libuv_thread_event_dispose(zend_async_event_t *event)
+{
+	if (ZEND_ASYNC_EVENT_REFCOUNT(event) > 1) {
+		ZEND_ASYNC_EVENT_DEL_REF(event);
+		return true;
+	}
+
+	if (event->loop_ref_count > 0) {
+		event->loop_ref_count = 1;
+		event->stop(event);
+	}
+
+	zend_async_callbacks_free(event);
+
+	async_thread_event_t *thread = (async_thread_event_t *) event;
+
+	if (thread->snapshot) {
+		async_thread_snapshot_destroy(thread->snapshot);
+		thread->snapshot = NULL;
+	}
+
+	if (thread->event.fcall) {
+		zend_fcall_release(thread->event.fcall);
+		thread->event.fcall = NULL;
+	}
+
+	if (thread->event.bootloader) {
+		zend_fcall_release(thread->event.bootloader);
+		thread->event.bootloader = NULL;
+	}
+
+	if (thread->event.filename) {
+		zend_string_release(thread->event.filename);
+		thread->event.filename = NULL;
+	}
+
+	zval_ptr_dtor(&thread->event.result);
+	ZVAL_UNDEF(&thread->event.result);
+
+	if (thread->event.exception) {
+		OBJ_RELEASE(thread->event.exception);
+		thread->event.exception = NULL;
+	}
+
+	uv_close((uv_handle_t *) &thread->uv_notify, libuv_close_handle_cb);
+	return true;
+}
+
+/* }}} */
+
+/* {{{ libuv_thread_replay — replay result/exception for already-completed thread */
+static bool libuv_thread_replay(zend_async_event_t *event,
+	zend_async_event_callback_t *callback, zval *result, zend_object **exception)
+{
+	zend_async_thread_event_t *thread_event = (zend_async_thread_event_t *) event;
+
+	if (!ZEND_ASYNC_EVENT_IS_CLOSED(event)) {
+		return false;
+	}
+
+	if (callback != NULL) {
+		callback->callback(event, callback, &thread_event->result, thread_event->exception);
+		return true;
+	}
+
+	if (result != NULL && !Z_ISUNDEF(thread_event->result)) {
+		ZVAL_COPY(result, &thread_event->result);
+	}
+
+	if (exception == NULL && thread_event->exception != NULL) {
+		GC_ADDREF(thread_event->exception);
+		zend_throw_exception_object(thread_event->exception);
+	} else if (exception != NULL && thread_event->exception != NULL) {
+		*exception = thread_event->exception;
+		GC_ADDREF(*exception);
+	}
+
+	return thread_event->exception != NULL || !Z_ISUNDEF(thread_event->result);
+}
+
+/* }}} */
+
+/* {{{ libuv_thread_info */
+static zend_string *libuv_thread_info(zend_async_event_t *event)
+{
+	async_thread_event_t *thread = (async_thread_event_t *) event;
+
+	return zend_strpprintf(0, "thread #%" PRId64 " spawned at %s:%u",
+		zend_atomic_int64_load(&thread->event.thread_id),
+		thread->event.filename ? ZSTR_VAL(thread->event.filename) : "unknown",
+		thread->event.lineno);
+}
+
+/* }}} */
+
+/* {{{ libuv_new_thread_event */
+zend_async_thread_event_t *libuv_new_thread_event(
+	zend_async_thread_entry_t entry, void *arg, uint32_t thread_flags, size_t extra_size)
+{
+	START_REACTOR_OR_RETURN_NULL;
+
+	const size_t alloc_size = extra_size != 0
+		? sizeof(async_thread_event_t) + extra_size
+		: sizeof(async_thread_event_t);
+
+	async_thread_event_t *thread_event = pecalloc(1, alloc_size, 0);
+
+	thread_event->event.internal_entry = entry;
+	thread_event->event.internal_arg = arg;
+	thread_event->event.thread_flags = thread_flags;
+	thread_event->event.base.extra_offset = sizeof(async_thread_event_t);
+	thread_event->event.base.ref_count = 1;
+
+	thread_event->event.base.add_callback = libuv_add_callback;
+	thread_event->event.base.del_callback = libuv_remove_callback;
+	thread_event->event.base.start = libuv_thread_event_start;
+	thread_event->event.base.stop = libuv_thread_event_stop;
+	thread_event->event.base.dispose = libuv_thread_event_dispose;
+	thread_event->event.base.replay = libuv_thread_replay;
+	thread_event->event.base.info = libuv_thread_info;
+
+	ZVAL_UNDEF(&thread_event->event.result);
+	thread_event->event.exception = NULL;
+	thread_event->event.bootloader = NULL;
+	ZEND_ATOMIC_INT64_INIT(&thread_event->event.thread_id, 0);
+	thread_event->event.filename = NULL;
+	thread_event->event.lineno = 0;
+
+	/* Create snapshot for PHP threads (entry == NULL means PHP thread) */
+	if (entry == NULL) {
+		const bool inherit = (thread_flags & ZEND_THREAD_F_INHERIT) != 0;
+		thread_event->snapshot = async_thread_snapshot_create(inherit);
+	}
+
+	/* Initialize cross-thread notification handle */
+	const int ret = uv_async_init(UVLOOP, &thread_event->uv_notify, libuv_thread_notify_cb);
+
+	if (UNEXPECTED(ret != 0)) {
+		if (thread_event->snapshot) {
+			async_thread_snapshot_destroy(thread_event->snapshot);
+		}
+		pefree(thread_event, 0);
+		async_throw_error("Failed to init thread notification: %s", uv_strerror(ret));
+		return NULL;
+	}
+
+	thread_event->uv_notify.data = thread_event;
+
+	return &thread_event->event;
 }
 
 /* }}} */
