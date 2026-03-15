@@ -5,6 +5,12 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-03-15
+
+### Fixed
+- **`feof()` on sockets unreliable on Windows**: `WSAPoll(timeout=0)` fails to detect FIN packets on Windows, causing `feof()` to return false on closed sockets. Fixed by skipping poll for liveness checks (`value==0`) and going directly to `recv(MSG_PEEK)`. On Windows, `MSG_DONTWAIT` is unavailable, so non-blocking mode is temporarily toggled via `ioctlsocket`. Errno is saved immediately after `recv` because `ioctlsocket` clears `WSAGetLastError()`. Shared logic extracted into `php_socket_check_liveness()` in `network_async.c` to eliminate duplication between `xp_socket.c` and `xp_ssl.c`.
+- **Pipe close error on Windows**: `php_select()` incorrectly skipped signaled pipe handles when `num_read_pipes >= n_handles`, causing pipe-close events to be missed and `proc_open` reads to hang. Fixed by removing the `num_read_pipes < n_handles` guard so `PeekNamedPipe` is always called for signaled handles.
+
 ## [0.6.0] - 2026-03-14
 
 ### Fixed
