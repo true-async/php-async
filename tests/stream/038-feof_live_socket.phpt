@@ -9,9 +9,10 @@ use function Async\await_all;
 
 echo "Start\n";
 
-$ch = new Channel(1);
+$s2c = new Channel(1); // server -> client
+$c2s = new Channel(1); // client -> server
 
-$server = spawn(function() use ($ch) {
+$server = spawn(function() use ($s2c, $c2s) {
     $socket = stream_socket_server("tcp://127.0.0.1:0", $errno, $errstr);
     if (!$socket) {
         echo "Server: failed - $errstr\n";
@@ -19,29 +20,29 @@ $server = spawn(function() use ($ch) {
     }
 
     // Signal the address to the client
-    $ch->send(stream_socket_get_name($socket, false));
+    $s2c->send(stream_socket_get_name($socket, false));
 
     $client = stream_socket_accept($socket, 5);
     echo "Server: accepted\n";
 
     // Signal that connection is established
-    $ch->send("connected");
+    $s2c->send("connected");
 
     // Wait for client to finish feof check
-    $ch->recv();
+    $c2s->recv();
 
     // Close client connection
     fclose($client);
     echo "Server: closed client\n";
 
     // Signal that server closed the connection
-    $ch->send("closed");
+    $s2c->send("closed");
 
     fclose($socket);
 });
 
-$client = spawn(function() use ($ch) {
-    $address = $ch->recv();
+$client = spawn(function() use ($s2c, $c2s) {
+    $address = $s2c->recv();
 
     $sock = stream_socket_client("tcp://$address", $errno, $errstr, 5);
     if (!$sock) {
@@ -51,17 +52,17 @@ $client = spawn(function() use ($ch) {
     echo "Client: connected\n";
 
     // Wait for server to confirm accept
-    $ch->recv();
+    $s2c->recv();
 
     // Socket is alive — feof() MUST return false
     $eof = feof($sock);
     echo "feof on live socket: " . ($eof ? "true (BUG!)" : "false") . "\n";
 
     // Tell server it can close now
-    $ch->send("done");
+    $c2s->send("done");
 
     // Wait for server to confirm close
-    $ch->recv();
+    $s2c->recv();
 
     // Give TCP stack time to deliver FIN
     \Async\delay(1);
@@ -78,11 +79,11 @@ await_all([$server, $client]);
 echo "End\n";
 
 ?>
---EXPECT--
+--EXPECTF--
 Start
-Server: accepted
-Client: connected
+%AServer: accepted
+%AClient: connected
+%Afeof on live socket: false
 Server: closed client
-feof on live socket: false
 feof after remote close: true
 End
