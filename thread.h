@@ -24,41 +24,39 @@
 ///////////////////////////////////////////////////////////
 
 /**
- * Snapshot of a thread's code tables, used to transfer compiled code
- * from a parent thread to a child thread.
- *
- * With OPcache: function/class entries point into SHM (ZEND_ACC_IMMUTABLE),
- *               so we only store pointers (shallow copy).
- * Without OPcache: TODO deep copy via adapted zend_persist.c logic.
+ * A deep-copied closure: pemalloc'd op_array + transferred bound variables.
  */
+typedef struct _async_thread_closure_copy_t {
+	zend_op_array *func;
+	HashTable *bound_vars;   /* NULL if no captured variables */
+} async_thread_closure_copy_t;
+
 typedef struct _async_thread_snapshot_t {
-	/* User-defined functions (key → zend_function*) */
-	HashTable function_table;
-	/* User-defined classes (key → zend_class_entry*) */
-	HashTable class_table;
-	/* Number of internal functions in parent CG(function_table) at snapshot time.
-	 * Used to skip internal entries during iteration. */
-	uint32_t copied_functions_count;
-	/* Autoloader callables (zval array of callables) */
+	/* Deep-copied entry closure */
+	async_thread_closure_copy_t entry;
+	/* Deep-copied bootloader closure (func == NULL if not provided) */
+	async_thread_closure_copy_t bootloader;
+	/* Autoloader callables (transferred zval array) */
 	zval autoload_functions;
-	/* Included files list */
-	HashTable included_files;
+	/* All pemalloc'd pointers from deep copy (for bulk cleanup) */
+	void **allocs;
+	uint32_t allocs_count;
+	uint32_t allocs_capacity;
 } async_thread_snapshot_t;
 
 /**
- * Create a snapshot of the current thread's user code tables.
+ * Create a snapshot: deep-copy entry closure + optional bootloader + autoloaders.
  * Must be called from the parent thread before spawning the child.
  *
- * @param inherit  If true, copy function/class tables. If false, only autoloaders.
+ * @param closure      The Closure to execute in the child thread
+ * @param bootloader   Optional bootloader Closure (NULL if not provided)
  * @return Snapshot structure (caller owns, must call async_thread_snapshot_destroy)
  */
-async_thread_snapshot_t *async_thread_snapshot_create(bool inherit);
+async_thread_snapshot_t *async_thread_snapshot_create(zval *closure, zval *bootloader);
 
 /**
- * Load a snapshot into the current thread's CG(function_table) and CG(class_table).
- * Must be called from the child thread after TSRM initialization.
- *
- * @param snapshot  The snapshot to load (not consumed, caller still owns it)
+ * Load a snapshot into the current thread: register autoloaders.
+ * Must be called from the child thread after php_request_startup().
  */
 void async_thread_snapshot_load(const async_thread_snapshot_t *snapshot);
 
@@ -66,6 +64,28 @@ void async_thread_snapshot_load(const async_thread_snapshot_t *snapshot);
  * Free a snapshot and all its resources.
  */
 void async_thread_snapshot_destroy(async_thread_snapshot_t *snapshot);
+
+///////////////////////////////////////////////////////////
+/// Zval transfer — copy runtime values between threads
+///////////////////////////////////////////////////////////
+
+/**
+ * Copy a zval into persistent memory for cross-thread transfer.
+ * Deep copies strings, arrays, and objects. Preserves identity
+ * (shared references → shared copies) and handles cycles.
+ */
+void async_thread_transfer_zval(zval *dst, const zval *src);
+
+/**
+ * Load a persistent zval into the current thread's emalloc heap.
+ * Creates proper refcounted copies owned by the calling thread.
+ */
+void async_thread_load_zval(zval *dst, const zval *src);
+
+/**
+ * Free a persistent zval created by async_thread_transfer_zval().
+ */
+void async_thread_release_transferred_zval(zval *z);
 
 ///////////////////////////////////////////////////////////
 /// Thread PHP object — Async\Thread class

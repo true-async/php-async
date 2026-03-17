@@ -163,32 +163,24 @@ PHP_FUNCTION(Async_spawn_thread)
 
 	const uint32_t thread_flags = inherit ? ZEND_THREAD_F_INHERIT : 0;
 
+	/* Pack closure + optional bootloader for the backend */
+	zval closures[2];
+	ZVAL_COPY_VALUE(&closures[0], &fci.function_name);
+	if (bootloader_zv != NULL) {
+		ZVAL_COPY_VALUE(&closures[1], bootloader_zv);
+	} else {
+		ZVAL_NULL(&closures[1]);
+	}
+
 	zend_async_thread_event_t *thread_event =
-		ZEND_ASYNC_NEW_THREAD_EVENT_EX(NULL, NULL, thread_flags, 0);
+		ZEND_ASYNC_NEW_THREAD_EVENT_EX(NULL, closures, thread_flags, 0);
 
 	if (UNEXPECTED(thread_event == NULL)) {
 		RETURN_THROWS();
 	}
 
-	/* Store the task closure */
-	zend_fcall_t *fcall = ecalloc(1, sizeof(zend_fcall_t));
-	fcall->fci = fci;
-	fcall->fci_cache = fcc;
-	Z_TRY_ADDREF(fcall->fci.function_name);
-	thread_event->fcall = fcall;
-
-	/* Store the bootloader closure if provided */
-	if (bootloader_zv != NULL) {
-		zend_fcall_info boot_fci;
-		zend_fcall_info_cache boot_fcc;
-		if (zend_fcall_info_init(bootloader_zv, 0, &boot_fci, &boot_fcc, NULL, NULL) == SUCCESS) {
-			zend_fcall_t *boot_fcall = ecalloc(1, sizeof(zend_fcall_t));
-			boot_fcall->fci = boot_fci;
-			boot_fcall->fci_cache = boot_fcc;
-			Z_TRY_ADDREF(boot_fcall->fci.function_name);
-			thread_event->bootloader = boot_fcall;
-		}
-	}
+	thread_event->fcall = NULL;
+	thread_event->bootloader = NULL;
 
 	/* Create the Thread PHP object — takes ownership of the event (ref_count=1) */
 	zend_object *obj = async_ce_thread->create_object(async_ce_thread);
