@@ -39,9 +39,9 @@ typedef struct _async_thread_snapshot_t {
 	/* Autoloader callables (transferred zval array) */
 	zval autoload_functions;
 	/* All pemalloc'd pointers from deep copy (for bulk cleanup) */
-	void **allocs;
-	uint32_t allocs_count;
-	uint32_t allocs_capacity;
+	void **persistent_pointers;
+	uint32_t persistent_pointers_count;
+	uint32_t persistent_pointers_capacity;
 } async_thread_snapshot_t;
 
 /**
@@ -52,7 +52,7 @@ typedef struct _async_thread_snapshot_t {
  * @param bootloader   Optional bootloader Closure (NULL if not provided)
  * @return Snapshot structure (caller owns, must call async_thread_snapshot_destroy)
  */
-async_thread_snapshot_t *async_thread_snapshot_create(zval *closure, zval *bootloader);
+async_thread_snapshot_t *async_thread_snapshot_create(const zval *closure, const zval *bootloader);
 
 /**
  * Load a snapshot into the current thread: register autoloaders.
@@ -97,10 +97,10 @@ PHP_ASYNC_API extern zend_class_entry *async_ce_thread;
 
 struct _async_thread_object_s
 {
-	/* Event reference prolog — allows ZEND_ASYNC_OBJECT_TO_EVENT() to
+	/* Event reference — allows ZEND_ASYNC_OBJECT_TO_EVENT() to
 	 * resolve from this object to the thread event pointer.
 	 * Must be at offset 0 from the struct start (= handlers->offset from zend_object). */
-	ZEND_ASYNC_EVENT_REF_PROLOG
+	ZEND_ASYNC_EVENT_REF_FIELDS
 
 	/* Pointer to the underlying thread event */
 	zend_async_thread_event_t *thread_event;

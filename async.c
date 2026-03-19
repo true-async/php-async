@@ -16,6 +16,7 @@
 
 #include "zend_exceptions.h"
 #include "zend_closures.h"
+#include "zend_common.h"
 #ifdef HAVE_CONFIG_H
 #include <config.h>
 #endif
