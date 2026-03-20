@@ -1151,8 +1151,9 @@ async_thread_snapshot_t *async_thread_snapshot_create(const zend_fcall_t *entry,
 		thread_copy_callable(&snapshot->persistent_map, bootloader, &snapshot->bootloader);
 	}
 
-	/* Capture autoloaders by calling spl_autoload_functions() */
-	{
+	/* Capture autoloaders only when no bootloader is provided.
+	 * Bootloader is responsible for setting up its own autoloaders. */
+	if (bootloader == NULL) {
 		zval tmp_retval;
 		ZVAL_UNDEF(&tmp_retval);
 
@@ -1178,6 +1179,8 @@ async_thread_snapshot_t *async_thread_snapshot_create(const zend_fcall_t *entry,
 			ZVAL_EMPTY_ARRAY(&snapshot->autoload_functions);
 		}
 		zval_ptr_dtor(&tmp_retval);
+	} else {
+		ZVAL_EMPTY_ARRAY(&snapshot->autoload_functions);
 	}
 
 	return snapshot;
