@@ -148,13 +148,12 @@ PHP_FUNCTION(Async_spawn_thread)
 	THROW_IF_ASYNC_OFF;
 	THROW_IF_SCHEDULER_CONTEXT;
 
-	zend_fcall_info fci;
-	zend_fcall_info_cache fcc;
+	zval *entry_zv = NULL;
 	bool inherit = true;
 	zval *bootloader_zv = NULL;
 
 	ZEND_PARSE_PARAMETERS_START(1, 3)
-	Z_PARAM_FUNC(fci, fcc)
+	Z_PARAM_OBJECT_OF_CLASS(entry_zv, zend_ce_closure)
 	Z_PARAM_OPTIONAL
 	Z_PARAM_BOOL(inherit)
 	Z_PARAM_OBJECT_OF_CLASS_OR_NULL(bootloader_zv, zend_ce_closure)
@@ -164,24 +163,22 @@ PHP_FUNCTION(Async_spawn_thread)
 
 	const uint32_t thread_flags = inherit ? ZEND_THREAD_F_INHERIT : 0;
 
-	/* Pack closure + optional bootloader for the backend */
-	zval closures[2];
-	ZVAL_COPY_VALUE(&closures[0], &fci.function_name);
-	if (bootloader_zv != NULL) {
-		ZVAL_COPY_VALUE(&closures[1], bootloader_zv);
-	} else {
-		ZVAL_NULL(&closures[1]);
+	/* Build fcall structs from Closure zvals */
+	zend_fcall_t entry;
+	zend_fcall_info_init(entry_zv, 0, &entry.fci, &entry.fci_cache, NULL, NULL);
+
+	zend_fcall_t boot, *boot_ptr = NULL;
+	if (bootloader_zv != NULL
+		&& zend_fcall_info_init(bootloader_zv, 0, &boot.fci, &boot.fci_cache, NULL, NULL) == SUCCESS) {
+		boot_ptr = &boot;
 	}
 
 	zend_async_thread_event_t *thread_event =
-		ZEND_ASYNC_NEW_THREAD_EVENT_EX(NULL, closures, thread_flags, 0);
+		ZEND_ASYNC_NEW_THREAD_EVENT_EX(&entry, boot_ptr, thread_flags, 0);
 
 	if (UNEXPECTED(thread_event == NULL)) {
 		RETURN_THROWS();
 	}
-
-	thread_event->fcall = NULL;
-	thread_event->bootloader = NULL;
 
 	/* Create the Thread PHP object — takes ownership of the event (ref_count=1) */
 	zend_object *obj = async_ce_thread->create_object(async_ce_thread);

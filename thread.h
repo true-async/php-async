@@ -39,20 +39,20 @@ typedef struct _async_thread_snapshot_t {
 	/* Autoloader callables (transferred zval array) */
 	zval autoload_functions;
 	/* All pemalloc'd pointers from deep copy (for bulk cleanup) */
-	void **persistent_pointers;
-	uint32_t persistent_pointers_count;
-	uint32_t persistent_pointers_capacity;
+	void **pointers;
+	uint32_t pointers_count;
+	uint32_t pointers_capacity;
 } async_thread_snapshot_t;
 
 /**
  * Create a snapshot: deep-copy entry closure + optional bootloader + autoloaders.
  * Must be called from the parent thread before spawning the child.
  *
- * @param closure      The Closure to execute in the child thread
- * @param bootloader   Optional bootloader Closure (NULL if not provided)
+ * @param entry        The callable to execute in the child thread
+ * @param bootloader   Optional bootloader callable (NULL if not provided)
  * @return Snapshot structure (caller owns, must call async_thread_snapshot_destroy)
  */
-async_thread_snapshot_t *async_thread_snapshot_create(const zval *closure, const zval *bootloader);
+async_thread_snapshot_t *async_thread_snapshot_create(const zend_fcall_t *entry, const zend_fcall_t *bootloader);
 
 /**
  * Load a snapshot into the current thread: register autoloaders.

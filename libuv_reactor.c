@@ -2200,7 +2200,7 @@ static zend_string *libuv_thread_info(zend_async_event_t *event)
 
 /* {{{ libuv_new_thread_event */
 zend_async_thread_event_t *libuv_new_thread_event(
-	zend_async_thread_entry_t entry, void *arg, uint32_t thread_flags, size_t extra_size)
+	const zend_fcall_t *entry, const zend_fcall_t *bootloader, const uint32_t thread_flags, const size_t extra_size)
 {
 	START_REACTOR_OR_RETURN_NULL;
 
@@ -2210,8 +2210,6 @@ zend_async_thread_event_t *libuv_new_thread_event(
 
 	async_thread_event_t *thread_event = pecalloc(1, alloc_size, 0);
 
-	thread_event->event.internal_entry = entry;
-	thread_event->event.internal_arg = arg;
 	thread_event->event.thread_flags = thread_flags;
 	thread_event->event.base.extra_offset = sizeof(async_thread_event_t);
 	thread_event->event.base.ref_count = 1;
@@ -2226,17 +2224,13 @@ zend_async_thread_event_t *libuv_new_thread_event(
 
 	ZVAL_UNDEF(&thread_event->event.result);
 	thread_event->event.exception = NULL;
-	thread_event->event.bootloader = NULL;
 	ZEND_ATOMIC_INT64_INIT(&thread_event->event.thread_id, 0);
 	thread_event->event.filename = NULL;
 	thread_event->event.lineno = 0;
 
-	/* Create snapshot for PHP threads (entry == NULL means PHP thread).
-	 * arg points to zval[2]: [0] = entry closure, [1] = bootloader or NULL */
-	if (entry == NULL && arg != NULL) {
-		zval *closures = (zval *) arg;
-		zval *bootloader = Z_TYPE(closures[1]) != IS_NULL ? &closures[1] : NULL;
-		thread_event->snapshot = async_thread_snapshot_create(&closures[0], bootloader);
+	/* Create snapshot: deep-copy entry closure + optional bootloader + autoloaders */
+	if (entry != NULL) {
+		thread_event->snapshot = async_thread_snapshot_create(entry, bootloader);
 	}
 
 	/* Initialize cross-thread notification handle */

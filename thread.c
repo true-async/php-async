@@ -43,17 +43,17 @@
 typedef struct {
 	HashTable xlat;
 	/* Track all pemalloc'd pointers for bulk cleanup */
-	void **persistent_pointers;
-	uint32_t persistent_pointers_count;
-	uint32_t persistent_pointers_capacity;
+	void **pointers;
+	uint32_t pointers_count;
+	uint32_t pointers_capacity;
 } thread_copy_ctx_t;
 
 static void thread_copy_ctx_init(thread_copy_ctx_t *ctx)
 {
 	zend_hash_init(&ctx->xlat, 128, NULL, NULL, 0);
-	ctx->persistent_pointers_capacity = 256;
-	ctx->persistent_pointers_count = 0;
-	ctx->persistent_pointers = emalloc(sizeof(void *) * ctx->persistent_pointers_capacity);
+	ctx->pointers_capacity = 256;
+	ctx->pointers_count = 0;
+	ctx->pointers = emalloc(sizeof(void *) * ctx->pointers_capacity);
 }
 
 static void thread_copy_ctx_destroy(thread_copy_ctx_t *ctx)
@@ -65,12 +65,12 @@ static void thread_copy_ctx_destroy(thread_copy_ctx_t *ctx)
 /* Record a pemalloc'd pointer for later bulk cleanup */
 static void thread_copy_ctx_track(thread_copy_ctx_t *ctx, void *ptr)
 {
-	if (ctx->persistent_pointers_count == ctx->persistent_pointers_capacity) {
-		ctx->persistent_pointers_capacity *= 2;
-		ctx->persistent_pointers = erealloc(ctx->persistent_pointers,
-			sizeof(void *) * ctx->persistent_pointers_capacity);
+	if (ctx->pointers_count == ctx->pointers_capacity) {
+		ctx->pointers_capacity *= 2;
+		ctx->pointers = erealloc(ctx->pointers,
+			sizeof(void *) * ctx->pointers_capacity);
 	}
-	ctx->persistent_pointers[ctx->persistent_pointers_count++] = ptr;
+	ctx->pointers[ctx->pointers_count++] = ptr;
 }
 
 /* Copy memory into persistent heap, register in xlat, track for cleanup */
@@ -1103,15 +1103,14 @@ void async_thread_load_zval(zval *dst, const zval *src)
 ///////////////////////////////////////////////////////////
 
 /**
- * Deep-copy a single Closure into persistent memory.
+ * Deep-copy a callable into persistent memory.
  * Copies op_array via thread_copy_op_array and transfers
  * captured variables via async_thread_transfer_zval.
  */
-static void thread_copy_closure(
-	thread_copy_ctx_t *ctx, const zval *closure_zv, async_thread_closure_copy_t *dst)
+static void thread_copy_callable(
+	thread_copy_ctx_t *ctx, const zend_fcall_t *fcall, async_thread_closure_copy_t *dst)
 {
-	const zend_function *src_func = zend_get_closure_method_def(Z_OBJ_P(closure_zv));
-	const zend_op_array *src_op = &src_func->op_array;
+	const zend_op_array *src_op = &fcall->fci_cache.function_handler->op_array;
 
 	/* Deep copy the op_array */
 	zval tmp;
@@ -1168,30 +1167,30 @@ static void thread_release_closure_copy(async_thread_closure_copy_t *copy)
  * Create a snapshot: deep-copy closures + capture autoloaders.
  * Child thread will recompile code on demand via autoloader.
  */
-async_thread_snapshot_t *async_thread_snapshot_create(const zval *closure, const zval *bootloader)
+async_thread_snapshot_t *async_thread_snapshot_create(const zend_fcall_t *entry, const zend_fcall_t *bootloader)
 {
 	async_thread_snapshot_t *snapshot = pecalloc(1, sizeof(async_thread_snapshot_t), 1);
 
-	/* Deep copy closures into persistent memory */
+	/* Deep copy callables into persistent memory */
 	{
 		thread_copy_ctx_t copy_ctx;
 		thread_copy_ctx_init(&copy_ctx);
 
-		thread_copy_closure(&copy_ctx, closure, &snapshot->entry);
+		thread_copy_callable(&copy_ctx, entry, &snapshot->entry);
 
 		if (bootloader != NULL) {
-			thread_copy_closure(&copy_ctx, bootloader, &snapshot->bootloader);
+			thread_copy_callable(&copy_ctx, bootloader, &snapshot->bootloader);
 		}
 
 		/* Transfer persistent pointers tracking to snapshot */
-		if (copy_ctx.persistent_pointers_count > 0) {
-			const size_t size = sizeof(void *) * copy_ctx.persistent_pointers_count;
-			snapshot->persistent_pointers = pemalloc(size, 1);
-			memcpy(snapshot->persistent_pointers, copy_ctx.persistent_pointers, size);
-			snapshot->persistent_pointers_count = copy_ctx.persistent_pointers_count;
-			snapshot->persistent_pointers_capacity = copy_ctx.persistent_pointers_count;
+		if (copy_ctx.pointers_count > 0) {
+			const size_t size = sizeof(void *) * copy_ctx.pointers_count;
+			snapshot->pointers = pemalloc(size, 1);
+			memcpy(snapshot->pointers, copy_ctx.pointers, size);
+			snapshot->pointers_count = copy_ctx.pointers_count;
+			snapshot->pointers_capacity = copy_ctx.pointers_count;
 		}
-		efree(copy_ctx.persistent_pointers);
+		efree(copy_ctx.pointers);
 		thread_copy_ctx_destroy(&copy_ctx);
 	}
 
@@ -1270,11 +1269,11 @@ void async_thread_snapshot_destroy(async_thread_snapshot_t *snapshot)
 	async_thread_release_transferred_zval(&snapshot->autoload_functions);
 
 	/* Free all deep-copied pemalloc'd pointers in reverse order */
-	if (snapshot->persistent_pointers != NULL) {
-		for (uint32_t i = snapshot->persistent_pointers_count; i > 0; i--) {
-			pefree(snapshot->persistent_pointers[i - 1], 1);
+	if (snapshot->pointers != NULL) {
+		for (uint32_t i = snapshot->pointers_count; i > 0; i--) {
+			pefree(snapshot->pointers[i - 1], 1);
 		}
-		pefree(snapshot->persistent_pointers, 1);
+		pefree(snapshot->pointers, 1);
 	}
 
 	pefree(snapshot, 1);
