@@ -1151,67 +1151,18 @@ async_thread_snapshot_t *async_thread_snapshot_create(const zend_fcall_t *entry,
 		thread_copy_callable(&snapshot->persistent_map, bootloader, &snapshot->bootloader);
 	}
 
-	/* Capture autoloaders only when no bootloader is provided.
-	 * Bootloader is responsible for setting up its own autoloaders. */
-	if (bootloader == NULL) {
-		zval tmp_retval;
-		ZVAL_UNDEF(&tmp_retval);
-
-		zend_function *func = zend_hash_str_find_ptr(
-			CG(function_table), "spl_autoload_functions", sizeof("spl_autoload_functions") - 1);
-		if (func) {
-			zend_fcall_info fci;
-			zend_fcall_info_cache fcc;
-			zval func_name;
-			ZVAL_STRING(&func_name, "spl_autoload_functions");
-			if (zend_fcall_info_init(&func_name, 0, &fci, &fcc, NULL, NULL) == SUCCESS) {
-				fci.retval = &tmp_retval;
-				fci.param_count = 0;
-				fci.params = NULL;
-				zend_call_function(&fci, &fcc);
-			}
-			zval_ptr_dtor(&func_name);
-		}
-
-		if (Z_TYPE(tmp_retval) == IS_ARRAY) {
-			async_thread_transfer_zval(&snapshot->autoload_functions, &tmp_retval);
-		} else {
-			ZVAL_EMPTY_ARRAY(&snapshot->autoload_functions);
-		}
-		zval_ptr_dtor(&tmp_retval);
-	} else {
-		ZVAL_EMPTY_ARRAY(&snapshot->autoload_functions);
-	}
-
 	return snapshot;
 }
 
 /**
- * Load a snapshot into the current thread: register autoloaders.
+ * Load a snapshot into the current thread.
  * Called from child thread after php_request_startup().
  */
 void async_thread_snapshot_load(const async_thread_snapshot_t *snapshot)
 {
-	/* Register autoloaders in child thread */
-	if (Z_TYPE(snapshot->autoload_functions) == IS_ARRAY) {
-		zval loaded;
-		async_thread_load_zval(&loaded, &snapshot->autoload_functions);
-
-		zval *entry;
-		ZEND_HASH_FOREACH_VAL(Z_ARRVAL(loaded), entry) {
-			zend_fcall_info fci;
-			zend_fcall_info_cache fcc;
-			char *error = NULL;
-			if (zend_fcall_info_init(entry, 0, &fci, &fcc, NULL, &error) == SUCCESS) {
-				zend_autoload_register_class_loader(&fcc, false);
-			}
-			if (error) {
-				efree(error);
-			}
-		} ZEND_HASH_FOREACH_END();
-
-		zval_ptr_dtor(&loaded);
-	}
+	/* Currently a no-op. Bootloader (if provided) is responsible
+	 * for setting up autoloaders and other initialization. */
+	(void) snapshot;
 }
 
 /**
@@ -1224,9 +1175,6 @@ void async_thread_snapshot_destroy(async_thread_snapshot_t *snapshot)
 	if (snapshot->bootloader.func != NULL) {
 		thread_release_closure_copy(&snapshot->bootloader);
 	}
-
-	/* Free transferred autoloader array */
-	async_thread_release_transferred_zval(&snapshot->autoload_functions);
 
 	/* Free all deep-copied pemalloc'd pointers */
 	{

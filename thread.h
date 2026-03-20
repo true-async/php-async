@@ -36,8 +36,6 @@ typedef struct _async_thread_snapshot_t {
 	async_thread_closure_copy_t entry;
 	/* Deep-copied bootloader closure (func == NULL if not provided) */
 	async_thread_closure_copy_t bootloader;
-	/* Autoloader callables (transferred zval array) */
-	zval autoload_functions;
 	/* All pemalloc'd pointers from deep copy: old_ptr → new_ptr.
 	 * Used for deduplication during copy and bulk pefree on destroy. */
 	HashTable persistent_map;
