@@ -15,10 +15,8 @@
 */
 #include "libuv_reactor.h"
 #include <Zend/zend_async_API.h>
-#include <Zend/zend_autoload.h>
 #include <Zend/zend_closures.h>
-#include <main/php_main.h>
-#include <main/php_globals.h>
+#include <main/php.h>
 #include <main/SAPI.h>
 
 #include "exceptions.h"
@@ -1961,13 +1959,7 @@ static void libuv_thread_entry(void *arg)
 	zend_atomic_int64_store(&thread->event.thread_id, (int64_t) pthread_self());
 #endif
 
-	if (thread->event.internal_entry != NULL) {
-		/* C thread: run the internal entry directly */
-		thread->event.internal_entry(thread->event.internal_arg,
-			thread->event.base.extra_offset > sizeof(async_thread_event_t)
-				? thread->event.base.extra_offset - sizeof(async_thread_event_t) : 0);
-		thread->event.exit_code = 0;
-	} else if (thread->snapshot != NULL) {
+	if (thread->snapshot != NULL) {
 		/* PHP thread entry point */
 #ifdef ZTS
 		/* 1. Initialize TSRM resources and full PHP request lifecycle */
@@ -1985,10 +1977,10 @@ static void libuv_thread_entry(void *arg)
 		SG(headers_sent) = 1;
 		SG(request_info).no_headers = 1;
 
-		/* 3. Register autoloaders from snapshot */
+		/* 3. Load snapshot (reserved for future use) */
 		async_thread_snapshot_load(thread->snapshot);
 
-		/* 4. Run bootloader if provided */
+		/* 4. Run bootloader if provided (sets up autoloaders, etc.) */
 		if (thread->snapshot->bootloader.func != NULL) {
 			zval boot_closure, boot_retval;
 			libuv_thread_create_closure(&thread->snapshot->bootloader, &boot_closure);
@@ -2229,7 +2221,7 @@ zend_async_thread_event_t *libuv_new_thread_event(
 	thread_event->event.filename = NULL;
 	thread_event->event.lineno = 0;
 
-	/* Create snapshot: deep-copy entry closure + optional bootloader + autoloaders */
+	/* Create snapshot: deep-copy entry closure + optional bootloader */
 	if (entry != NULL) {
 		thread_event->snapshot = async_thread_snapshot_create(entry, bootloader);
 	}
