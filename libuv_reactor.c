@@ -1996,6 +1996,7 @@ static void libuv_thread_entry(void *arg)
 
 			if (EG(exception)) {
 				goto thread_transfer_exception;
+			}
 		}
 
 		/* 5. Create and call the entry closure */
