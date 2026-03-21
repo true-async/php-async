@@ -717,7 +717,7 @@ static zend_object *thread_transfer_object(thread_transfer_ctx_t *ctx, const zen
 		return existing;
 	}
 
-	const zend_class_entry *ce = src->ce;
+	zend_class_entry *ce = src->ce;
 
 	/* Allocate persistent object structure */
 	const size_t obj_size = sizeof(zend_object) + zend_object_properties_size(ce);
@@ -751,7 +751,7 @@ static zend_object *thread_transfer_object(thread_transfer_ctx_t *ctx, const zen
 /* }}} */
 
 /* {{{ thread_transfer_zval_inner — recursive deep copy of a single zval */
-static void thread_transfer_zval_inner(thread_transfer_ctx_t *ctx, zval *dst, const zval *src)
+static zend_always_inline void thread_transfer_zval_inner(thread_transfer_ctx_t *ctx, zval *dst, const zval *src)
 {
 	switch (Z_TYPE_P(src)) {
 		case IS_UNDEF:
@@ -798,16 +798,20 @@ static void thread_transfer_zval_inner(thread_transfer_ctx_t *ctx, zval *dst, co
 
 		case IS_RESOURCE:
 			/* TODO: support resource transfer via opt-in cloning */
+			zend_throw_error(NULL,
+				"Cannot transfer a resource between threads");
 			ZVAL_NULL(dst);
 			break;
 
-		case IS_REFERENCE: {
-			/* Dereference and copy the value (references don't cross threads) */
-			thread_transfer_zval_inner(ctx, dst, Z_REFVAL_P(src));
+		case IS_REFERENCE:
+			zend_throw_error(NULL,
+				"Cannot transfer a reference between threads");
+			ZVAL_NULL(dst);
 			break;
-		}
 
 		default:
+			zend_throw_error(NULL,
+				"Cannot transfer zval of type %d between threads", Z_TYPE_P(src));
 			ZVAL_NULL(dst);
 			break;
 	}
@@ -830,73 +834,6 @@ void async_thread_transfer_zval(zval *dst, const zval *src)
 	thread_transfer_ctx_init(&ctx);
 	thread_transfer_zval_inner(&ctx, dst, src);
 	thread_transfer_ctx_destroy(&ctx);
-}
-
-/**
- * Free a persistent zval previously created by async_thread_transfer_zval().
- * Recursively frees all pemalloc'd memory.
- */
-static void thread_release_transferred_hash_table(HashTable *ht);
-static void thread_release_transferred_object(zend_object *obj);
-
-static void thread_release_transferred_zval(zval *z)
-{
-	switch (Z_TYPE_P(z)) {
-		case IS_STRING:
-			zend_string_release(Z_STR_P(z));
-			break;
-
-		case IS_ARRAY:
-			thread_release_transferred_hash_table(Z_ARR_P(z));
-			break;
-
-		case IS_OBJECT:
-			thread_release_transferred_object(Z_OBJ_P(z));
-			break;
-
-		default:
-			break;
-	}
-}
-
-static void thread_release_transferred_hash_table(HashTable *ht)
-{
-	/* Guard against double-free: check and reset nNumUsed */
-	if (ht->nNumUsed == 0 && ht->nNumOfElements == 0 && ht->nTableSize == 0) {
-		return;
-	}
-
-	zval *val;
-	ZEND_HASH_FOREACH_VAL(ht, val) {
-		thread_release_transferred_zval(val);
-	} ZEND_HASH_FOREACH_END();
-
-	zend_hash_destroy(ht);
-	pefree(ht, 1);
-}
-
-static void thread_release_transferred_object(zend_object *obj)
-{
-	if (obj->properties) {
-		thread_release_transferred_hash_table(obj->properties);
-		obj->properties = NULL;
-	}
-
-	const zend_class_entry *ce = obj->ce;
-	for (int i = 0; i < ce->default_properties_count; i++) {
-		thread_release_transferred_zval(&obj->properties_table[i]);
-	}
-
-	pefree(obj, 1);
-}
-
-/**
- * Free a persistent zval and all its pemalloc'd children.
- */
-void async_thread_release_transferred_zval(zval *z)
-{
-	thread_release_transferred_zval(z);
-	ZVAL_UNDEF(z);
 }
 
 /**
@@ -1004,7 +941,7 @@ static zend_object *thread_load_object(thread_transfer_ctx_t *ctx, const zend_ob
 	return dst;
 }
 
-static void thread_load_zval_inner(thread_transfer_ctx_t *ctx, zval *dst, const zval *src)
+static zend_always_inline void thread_load_zval_inner(thread_transfer_ctx_t *ctx, zval *dst, const zval *src)
 {
 	switch (Z_TYPE_P(src)) {
 		case IS_UNDEF:
@@ -1069,8 +1006,71 @@ void async_thread_load_zval(zval *dst, const zval *src)
 	thread_transfer_ctx_destroy(&ctx);
 }
 
+/* {{{ Release — free persistent zvals created by async_thread_transfer_zval */
+
+static void thread_release_transferred_hash_table(HashTable *ht);
+static void thread_release_transferred_object(zend_object *obj);
+
+static void thread_release_transferred_zval(zval *z)
+{
+	switch (Z_TYPE_P(z)) {
+		case IS_STRING:
+			zend_string_release(Z_STR_P(z));
+			break;
+
+		case IS_ARRAY:
+			thread_release_transferred_hash_table(Z_ARR_P(z));
+			break;
+
+		case IS_OBJECT:
+			thread_release_transferred_object(Z_OBJ_P(z));
+			break;
+
+		default:
+			break;
+	}
+}
+
+static void thread_release_transferred_hash_table(HashTable *ht)
+{
+	if (ht->nNumUsed == 0 && ht->nNumOfElements == 0 && ht->nTableSize == 0) {
+		return;
+	}
+
+	zval *val;
+	ZEND_HASH_FOREACH_VAL(ht, val) {
+		thread_release_transferred_zval(val);
+	} ZEND_HASH_FOREACH_END();
+
+	zend_hash_destroy(ht);
+	pefree(ht, 1);
+}
+
+static void thread_release_transferred_object(zend_object *obj)
+{
+	if (obj->properties) {
+		thread_release_transferred_hash_table(obj->properties);
+		obj->properties = NULL;
+	}
+
+	const zend_class_entry *ce = obj->ce;
+	for (int i = 0; i < ce->default_properties_count; i++) {
+		thread_release_transferred_zval(&obj->properties_table[i]);
+	}
+
+	pefree(obj, 1);
+}
+
+void async_thread_release_transferred_zval(zval *z)
+{
+	thread_release_transferred_zval(z);
+	ZVAL_UNDEF(z);
+}
+
+/* }}} */
+
 ///////////////////////////////////////////////////////////
-/// 1. Snapshot — transfer closure + autoloaders between threads
+/// 1. Snapshot — transfer callable between threads
 ///////////////////////////////////////////////////////////
 
 /**
@@ -1452,8 +1452,6 @@ METHOD(finally)
 
 	Z_TRY_ADDREF_P(callable);
 }
-
-/* ---- Class Registration ---- */
 
 void async_register_thread_ce(void)
 {

@@ -1887,6 +1887,8 @@ static void libuv_thread_notify_cb(uv_async_t *handle)
 		thread->event.exception = Z_OBJ(exc_local);
 	}
 
+	thread->result_loaded = true;
+
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&thread->event.base,
 		&thread->event.result, thread->event.exception);
 
@@ -1904,6 +1906,8 @@ static void libuv_thread_notify_cb(uv_async_t *handle)
 static void libuv_thread_create_closure(
 	const async_thread_closure_copy_t *copy, zval *closure_zv)
 {
+	ZEND_ASSERT(copy != NULL && copy->func != NULL);
+
 	zend_function func;
 	memcpy(&func, copy->func, sizeof(zend_op_array));
 	func.op_array.fn_flags &= ~ZEND_ACC_IMMUTABLE;
@@ -1999,15 +2003,7 @@ static void libuv_thread_entry(void *arg)
 			zval_ptr_dtor(&boot_closure);
 
 			if (EG(exception)) {
-				zval exc_zv;
-				ZVAL_OBJ(&exc_zv, EG(exception));
-				zval transferred;
-				async_thread_transfer_zval(&transferred, &exc_zv);
-				thread->event.exception = Z_OBJ(transferred);
-				zend_clear_exception();
-				thread->event.exit_code = -1;
-				goto thread_shutdown;
-			}
+				goto thread_transfer_exception;
 		}
 
 		/* 5. Create and call the entry closure */
@@ -2023,27 +2019,27 @@ static void libuv_thread_entry(void *arg)
 			ZVAL_UNDEF(&retval);
 			fci.retval = &retval;
 
-			if (zend_call_function(&fci, &fcc) == SUCCESS) {
+			if (zend_call_function(&fci, &fcc) == SUCCESS && !EG(exception)) {
 				if (!Z_ISUNDEF(retval)) {
 					async_thread_transfer_zval(&thread->event.result, &retval);
-					zval_ptr_dtor(&retval);
 				}
 				thread->event.exit_code = 0;
 			} else {
 				thread->event.exit_code = -1;
 			}
 
+			zval_ptr_dtor(&retval);
 			zval_ptr_dtor(&closure_zv);
 		}
 
+thread_transfer_exception:
 		if (EG(exception)) {
-			/* Transfer exception to parent thread via persistent copy */
-			zval exc_zv;
-			ZVAL_OBJ(&exc_zv, EG(exception));
-			zval transferred;
+			zval exc_zv, transferred;
+			ZVAL_OBJ_COPY(&exc_zv, EG(exception));
+			zend_clear_exception();
 			async_thread_transfer_zval(&transferred, &exc_zv);
 			thread->event.exception = Z_OBJ(transferred);
-			zend_clear_exception();
+			zval_ptr_dtor(&exc_zv);
 			thread->event.exit_code = -1;
 		}
 
@@ -2051,8 +2047,9 @@ thread_shutdown:
 		php_request_shutdown(NULL);
 		ts_free_thread();
 #else
-		/* Without ZTS, threads share globals — not safe for PHP execution */
-		thread->event.exit_code = -1;
+		/* Without ZTS, threads share globals — not safe for PHP execution.
+		 * This path should never be reached; spawn_thread should fail earlier. */
+		ZEND_UNREACHABLE();
 #endif
 	}
 
@@ -2124,28 +2121,30 @@ static bool libuv_thread_event_dispose(zend_async_event_t *event)
 		thread->snapshot = NULL;
 	}
 
-	if (thread->event.fcall) {
-		zend_fcall_release(thread->event.fcall);
-		thread->event.fcall = NULL;
-	}
-
-	if (thread->event.bootloader) {
-		zend_fcall_release(thread->event.bootloader);
-		thread->event.bootloader = NULL;
-	}
-
 	if (thread->event.filename) {
 		zend_string_release(thread->event.filename);
 		thread->event.filename = NULL;
 	}
 
-	zval_ptr_dtor(&thread->event.result);
-	ZVAL_UNDEF(&thread->event.result);
-
-	if (thread->event.exception) {
-		OBJ_RELEASE(thread->event.exception);
-		thread->event.exception = NULL;
+	/* Result/exception cleanup depends on whether notify_cb has
+	 * converted them from pemalloc to emalloc */
+	if (thread->result_loaded) {
+		zval_ptr_dtor(&thread->event.result);
+		if (thread->event.exception) {
+			OBJ_RELEASE(thread->event.exception);
+		}
+	} else {
+		if (!Z_ISUNDEF(thread->event.result)) {
+			async_thread_release_transferred_zval(&thread->event.result);
+		}
+		if (thread->event.exception) {
+			zval exc_pz;
+			ZVAL_OBJ(&exc_pz, thread->event.exception);
+			async_thread_release_transferred_zval(&exc_pz);
+		}
 	}
+	ZVAL_UNDEF(&thread->event.result);
+	thread->event.exception = NULL;
 
 	uv_close((uv_handle_t *) &thread->uv_notify, libuv_close_handle_cb);
 	return true;
@@ -2208,6 +2207,8 @@ zend_async_thread_event_t *libuv_new_thread_event(
 		? sizeof(async_thread_event_t) + extra_size
 		: sizeof(async_thread_event_t);
 
+	/* ecalloc (persistent=0): lives in parent's emalloc heap.
+	 * Safe because parent outlives child thread (uv_thread_join in stop). */
 	async_thread_event_t *thread_event = pecalloc(1, alloc_size, 0);
 
 	thread_event->event.thread_flags = thread_flags;
