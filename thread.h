@@ -20,7 +20,7 @@
 #include <Zend/zend_async_API.h>
 
 ///////////////////////////////////////////////////////////
-/// Snapshot — transfer compiled code between threads
+/// Snapshot — package transferred from parent to child
 ///////////////////////////////////////////////////////////
 
 /**
@@ -36,31 +36,80 @@ typedef struct _async_thread_snapshot_t {
 	async_thread_closure_copy_t entry;
 	/* Deep-copied bootloader closure (func == NULL if not provided) */
 	async_thread_closure_copy_t bootloader;
+	/* Parent SAPI context — propagated to child thread before php_request_startup */
+	void *parent_server_context;
+	int parent_argc;
+	char **parent_argv;
 	/* All pemalloc'd pointers from deep copy: old_ptr → new_ptr.
 	 * Used for deduplication during copy and bulk pefree on destroy. */
 	HashTable persistent_map;
 } async_thread_snapshot_t;
 
 /**
- * Create a snapshot: deep-copy entry closure + optional bootloader + autoloaders.
- * Must be called from the parent thread before spawning the child.
+ * Create a snapshot: deep-copy entry closure + optional bootloader,
+ * capture parent SAPI context.
  *
  * @param entry        The callable to execute in the child thread
  * @param bootloader   Optional bootloader callable (NULL if not provided)
- * @return Snapshot structure (caller owns, must call async_thread_snapshot_destroy)
+ * @return Snapshot (caller owns, free with async_thread_snapshot_destroy)
  */
-async_thread_snapshot_t *async_thread_snapshot_create(const zend_fcall_t *entry, const zend_fcall_t *bootloader);
-
-/**
- * Load a snapshot into the current thread: register autoloaders.
- * Must be called from the child thread after php_request_startup().
- */
-void async_thread_snapshot_load(const async_thread_snapshot_t *snapshot);
+async_thread_snapshot_t *async_thread_snapshot_create(
+	const zend_fcall_t *entry, const zend_fcall_t *bootloader);
 
 /**
  * Free a snapshot and all its resources.
  */
 void async_thread_snapshot_destroy(async_thread_snapshot_t *snapshot);
+
+///////////////////////////////////////////////////////////
+/// Thread lifecycle — PHP request in child thread
+///////////////////////////////////////////////////////////
+
+/**
+ * Initialize PHP request in child thread.
+ * Must be called from the child thread entry point.
+ *
+ * Performs: ts_resource, TSRM init, SAPI context propagation,
+ * php_request_startup, post-startup fixups.
+ *
+ * @return SUCCESS or FAILURE
+ */
+int async_thread_request_startup(const async_thread_snapshot_t *snapshot);
+
+/**
+ * Shut down PHP request in child thread.
+ * Must be called before thread exit.
+ *
+ * Performs: php_request_shutdown, ts_free_thread.
+ */
+void async_thread_request_shutdown(void);
+
+/**
+ * Create a callable Closure from a deep-copied closure.
+ * Loads bound variables into current thread's emalloc.
+ *
+ * @param copy         The deep-copied closure (from snapshot)
+ * @param closure_zv   Output: the created Closure zval
+ */
+void async_thread_create_closure(
+	const async_thread_closure_copy_t *copy, zval *closure_zv);
+
+/**
+ * Thread entry point: run the snapshot's closures in a new PHP request.
+ *
+ * Handles the full lifecycle: request startup, bootloader, entry closure,
+ * result/exception transfer, request shutdown, and parent notification.
+ * Called from the reactor's OS thread callback.
+ *
+ * @param arg  Pointer to zend_async_thread_event_t (cast from void* for
+ *             compatibility with OS thread entry signatures)
+ */
+void async_thread_run(void *arg);
+
+/* API-compatible wrappers (opaque void* signatures for function pointers) */
+void *async_thread_snapshot_create_api(
+	const zend_fcall_t *entry, const zend_fcall_t *bootloader);
+void async_thread_snapshot_destroy_api(void *snapshot);
 
 ///////////////////////////////////////////////////////////
 /// Zval transfer — copy runtime values between threads

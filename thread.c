@@ -19,6 +19,8 @@
 #include "coroutine.h"
 #include "exceptions.h"
 #include "php_async.h"
+#include "php.h"
+#include "SAPI.h"
 #include "zend.h"
 #include "zend_API.h"
 #include "zend_compile.h"
@@ -106,7 +108,7 @@ static zend_string *thread_copy_string(thread_copy_ctx_t ctx, const zend_string 
 /* Forward declarations */
 static void thread_copy_zval(thread_copy_ctx_t ctx, zval *z);
 static void thread_copy_hash_table(thread_copy_ctx_t ctx, HashTable *ht);
-static zend_ast *thread_copy_ast(thread_copy_ctx_t ctx, const zend_ast *ast);
+static zend_ast *thread_copy_ast(thread_copy_ctx_t ctx, zend_ast *ast);
 static void thread_copy_op_array(thread_copy_ctx_t ctx, zval *zv);
 static void thread_copy_op_array_ex(thread_copy_ctx_t ctx, zend_op_array *op_array);
 static void thread_copy_type(thread_copy_ctx_t ctx, zend_type *type);
@@ -142,7 +144,7 @@ static void thread_copy_hash_table(thread_copy_ctx_t ctx, HashTable *ht)
 /* }}} */
 
 /* {{{ thread_copy_ast */
-static zend_ast *thread_copy_ast(thread_copy_ctx_t ctx, const zend_ast *ast)
+static zend_ast *thread_copy_ast(thread_copy_ctx_t ctx, zend_ast *ast)
 {
 	zend_ast *node;
 
@@ -1135,12 +1137,16 @@ static void thread_release_closure_copy(async_thread_closure_copy_t *copy)
 }
 
 /**
- * Create a snapshot: deep-copy closures + capture autoloaders.
- * Child thread will recompile code on demand via autoloader.
+ * Create a snapshot: deep-copy closures, capture parent SAPI context.
  */
 async_thread_snapshot_t *async_thread_snapshot_create(const zend_fcall_t *entry, const zend_fcall_t *bootloader)
 {
 	async_thread_snapshot_t *snapshot = pecalloc(1, sizeof(async_thread_snapshot_t), 1);
+
+	/* Capture parent SAPI context */
+	snapshot->parent_server_context = SG(server_context);
+	snapshot->parent_argc = SG(request_info).argc;
+	snapshot->parent_argv = SG(request_info).argv;
 
 	/* Deep copy callables into persistent memory */
 	zend_hash_init(&snapshot->persistent_map, 128, NULL, NULL, 1);
@@ -1152,17 +1158,6 @@ async_thread_snapshot_t *async_thread_snapshot_create(const zend_fcall_t *entry,
 	}
 
 	return snapshot;
-}
-
-/**
- * Load a snapshot into the current thread.
- * Called from child thread after php_request_startup().
- */
-void async_thread_snapshot_load(const async_thread_snapshot_t *snapshot)
-{
-	/* Currently a no-op. Bootloader (if provided) is responsible
-	 * for setting up autoloaders and other initialization. */
-	(void) snapshot;
 }
 
 /**
@@ -1189,7 +1184,180 @@ void async_thread_snapshot_destroy(async_thread_snapshot_t *snapshot)
 }
 
 ///////////////////////////////////////////////////////////
-/// 2. Thread PHP object — Async\Thread class
+/// 2. Thread lifecycle — PHP request in child thread
+///////////////////////////////////////////////////////////
+
+int async_thread_request_startup(const async_thread_snapshot_t *snapshot)
+{
+#ifdef ZTS
+	ts_resource(0);
+	TSRMLS_CACHE_UPDATE();
+
+	/* Propagate parent's SAPI context (as parallel does) */
+	SG(server_context) = snapshot->parent_server_context;
+	SG(request_info).argc = snapshot->parent_argc;
+	SG(request_info).argv = snapshot->parent_argv;
+	SG(request_info).path_translated = NULL;
+	PG(expose_php) = 0;
+	PG(auto_globals_jit) = 1;
+
+	if (UNEXPECTED(php_request_startup() == FAILURE)) {
+		ts_free_thread();
+		return FAILURE;
+	}
+
+	/* Suppress HTTP-specific behavior */
+	PG(during_request_startup) = 0;
+	SG(sapi_started) = 0;
+	SG(headers_sent) = 1;
+	SG(request_info).no_headers = 1;
+
+	return SUCCESS;
+#else
+	return FAILURE;
+#endif
+}
+
+void async_thread_request_shutdown(void)
+{
+#ifdef ZTS
+	php_request_shutdown(NULL);
+	ts_free_thread();
+#endif
+}
+
+void async_thread_create_closure(
+	const async_thread_closure_copy_t *copy, zval *closure_zv)
+{
+	ZEND_ASSERT(copy->func != NULL);
+
+	zend_function func;
+	memcpy(&func, copy->func, sizeof(zend_op_array));
+	func.op_array.fn_flags &= ~ZEND_ACC_IMMUTABLE;
+
+	/* Allocate a local refcount. Set to 2 so that zend_create_closure increments
+	 * to 3, and when the Closure is destroyed it decrements back to 2 — never
+	 * reaching 0, which would trigger destroy_op_array on pemalloc'd data. */
+	uint32_t *refcount = emalloc(sizeof(uint32_t));
+	*refcount = 2;
+	func.op_array.refcount = refcount;
+
+	/* Load bound variables from persistent memory into child's emalloc */
+	HashTable *loaded_vars = NULL;
+	if (copy->bound_vars) {
+		loaded_vars = zend_new_array(
+			zend_hash_num_elements(copy->bound_vars));
+		zend_string *key;
+		zval *val;
+		ZEND_HASH_FOREACH_STR_KEY_VAL(copy->bound_vars, key, val) {
+			zval loaded;
+			async_thread_load_zval(&loaded, val);
+			zend_hash_add(loaded_vars, key, &loaded);
+		} ZEND_HASH_FOREACH_END();
+		ZEND_MAP_PTR_INIT(func.op_array.static_variables_ptr, loaded_vars);
+	} else {
+		ZEND_MAP_PTR_INIT(func.op_array.static_variables_ptr, NULL);
+	}
+
+	/* Let zend_create_closure allocate runtime cache itself */
+	ZEND_MAP_PTR_INIT(func.op_array.run_time_cache, NULL);
+	func.op_array.fn_flags &= ~ZEND_ACC_HEAP_RT_CACHE;
+
+	zend_create_closure(closure_zv, &func, NULL, NULL, NULL);
+
+	/* zend_create_closure duplicates static_variables via zend_array_dup,
+	 * so we must free our intermediate copy */
+	if (loaded_vars) {
+		zend_array_destroy(loaded_vars);
+	}
+}
+
+void async_thread_run(void *arg)
+{
+	zend_async_thread_event_t *event = (zend_async_thread_event_t *) arg;
+	const async_thread_snapshot_t *snapshot = event->snapshot;
+
+	/* Record OS thread ID */
+#ifdef _WIN32
+	zend_atomic_int64_store(&event->thread_id, (int64_t) GetCurrentThreadId());
+#else
+	zend_atomic_int64_store(&event->thread_id, (int64_t) pthread_self());
+#endif
+
+	if (snapshot == NULL) {
+		goto notify;
+	}
+
+	/* 1. Initialize PHP request in child thread */
+	if (UNEXPECTED(async_thread_request_startup(snapshot) == FAILURE)) {
+		event->exit_code = -1;
+		goto notify;
+	}
+
+	/* 2. Run bootloader if provided (sets up autoloaders, etc.) */
+	if (snapshot->bootloader.func != NULL) {
+		zval boot_closure, boot_retval;
+		async_thread_create_closure(&snapshot->bootloader, &boot_closure);
+		ZVAL_UNDEF(&boot_retval);
+
+		zend_fcall_info boot_fci;
+		zend_fcall_info_cache boot_fcc;
+		zend_fcall_info_init(&boot_closure, 0, &boot_fci, &boot_fcc, NULL, NULL);
+		boot_fci.retval = &boot_retval;
+		zend_call_function(&boot_fci, &boot_fcc);
+		zval_ptr_dtor(&boot_retval);
+		zval_ptr_dtor(&boot_closure);
+
+		if (EG(exception)) {
+			goto transfer_exception;
+		}
+	}
+
+	/* 3. Create and call the entry closure */
+	{
+		zval closure_zv;
+		async_thread_create_closure(&snapshot->entry, &closure_zv);
+
+		zend_fcall_info fci;
+		zend_fcall_info_cache fcc;
+		zend_fcall_info_init(&closure_zv, 0, &fci, &fcc, NULL, NULL);
+
+		zval retval;
+		ZVAL_UNDEF(&retval);
+		fci.retval = &retval;
+
+		if (zend_call_function(&fci, &fcc) == SUCCESS && !EG(exception)) {
+			if (!Z_ISUNDEF(retval)) {
+				async_thread_transfer_zval(&event->result, &retval);
+			}
+			event->exit_code = 0;
+		} else {
+			event->exit_code = -1;
+		}
+
+		zval_ptr_dtor(&retval);
+		zval_ptr_dtor(&closure_zv);
+	}
+
+transfer_exception:
+	if (EG(exception)) {
+		zval exc_zv, transferred;
+		ZVAL_OBJ_COPY(&exc_zv, EG(exception));
+		zend_clear_exception();
+		async_thread_transfer_zval(&transferred, &exc_zv);
+		event->exception = Z_OBJ(transferred);
+		zval_ptr_dtor(&exc_zv);
+		event->exit_code = -1;
+	}
+
+	async_thread_request_shutdown();
+
+notify:
+	event->notify_parent(event);
+}
+
+///////////////////////////////////////////////////////////
+/// 3. Thread PHP object — Async\Thread class
 ///////////////////////////////////////////////////////////
 
 #define METHOD(name) PHP_METHOD(Async_Thread, name)
@@ -1451,6 +1619,19 @@ METHOD(finally)
 	}
 
 	Z_TRY_ADDREF_P(callable);
+}
+
+/* API wrappers for opaque void* signatures */
+/* API-compatible wrappers with opaque void* signatures */
+void *async_thread_snapshot_create_api(
+	const zend_fcall_t *entry, const zend_fcall_t *bootloader)
+{
+	return async_thread_snapshot_create(entry, bootloader);
+}
+
+void async_thread_snapshot_destroy_api(void *snapshot)
+{
+	async_thread_snapshot_destroy((async_thread_snapshot_t *) snapshot);
 }
 
 void async_register_thread_ce(void)

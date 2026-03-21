@@ -25,6 +25,7 @@
 #include "scheduler.h"
 #include "scope.h"
 #include "task_group.h"
+#include "thread.h"
 #include "zend_common.h"
 
 zend_async_scope_t *async_provide_scope(zend_object *scope_provider)
@@ -1251,5 +1252,8 @@ void async_api_register(void)
 								  async_new_future_obj,
 								  async_new_channel_obj_stub,
 								  async_new_group,
-								  engine_shutdown);
+								  engine_shutdown,
+								  async_thread_snapshot_create_api,
+								  async_thread_snapshot_destroy_api,
+								  async_thread_run);
 }

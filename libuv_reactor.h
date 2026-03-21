@@ -98,7 +98,6 @@ struct _async_thread_event_t
 	zend_async_thread_event_t event;
 	uv_thread_t uv_handle;
 	uv_async_t uv_notify;     /* Cross-thread notification handle */
-	async_thread_snapshot_t *snapshot;  /* Code snapshot for child thread */
 	bool result_loaded;  /* true after notify_cb converts pemalloc → emalloc */
 };
 

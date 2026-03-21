@@ -21,6 +21,7 @@
 
 #include "exceptions.h"
 #include "php_async.h"
+#include "php_main.h"
 #include "thread.h"
 #include "zend_common.h"
 
@@ -1897,157 +1898,10 @@ static void libuv_thread_notify_cb(uv_async_t *handle)
 
 /* }}} */
 
-/**
- * Create a callable Closure zval from a deep-copied closure.
- * Loads bound variables into current thread's emalloc.
- */
-static void libuv_thread_create_closure(
-	const async_thread_closure_copy_t *copy, zval *closure_zv)
+/* {{{ libuv_thread_notify — callback for notify_parent */
+static void libuv_thread_notify(zend_async_thread_event_t *event)
 {
-	ZEND_ASSERT(copy != NULL && copy->func != NULL);
-
-	zend_function func;
-	memcpy(&func, copy->func, sizeof(zend_op_array));
-	func.op_array.fn_flags &= ~ZEND_ACC_IMMUTABLE;
-
-	/* Allocate a local refcount. Set to 2 so that zend_create_closure increments
-	 * to 3, and when the Closure is destroyed it decrements back to 2 — never
-	 * reaching 0, which would trigger destroy_op_array on pemalloc'd data. */
-	uint32_t *refcount = emalloc(sizeof(uint32_t));
-	*refcount = 2;
-	func.op_array.refcount = refcount;
-
-	/* Load bound variables from persistent memory into child's emalloc */
-	HashTable *loaded_vars = NULL;
-	if (copy->bound_vars) {
-		loaded_vars = zend_new_array(
-			zend_hash_num_elements(copy->bound_vars));
-		zend_string *key;
-		zval *val;
-		ZEND_HASH_FOREACH_STR_KEY_VAL(copy->bound_vars, key, val) {
-			zval loaded;
-			async_thread_load_zval(&loaded, val);
-			zend_hash_add(loaded_vars, key, &loaded);
-		} ZEND_HASH_FOREACH_END();
-		ZEND_MAP_PTR_INIT(func.op_array.static_variables_ptr, loaded_vars);
-	} else {
-		ZEND_MAP_PTR_INIT(func.op_array.static_variables_ptr, NULL);
-	}
-
-	/* Let zend_create_closure allocate runtime cache itself */
-	ZEND_MAP_PTR_INIT(func.op_array.run_time_cache, NULL);
-	func.op_array.fn_flags &= ~ZEND_ACC_HEAP_RT_CACHE;
-
-	zend_create_closure(closure_zv, &func, NULL, NULL, NULL);
-
-	/* zend_create_closure duplicates static_variables via zend_array_dup,
-	 * so we must free our intermediate copy */
-	if (loaded_vars) {
-		zend_array_destroy(loaded_vars);
-	}
-}
-
-/* {{{ libuv_thread_entry - the function that runs in the new OS thread */
-static void libuv_thread_entry(void *arg)
-{
-	async_thread_event_t *thread = (async_thread_event_t *) arg;
-
-	/* Record OS thread ID */
-#ifdef _WIN32
-	zend_atomic_int64_store(&thread->event.thread_id, (int64_t) GetCurrentThreadId());
-#else
-	zend_atomic_int64_store(&thread->event.thread_id, (int64_t) pthread_self());
-#endif
-
-	if (thread->snapshot != NULL) {
-		/* PHP thread entry point */
-#ifdef ZTS
-		/* 1. Initialize TSRM resources and full PHP request lifecycle */
-		ts_resource(0);
-		TSRMLS_CACHE_UPDATE();
-
-		if (UNEXPECTED(php_request_startup() == FAILURE)) {
-			thread->event.exit_code = -1;
-			ts_free_thread();
-			goto notify_parent;
-		}
-
-		/* 2. Suppress HTTP-specific behavior in child thread */
-		PG(during_request_startup) = 0;
-		SG(headers_sent) = 1;
-		SG(request_info).no_headers = 1;
-
-		/* 3. Load snapshot (reserved for future use) */
-		async_thread_snapshot_load(thread->snapshot);
-
-		/* 4. Run bootloader if provided (sets up autoloaders, etc.) */
-		if (thread->snapshot->bootloader.func != NULL) {
-			zval boot_closure, boot_retval;
-			libuv_thread_create_closure(&thread->snapshot->bootloader, &boot_closure);
-			ZVAL_UNDEF(&boot_retval);
-
-			zend_fcall_info boot_fci;
-			zend_fcall_info_cache boot_fcc;
-			zend_fcall_info_init(&boot_closure, 0, &boot_fci, &boot_fcc, NULL, NULL);
-			boot_fci.retval = &boot_retval;
-			zend_call_function(&boot_fci, &boot_fcc);
-			zval_ptr_dtor(&boot_retval);
-			zval_ptr_dtor(&boot_closure);
-
-			if (EG(exception)) {
-				goto thread_transfer_exception;
-			}
-		}
-
-		/* 5. Create and call the entry closure */
-		{
-			zval closure_zv;
-			libuv_thread_create_closure(&thread->snapshot->entry, &closure_zv);
-
-			zend_fcall_info fci;
-			zend_fcall_info_cache fcc;
-			zend_fcall_info_init(&closure_zv, 0, &fci, &fcc, NULL, NULL);
-
-			zval retval;
-			ZVAL_UNDEF(&retval);
-			fci.retval = &retval;
-
-			if (zend_call_function(&fci, &fcc) == SUCCESS && !EG(exception)) {
-				if (!Z_ISUNDEF(retval)) {
-					async_thread_transfer_zval(&thread->event.result, &retval);
-				}
-				thread->event.exit_code = 0;
-			} else {
-				thread->event.exit_code = -1;
-			}
-
-			zval_ptr_dtor(&retval);
-			zval_ptr_dtor(&closure_zv);
-		}
-
-thread_transfer_exception:
-		if (EG(exception)) {
-			zval exc_zv, transferred;
-			ZVAL_OBJ_COPY(&exc_zv, EG(exception));
-			zend_clear_exception();
-			async_thread_transfer_zval(&transferred, &exc_zv);
-			thread->event.exception = Z_OBJ(transferred);
-			zval_ptr_dtor(&exc_zv);
-			thread->event.exit_code = -1;
-		}
-
-thread_shutdown:
-		php_request_shutdown(NULL);
-		ts_free_thread();
-#else
-		/* Without ZTS, threads share globals — not safe for PHP execution.
-		 * This path should never be reached; spawn_thread should fail earlier. */
-		ZEND_UNREACHABLE();
-#endif
-	}
-
-notify_parent:
-	/* Notify the parent event loop that the thread has finished */
+	async_thread_event_t *thread = (async_thread_event_t *) event;
 	uv_async_send(&thread->uv_notify);
 }
 
@@ -2060,7 +1914,7 @@ static bool libuv_thread_event_start(zend_async_event_t *event)
 
 	async_thread_event_t *thread = (async_thread_event_t *) event;
 
-	const int ret = uv_thread_create(&thread->uv_handle, libuv_thread_entry, thread);
+	const int ret = uv_thread_create(&thread->uv_handle, zend_async_thread_run_fn, &thread->event);
 
 	if (UNEXPECTED(ret != 0)) {
 		async_throw_error("Failed to create thread: %s", uv_strerror(ret));
@@ -2109,9 +1963,9 @@ static bool libuv_thread_event_dispose(zend_async_event_t *event)
 
 	async_thread_event_t *thread = (async_thread_event_t *) event;
 
-	if (thread->snapshot) {
-		async_thread_snapshot_destroy(thread->snapshot);
-		thread->snapshot = NULL;
+	if (thread->event.snapshot) {
+		ZEND_ASYNC_THREAD_SNAPSHOT_DESTROY(thread->event.snapshot);
+		thread->event.snapshot = NULL;
 	}
 
 	if (thread->event.filename) {
@@ -2165,8 +2019,9 @@ static bool libuv_thread_replay(zend_async_event_t *event,
 	}
 
 	if (exception == NULL && thread_event->exception != NULL) {
-		GC_ADDREF(thread_event->exception);
-		zend_throw_exception_object(thread_event->exception);
+		zval exc_zv;
+		ZVAL_OBJ_COPY(&exc_zv, thread_event->exception);
+		zend_throw_exception_object(&exc_zv);
 	} else if (exception != NULL && thread_event->exception != NULL) {
 		*exception = thread_event->exception;
 		GC_ADDREF(*exception);
@@ -2222,17 +2077,20 @@ zend_async_thread_event_t *libuv_new_thread_event(
 	thread_event->event.filename = NULL;
 	thread_event->event.lineno = 0;
 
-	/* Create snapshot: deep-copy entry closure + optional bootloader */
+	/* Set notify callback for child → parent notification */
+	thread_event->event.notify_parent = libuv_thread_notify;
+
+	/* Create snapshot: deep-copy entry closure + optional bootloader + parent context */
 	if (entry != NULL) {
-		thread_event->snapshot = async_thread_snapshot_create(entry, bootloader);
+		thread_event->event.snapshot = ZEND_ASYNC_THREAD_SNAPSHOT_CREATE(entry, bootloader);
 	}
 
 	/* Initialize cross-thread notification handle */
 	const int ret = uv_async_init(UVLOOP, &thread_event->uv_notify, libuv_thread_notify_cb);
 
 	if (UNEXPECTED(ret != 0)) {
-		if (thread_event->snapshot) {
-			async_thread_snapshot_destroy(thread_event->snapshot);
+		if (thread_event->event.snapshot) {
+			ZEND_ASYNC_THREAD_SNAPSHOT_DESTROY(thread_event->event.snapshot);
 		}
 		pefree(thread_event, 0);
 		async_throw_error("Failed to init thread notification: %s", uv_strerror(ret));
