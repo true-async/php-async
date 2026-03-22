@@ -1203,6 +1203,13 @@ int async_thread_request_startup(const async_thread_snapshot_t *snapshot)
 	SG(headers_sent) = 1;
 	SG(request_info).no_headers = 1;
 
+	/* Set script filename from entry closure for error reporting */
+	if (snapshot->entry.func && snapshot->entry.func->filename) {
+		SG(request_info).path_translated = estrndup(
+			ZSTR_VAL(snapshot->entry.func->filename),
+			ZSTR_LEN(snapshot->entry.func->filename));
+	}
+
 	return SUCCESS;
 #else
 	return FAILURE;
@@ -1212,6 +1219,11 @@ int async_thread_request_startup(const async_thread_snapshot_t *snapshot)
 void async_thread_request_shutdown(void)
 {
 #ifdef ZTS
+	/* Free path_translated before shutdown destroys emalloc heap */
+	if (SG(request_info).path_translated) {
+		efree(SG(request_info).path_translated);
+		SG(request_info).path_translated = NULL;
+	}
 	php_request_shutdown(NULL);
 	ts_free_thread();
 #endif
@@ -1226,12 +1238,9 @@ void async_thread_create_closure(
 	memcpy(&func, copy->func, sizeof(zend_op_array));
 	func.op_array.fn_flags &= ~ZEND_ACC_IMMUTABLE;
 
-	/* Allocate a local refcount. Set to 2 so that zend_create_closure increments
-	 * to 3, and when the Closure is destroyed it decrements back to 2 — never
-	 * reaching 0, which would trigger destroy_op_array on pemalloc'd data. */
-	uint32_t *refcount = emalloc(sizeof(uint32_t));
-	*refcount = 2;
-	func.op_array.refcount = refcount;
+	/* Set refcount to NULL: zend_create_closure skips increment,
+	 * and destroy_op_array returns early without freeing pemalloc'd data. */
+	func.op_array.refcount = NULL;
 
 	/* Load bound variables from persistent memory into child's emalloc */
 	HashTable *loaded_vars = NULL;
