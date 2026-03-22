@@ -102,6 +102,12 @@ void async_thread_create_closure(
  */
 void async_thread_run(void *arg);
 
+/**
+ * Load thread result/exception from persistent memory into parent's emalloc.
+ * Sets ZEND_THREAD_F_RESULT_LOADED flag.
+ */
+void async_thread_load_result(zend_async_thread_event_t *event);
+
 /* API-compatible wrappers (opaque void* signatures for function pointers) */
 void *async_thread_snapshot_create_api(
 	const zend_fcall_t *entry, const zend_fcall_t *bootloader);

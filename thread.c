@@ -703,7 +703,13 @@ static HashTable *thread_transfer_hash_table(thread_transfer_ctx_t *ctx, const H
 }
 /* }}} */
 
-/* {{{ thread_transfer_object — deep copy an object via clone into persistent memory */
+/* {{{ thread_transfer_object — deep copy an object into persistent memory.
+ *
+ * pemalloc + memcpy the whole zend_object, then deep-copy each property
+ * in the copy's properties_table. Repurpose ce/handlers fields for transit:
+ *   ce       → persistent class name (zend_string *)
+ *   handlers → properties count (cast to pointer)
+ */
 static zend_object *thread_transfer_object(thread_transfer_ctx_t *ctx, const zend_object *src)
 {
 	zend_object *existing = thread_transfer_xlat_get(ctx, src);
@@ -711,32 +717,29 @@ static zend_object *thread_transfer_object(thread_transfer_ctx_t *ctx, const zen
 		return existing;
 	}
 
-	zend_class_entry *ce = src->ce;
-
-	/* Allocate persistent object structure */
+	const zend_class_entry *ce = src->ce;
+	const uint32_t prop_count = ce->default_properties_count;
 	const size_t obj_size = sizeof(zend_object) + zend_object_properties_size(ce);
+
+	/* pemalloc + memcpy the entire object */
 	zend_object *dst = pemalloc(obj_size, 1);
-	memset(dst, 0, obj_size);
+	memcpy(dst, src, obj_size);
 
 	/* Register early so cycles are handled */
 	thread_transfer_xlat_put(ctx, src, dst);
 
-	/* Copy basic header fields */
-	GC_SET_REFCOUNT(dst, 1);
-	GC_TYPE_INFO(dst) = GC_OBJECT;
-	dst->ce = ce;
-	dst->handlers = src->handlers;
+	/* Repurpose fields for transit */
+	dst->ce = (zend_class_entry *) thread_transfer_string(ctx, ce->name);
+	dst->handlers = (const zend_object_handlers *)(uintptr_t) prop_count;
+	dst->properties = NULL;
 
-	/* Copy properties */
-	if (src->properties) {
-		dst->properties = thread_transfer_hash_table(ctx, src->properties);
-	}
-
-	/* Copy property slots (declared properties) */
-	if (ce->default_properties_count > 0) {
-		for (int i = 0; i < ce->default_properties_count; i++) {
-			const zval *prop = &src->properties_table[i];
-			thread_transfer_zval_inner(ctx, &dst->properties_table[i], prop);
+	/* Deep-copy each property zval in the copy */
+	for (uint32_t i = 0; i < prop_count; i++) {
+		zval *prop = &dst->properties_table[i];
+		if (Z_TYPE_P(prop) != IS_UNDEF) {
+			zval transferred;
+			thread_transfer_zval_inner(ctx, &transferred, prop);
+			ZVAL_COPY_VALUE(prop, &transferred);
 		}
 	}
 
@@ -898,16 +901,35 @@ static zend_object *thread_load_object(thread_transfer_ctx_t *ctx, const zend_ob
 		return existing;
 	}
 
-	zend_class_entry *ce = src->ce;
+	/* Read transit fields: ce = class_name, handlers = prop_count */
+	const zend_string *class_name = (const zend_string *) src->ce;
+	const uint32_t src_prop_count = (uint32_t)(uintptr_t) src->handlers;
 
-	/* Create a normal emalloc'd object via standard handlers */
+	/* Resolve class by name via autoload */
+	zend_string *lookup_name = zend_string_init(
+		ZSTR_VAL(class_name), ZSTR_LEN(class_name), 0);
+	zend_class_entry *ce = zend_lookup_class(lookup_name);
+	zend_string_release(lookup_name);
+
+	if (UNEXPECTED(ce == NULL)) {
+		zend_throw_error(NULL,
+			"Cannot load transferred object: class \"%s\" not found",
+			ZSTR_VAL(class_name));
+		zend_object *fallback = zend_objects_new(zend_standard_class_def);
+		object_properties_init(fallback, zend_standard_class_def);
+		return fallback;
+	}
+
+	/* Create a normal emalloc'd object */
 	zend_object *dst = zend_objects_new(ce);
 	thread_transfer_xlat_put(ctx, src, dst);
-
 	object_properties_init(dst, ce);
 
-	/* Copy declared properties */
-	for (int i = 0; i < ce->default_properties_count; i++) {
+	/* Copy declared properties from transit object */
+	const uint32_t prop_count = MIN(src_prop_count,
+		(uint32_t) ce->default_properties_count);
+
+	for (uint32_t i = 0; i < prop_count; i++) {
 		const zval *prop = &src->properties_table[i];
 		if (Z_TYPE_P(prop) != IS_UNDEF) {
 			zval copy;
@@ -915,21 +937,6 @@ static zend_object *thread_load_object(thread_transfer_ctx_t *ctx, const zend_ob
 			zval_ptr_dtor(&dst->properties_table[i]);
 			ZVAL_COPY_VALUE(&dst->properties_table[i], &copy);
 		}
-	}
-
-	/* Copy dynamic properties */
-	if (src->properties) {
-		zend_string *key;
-		zval *val;
-		ZEND_HASH_MAP_FOREACH_STR_KEY_VAL(src->properties, key, val) {
-			if (key) {
-				zval copy;
-				thread_load_zval_inner(ctx, &copy, val);
-				zend_string *ekey = thread_load_string(ctx, key);
-				zend_hash_update(dst->properties, ekey, &copy);
-				zend_string_release(ekey);
-			}
-		} ZEND_HASH_FOREACH_END();
 	}
 
 	return dst;
@@ -1005,7 +1012,7 @@ void async_thread_load_zval(zval *dst, const zval *src)
 static void thread_release_transferred_hash_table(HashTable *ht);
 static void thread_release_transferred_object(zend_object *obj);
 
-static void thread_release_transferred_zval(zval *z)
+static zend_always_inline void thread_release_transferred_zval(zval *z)
 {
 	switch (Z_TYPE_P(z)) {
 		case IS_STRING:
@@ -1025,7 +1032,7 @@ static void thread_release_transferred_zval(zval *z)
 	}
 }
 
-static void thread_release_transferred_hash_table(HashTable *ht)
+static zend_always_inline void thread_release_transferred_hash_table(HashTable *ht)
 {
 	if (ht->nNumUsed == 0 && ht->nNumOfElements == 0 && ht->nTableSize == 0) {
 		return;
@@ -1042,16 +1049,15 @@ static void thread_release_transferred_hash_table(HashTable *ht)
 
 static void thread_release_transferred_object(zend_object *obj)
 {
-	if (obj->properties) {
-		thread_release_transferred_hash_table(obj->properties);
-		obj->properties = NULL;
-	}
+	/* Read transit fields */
+	const uint32_t prop_count = (uint32_t)(uintptr_t) obj->handlers;
+	zend_string *class_name = (zend_string *) obj->ce;
 
-	const zend_class_entry *ce = obj->ce;
-	for (int i = 0; i < ce->default_properties_count; i++) {
+	for (uint32_t i = 0; i < prop_count; i++) {
 		thread_release_transferred_zval(&obj->properties_table[i]);
 	}
 
+	zend_string_release(class_name);
 	pefree(obj, 1);
 }
 
@@ -1168,6 +1174,30 @@ void async_thread_snapshot_destroy(async_thread_snapshot_t *snapshot)
 	zend_hash_destroy(&snapshot->persistent_map);
 
 	pefree(snapshot, 1);
+}
+
+/**
+ * Load thread result/exception from persistent memory into parent's emalloc.
+ * Called from reactor's notify callback in the parent thread.
+ */
+void async_thread_load_result(zend_async_thread_event_t *event)
+{
+	if (!Z_ISUNDEF(event->result)) {
+		zval local_result;
+		async_thread_load_zval(&local_result, &event->result);
+		async_thread_release_transferred_zval(&event->result);
+		ZVAL_COPY_VALUE(&event->result, &local_result);
+	}
+
+	if (event->exception != NULL) {
+		zval exc_pz, exc_local;
+		ZVAL_OBJ(&exc_pz, event->exception);
+		async_thread_load_zval(&exc_local, &exc_pz);
+		async_thread_release_transferred_zval(&exc_pz);
+		event->exception = Z_OBJ(exc_local);
+	}
+
+	ZEND_THREAD_SET_RESULT_LOADED(event);
 }
 
 ///////////////////////////////////////////////////////////
@@ -1294,61 +1324,67 @@ void async_thread_run(void *arg)
 		goto notify;
 	}
 
-	/* 2. Run bootloader if provided (sets up autoloaders, etc.) */
-	if (snapshot->bootloader.func != NULL) {
-		zval boot_closure, boot_retval;
-		async_thread_create_closure(&snapshot->bootloader, &boot_closure);
-		ZVAL_UNDEF(&boot_retval);
+	/* Wrap user code in zend_try to catch bailout (fatal error, OOM) */
+	zend_try {
+		/* 2. Run bootloader if provided (sets up autoloaders, etc.) */
+		if (snapshot->bootloader.func != NULL) {
+			zval boot_closure, boot_retval;
+			async_thread_create_closure(&snapshot->bootloader, &boot_closure);
+			ZVAL_UNDEF(&boot_retval);
 
-		zend_fcall_info boot_fci;
-		zend_fcall_info_cache boot_fcc;
-		zend_fcall_info_init(&boot_closure, 0, &boot_fci, &boot_fcc, NULL, NULL);
-		boot_fci.retval = &boot_retval;
-		zend_call_function(&boot_fci, &boot_fcc);
-		zval_ptr_dtor(&boot_retval);
-		zval_ptr_dtor(&boot_closure);
+			zend_fcall_info boot_fci;
+			zend_fcall_info_cache boot_fcc;
+			zend_fcall_info_init(&boot_closure, 0, &boot_fci, &boot_fcc, NULL, NULL);
+			boot_fci.retval = &boot_retval;
+			zend_call_function(&boot_fci, &boot_fcc);
+			zval_ptr_dtor(&boot_retval);
+			zval_ptr_dtor(&boot_closure);
 
-		if (EG(exception)) {
-			goto transfer_exception;
-		}
-	}
-
-	/* 3. Create and call the entry closure */
-	{
-		zval closure_zv;
-		async_thread_create_closure(&snapshot->entry, &closure_zv);
-
-		zend_fcall_info fci;
-		zend_fcall_info_cache fcc;
-		zend_fcall_info_init(&closure_zv, 0, &fci, &fcc, NULL, NULL);
-
-		zval retval;
-		ZVAL_UNDEF(&retval);
-		fci.retval = &retval;
-
-		if (zend_call_function(&fci, &fcc) == SUCCESS && !EG(exception)) {
-			if (!Z_ISUNDEF(retval)) {
-				async_thread_transfer_zval(&event->result, &retval);
+			if (EG(exception)) {
+				goto transfer_exception;
 			}
-			event->exit_code = 0;
-		} else {
-			event->exit_code = -1;
 		}
 
-		zval_ptr_dtor(&retval);
-		zval_ptr_dtor(&closure_zv);
-	}
+		/* 3. Create and call the entry closure */
+		{
+			zval closure_zv;
+			async_thread_create_closure(&snapshot->entry, &closure_zv);
+
+			zend_fcall_info fci;
+			zend_fcall_info_cache fcc;
+			zend_fcall_info_init(&closure_zv, 0, &fci, &fcc, NULL, NULL);
+
+			zval retval;
+			ZVAL_UNDEF(&retval);
+			fci.retval = &retval;
+
+			if (zend_call_function(&fci, &fcc) == SUCCESS && !EG(exception)) {
+				if (!Z_ISUNDEF(retval)) {
+					async_thread_transfer_zval(&event->result, &retval);
+				}
+				event->exit_code = 0;
+			} else {
+				event->exit_code = -1;
+			}
+
+			zval_ptr_dtor(&retval);
+			zval_ptr_dtor(&closure_zv);
+		}
 
 transfer_exception:
-	if (EG(exception)) {
-		zval exc_zv, transferred;
-		ZVAL_OBJ_COPY(&exc_zv, EG(exception));
-		zend_clear_exception();
-		async_thread_transfer_zval(&transferred, &exc_zv);
-		event->exception = Z_OBJ(transferred);
-		zval_ptr_dtor(&exc_zv);
+		if (EG(exception)) {
+			zval exc_zv, transferred;
+			ZVAL_OBJ_COPY(&exc_zv, EG(exception));
+			zend_clear_exception();
+			async_thread_transfer_zval(&transferred, &exc_zv);
+			event->exception = Z_OBJ(transferred);
+			zval_ptr_dtor(&exc_zv);
+			event->exit_code = -1;
+		}
+	} zend_catch {
 		event->exit_code = -1;
-	}
+		event->base.flags |= ZEND_ASYNC_EVENT_F_BAILOUT;
+	} zend_end_try();
 
 	async_thread_request_shutdown();
 

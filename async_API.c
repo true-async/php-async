@@ -1255,5 +1255,6 @@ void async_api_register(void)
 								  engine_shutdown,
 								  async_thread_snapshot_create_api,
 								  async_thread_snapshot_destroy_api,
-								  async_thread_run);
+								  async_thread_run,
+								  async_thread_load_result);
 }

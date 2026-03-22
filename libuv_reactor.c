@@ -1870,27 +1870,9 @@ static void libuv_thread_notify_cb(uv_async_t *handle)
 {
 	async_thread_event_t *thread = handle->data;
 
-	/* Load persistent result/exception into parent thread's emalloc heap */
-	if (!Z_ISUNDEF(thread->event.result)) {
-		zval local_result;
-		async_thread_load_zval(&local_result, &thread->event.result);
-		async_thread_release_transferred_zval(&thread->event.result);
-		ZVAL_COPY_VALUE(&thread->event.result, &local_result);
-	}
-
-	if (thread->event.exception != NULL) {
-		zval exc_pz, exc_local;
-		ZVAL_OBJ(&exc_pz, thread->event.exception);
-		async_thread_load_zval(&exc_local, &exc_pz);
-		async_thread_release_transferred_zval(&exc_pz);
-		thread->event.exception = Z_OBJ(exc_local);
-	}
-
-	thread->result_loaded = true;
-
-	ZEND_ASYNC_CALLBACKS_NOTIFY(&thread->event.base,
-		&thread->event.result, thread->event.exception);
-
+	/* Load persistent result/exception into parent thread's emalloc */
+	ZEND_ASYNC_THREAD_LOAD_RESULT(&thread->event);
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&thread->event.base, &thread->event.result, thread->event.exception);
 	thread->event.base.stop(&thread->event.base);
 
 	IF_EXCEPTION_STOP_REACTOR;
@@ -1975,7 +1957,7 @@ static bool libuv_thread_event_dispose(zend_async_event_t *event)
 
 	/* Result/exception cleanup depends on whether notify_cb has
 	 * converted them from pemalloc to emalloc */
-	if (thread->result_loaded) {
+	if (ZEND_THREAD_IS_RESULT_LOADED(&thread->event)) {
 		zval_ptr_dtor(&thread->event.result);
 		if (thread->event.exception) {
 			OBJ_RELEASE(thread->event.exception);
