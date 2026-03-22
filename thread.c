@@ -20,6 +20,7 @@
 #include "exceptions.h"
 #include "php_async.h"
 #include "php.h"
+#include "php_main.h"
 #include "SAPI.h"
 #include "zend.h"
 #include "zend_API.h"
@@ -33,6 +34,7 @@
 #include "zend_closures.h"
 #include "zend_common.h"
 #include "zend_map_ptr.h"
+#include "main/SAPI.h"
 
 ///////////////////////////////////////////////////////////
 /// 0. Deep copy — pemalloc-based op_array copy
@@ -71,11 +73,6 @@ static void *thread_xlat_get(const thread_copy_ctx_t ctx, const void *old_ptr)
 	return zend_hash_index_find_ptr(ctx, async_ptr_to_index((void *)old_ptr));
 }
 
-/* Register a pointer mapping without copying */
-static void thread_xlat_put(thread_copy_ctx_t ctx, const void *old_ptr, void *new_ptr)
-{
-	zend_hash_index_update_ptr(ctx, async_ptr_to_index((void *)old_ptr), new_ptr);
-}
 
 /* Canonical uninitialized bucket for empty hash tables */
 static const uint32_t thread_uninitialized_bucket[-HT_MIN_MASK] =
@@ -322,12 +319,7 @@ static void thread_copy_op_array_ex(thread_copy_ctx_t ctx, zend_op_array *op_arr
 	op_array->refcount = NULL;
 
 	if (op_array->function_name) {
-		zend_string *old_name = op_array->function_name;
 		op_array->function_name = thread_copy_string(ctx, op_array->function_name);
-		if (op_array->function_name != old_name
-				&& !thread_xlat_get(ctx, &op_array->function_name)) {
-			thread_xlat_put(ctx, &op_array->function_name, old_name);
-		}
 	}
 
 	if (op_array->scope) {
@@ -1136,20 +1128,21 @@ static void thread_release_closure_copy(async_thread_closure_copy_t *copy)
 	}
 }
 
+/* Destructor for persistent_map entries: free pemalloc'd pointers */
+static void thread_persistent_ptr_dtor(zval *zv)
+{
+	pefree(Z_PTR_P(zv), 1);
+}
+
 /**
- * Create a snapshot: deep-copy closures, capture parent SAPI context.
+ * Create a snapshot: deep-copy closures into persistent memory.
  */
 async_thread_snapshot_t *async_thread_snapshot_create(const zend_fcall_t *entry, const zend_fcall_t *bootloader)
 {
 	async_thread_snapshot_t *snapshot = pecalloc(1, sizeof(async_thread_snapshot_t), 1);
 
-	/* Capture parent SAPI context */
-	snapshot->parent_server_context = SG(server_context);
-	snapshot->parent_argc = SG(request_info).argc;
-	snapshot->parent_argv = SG(request_info).argv;
-
 	/* Deep copy callables into persistent memory */
-	zend_hash_init(&snapshot->persistent_map, 128, NULL, NULL, 1);
+	zend_hash_init(&snapshot->persistent_map, 128, NULL, thread_persistent_ptr_dtor, 1);
 
 	thread_copy_callable(&snapshot->persistent_map, entry, &snapshot->entry);
 
@@ -1171,14 +1164,8 @@ void async_thread_snapshot_destroy(async_thread_snapshot_t *snapshot)
 		thread_release_closure_copy(&snapshot->bootloader);
 	}
 
-	/* Free all deep-copied pemalloc'd pointers */
-	{
-		void *ptr;
-		ZEND_HASH_FOREACH_PTR(&snapshot->persistent_map, ptr) {
-			pefree(ptr, 1);
-		} ZEND_HASH_FOREACH_END();
-		zend_hash_destroy(&snapshot->persistent_map);
-	}
+	/* Destructor auto-frees all pemalloc'd pointers */
+	zend_hash_destroy(&snapshot->persistent_map);
 
 	pefree(snapshot, 1);
 }
@@ -1190,14 +1177,18 @@ void async_thread_snapshot_destroy(async_thread_snapshot_t *snapshot)
 int async_thread_request_startup(const async_thread_snapshot_t *snapshot)
 {
 #ifdef ZTS
+	(void) snapshot;
+
 	ts_resource(0);
 	TSRMLS_CACHE_UPDATE();
 
-	/* Propagate parent's SAPI context (as parallel does) */
-	SG(server_context) = snapshot->parent_server_context;
-	SG(request_info).argc = snapshot->parent_argc;
-	SG(request_info).argv = snapshot->parent_argv;
-	SG(request_info).path_translated = NULL;
+	/* Update TSRMLS cache in the SAPI module (e.g. php.exe on Windows).
+	 * Without this, SG()/EG() calls from SAPI callbacks would use
+	 * an uninitialized per-module thread-local cache. */
+	if (sapi_module.thread_init) {
+		sapi_module.thread_init();
+	}
+
 	PG(expose_php) = 0;
 	PG(auto_globals_jit) = 1;
 
