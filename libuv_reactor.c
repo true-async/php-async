@@ -1875,6 +1875,19 @@ static void libuv_thread_notify_cb(uv_async_t *handle)
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&thread->event.base, &thread->event.result, thread->event.exception);
 	thread->event.base.stop(&thread->event.base);
 
+	if (UNEXPECTED(thread->event.exception != NULL
+		&& false == ZEND_ASYNC_EVENT_IS_EXCEPTION_HANDLED(&thread->event.base))) {
+
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			zend_exception_set_previous(thread->event.exception, EG(exception));
+			EG(exception) = thread->event.exception;
+		} else {
+			EG(exception) = thread->event.exception;
+		}
+
+		thread->event.exception = NULL;
+	}
+
 	IF_EXCEPTION_STOP_REACTOR;
 }
 

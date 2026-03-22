@@ -136,6 +136,13 @@ void async_thread_load_zval(zval *dst, const zval *src);
 void async_thread_release_transferred_zval(zval *z);
 
 ///////////////////////////////////////////////////////////
+/// Thread exceptions
+///////////////////////////////////////////////////////////
+
+PHP_ASYNC_API extern zend_class_entry *async_ce_remote_exception;
+PHP_ASYNC_API extern zend_class_entry *async_ce_thread_transfer_exception;
+
+///////////////////////////////////////////////////////////
 /// Thread PHP object — Async\Thread class
 ///////////////////////////////////////////////////////////
 

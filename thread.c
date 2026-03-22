@@ -171,7 +171,7 @@ static zend_ast *thread_copy_ast(thread_copy_ctx_t ctx, zend_ast *ast)
 		copy->args = thread_copy_ast(ctx, copy->args);
 		node = (zend_ast *) copy;
 	} else {
-		uint32_t children = zend_ast_get_num_children(ast);
+		const uint32_t children = zend_ast_get_num_children(ast);
 		node = thread_persist_copy(ctx, ast, zend_ast_size(children));
 		for (uint32_t i = 0; i < children; i++) {
 			if (node->child[i]) {
@@ -257,7 +257,7 @@ static HashTable *thread_copy_attributes(thread_copy_ctx_t ctx, HashTable *attri
 
 	zval *v;
 	ZEND_HASH_PACKED_FOREACH_VAL(attributes, v) {
-		zend_attribute *attr = Z_PTR_P(v);
+		const zend_attribute *attr = Z_PTR_P(v);
 		zend_attribute *copy = thread_persist_copy_xlat(ctx, attr, ZEND_ATTRIBUTE_SIZE(attr->argc));
 
 		copy->name = thread_copy_string(ctx, copy->name);
@@ -409,7 +409,8 @@ static void thread_copy_op_array_ex(thread_copy_ctx_t ctx, zend_op_array *op_arr
 	/* literals */
 	if (op_array->literals) {
 		orig_literals = op_array->literals;
-		zval *p = thread_persist_copy_xlat(ctx, op_array->literals, sizeof(zval) * op_array->last_literal);
+		zval *p = thread_persist_copy_xlat(ctx, op_array->literals,
+			sizeof(zval) * op_array->last_literal);
 		const zval *end = p + op_array->last_literal;
 		op_array->literals = p;
 		while (p < end) {
@@ -422,7 +423,7 @@ static void thread_copy_op_array_ex(thread_copy_ctx_t ctx, zend_op_array *op_arr
 	{
 		zend_op *new_opcodes = thread_persist_copy_xlat(ctx, op_array->opcodes, sizeof(zend_op) * op_array->last);
 		zend_op *opline = new_opcodes;
-		zend_op *end = new_opcodes + op_array->last;
+		const zend_op *end = new_opcodes + op_array->last;
 
 		for (; opline < end; opline++) {
 #if ZEND_USE_ABS_CONST_ADDR
@@ -612,13 +613,29 @@ static void thread_copy_op_array(thread_copy_ctx_t ctx, zval *zv)
  * Uses xlat table to preserve object/array identity (same pointer
  * in source → same pointer in destination) and handle cycles.
  */
+#define THREAD_TRANSFER_MAX_DEPTH 512
+
+#define THREAD_DEPTH_CHECK(ctx, ret) do { \
+	if (UNEXPECTED((ctx)->depth >= THREAD_TRANSFER_MAX_DEPTH)) { \
+		zend_throw_error(NULL, \
+			"Maximum nesting depth (%u) exceeded during thread data transfer", \
+			THREAD_TRANSFER_MAX_DEPTH); \
+		return ret; \
+	} \
+	(ctx)->depth++; \
+} while (0)
+
+#define THREAD_DEPTH_RELEASE(ctx) (ctx)->depth--
+
 typedef struct {
 	HashTable xlat;   /* old_ptr → new_ptr mapping */
+	uint32_t depth;
 } thread_transfer_ctx_t;
 
 static void thread_transfer_ctx_init(thread_transfer_ctx_t *ctx)
 {
 	zend_hash_init(&ctx->xlat, 32, NULL, NULL, 0);
+	ctx->depth = 0;
 }
 
 static void thread_transfer_ctx_destroy(thread_transfer_ctx_t *ctx)
@@ -658,8 +675,11 @@ static zend_string *thread_transfer_string(thread_transfer_ctx_t *ctx, const zen
 /* {{{ thread_transfer_hash_table — deep copy a HashTable into persistent memory */
 static HashTable *thread_transfer_hash_table(thread_transfer_ctx_t *ctx, const HashTable *src)
 {
+	THREAD_DEPTH_CHECK(ctx, NULL);
+
 	HashTable *existing = thread_transfer_xlat_get(ctx, src);
 	if (existing) {
+		THREAD_DEPTH_RELEASE(ctx);
 		return existing;
 	}
 
@@ -671,6 +691,7 @@ static HashTable *thread_transfer_hash_table(thread_transfer_ctx_t *ctx, const H
 	zend_hash_init(dst, count, NULL, NULL, 1);
 
 	if (count == 0) {
+		THREAD_DEPTH_RELEASE(ctx);
 		return dst;
 	}
 
@@ -699,6 +720,7 @@ static HashTable *thread_transfer_hash_table(thread_transfer_ctx_t *ctx, const H
 		} ZEND_HASH_FOREACH_END();
 	}
 
+	THREAD_DEPTH_RELEASE(ctx);
 	return dst;
 }
 /* }}} */
@@ -712,12 +734,15 @@ static HashTable *thread_transfer_hash_table(thread_transfer_ctx_t *ctx, const H
  */
 static zend_object *thread_transfer_object(thread_transfer_ctx_t *ctx, const zend_object *src)
 {
+	THREAD_DEPTH_CHECK(ctx, NULL);
+
 	zend_object *existing = thread_transfer_xlat_get(ctx, src);
 	if (existing) {
+		THREAD_DEPTH_RELEASE(ctx);
 		return existing;
 	}
 
-	const zend_class_entry *ce = src->ce;
+	zend_class_entry *ce = src->ce;
 	const uint32_t prop_count = ce->default_properties_count;
 	const size_t obj_size = sizeof(zend_object) + zend_object_properties_size(ce);
 
@@ -743,6 +768,7 @@ static zend_object *thread_transfer_object(thread_transfer_ctx_t *ctx, const zen
 		}
 	}
 
+	THREAD_DEPTH_RELEASE(ctx);
 	return dst;
 }
 /* }}} */
@@ -859,9 +885,12 @@ static zend_string *thread_load_string(thread_transfer_ctx_t *ctx, const zend_st
 
 static HashTable *thread_load_hash_table(thread_transfer_ctx_t *ctx, const HashTable *src)
 {
+	THREAD_DEPTH_CHECK(ctx, NULL);
+
 	HashTable *existing = thread_transfer_xlat_get(ctx, src);
 	if (existing) {
 		GC_ADDREF(existing);
+		THREAD_DEPTH_RELEASE(ctx);
 		return existing;
 	}
 
@@ -890,14 +919,18 @@ static HashTable *thread_load_hash_table(thread_transfer_ctx_t *ctx, const HashT
 		}
 	} ZEND_HASH_FOREACH_END();
 
+	THREAD_DEPTH_RELEASE(ctx);
 	return dst;
 }
 
 static zend_object *thread_load_object(thread_transfer_ctx_t *ctx, const zend_object *src)
 {
+	THREAD_DEPTH_CHECK(ctx, NULL);
+
 	zend_object *existing = thread_transfer_xlat_get(ctx, src);
 	if (existing) {
 		GC_ADDREF(existing);
+		THREAD_DEPTH_RELEASE(ctx);
 		return existing;
 	}
 
@@ -912,11 +945,14 @@ static zend_object *thread_load_object(thread_transfer_ctx_t *ctx, const zend_ob
 	zend_string_release(lookup_name);
 
 	if (UNEXPECTED(ce == NULL)) {
-		zend_throw_error(NULL,
-			"Cannot load transferred object: class \"%s\" not found",
-			ZSTR_VAL(class_name));
+		if (!EG(exception)) {
+			zend_throw_error(NULL,
+				"Cannot load transferred object: class \"%s\" not found",
+				ZSTR_VAL(class_name));
+		}
 		zend_object *fallback = zend_objects_new(zend_standard_class_def);
 		object_properties_init(fallback, zend_standard_class_def);
+		THREAD_DEPTH_RELEASE(ctx);
 		return fallback;
 	}
 
@@ -939,6 +975,7 @@ static zend_object *thread_load_object(thread_transfer_ctx_t *ctx, const zend_ob
 		}
 	}
 
+	THREAD_DEPTH_RELEASE(ctx);
 	return dst;
 }
 
@@ -1177,27 +1214,136 @@ void async_thread_snapshot_destroy(async_thread_snapshot_t *snapshot)
 }
 
 /**
+ * Create a RemoteException wrapping a loaded remote exception object.
+ */
+/**
+ * Create a ThreadTransferException with message and optional previous exception.
+ * Consumes the previous exception reference (OBJ_RELEASE after setting).
+ */
+static zend_object *thread_create_transfer_exception(
+	const char *message, zend_object *previous)
+{
+	zval exception_zv;
+	object_init_ex(&exception_zv, async_ce_thread_transfer_exception);
+
+	zval msg_zv;
+	ZVAL_STRING(&msg_zv, message);
+	zend_update_property_ex(async_ce_thread_transfer_exception,
+		Z_OBJ(exception_zv), ZSTR_KNOWN(ZEND_STR_MESSAGE), &msg_zv);
+	zval_ptr_dtor(&msg_zv);
+
+	if (previous) {
+		zval previous_zv;
+		ZVAL_OBJ(&previous_zv, previous);
+		zend_update_property_ex(async_ce_thread_transfer_exception,
+			Z_OBJ(exception_zv), ZSTR_KNOWN(ZEND_STR_PREVIOUS), &previous_zv);
+		OBJ_RELEASE(previous);
+	}
+
+	return Z_OBJ(exception_zv);
+}
+
+static zend_object *thread_wrap_remote_exception(
+	zend_object *remote_obj, const char *remote_class_name)
+{
+	zval wrapper_zval;
+	object_init_ex(&wrapper_zval, async_ce_remote_exception);
+	zend_object *wrapper = Z_OBJ(wrapper_zval);
+
+	/* Set message from remote exception */
+	zval rv;
+	zval *remote_message = zend_read_property_ex(
+		remote_obj->ce, remote_obj, ZSTR_KNOWN(ZEND_STR_MESSAGE), 1, &rv);
+	if (remote_message && Z_TYPE_P(remote_message) == IS_STRING) {
+		zend_update_property_ex(async_ce_remote_exception, wrapper,
+			ZSTR_KNOWN(ZEND_STR_MESSAGE), remote_message);
+	}
+
+	/* Set code from remote exception */
+	zval *remote_code = zend_read_property_ex(
+		remote_obj->ce, remote_obj, ZSTR_KNOWN(ZEND_STR_CODE), 1, &rv);
+	if (remote_code && Z_TYPE_P(remote_code) == IS_LONG) {
+		zval code_zv;
+		ZVAL_LONG(&code_zv, Z_LVAL_P(remote_code));
+		zend_update_property_ex(async_ce_remote_exception, wrapper,
+			ZSTR_KNOWN(ZEND_STR_CODE), &code_zv);
+	}
+
+	/* Store the original remote exception */
+	zval remote_exception_zval;
+	ZVAL_OBJ_COPY(&remote_exception_zval, remote_obj);
+	zend_update_property(async_ce_remote_exception, wrapper,
+		"remoteException", sizeof("remoteException") - 1, &remote_exception_zval);
+	zval_ptr_dtor(&remote_exception_zval);
+
+	/* Store the remote class name */
+	zend_update_property_string(async_ce_remote_exception, wrapper,
+		"remoteClass", sizeof("remoteClass") - 1, remote_class_name);
+
+	return wrapper;
+}
+
+/**
  * Load thread result/exception from persistent memory into parent's emalloc.
  * Called from reactor's notify callback in the parent thread.
  */
 void async_thread_load_result(zend_async_thread_event_t *event)
 {
-	if (!Z_ISUNDEF(event->result)) {
-		zval local_result;
-		async_thread_load_zval(&local_result, &event->result);
-		async_thread_release_transferred_zval(&event->result);
-		ZVAL_COPY_VALUE(&event->result, &local_result);
-	}
+	ZEND_ASYNC_EVENT_CLR_EXCEPTION_HANDLED(&event->base);
 
+	/* Load exception and wrap in RemoteException */
 	if (event->exception != NULL) {
-		zval exc_pz, exc_local;
-		ZVAL_OBJ(&exc_pz, event->exception);
-		async_thread_load_zval(&exc_local, &exc_pz);
-		async_thread_release_transferred_zval(&exc_pz);
-		event->exception = Z_OBJ(exc_local);
+		/* remote_class_name lives in persistent memory (transit format: ce = class_name) */
+		const char *remote_class_name = ZSTR_VAL((zend_string *) event->exception->ce);
+
+		zval persistent_exception, loaded_exception;
+		ZVAL_OBJ(&persistent_exception, event->exception);
+		async_thread_load_zval(&loaded_exception, &persistent_exception);
+
+		if (UNEXPECTED(EG(exception))) {
+			zend_object *loading_exception = EG(exception);
+			GC_ADDREF(loading_exception);
+			zend_clear_exception();
+
+			zend_string *message = zend_strpprintf(0,
+				"Failed to load remote exception of class \"%s\"", remote_class_name);
+			event->exception = thread_create_transfer_exception(
+				ZSTR_VAL(message), loading_exception);
+			zend_string_release(message);
+
+			zval_ptr_dtor(&loaded_exception);
+			async_thread_release_transferred_zval(&persistent_exception);
+		} else {
+			event->exception = thread_wrap_remote_exception(
+				Z_OBJ(loaded_exception), remote_class_name);
+			zval_ptr_dtor(&loaded_exception);
+			async_thread_release_transferred_zval(&persistent_exception);
+		}
 	}
 
-	ZEND_THREAD_SET_RESULT_LOADED(event);
+	/* Load result */
+	if (!Z_ISUNDEF(event->result)) {
+		zval loaded_result;
+		async_thread_load_zval(&loaded_result, &event->result);
+
+		if (UNEXPECTED(EG(exception))) {
+			zend_object *loading_exception = EG(exception);
+			GC_ADDREF(loading_exception);
+			zend_clear_exception();
+
+			async_thread_release_transferred_zval(&event->result);
+			zval_ptr_dtor(&loaded_result);
+			event->exception = thread_create_transfer_exception(
+				"Failed to load thread result into parent thread", loading_exception);
+			ZEND_THREAD_SET_RESULT_LOADED(event);
+			return;
+		}
+
+		async_thread_release_transferred_zval(&event->result);
+		ZVAL_COPY_VALUE(&event->result, &loaded_result);
+		ZEND_THREAD_SET_RESULT_LOADED(event);
+		ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&event->base);
+	}
 }
 
 ///////////////////////////////////////////////////////////
@@ -1373,12 +1519,12 @@ void async_thread_run(void *arg)
 
 transfer_exception:
 		if (EG(exception)) {
-			zval exc_zv, transferred;
-			ZVAL_OBJ_COPY(&exc_zv, EG(exception));
+			zval exception_zval, transferred_exception;
+			ZVAL_OBJ_COPY(&exception_zval, EG(exception));
 			zend_clear_exception();
-			async_thread_transfer_zval(&transferred, &exc_zv);
-			event->exception = Z_OBJ(transferred);
-			zval_ptr_dtor(&exc_zv);
+			async_thread_transfer_zval(&transferred_exception, &exception_zval);
+			event->exception = Z_OBJ(transferred_exception);
+			zval_ptr_dtor(&exception_zval);
 			event->exit_code = -1;
 		}
 	} zend_catch {
@@ -1400,8 +1546,28 @@ notify:
 #define THIS_THREAD() Z_ASYNC_THREAD_P(ZEND_THIS)
 
 zend_class_entry *async_ce_thread = NULL;
+zend_class_entry *async_ce_remote_exception = NULL;
+zend_class_entry *async_ce_thread_transfer_exception = NULL;
 
 static zend_object_handlers thread_object_handlers;
+
+/* ---- RemoteException methods ---- */
+
+PHP_METHOD(Async_RemoteException, getRemoteException)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+	zval *prop = zend_read_property(async_ce_remote_exception, Z_OBJ_P(ZEND_THIS),
+		"remoteException", sizeof("remoteException") - 1, 0, NULL);
+	RETURN_ZVAL(prop, 1, 0);
+}
+
+PHP_METHOD(Async_RemoteException, getRemoteClass)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+	zval *prop = zend_read_property(async_ce_remote_exception, Z_OBJ_P(ZEND_THIS),
+		"remoteClass", sizeof("remoteClass") - 1, 0, NULL);
+	RETURN_ZVAL(prop, 1, 0);
+}
 
 /* ---- Object Lifecycle ---- */
 
@@ -1672,6 +1838,9 @@ void async_thread_snapshot_destroy_api(void *snapshot)
 
 void async_register_thread_ce(void)
 {
+	async_ce_remote_exception = register_class_Async_RemoteException(async_ce_async_exception);
+	async_ce_thread_transfer_exception = register_class_Async_ThreadTransferException(async_ce_async_exception);
+
 	async_ce_thread = register_class_Async_Thread(async_ce_completable);
 	async_ce_thread->create_object = thread_object_create;
 	async_ce_thread->default_object_handlers = &thread_object_handlers;
