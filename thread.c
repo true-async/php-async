@@ -1693,14 +1693,9 @@ cleanup:
 		thread_capture_bailout(event, &fallback_message);
 	} zend_end_try();
 
-	/* 3. Free snapshot — closures have been executed, all pemalloc'd
-	 * op_array data (strings, literals) is no longer referenced. */
-	if (event->snapshot != NULL) {
-		async_thread_snapshot_destroy(event->snapshot);
-		event->snapshot = NULL;
-	}
-
-	/* 4. Shut down PHP request */
+	/* 3. Shut down PHP request — must happen BEFORE snapshot destroy
+	 * because request shutdown may destroy closures (e.g. autoloader
+	 * callbacks) whose op_arrays reference arena-allocated strings. */
 	if (EXPECTED(request_started)) {
 		zend_first_try {
 			async_thread_request_shutdown();
@@ -1711,6 +1706,13 @@ cleanup:
 				thread_capture_bailout(event, &fallback_message);
 			}
 		} zend_end_try();
+	}
+
+	/* 4. Free snapshot arena — safe now that all PHP objects referencing
+	 * arena-allocated op_array data have been destroyed by request shutdown. */
+	if (event->snapshot != NULL) {
+		async_thread_snapshot_destroy(event->snapshot);
+		event->snapshot = NULL;
 	}
 
 	/* Free TSRM storage after all zend_end_try blocks.
