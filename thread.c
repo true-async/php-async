@@ -1066,7 +1066,7 @@ void async_thread_load_zval(zval *dst, const zval *src)
 static void thread_release_transferred_hash_table(HashTable *ht);
 static void thread_release_transferred_object(zend_object *obj);
 
-static zend_always_inline void thread_release_transferred_zval(zval *z)
+static void thread_release_transferred_zval(zval *z)
 {
 	switch (Z_TYPE_P(z)) {
 		case IS_STRING:
@@ -1086,7 +1086,7 @@ static zend_always_inline void thread_release_transferred_zval(zval *z)
 	}
 }
 
-static zend_always_inline void thread_release_transferred_hash_table(HashTable *ht)
+static void thread_release_transferred_hash_table(HashTable *ht)
 {
 	if (ht->nNumUsed == 0 && ht->nNumOfElements == 0 && ht->nTableSize == 0) {
 		return;
