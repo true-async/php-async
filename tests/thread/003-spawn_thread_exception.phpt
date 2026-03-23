@@ -20,10 +20,17 @@ spawn(function() {
     try {
         await($thread);
         echo "ERROR: should not reach here\n";
-    } catch (RuntimeException $e) {
+    } catch (\Async\RemoteException $e) {
         echo "caught: " . $e->getMessage() . "\n";
+        echo "remote class: " . $e->getRemoteClass() . "\n";
+        $remote = $e->getRemoteException();
+        if ($remote !== null) {
+            echo "remote message: " . $remote->getMessage() . "\n";
+        }
     }
 });
 ?>
 --EXPECT--
 caught: thread error
+remote class: RuntimeException
+remote message: thread error

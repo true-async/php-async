@@ -1930,8 +1930,9 @@ static bool libuv_thread_event_stop(zend_async_event_t *event)
 
 	async_thread_event_t *thread = (async_thread_event_t *) event;
 
-	/* Wait for thread to finish (should already be done by this point) */
-	uv_thread_join(&thread->uv_handle);
+	/* Unref async handle so it doesn't keep the event loop alive.
+	 * Actual uv_close happens in dispose when refcount reaches 0. */
+	uv_unref((uv_handle_t *) &thread->uv_notify);
 
 	ZEND_ASYNC_EVENT_SET_CLOSED(event);
 	event->loop_ref_count = 0;
@@ -1987,6 +1988,11 @@ static bool libuv_thread_event_dispose(zend_async_event_t *event)
 	}
 	ZVAL_UNDEF(&thread->event.result);
 	thread->event.exception = NULL;
+
+	if (thread->event.bailout_error_message) {
+		pefree(thread->event.bailout_error_message, 1);
+		thread->event.bailout_error_message = NULL;
+	}
 
 	uv_close((uv_handle_t *) &thread->uv_notify, libuv_close_handle_cb);
 	return true;
@@ -2068,6 +2074,7 @@ zend_async_thread_event_t *libuv_new_thread_event(
 
 	ZVAL_UNDEF(&thread_event->event.result);
 	thread_event->event.exception = NULL;
+	thread_event->event.bailout_error_message = NULL;
 	ZEND_ATOMIC_INT64_INIT(&thread_event->event.thread_id, 0);
 	thread_event->event.filename = NULL;
 	thread_event->event.lineno = 0;

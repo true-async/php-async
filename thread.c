@@ -1291,6 +1291,16 @@ void async_thread_load_result(zend_async_thread_event_t *event)
 {
 	ZEND_ASYNC_EVENT_CLR_EXCEPTION_HANDLED(&event->base);
 
+	/* Handle bailout from child thread (fatal error, OOM, exit()) */
+	if (UNEXPECTED(event->bailout_error_message != NULL)) {
+		event->exception = thread_create_transfer_exception(
+			event->bailout_error_message, NULL);
+		pefree(event->bailout_error_message, 1);
+		event->bailout_error_message = NULL;
+		ZEND_THREAD_SET_RESULT_LOADED(event);
+		return;
+	}
+
 	/* Load exception and wrap in RemoteException */
 	if (event->exception != NULL) {
 		/* remote_class_name lives in persistent memory (transit format: ce = class_name) */
@@ -1341,20 +1351,24 @@ void async_thread_load_result(zend_async_thread_event_t *event)
 
 		async_thread_release_transferred_zval(&event->result);
 		ZVAL_COPY_VALUE(&event->result, &loaded_result);
-		ZEND_THREAD_SET_RESULT_LOADED(event);
 		ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&event->base);
 	}
+
+	ZEND_THREAD_SET_RESULT_LOADED(event);
 }
 
 ///////////////////////////////////////////////////////////
 /// 2. Thread lifecycle — PHP request in child thread
 ///////////////////////////////////////////////////////////
 
-int async_thread_request_startup(const async_thread_snapshot_t *snapshot)
+/**
+ * Initialize TSRM for the child thread.
+ * Must be called BEFORE any zend_try block (EG(bailout) is not available yet).
+ * After this call, EG()/SG()/PG() macros work correctly.
+ */
+void async_thread_tsrm_init(void)
 {
 #ifdef ZTS
-	(void) snapshot;
-
 	ts_resource(0);
 	TSRMLS_CACHE_UPDATE();
 
@@ -1364,7 +1378,12 @@ int async_thread_request_startup(const async_thread_snapshot_t *snapshot)
 	if (sapi_module.thread_init) {
 		sapi_module.thread_init();
 	}
+#endif
+}
 
+int async_thread_request_startup(const async_thread_snapshot_t *snapshot)
+{
+#ifdef ZTS
 	PG(expose_php) = 0;
 	PG(auto_globals_jit) = 1;
 
@@ -1401,7 +1420,6 @@ void async_thread_request_shutdown(void)
 		SG(request_info).path_translated = NULL;
 	}
 	php_request_shutdown(NULL);
-	ts_free_thread();
 #endif
 }
 
@@ -1448,10 +1466,83 @@ void async_thread_create_closure(
 	}
 }
 
+/**
+ * Call a deep-copied closure in the child thread.
+ *
+ * Creates a Closure from the copy, executes it, and captures any exception
+ * immediately (before dtors that could trigger bailout).
+ *
+ * @param copy    Deep-copied closure from snapshot
+ * @param event   Thread event (receives exception on failure)
+ * @param retval  Output: return value (UNDEF on exception or void return)
+ * @return true on success, false if exception was captured
+ */
+static bool thread_call_closure(
+	const async_thread_closure_copy_t *copy,
+	zend_async_thread_event_t *event,
+	zval *retval)
+{
+	zval closure_zv;
+	async_thread_create_closure(copy, &closure_zv);
+
+	const zend_function *func = zend_get_closure_method_def(Z_OBJ(closure_zv));
+
+	ZVAL_UNDEF(retval);
+
+	/* Execute closure directly via VM, bypassing zend_call_function.
+	 * zend_call_function would trigger zend_throw_exception_internal
+	 * when current_execute_data is NULL (no PHP caller above us),
+	 * converting any uncaught exception into a fatal bailout.
+	 * With zend_execute_ex we get the exception cleanly in EG(exception). */
+	zend_execute_data *frame = zend_vm_stack_push_call_frame(
+		ZEND_CALL_TOP_FUNCTION, (zend_function *) func, 0, NULL);
+	zend_init_func_execute_data(frame, (zend_op_array *) &func->op_array, retval);
+	zend_execute_ex(frame);
+
+	/* After zend_execute_ex returns, the frame is already freed by the VM.
+	 * If the closure threw, EG(exception) is set — no bailout occurred. */
+	const bool has_exception = EG(exception) != NULL;
+	if (UNEXPECTED(has_exception)) {
+		zval exception_zval, transferred_exception;
+		ZVAL_OBJ_COPY(&exception_zval, EG(exception));
+		zend_clear_exception();
+		async_thread_transfer_zval(&transferred_exception, &exception_zval);
+		event->exception = Z_OBJ(transferred_exception);
+		zval_ptr_dtor(&exception_zval);
+		zval_ptr_dtor(retval);
+		ZVAL_UNDEF(retval);
+	}
+
+	zval_ptr_dtor(&closure_zv);
+	return !has_exception;
+}
+
+/**
+ * Capture bailout error message into the event.
+ * Safe to call after zend_catch — uses only pemalloc and PG().
+ *
+ * @param fallback  Pre-allocated fallback message (ownership transferred
+ *                  if PG(last_error_message) is NULL). Caller must set
+ *                  its pointer to NULL after this call to avoid double-free.
+ */
+static zend_always_inline void thread_capture_bailout(zend_async_thread_event_t *event, char **fallback)
+{
+	const zend_string *last_error = PG(last_error_message);
+
+	if (last_error != NULL) {
+		event->bailout_error_message = pestrdup(ZSTR_VAL(last_error), 1);
+	} else {
+		event->bailout_error_message = *fallback;
+		*fallback = NULL;
+	}
+}
+
 void async_thread_run(void *arg)
 {
 	zend_async_thread_event_t *event = (zend_async_thread_event_t *) arg;
 	const async_thread_snapshot_t *snapshot = event->snapshot;
+	bool request_started = false;
+	char *fallback_message = pestrdup("Unknown fatal error in child thread", 1);
 
 	/* Record OS thread ID */
 #ifdef _WIN32
@@ -1460,81 +1551,74 @@ void async_thread_run(void *arg)
 	zend_atomic_int64_store(&event->thread_id, (int64_t) pthread_self());
 #endif
 
-	if (snapshot == NULL) {
+	if (UNEXPECTED(snapshot == NULL)) {
 		goto notify;
 	}
 
-	/* 1. Initialize PHP request in child thread */
-	if (UNEXPECTED(async_thread_request_startup(snapshot) == FAILURE)) {
-		event->exit_code = -1;
-		goto notify;
-	}
+	/* 1a. Initialize TSRM — must happen before any zend_try
+	 * because zend_try uses EG(bailout) which requires TSRM. */
+	async_thread_tsrm_init();
 
-	/* Wrap user code in zend_try to catch bailout (fatal error, OOM) */
-	zend_try {
-		/* 2. Run bootloader if provided (sets up autoloaders, etc.) */
-		if (snapshot->bootloader.func != NULL) {
-			zval boot_closure, boot_retval;
-			async_thread_create_closure(&snapshot->bootloader, &boot_closure);
-			ZVAL_UNDEF(&boot_retval);
-
-			zend_fcall_info boot_fci;
-			zend_fcall_info_cache boot_fcc;
-			zend_fcall_info_init(&boot_closure, 0, &boot_fci, &boot_fcc, NULL, NULL);
-			boot_fci.retval = &boot_retval;
-			zend_call_function(&boot_fci, &boot_fcc);
-			zval_ptr_dtor(&boot_retval);
-			zval_ptr_dtor(&boot_closure);
-
-			if (EG(exception)) {
-				goto transfer_exception;
-			}
+	/* 1b. Start PHP request (can bailout).
+	 * zend_first_try initializes EG(bailout) for this thread. */
+	zend_first_try {
+		if (UNEXPECTED(async_thread_request_startup(snapshot) == FAILURE)) {
+			goto notify;
 		}
-
-		/* 3. Create and call the entry closure */
-		{
-			zval closure_zv;
-			async_thread_create_closure(&snapshot->entry, &closure_zv);
-
-			zend_fcall_info fci;
-			zend_fcall_info_cache fcc;
-			zend_fcall_info_init(&closure_zv, 0, &fci, &fcc, NULL, NULL);
-
-			zval retval;
-			ZVAL_UNDEF(&retval);
-			fci.retval = &retval;
-
-			if (zend_call_function(&fci, &fcc) == SUCCESS && !EG(exception)) {
-				if (!Z_ISUNDEF(retval)) {
-					async_thread_transfer_zval(&event->result, &retval);
-				}
-				event->exit_code = 0;
-			} else {
-				event->exit_code = -1;
-			}
-
-			zval_ptr_dtor(&retval);
-			zval_ptr_dtor(&closure_zv);
-		}
-
-transfer_exception:
-		if (EG(exception)) {
-			zval exception_zval, transferred_exception;
-			ZVAL_OBJ_COPY(&exception_zval, EG(exception));
-			zend_clear_exception();
-			async_thread_transfer_zval(&transferred_exception, &exception_zval);
-			event->exception = Z_OBJ(transferred_exception);
-			zval_ptr_dtor(&exception_zval);
-			event->exit_code = -1;
-		}
+		request_started = true;
 	} zend_catch {
-		event->exit_code = -1;
-		event->base.flags |= ZEND_ASYNC_EVENT_F_BAILOUT;
+		thread_capture_bailout(event, &fallback_message);
+		goto notify;
 	} zend_end_try();
 
-	async_thread_request_shutdown();
+	/* 2. Execute user closures */
+	zend_first_try {
+		zval retval;
+		ZVAL_UNDEF(&retval);
+
+		/* Bootloader (optional) */
+		if (snapshot->bootloader.func != NULL) {
+			if (!thread_call_closure(&snapshot->bootloader, event, &retval)) {
+				goto cleanup;
+			}
+		}
+
+		/* Entry closure */
+		if (thread_call_closure(&snapshot->entry, event, &retval)) {
+			if (!Z_ISUNDEF(retval)) {
+				async_thread_transfer_zval(&event->result, &retval);
+			}
+		}
+
+cleanup:
+		zval_ptr_dtor(&retval);
+	} zend_catch {
+		thread_capture_bailout(event, &fallback_message);
+	} zend_end_try();
+
+	/* 3. Shut down PHP request */
+	if (EXPECTED(request_started)) {
+		zend_first_try {
+			async_thread_request_shutdown();
+		} zend_catch {
+			/* Bailout during shutdown — not much we can do,
+			 * but don't overwrite a prior bailout message. */
+			if (event->bailout_error_message == NULL) {
+				thread_capture_bailout(event, &fallback_message);
+			}
+		} zend_end_try();
+	}
+
+	/* Free TSRM storage after all zend_end_try blocks.
+	 * Must be separate because zend_end_try accesses EG(bailout). */
+#ifdef ZTS
+	ts_free_thread();
+#endif
 
 notify:
+	if (fallback_message != NULL) {
+		pefree(fallback_message, 1);
+	}
 	event->notify_parent(event);
 }
 

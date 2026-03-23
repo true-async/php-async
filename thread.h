@@ -62,11 +62,17 @@ void async_thread_snapshot_destroy(async_thread_snapshot_t *snapshot);
 ///////////////////////////////////////////////////////////
 
 /**
+ * Initialize TSRM for the child thread.
+ * Must be called BEFORE any zend_try block (EG(bailout) is not available yet).
+ * After this call, EG()/SG()/PG() macros work correctly.
+ */
+void async_thread_tsrm_init(void);
+
+/**
  * Initialize PHP request in child thread.
- * Must be called from the child thread entry point.
+ * Must be called after async_thread_tsrm_init().
  *
- * Performs: ts_resource, TSRM init, SAPI context propagation,
- * php_request_startup, post-startup fixups.
+ * Performs: php_request_startup, post-startup fixups.
  *
  * @return SUCCESS or FAILURE
  */
@@ -74,9 +80,8 @@ int async_thread_request_startup(const async_thread_snapshot_t *snapshot);
 
 /**
  * Shut down PHP request in child thread.
- * Must be called before thread exit.
- *
- * Performs: php_request_shutdown, ts_free_thread.
+ * Performs php_request_shutdown only.
+ * Caller must call ts_free_thread() separately after zend_end_try.
  */
 void async_thread_request_shutdown(void);
 
