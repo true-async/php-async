@@ -37,40 +37,98 @@
 #include "main/SAPI.h"
 
 ///////////////////////////////////////////////////////////
-/// 0. Deep copy — pemalloc-based op_array copy
+/// 0. Deep copy — arena-based op_array copy
 ///////////////////////////////////////////////////////////
 
 /**
- * Deep copy context: holds xlat table for pointer deduplication.
- * All copies go into persistent memory (pemalloc) so child threads
- * can access them safely after parent's emalloc heap is gone.
+ * Deep copy context: bump allocator + xlat table for pointer deduplication.
+ * All copies go into persistent arena memory so child threads can access
+ * them safely. The arena is freed as a whole on snapshot destroy.
+ *
+ * Using a bump allocator instead of individual pemalloc calls guarantees
+ * that opcodes and literals are in the same memory region, keeping
+ * RT_CONSTANT int32_t relative offsets within range.
  */
-/* Copy context: pointer to snapshot's persistent_map.
- * All copy functions use this for deduplication (xlat) and cleanup tracking. */
-typedef HashTable *thread_copy_ctx_t;
+#define THREAD_COPY_ARENA_BLOCK_SIZE (64 * 1024)
 
-/* Copy memory into persistent heap, register in map for deduplication and cleanup */
-static void *thread_persist_copy_xlat(thread_copy_ctx_t ctx, const void *src, size_t size)
+typedef struct {
+	thread_copy_arena_block_t *current_block;
+	HashTable xlat;  /* old_ptr → new_ptr for deduplication */
+} thread_copy_ctx_t;
+
+static void thread_copy_ctx_init(thread_copy_ctx_t *ctx)
 {
-	void *dst = pemalloc(size, 1);
+	thread_copy_arena_block_t *block = pemalloc(
+		sizeof(thread_copy_arena_block_t) + THREAD_COPY_ARENA_BLOCK_SIZE, 1);
+	block->prev = NULL;
+	block->size = THREAD_COPY_ARENA_BLOCK_SIZE;
+	block->offset = 0;
+	ctx->current_block = block;
+	zend_hash_init(&ctx->xlat, 128, NULL, NULL, 1);
+}
+
+static zend_always_inline void *thread_copy_arena_alloc(thread_copy_ctx_t *ctx, size_t size)
+{
+	size = ZEND_MM_ALIGNED_SIZE(size);
+	thread_copy_arena_block_t *block = ctx->current_block;
+
+	if (EXPECTED(block->offset + size <= block->size)) {
+		void *ptr = block->data + block->offset;
+		block->offset += size;
+		return ptr;
+	}
+
+	/* Current block exhausted — allocate a new one */
+	size_t new_size = block->size * 2;
+	if (UNEXPECTED(new_size < size)) {
+		new_size = size;
+	}
+	thread_copy_arena_block_t *new_block = pemalloc(
+		sizeof(thread_copy_arena_block_t) + new_size, 1);
+	new_block->prev = block;
+	new_block->size = new_size;
+	new_block->offset = size;
+	ctx->current_block = new_block;
+	return new_block->data;
+}
+
+static void thread_copy_ctx_destroy(thread_copy_ctx_t *ctx)
+{
+	zend_hash_destroy(&ctx->xlat);
+	/* Arena blocks are NOT freed here — ownership transfers to the snapshot */
+}
+
+static void thread_copy_arena_free(thread_copy_arena_block_t *block)
+{
+	while (block) {
+		thread_copy_arena_block_t *prev = block->prev;
+		pefree(block, 1);
+		block = prev;
+	}
+}
+
+/* Copy memory into arena, register in xlat (update semantics — overwrites existing) */
+static void *thread_persist_copy_xlat(thread_copy_ctx_t *ctx, const void *src, size_t size)
+{
+	void *dst = thread_copy_arena_alloc(ctx, size);
 	memcpy(dst, src, size);
-	zend_hash_index_update_ptr(ctx, async_ptr_to_index((void *)src), dst);
+	zend_hash_index_update_ptr(&ctx->xlat, async_ptr_to_index((void *)src), dst);
 	return dst;
 }
 
-/* Copy memory into persistent heap, register in map for cleanup only */
-static void *thread_persist_copy(thread_copy_ctx_t ctx, const void *src, size_t size)
+/* Copy memory into arena, register in xlat (add semantics — fails silently on duplicate) */
+static void *thread_persist_copy(thread_copy_ctx_t *ctx, const void *src, size_t size)
 {
-	void *dst = pemalloc(size, 1);
+	void *dst = thread_copy_arena_alloc(ctx, size);
 	memcpy(dst, src, size);
-	zend_hash_index_add_ptr(ctx, async_ptr_to_index((void *)src), dst);
+	zend_hash_index_add_ptr(&ctx->xlat, async_ptr_to_index((void *)src), dst);
 	return dst;
 }
 
 /* Look up a previously copied pointer */
-static void *thread_xlat_get(const thread_copy_ctx_t ctx, const void *old_ptr)
+static zend_always_inline void *thread_xlat_get(const thread_copy_ctx_t *ctx, const void *old_ptr)
 {
-	return zend_hash_index_find_ptr(ctx, async_ptr_to_index((void *)old_ptr));
+	return zend_hash_index_find_ptr(&ctx->xlat, async_ptr_to_index((void *)old_ptr));
 }
 
 
@@ -79,7 +137,7 @@ static const uint32_t thread_uninitialized_bucket[-HT_MIN_MASK] =
 	{HT_INVALID_IDX, HT_INVALID_IDX};
 
 /* Copy a string into persistent memory with interned+permanent flags */
-static zend_string *thread_copy_string(thread_copy_ctx_t ctx, const zend_string *str)
+static zend_string *thread_copy_string(thread_copy_ctx_t *ctx, const zend_string *str)
 {
 	if (!str) {
 		return NULL;
@@ -103,16 +161,16 @@ static zend_string *thread_copy_string(thread_copy_ctx_t ctx, const zend_string 
 }
 
 /* Forward declarations */
-static void thread_copy_zval(thread_copy_ctx_t ctx, zval *z);
-static void thread_copy_hash_table(thread_copy_ctx_t ctx, HashTable *ht);
-static zend_ast *thread_copy_ast(thread_copy_ctx_t ctx, zend_ast *ast);
-static void thread_copy_op_array(thread_copy_ctx_t ctx, zval *zv);
-static void thread_copy_op_array_ex(thread_copy_ctx_t ctx, zend_op_array *op_array);
-static void thread_copy_type(thread_copy_ctx_t ctx, zend_type *type);
-static HashTable *thread_copy_attributes(thread_copy_ctx_t ctx, HashTable *attributes);
+static void thread_copy_zval(thread_copy_ctx_t *ctx, zval *z);
+static void thread_copy_hash_table(thread_copy_ctx_t *ctx, HashTable *ht);
+static zend_ast *thread_copy_ast(thread_copy_ctx_t *ctx, zend_ast *ast);
+static void thread_copy_op_array(thread_copy_ctx_t *ctx, zval *zv);
+static void thread_copy_op_array_ex(thread_copy_ctx_t *ctx, zend_op_array *op_array);
+static void thread_copy_type(thread_copy_ctx_t *ctx, zend_type *type);
+static HashTable *thread_copy_attributes(thread_copy_ctx_t *ctx, HashTable *attributes);
 
 /* {{{ thread_copy_hash_table — relocate HashTable internals to pemalloc */
-static void thread_copy_hash_table(thread_copy_ctx_t ctx, HashTable *ht)
+static void thread_copy_hash_table(thread_copy_ctx_t *ctx, HashTable *ht)
 {
 	HT_FLAGS(ht) |= HASH_FLAG_STATIC_KEYS;
 	ht->pDestructor = NULL;
@@ -141,7 +199,7 @@ static void thread_copy_hash_table(thread_copy_ctx_t ctx, HashTable *ht)
 /* }}} */
 
 /* {{{ thread_copy_ast */
-static zend_ast *thread_copy_ast(thread_copy_ctx_t ctx, zend_ast *ast)
+static zend_ast *thread_copy_ast(thread_copy_ctx_t *ctx, zend_ast *ast)
 {
 	zend_ast *node;
 
@@ -185,7 +243,7 @@ static zend_ast *thread_copy_ast(thread_copy_ctx_t ctx, zend_ast *ast)
 /* }}} */
 
 /* {{{ thread_copy_zval */
-static void thread_copy_zval(thread_copy_ctx_t ctx, zval *z)
+static void thread_copy_zval(thread_copy_ctx_t *ctx, zval *z)
 {
 	switch (Z_TYPE_P(z)) {
 		case IS_STRING:
@@ -246,7 +304,7 @@ static void thread_copy_zval(thread_copy_ctx_t ctx, zval *z)
 /* }}} */
 
 /* {{{ thread_copy_attributes */
-static HashTable *thread_copy_attributes(thread_copy_ctx_t ctx, HashTable *attributes)
+static HashTable *thread_copy_attributes(thread_copy_ctx_t *ctx, HashTable *attributes)
 {
 	HashTable *xlat = thread_xlat_get(ctx, attributes);
 	if (xlat) {
@@ -287,7 +345,7 @@ static HashTable *thread_copy_attributes(thread_copy_ctx_t ctx, HashTable *attri
 /* }}} */
 
 /* {{{ thread_copy_type */
-static void thread_copy_type(thread_copy_ctx_t ctx, zend_type *type)
+static void thread_copy_type(thread_copy_ctx_t *ctx, zend_type *type)
 {
 	if (ZEND_TYPE_HAS_LIST(*type)) {
 		zend_type_list *list = ZEND_TYPE_LIST(*type);
@@ -313,7 +371,7 @@ static void thread_copy_type(thread_copy_ctx_t ctx, zend_type *type)
 /* }}} */
 
 /* {{{ thread_copy_op_array_ex — deep copy op_array internals */
-static void thread_copy_op_array_ex(thread_copy_ctx_t ctx, zend_op_array *op_array)
+static void thread_copy_op_array_ex(thread_copy_ctx_t *ctx, zend_op_array *op_array)
 {
 	const zval *orig_literals = NULL;
 
@@ -585,7 +643,7 @@ static void thread_copy_op_array_ex(thread_copy_ctx_t ctx, zend_op_array *op_arr
 /* }}} */
 
 /* {{{ thread_copy_op_array — copy a standalone user function */
-static void thread_copy_op_array(thread_copy_ctx_t ctx, zval *zv)
+static void thread_copy_op_array(thread_copy_ctx_t *ctx, zval *zv)
 {
 	zend_op_array *op_array = Z_PTR_P(zv);
 	ZEND_ASSERT(op_array->type == ZEND_USER_FUNCTION);
@@ -1148,17 +1206,19 @@ void async_thread_release_transferred_zval(zval *z)
  * captured variables via async_thread_transfer_zval.
  */
 static void thread_copy_callable(
-	thread_copy_ctx_t ctx, const zend_fcall_t *fcall, async_thread_closure_copy_t *dst)
+	thread_copy_ctx_t *ctx, const zend_fcall_t *fcall, async_thread_closure_copy_t *dst)
 {
 	const zend_op_array *src_op = &fcall->fci_cache.function_handler->op_array;
 
-	/* Deep copy the op_array */
+	/* Deep copy the op_array into arena */
 	zval tmp;
 	ZVAL_PTR(&tmp, (void *) src_op);
 	thread_copy_op_array(ctx, &tmp);
 	dst->func = Z_PTR(tmp);
 
-	/* Transfer captured variables (use ($a, $b)) into persistent memory */
+	/* Transfer captured variables (use ($a, $b)) into persistent memory.
+	 * bound_vars use pemalloc (not arena) because they're released individually
+	 * in thread_release_closure_copy via async_thread_release_transferred_zval. */
 	HashTable *static_vars = ZEND_MAP_PTR_GET(src_op->static_variables_ptr);
 	if (!static_vars) {
 		static_vars = src_op->static_variables;
@@ -1167,7 +1227,6 @@ static void thread_copy_callable(
 	if (static_vars && zend_hash_num_elements(static_vars) > 0) {
 		dst->bound_vars = pemalloc(sizeof(HashTable), 1);
 		zend_hash_init(dst->bound_vars, zend_hash_num_elements(static_vars), NULL, NULL, 1);
-		zend_hash_index_add_ptr(ctx, async_ptr_to_index(dst->bound_vars), dst->bound_vars);
 
 		zend_string *key;
 		zval *val;
@@ -1185,7 +1244,7 @@ static void thread_copy_callable(
 
 /**
  * Free resources of a copied closure (bound vars only;
- * op_array is freed via persistent_map).
+ * op_array is freed via arena).
  */
 static void thread_release_closure_copy(async_thread_closure_copy_t *copy)
 {
@@ -1199,31 +1258,29 @@ static void thread_release_closure_copy(async_thread_closure_copy_t *copy)
 			}
 		} ZEND_HASH_FOREACH_END();
 		zend_hash_destroy(copy->bound_vars);
-		/* bound_vars itself is tracked in persistent_map */
+		pefree(copy->bound_vars, 1);
 	}
 }
 
-/* Destructor for persistent_map entries: free pemalloc'd pointers */
-static void thread_persistent_ptr_dtor(zval *zv)
-{
-	pefree(Z_PTR_P(zv), 1);
-}
-
 /**
- * Create a snapshot: deep-copy closures into persistent memory.
+ * Create a snapshot: deep-copy closures into arena memory.
  */
 async_thread_snapshot_t *async_thread_snapshot_create(const zend_fcall_t *entry, const zend_fcall_t *bootloader)
 {
 	async_thread_snapshot_t *snapshot = pecalloc(1, sizeof(async_thread_snapshot_t), 1);
 
-	/* Deep copy callables into persistent memory */
-	zend_hash_init(&snapshot->persistent_map, 128, NULL, thread_persistent_ptr_dtor, 1);
+	thread_copy_ctx_t ctx;
+	thread_copy_ctx_init(&ctx);
 
-	thread_copy_callable(&snapshot->persistent_map, entry, &snapshot->entry);
+	thread_copy_callable(&ctx, entry, &snapshot->entry);
 
 	if (bootloader != NULL) {
-		thread_copy_callable(&snapshot->persistent_map, bootloader, &snapshot->bootloader);
+		thread_copy_callable(&ctx, bootloader, &snapshot->bootloader);
 	}
+
+	/* Store arena block list in snapshot for later cleanup */
+	snapshot->arena_blocks = ctx.current_block;
+	thread_copy_ctx_destroy(&ctx);
 
 	return snapshot;
 }
@@ -1239,8 +1296,9 @@ void async_thread_snapshot_destroy(async_thread_snapshot_t *snapshot)
 		thread_release_closure_copy(&snapshot->bootloader);
 	}
 
-	/* Destructor auto-frees all pemalloc'd pointers */
-	zend_hash_destroy(&snapshot->persistent_map);
+	/* Free all arena blocks at once */
+	thread_copy_arena_free(snapshot->arena_blocks);
+	snapshot->arena_blocks = NULL;
 
 	pefree(snapshot, 1);
 }

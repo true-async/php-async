@@ -24,11 +24,22 @@
 ///////////////////////////////////////////////////////////
 
 /**
- * A deep-copied closure: pemalloc'd op_array + transferred bound variables.
+ * Arena block for bump allocator — all op_array data lives here.
+ * Freed as a whole on snapshot destroy (no individual pefree needed).
+ */
+typedef struct _thread_copy_arena_block_t {
+	struct _thread_copy_arena_block_t *prev;
+	size_t size;
+	size_t offset;
+	char data[];  /* flexible array member */
+} thread_copy_arena_block_t;
+
+/**
+ * A deep-copied closure: arena-allocated op_array + transferred bound variables.
  */
 typedef struct _async_thread_closure_copy_t {
 	zend_op_array *func;
-	HashTable *bound_vars;   /* NULL if no captured variables */
+	HashTable *bound_vars;   /* NULL if no captured variables (pemalloc, not arena) */
 } async_thread_closure_copy_t;
 
 typedef struct _async_thread_snapshot_t {
@@ -36,9 +47,8 @@ typedef struct _async_thread_snapshot_t {
 	async_thread_closure_copy_t entry;
 	/* Deep-copied bootloader closure (func == NULL if not provided) */
 	async_thread_closure_copy_t bootloader;
-	/* All pemalloc'd pointers from deep copy: old_ptr → new_ptr.
-	 * Used for deduplication during copy and bulk pefree on destroy. */
-	HashTable persistent_map;
+	/* Arena block list head — all pemalloc'd op_array data */
+	thread_copy_arena_block_t *arena_blocks;
 } async_thread_snapshot_t;
 
 /**
