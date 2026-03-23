@@ -15,8 +15,10 @@ use function Async\await;
 spawn(function() {
     $thread = spawn_thread(function() {
         $a = 1;
-        $b = &$a;
-        return [$a, $b];
+        $arr = [];
+        $arr[0] = &$a;
+        $arr[1] = &$a;
+        return $arr;
     });
 
     try {

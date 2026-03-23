@@ -666,6 +666,7 @@ static zend_string *thread_transfer_string(thread_transfer_ctx_t *ctx, const zen
 {
 	zend_string *existing = thread_transfer_xlat_get(ctx, str);
 	if (existing) {
+		GC_ADDREF(existing);
 		return existing;
 	}
 
@@ -682,6 +683,7 @@ static HashTable *thread_transfer_hash_table(thread_transfer_ctx_t *ctx, const H
 
 	HashTable *existing = thread_transfer_xlat_get(ctx, src);
 	if (existing) {
+		GC_ADDREF(existing);
 		THREAD_DEPTH_RELEASE(ctx);
 		return existing;
 	}
@@ -741,6 +743,7 @@ static zend_object *thread_transfer_object(thread_transfer_ctx_t *ctx, const zen
 
 	zend_object *existing = thread_transfer_xlat_get(ctx, src);
 	if (existing) {
+		GC_ADDREF(existing);
 		THREAD_DEPTH_RELEASE(ctx);
 		return existing;
 	}
@@ -761,6 +764,7 @@ static zend_object *thread_transfer_object(thread_transfer_ctx_t *ctx, const zen
 	/* pemalloc + memcpy the entire object */
 	zend_object *dst = pemalloc(obj_size, 1);
 	memcpy(dst, src, obj_size);
+	GC_SET_REFCOUNT(dst, 1);
 
 	/* Register early so cycles are handled */
 	thread_transfer_xlat_put(ctx, src, dst);
@@ -1095,6 +1099,10 @@ static void thread_release_transferred_hash_table(HashTable *ht)
 		return;
 	}
 
+	if (GC_DELREF(ht) > 0) {
+		return;
+	}
+
 	zval *val;
 	ZEND_HASH_FOREACH_VAL(ht, val) {
 		thread_release_transferred_zval(val);
@@ -1106,6 +1114,10 @@ static void thread_release_transferred_hash_table(HashTable *ht)
 
 static void thread_release_transferred_object(zend_object *obj)
 {
+	if (GC_DELREF(obj) > 0) {
+		return;
+	}
+
 	/* Read transit fields */
 	const uint32_t prop_count = (uint32_t)(uintptr_t) obj->handlers;
 	zend_string *class_name = (zend_string *) obj->ce;
