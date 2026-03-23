@@ -1,5 +1,5 @@
 --TEST--
-spawn_thread() - parent custom globals not visible in thread
+spawn_thread() - parent globals not visible in thread
 --SKIPIF--
 <?php
 if (!PHP_ZTS) die('skip ZTS required');
@@ -16,13 +16,11 @@ $GLOBALS['test_var'] = 'parent_value';
 
 spawn(function() {
     $result = await(spawn_thread(function() {
-        return [
-            'has_test_var' => isset($GLOBALS['test_var']),
-        ];
+        return isset($GLOBALS['test_var']);
     }));
 
-    echo "has_test_var: " . ($result['has_test_var'] ? 'yes' : 'no') . "\n";
+    echo "parent globals isolated: " . ($result ? 'no' : 'yes') . "\n";
 });
 ?>
 --EXPECT--
-has_test_var: no
+parent globals isolated: yes
