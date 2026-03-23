@@ -1620,7 +1620,14 @@ cleanup:
 		thread_capture_bailout(event, &fallback_message);
 	} zend_end_try();
 
-	/* 3. Shut down PHP request */
+	/* 3. Free snapshot — closures have been executed, all pemalloc'd
+	 * op_array data (strings, literals) is no longer referenced. */
+	if (event->snapshot != NULL) {
+		async_thread_snapshot_destroy(event->snapshot);
+		event->snapshot = NULL;
+	}
+
+	/* 4. Shut down PHP request */
 	if (EXPECTED(request_started)) {
 		zend_first_try {
 			async_thread_request_shutdown();
