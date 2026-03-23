@@ -742,6 +742,15 @@ static zend_object *thread_transfer_object(thread_transfer_ctx_t *ctx, const zen
 		return existing;
 	}
 
+	/* Dynamic properties (stdClass, __set) are not supported */
+	if (src->properties && zend_hash_num_elements(src->properties) > 0) {
+		zend_async_throw(ZEND_ASYNC_EXCEPTION_THREAD_TRANSFER,
+			"Cannot transfer object with dynamic properties between threads "
+			"(class %s). Use arrays instead", ZSTR_VAL(src->ce->name));
+		THREAD_DEPTH_RELEASE(ctx);
+		return NULL;
+	}
+
 	zend_class_entry *ce = src->ce;
 	const uint32_t prop_count = ce->default_properties_count;
 	const size_t obj_size = sizeof(zend_object) + zend_object_properties_size(ce);
@@ -809,12 +818,20 @@ static zend_always_inline void thread_transfer_zval_inner(thread_transfer_ctx_t 
 
 		case IS_ARRAY: {
 			HashTable *copy = thread_transfer_hash_table(ctx, Z_ARRVAL_P(src));
+			if (UNEXPECTED(copy == NULL)) {
+				ZVAL_NULL(dst);
+				return;
+			}
 			ZVAL_ARR(dst, copy);
 			break;
 		}
 
 		case IS_OBJECT: {
 			zend_object *copy = thread_transfer_object(ctx, Z_OBJ_P(src));
+			if (UNEXPECTED(copy == NULL)) {
+				ZVAL_NULL(dst);
+				return;
+			}
 			ZVAL_OBJ(dst, copy);
 			break;
 		}
@@ -1233,11 +1250,7 @@ static zend_object *thread_create_transfer_exception(
 	zval_ptr_dtor(&msg_zv);
 
 	if (previous) {
-		zval previous_zv;
-		ZVAL_OBJ(&previous_zv, previous);
-		zend_update_property_ex(async_ce_thread_transfer_exception,
-			Z_OBJ(exception_zv), ZSTR_KNOWN(ZEND_STR_PREVIOUS), &previous_zv);
-		OBJ_RELEASE(previous);
+		zend_exception_set_previous(Z_OBJ(exception_zv), previous);
 	}
 
 	return Z_OBJ(exception_zv);
@@ -1587,6 +1600,17 @@ void async_thread_run(void *arg)
 		if (thread_call_closure(&snapshot->entry, event, &retval)) {
 			if (!Z_ISUNDEF(retval)) {
 				async_thread_transfer_zval(&event->result, &retval);
+
+				/* Transfer itself may fail (unsupported types, depth limit) */
+				if (UNEXPECTED(EG(exception))) {
+					zval exception_zval, transferred_exception;
+					ZVAL_OBJ_COPY(&exception_zval, EG(exception));
+					zend_clear_exception();
+					async_thread_transfer_zval(&transferred_exception, &exception_zval);
+					event->exception = Z_OBJ(transferred_exception);
+					zval_ptr_dtor(&exception_zval);
+					ZVAL_UNDEF(&event->result);
+				}
 			}
 		}
 

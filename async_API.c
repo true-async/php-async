@@ -279,6 +279,10 @@ static zend_class_entry *async_get_class_ce(zend_async_class type)
 			return async_ce_service_unavailable_exception;
 		case ZEND_ASYNC_EXCEPTION_OPERATION_CANCELLED:
 			return async_ce_operation_cancelled_exception;
+		case ZEND_ASYNC_EXCEPTION_THREAD_TRANSFER:
+			return async_ce_thread_transfer_exception;
+		case ZEND_ASYNC_EXCEPTION_REMOTE:
+			return async_ce_remote_exception;
 		default:
 			return NULL;
 	}
