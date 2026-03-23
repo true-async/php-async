@@ -253,6 +253,9 @@ static HashTable *thread_copy_attributes(thread_copy_ctx_t ctx, HashTable *attri
 		return xlat;
 	}
 
+	/* Copy the HashTable struct first, then relocate internals on the copy,
+	 * so the original HashTable stays untouched. */
+	attributes = thread_persist_copy_xlat(ctx, attributes, sizeof(HashTable));
 	thread_copy_hash_table(ctx, attributes);
 
 	zval *v;
@@ -276,11 +279,10 @@ static HashTable *thread_copy_attributes(thread_copy_ctx_t ctx, HashTable *attri
 		ZVAL_PTR(v, copy);
 	} ZEND_HASH_FOREACH_END();
 
-	HashTable *ptr = thread_persist_copy_xlat(ctx, attributes, sizeof(HashTable));
-	GC_SET_REFCOUNT(ptr, 2);
-	GC_TYPE_INFO(ptr) = GC_ARRAY | ((IS_ARRAY_IMMUTABLE|GC_NOT_COLLECTABLE) << GC_FLAGS_SHIFT);
+	GC_SET_REFCOUNT(attributes, 2);
+	GC_TYPE_INFO(attributes) = GC_ARRAY | ((IS_ARRAY_IMMUTABLE|GC_NOT_COLLECTABLE) << GC_FLAGS_SHIFT);
 
-	return ptr;
+	return attributes;
 }
 /* }}} */
 
@@ -392,16 +394,17 @@ static void thread_copy_op_array_ex(thread_copy_ctx_t ctx, zend_op_array *op_arr
 		op_array->prototype = NULL;
 	}
 
-	/* static_variables */
+	/* static_variables — copy the HashTable struct first, then relocate
+	 * internals on the copy, so the original HashTable stays untouched. */
 	if (op_array->static_variables) {
 		Bucket *p;
+		op_array->static_variables = thread_persist_copy_xlat(ctx, op_array->static_variables, sizeof(HashTable));
 		thread_copy_hash_table(ctx, op_array->static_variables);
 		ZEND_HASH_MAP_FOREACH_BUCKET(op_array->static_variables, p) {
 			ZEND_ASSERT(p->key != NULL);
 			p->key = thread_copy_string(ctx, p->key);
 			thread_copy_zval(ctx, &p->val);
 		} ZEND_HASH_FOREACH_END();
-		op_array->static_variables = thread_persist_copy_xlat(ctx, op_array->static_variables, sizeof(HashTable));
 		GC_SET_REFCOUNT(op_array->static_variables, 2);
 		GC_TYPE_INFO(op_array->static_variables) = GC_ARRAY | ((IS_ARRAY_IMMUTABLE|GC_NOT_COLLECTABLE) << GC_FLAGS_SHIFT);
 	}
