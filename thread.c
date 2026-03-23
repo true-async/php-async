@@ -1491,6 +1491,13 @@ int async_thread_request_startup(const async_thread_snapshot_t *snapshot)
 			ZSTR_LEN(snapshot->entry.func->filename));
 	}
 
+	/* Force initialization of $_SERVER and $_ENV.
+	 * With auto_globals_jit=1 these are lazily created by the compiler,
+	 * but child thread executes pre-compiled op_arrays (no compiler runs),
+	 * so the JIT callback never fires. Force it here. */
+	zend_is_auto_global(ZSTR_KNOWN(ZEND_STR_AUTOGLOBAL_SERVER));
+	zend_is_auto_global(ZSTR_KNOWN(ZEND_STR_AUTOGLOBAL_ENV));
+
 	return SUCCESS;
 #else
 	return FAILURE;
