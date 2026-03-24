@@ -383,7 +383,7 @@ METHOD(awaitAfterCancellation)
 	scope_coroutine_callback_t *scope_callback = (scope_coroutine_callback_t *) zend_async_coroutine_callback_new(
 			current_coroutine, callback_resolve_when_zombie_completed, sizeof(scope_coroutine_callback_t));
 	if (UNEXPECTED(scope_callback == NULL)) {
-		zend_async_waker_clean(current_coroutine);
+		ZEND_ASYNC_WAKER_DESTROY(current_coroutine);
 		RETURN_THROWS();
 	}
 
@@ -395,9 +395,9 @@ METHOD(awaitAfterCancellation)
 		scope_callback->error_fci_cache = NULL;
 	}
 
-	zend_async_resume_when(current_coroutine, &scope_object->scope->scope.event, true, NULL, &scope_callback->callback);
-	if (UNEXPECTED(EG(exception))) {
-		zend_async_waker_clean(current_coroutine);
+	if (UNEXPECTED(!zend_async_resume_when(current_coroutine, &scope_object->scope->scope.event, false, NULL,
+		&scope_callback->callback))) {
+		ZEND_ASYNC_WAKER_DESTROY(current_coroutine);
 		RETURN_THROWS();
 	}
 
@@ -790,6 +790,7 @@ void async_scope_notify_coroutine_finished(async_coroutine_t *coroutine)
 	ZEND_ASSERT(scope != NULL && "Coroutine must belong to a valid scope");
 
 	async_scope_remove_coroutine(scope, coroutine);
+	scope_check_completion_and_notify(scope, true);
 	scope->scope.try_to_dispose(&scope->scope);
 }
 
@@ -1440,7 +1441,7 @@ static void scope_check_completion_and_notify(async_scope_t *scope, bool with_zo
 	}
 
 	// Check if current scope is completed
-	if (SCOPE_IS_COMPLETELY_DONE(scope)) {
+	if (scope->scope.can_be_disposed(&scope->scope, with_zombies, false)) {
 		// Notify waiting callbacks for this scope
 		ZEND_ASYNC_CALLBACKS_NOTIFY(&scope->scope.event, NULL, NULL);
 
