@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Non-blocking `flock()`**: `flock()` no longer blocks the event loop. The lock operation is offloaded to the libuv thread pool via `zend_async_task_t`, allowing other coroutines to continue executing while waiting for a file lock.
 - **`zend_async_task_new()` API**: New factory function for creating thread pool tasks, registered through the reactor like timer and IO events. Replaces manual `pecalloc` + field initialization.
 
+### Fixed
+- **`await_*()` deadlock with already-completed awaitables**: When a coroutine or Future passed to `await_all()`, `await_any_or_fail()`, or other `await_*()` functions had already completed, it was skipped entirely (`ZEND_ASYNC_EVENT_IS_CLOSED` → `continue`), but `resolved_count` was never incremented. Since `total` still counted the skipped awaitable, `resolved_count` could never reach `total`, causing a deadlock. Fixed by using `ZEND_ASYNC_EVENT_REPLAY` to synchronously replay the stored result/exception through the normal callback path, correctly updating all counters. Additionally, when replay satisfies the waiting condition early (e.g. `await_any_or_fail` needs only one result), the loop now breaks immediately instead of subscribing to remaining awaitables and suspending unnecessarily.
+
 ## [0.6.1] - 2026-03-15
 
 ### Fixed

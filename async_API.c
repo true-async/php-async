@@ -968,7 +968,7 @@ void async_await_futures(zval *iterable,
 				return;
 			}
 
-			if (awaitable == NULL || ZEND_ASYNC_EVENT_IS_CLOSED(awaitable)) {
+			if (awaitable == NULL) {
 				continue;
 			}
 
@@ -997,6 +997,21 @@ void async_await_futures(zval *iterable,
 				} else if (await_context->results != NULL && preserve_key_order) {
 					zend_hash_index_add_new(await_context->results, index, &undef_val);
 				}
+			}
+
+			/* If the awaitable already completed, replay its stored result/exception
+			 * through the normal callback path so counters update correctly.
+			 * Without this, resolved_count never reaches total → deadlock. */
+			if (ZEND_ASYNC_EVENT_IS_CLOSED(awaitable)) {
+				callback->callback.base.dispose = async_waiting_callback_dispose;
+				await_context->ref_count++;
+				ZEND_ASYNC_EVENT_REPLAY(awaitable, &callback->callback.base);
+
+				if (AWAIT_ITERATOR_IS_FINISHED(await_context)) {
+					break;
+				}
+
+				continue;
 			}
 
 			zend_async_resume_when(coroutine, awaitable, false, NULL, &callback->callback);
