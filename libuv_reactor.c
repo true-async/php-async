@@ -1955,6 +1955,35 @@ static bool libuv_task_dispose(zend_async_event_t *event)
 
 /* }}} */
 
+/* {{{ libuv_new_task */
+static zend_async_task_t *libuv_new_task(zend_async_task_run_t run, void *data, size_t extra_size)
+{
+	if (UNEXPECTED(run == NULL)) {
+		async_throw_error("Cannot create a task without a run function");
+		return NULL;
+	}
+
+	const size_t total_size = sizeof(zend_async_task_t) + extra_size;
+	zend_async_task_t *task = pecalloc(1, total_size, 0);
+
+	zend_async_event_t *event = &task->base;
+	event->ref_count = 1;
+	event->extra_offset = extra_size > 0 ? sizeof(zend_async_task_t) : 0;
+	event->add_callback = libuv_add_callback;
+	event->del_callback = libuv_remove_callback;
+	event->start = libuv_task_start;
+	event->stop = libuv_task_stop;
+	event->dispose = libuv_task_dispose;
+	event->info = libuv_task_info;
+
+	task->run = run;
+	task->data = data;
+
+	return task;
+}
+
+/* }}} */
+
 /* {{{ libuv_queue_task */
 static bool libuv_queue_task(zend_async_task_t *task)
 {
@@ -1974,16 +2003,6 @@ static bool libuv_queue_task(zend_async_task_t *task)
 			return false;
 		}
 	}
-
-	/* Initialize the event methods on the task */
-	zend_async_event_t *event = &task->base;
-	event->ref_count = 1;
-	event->add_callback = libuv_add_callback;
-	event->del_callback = libuv_remove_callback;
-	event->start = libuv_task_start;
-	event->stop = libuv_task_stop;
-	event->dispose = libuv_task_dispose;
-	event->info = libuv_task_info;
 
 	/* Allocate the libuv work wrapper */
 	libuv_work_wrapper_t *wrapper = pecalloc(1, sizeof(libuv_work_wrapper_t), 0);
@@ -4530,5 +4549,5 @@ void async_libuv_reactor_register(void)
 						   libuv_io_set_option,
 						   libuv_udp_set_membership);
 
-	zend_async_thread_pool_register(LIBUV_REACTOR_NAME, false, libuv_queue_task);
+	zend_async_thread_pool_register(LIBUV_REACTOR_NAME, false, libuv_new_task, libuv_queue_task);
 }

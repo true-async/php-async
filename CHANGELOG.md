@@ -5,6 +5,12 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-03-24
+
+### Added
+- **Non-blocking `flock()`**: `flock()` no longer blocks the event loop. The lock operation is offloaded to the libuv thread pool via `zend_async_task_t`, allowing other coroutines to continue executing while waiting for a file lock.
+- **`zend_async_task_new()` API**: New factory function for creating thread pool tasks, registered through the reactor like timer and IO events. Replaces manual `pecalloc` + field initialization.
+
 ## [0.6.1] - 2026-03-15
 
 ### Fixed
