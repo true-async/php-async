@@ -1086,8 +1086,12 @@ static bool scope_dispose(zend_async_event_t *scope_event)
 		return true;
 	}
 
-	if (ZEND_ASYNC_EVENT_REFCOUNT(scope_event) == 1) {
-		ZEND_ASYNC_EVENT_DEL_REF(scope_event);
+	// Keep ref_count=1 as a guard during disposal.
+	// Callbacks, child scope disposal, and finally handlers may create new child scopes
+	// that reference this scope as parent. They must not see ref_count=0.
+	// The DISPOSING flag prevents re-entrant calls to scope_dispose.
+	if (ZEND_ASYNC_EVENT_REFCOUNT(scope_event) == 0) {
+		ZEND_ASYNC_EVENT_ADD_REF(scope_event);
 	}
 
 	ZEND_ASYNC_SCOPE_SET_DISPOSING(&scope->scope);
@@ -1119,11 +1123,19 @@ static bool scope_dispose(zend_async_event_t *scope_event)
 
 	if (scope->finally_handlers != NULL && zend_hash_num_elements(scope->finally_handlers) > 0 &&
 		async_scope_call_finally_handlers(scope)) {
-		// If finally handlers were called, we don't dispose the scope yet
-		ZEND_ASYNC_EVENT_ADD_REF(&scope->scope.event);
+		// Finally handlers spawned coroutines — scope stays alive.
+		// Guard ref is already in place (ref_count was kept at 1).
 		if (critical_exception) {
 			async_spawn_and_throw(critical_exception, &scope->scope, 0);
 		}
+		ZEND_ASYNC_SCOPE_CLR_DISPOSING(&scope->scope);
+		return true;
+	}
+
+	// Drop the guard ref before freeing.
+	ZEND_ASYNC_EVENT_DEL_REF(scope_event);
+	if (ZEND_ASYNC_EVENT_REFCOUNT(scope_event) > 0) {
+		// Someone added refs during dispose — scope stays alive.
 		ZEND_ASYNC_SCOPE_CLR_DISPOSING(&scope->scope);
 		return true;
 	}
