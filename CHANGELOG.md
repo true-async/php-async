@@ -5,13 +5,17 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.4] - 2026-03-25
+
+### Fixed
+- **NULL `driver_data` crash in PDO PgSQL pool mode**: `pgsql_stmt_execute()` called `in_transaction()` on `stmt->dbh`, which in pool mode is the template PDO object with `driver_data == NULL`. This caused a segfault when dereferencing `H->server` via `PQtransactionStatus()`. Fixed by using `stmt->pooled_conn` (the actual pooled connection) when available.
+
 ## [0.6.3] - 2026-03-25
 
 ### Fixed
 - **`Scope::awaitCompletion()` ignoring completion**: `async_scope_notify_coroutine_finished()` was missing the call to `scope_check_completion_and_notify()`, so `awaitCompletion()` never woke up when all coroutines finished and always waited until the timeout expired.
 - **`Scope::awaitAfterCancellation()` cleanup**: Replaced `zend_async_waker_clean()` with `ZEND_ASYNC_WAKER_DESTROY()` on error paths, and switched to checking the return value of `zend_async_resume_when()` instead of `EG(exception)`.
 - **Negative stream timeout causing poll event leak**: When a stream context timeout was negative (e.g. `PHP_INT_MIN`), the signed `tv_sec` overflowed to a huge positive value when cast to `zend_ulong` milliseconds. This created an async waker with a timer event that held an extra reference to the poll event (refcount 3 instead of 2), causing it to leak. Fixed by checking `tv_sec < 0` before the conversion and falling back to synchronous `php_pollfd_for()`.
-- **NULL `driver_data` crash in PDO PgSQL pool mode**: `pgsql_stmt_execute()` called `in_transaction()` on `stmt->dbh`, which in pool mode is the template PDO object with `driver_data == NULL`. This caused a segfault when dereferencing `H->server` via `PQtransactionStatus()`. Fixed by using `stmt->pooled_conn` (the actual pooled connection) when available.
 
 ## [0.6.2] - 2026-03-24
 
