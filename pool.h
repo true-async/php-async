@@ -50,6 +50,7 @@ typedef struct _async_pool_s
 
 	/* Healthcheck timer */
 	zend_async_timer_event_t *healthcheck_timer;
+	zend_async_event_callback_t healthcheck_callback;
 	uint32_t healthcheck_interval_ms;
 } async_pool_t;
 

@@ -574,12 +574,17 @@ static bool pool_call_healthcheck(async_pool_t *pool, zval *resource)
 	return is_healthy;
 }
 
+static void pool_healthcheck_callback_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event)
+{
+	/* No-op: callback is embedded in async_pool_t, not heap-allocated */
+}
+
 static void pool_healthcheck_timer_callback(zend_async_event_t *timer_event,
 											zend_async_event_callback_t *callback,
 											void *result,
 											zend_object *exception)
 {
-	async_pool_t *pool = (async_pool_t *) callback;
+	async_pool_t *pool = (async_pool_t *) ((char *) callback - offsetof(async_pool_t, healthcheck_callback));
 	zend_async_pool_t *base = &pool->base;
 
 	if (ZEND_ASYNC_POOL_IS_CLOSED(pool)) {
@@ -650,12 +655,12 @@ static void pool_start_healthcheck_timer(async_pool_t *pool)
 		return;
 	}
 
-	/* Use pool pointer as callback data */
-	zend_async_event_callback_t *callback = (zend_async_event_callback_t *) pool;
-	callback->callback = pool_healthcheck_timer_callback;
-	callback->ref_count = 1;
+	/* Use inline callback embedded in pool structure */
+	pool->healthcheck_callback.ref_count = 1;
+	pool->healthcheck_callback.callback = pool_healthcheck_timer_callback;
+	pool->healthcheck_callback.dispose = pool_healthcheck_callback_dispose;
 
-	pool->healthcheck_timer->base.add_callback(&pool->healthcheck_timer->base, callback);
+	pool->healthcheck_timer->base.add_callback(&pool->healthcheck_timer->base, &pool->healthcheck_callback);
 	pool->healthcheck_timer->base.start(&pool->healthcheck_timer->base);
 }
 
