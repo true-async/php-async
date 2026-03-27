@@ -1458,13 +1458,14 @@ bool async_scheduler_coroutine_suspend(void)
 		const bool not_in_queue = ZEND_ASYNC_WAKER_NOT_IN_QUEUE(waker);
 
 		// Let's check that the coroutine has something to wait for;
-		// If a coroutine isn't waiting for anything, it must be in the execution queue.
-		// otherwise, it's a potential deadlock.
+		// A situation is possible where a coroutine has added events but has not yet called suspend,
+		// yet it has triggered an event without using a suspend function.
+		// Previously, this behavior caused an error, but now it is allowed.
+		// Example: curl_async.c calls curl_multi_socket_action() before suspend, which can trigger events immediately.
 		if (waker->events.nNumOfElements == 0 && not_in_queue) {
-			async_throw_error("The coroutine has no events to wait for");
-			zend_async_waker_clean(coroutine);
+			ZEND_ASYNC_WAKER_DESTROY(coroutine);
 			zend_exception_restore_fast(exception_ptr, prev_exception_ptr);
-			return false;
+			return true;
 		}
 
 		// Before starting the events, we change the status of the Waker.

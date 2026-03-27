@@ -5,6 +5,11 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.5] - 
+
+### Changed
+- **ZEND_ASYNC_SUSPEND** No longer throws an error when called with an empty array of events.
+
 ## [0.6.4] - 2026-03-25
 
 ### Fixed
