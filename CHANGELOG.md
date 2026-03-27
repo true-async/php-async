@@ -5,10 +5,11 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.5] - 
+## [0.6.5] -
 
 ### Changed
 - **ZEND_ASYNC_SUSPEND** No longer throws an error when called with an empty array of events.
+- **Waker inline storage optimization**: Embedded 2 trigger slots and 2 callback slots directly into the Waker struct, eliminating heap allocations for the most common case (1-2 events per await). Uses `capacity == 0` to mark inline triggers and `base.callback == NULL` to mark free inline callback slots. When more than 1 callback per event is needed, the inline trigger automatically promotes to a heap-allocated one. Benchmarks show ~3× speedup across all hot paths (`await`: 2.13 → 0.67 μs, `await_all` x2: 3.88 → 1.38 μs, Channel: 1.48 → 0.50 μs) with zero memory overhead.
 
 ## [0.6.4] - 2026-03-25
 
