@@ -613,7 +613,7 @@ static void pool_healthcheck_timer_callback(zend_async_event_t *timer_event,
 
 		if (is_healthy) {
 			/* Resource is healthy - return to buffer */
-			zval_circular_buffer_push(&pool->idle, &resource, false);
+			zval_circular_buffer_push(&pool->idle, &resource, true);
 			zval_ptr_dtor(&resource);
 		} else {
 			/* Resource is dead - destroy it */
@@ -624,7 +624,7 @@ static void pool_healthcheck_timer_callback(zend_async_event_t *timer_event,
 			if (total < base->min_size) {
 				zval new_resource;
 				if (pool_create_resource(pool, &new_resource)) {
-					zval_circular_buffer_push(&pool->idle, &new_resource, false);
+					zval_circular_buffer_push(&pool->idle, &new_resource, true);
 					zval_ptr_dtor(&new_resource);
 				}
 			}
@@ -708,7 +708,7 @@ async_pool_t *zend_async_pool_create(zend_fcall_t *factory,
 	pool->active_count = 0;
 
 	/* Init idle buffer */
-	circular_buffer_ctor(&pool->idle, 8, sizeof(zval), &zend_std_persistent_allocator);
+	circular_buffer_ctor(&pool->idle, min_size > 0 ? min_size : 4, sizeof(zval), &zend_std_persistent_allocator);
 
 	/* Init waiters queue */
 	pool_queue_init(&pool->waiters);
@@ -717,7 +717,7 @@ async_pool_t *zend_async_pool_create(zend_fcall_t *factory,
 	for (uint32_t i = 0; i < min_size; i++) {
 		zval resource;
 		if (pool_create_resource(pool, &resource)) {
-			zval_circular_buffer_push(&pool->idle, &resource, false);
+			zval_circular_buffer_push(&pool->idle, &resource, true);
 			zval_ptr_dtor(&resource);
 		} else if (EG(exception)) {
 			/* Stop on first error */
@@ -765,7 +765,7 @@ async_pool_t *zend_async_pool_create_internal(zend_async_pool_factory_fn factory
 	pool->active_count = 0;
 
 	/* Init idle buffer */
-	circular_buffer_ctor(&pool->idle, 8, sizeof(zval), &zend_std_persistent_allocator);
+	circular_buffer_ctor(&pool->idle, min_size > 0 ? min_size : 4, sizeof(zval), &zend_std_persistent_allocator);
 
 	/* Init waiters queue */
 	pool_queue_init(&pool->waiters);
@@ -774,7 +774,7 @@ async_pool_t *zend_async_pool_create_internal(zend_async_pool_factory_fn factory
 	for (uint32_t i = 0; i < min_size; i++) {
 		zval resource;
 		if (pool_create_resource(pool, &resource)) {
-			zval_circular_buffer_push(&pool->idle, &resource, false);
+			zval_circular_buffer_push(&pool->idle, &resource, true);
 			zval_ptr_dtor(&resource);
 		} else if (EG(exception)) {
 			/* Stop on first error */
@@ -910,12 +910,12 @@ void zend_async_pool_release(async_pool_t *pool, zval *resource)
 	/* Have waiters? Wake first one - it will take resource in retry */
 	if (pool_wake_waiter(pool)) {
 		/* Return resource to buffer, waiter will take it */
-		zval_circular_buffer_push(&pool->idle, resource, false);
+		zval_circular_buffer_push(&pool->idle, resource, true);
 		return;
 	}
 
 	/* No waiters - just return to buffer */
-	zval_circular_buffer_push(&pool->idle, resource, false);
+	zval_circular_buffer_push(&pool->idle, resource, true);
 }
 
 void zend_async_pool_close(async_pool_t *pool)
