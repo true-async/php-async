@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **ZEND_ASYNC_SUSPEND** No longer throws an error when called with an empty array of events.
 - **Waker inline storage optimization**: Embedded 2 trigger slots and 2 callback slots directly into the Waker struct, eliminating heap allocations for the most common case (1-2 events per await). Uses `capacity == 0` to mark inline triggers and `base.callback == NULL` to mark free inline callback slots. When more than 1 callback per event is needed, the inline trigger automatically promotes to a heap-allocated one. Benchmarks show ~3× speedup across all hot paths (`await`: 2.13 → 0.67 μs, `await_all` x2: 3.88 → 1.38 μs, Channel: 1.48 → 0.50 μs) with zero memory overhead.
+- **Adaptive fiber pool sizing**: The fiber context pool now grows dynamically based on coroutine queue pressure instead of being limited to a fixed size of 4. When demand exceeds the pool (queue size > pool count), the pool grows via `circular_buffer_push_ptr_with_resize`. When demand is low, excess fibers are destroyed instead of returned to the pool. A minimum of 4 fibers (`ASYNC_FIBER_POOL_SIZE`) is always retained. This eliminates costly fiber create/destroy cycles under bursty workloads, yielding a 10–15% improvement in context switch throughput (10k coroutines × 10 suspends: 490 → 566 switches/ms).
+
+### Fixed
+- **SIGSEGV in pool healthcheck callback**: The healthcheck timer callback was registered by casting the pool pointer directly to `zend_async_event_callback_t`, corrupting the pool's event structure fields and leaving the `dispose` function pointer uninitialized. When the pool was closed, `zend_async_callbacks_free` called the garbage dispose pointer, causing a segfault. Fixed by embedding a proper `zend_async_event_callback_t` inside `async_pool_t` and using `offsetof` to recover the pool pointer in the callback.
 
 ## [0.6.4] - 2026-03-25
 
