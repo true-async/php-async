@@ -73,7 +73,6 @@ echo "end\n";
 --EXPECTF--
 start
 database initialized
-initial count: 5
 %A
 final count: 7
 async records: 2

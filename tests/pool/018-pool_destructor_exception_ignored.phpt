@@ -1,5 +1,5 @@
 --TEST--
-Pool: destructor exception - is ignored and doesn't propagate
+Pool: destructor exception propagates from close()
 --FILE--
 <?php
 
@@ -19,14 +19,17 @@ $pool = new Pool(
 
 echo "Pool created\n";
 
-// Close should not throw even though destructor throws
-$pool->close();
-echo "Closed without exception\n";
+try {
+    $pool->close();
+    echo "ERROR: should have thrown\n";
+} catch (RuntimeException $e) {
+    echo "Caught: " . $e->getMessage() . "\n";
+}
 
 echo "Done\n";
 ?>
 --EXPECT--
 Pool created
 Destructor for 1 throwing
-Closed without exception
+Caught: Destructor failed
 Done
