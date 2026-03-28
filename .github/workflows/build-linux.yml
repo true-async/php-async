@@ -23,6 +23,18 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: ${{ matrix.asan && 360 || 60 }}
 
+    env:
+      MYSQL_TEST_HOST: 127.0.0.1
+      MYSQL_TEST_PORT: 3306
+      MYSQL_TEST_USER: root
+      MYSQL_TEST_PASSWD: root
+      MYSQL_TEST_DB: test
+      PDO_MYSQL_TEST_DSN: "mysql:host=127.0.0.1;dbname=test"
+      PDO_MYSQL_TEST_HOST: 127.0.0.1
+      PDO_MYSQL_TEST_USER: root
+      PDO_MYSQL_TEST_PASS: root
+      PDO_PGSQL_TEST_DSN: "pgsql:host=127.0.0.1 port=5432 dbname=test user=postgres password=postgres"
+
     services:
       mysql:
         image: mysql:8.3
@@ -35,6 +47,8 @@ jobs:
 
       postgres:
         image: postgres
+        ports:
+          - 5432:5432
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres

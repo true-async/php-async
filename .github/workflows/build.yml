@@ -8,6 +8,18 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    env:
+      MYSQL_TEST_HOST: 127.0.0.1
+      MYSQL_TEST_PORT: 3306
+      MYSQL_TEST_USER: root
+      MYSQL_TEST_PASSWD: ""
+      MYSQL_TEST_DB: test
+      PDO_MYSQL_TEST_DSN: "mysql:host=127.0.0.1;dbname=test"
+      PDO_MYSQL_TEST_HOST: 127.0.0.1
+      PDO_MYSQL_TEST_USER: root
+      PDO_MYSQL_TEST_PASS: ""
+      PDO_PGSQL_TEST_DSN: "pgsql:host=127.0.0.1 port=5432 dbname=test user=postgres password=postgres"
+
     services:
       mysql:
         image: mysql:8.3
