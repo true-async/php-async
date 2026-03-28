@@ -1745,7 +1745,15 @@ static bool libuv_process_event_start(zend_async_event_t *event)
 		ZEND_ASYNC_INCREASE_EVENT_COUNT(event);
 		return true;
 	} else {
-		// Error: process doesn't exist or already reaped
+		if (errno == ECHILD) {
+			/* Child was already reaped externally. Treat as exited with unknown status. */
+			process->event.exit_code = -1;
+			event->stop(event);
+			ZEND_ASYNC_CALLBACKS_NOTIFY(&process->event.base, NULL, NULL);
+			return true;
+		}
+
+		// Error: process doesn't exist or other waitpid error
 		libuv_remove_process_event(event);
 		zend_object *exception = async_new_exception(
 				async_ce_async_exception, "Failed to monitor process %d: %s", (int) pid, strerror(errno));

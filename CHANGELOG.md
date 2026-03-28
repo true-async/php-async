@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **SIGSEGV in pool healthcheck callback**: The healthcheck timer callback was registered by casting the pool pointer directly to `zend_async_event_callback_t`, corrupting the pool's event structure fields and leaving the `dispose` function pointer uninitialized. When the pool was closed, `zend_async_callbacks_free` called the garbage dispose pointer, causing a segfault. Fixed by embedding a proper `zend_async_event_callback_t` inside `async_pool_t` and using `offsetof` to recover the pool pointer in the callback.
+- **`proc_close()` crash when child process already reaped**: When a child process was killed by a signal and its zombie was reaped externally (e.g. by a host runtime calling `waitpid(-1)`), `async_wait_process()` fell through to `libuv_process_event_start()` which threw `AsyncException: Failed to monitor process N: No child processes`. Fixed by handling `ECHILD` in both `async_wait_process()` (early return) and `libuv_process_event_start()` (treat as exited with unknown status).
 
 ## [0.6.4] - 2026-03-25
 
