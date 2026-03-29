@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Scope::awaitCompletion()` not marking cancellation Future as used**: The cancellation token passed to `awaitCompletion()` was never marked with `RESULT_USED` / `EXC_CAUGHT`, causing a spurious "Future was never used" warning when the Future was destroyed. Additionally, early return paths (scope already finished, closed, or cancelled) skipped the marking entirely. Fixed by setting flags immediately after parameter parsing, before any early returns.
 - **`Scope::awaitAfterCancellation()` not marking cancellation Future as used**: Same issue as `awaitCompletion()` — the optional cancellation Future was only marked when the method reached `resume_when`, but early returns bypassed it. Fixed identically.
 
-## [0.6.5] -
+## [0.6.5] - 2026-03-29
 
 ### Changed
 - **ZEND_ASYNC_SUSPEND** No longer throws an error when called with an empty array of events.
