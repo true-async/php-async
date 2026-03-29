@@ -5,6 +5,12 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.6] -
+
+### Fixed
+- **`Scope::awaitCompletion()` not marking cancellation Future as used**: The cancellation token passed to `awaitCompletion()` was never marked with `RESULT_USED` / `EXC_CAUGHT`, causing a spurious "Future was never used" warning when the Future was destroyed. Additionally, early return paths (scope already finished, closed, or cancelled) skipped the marking entirely. Fixed by setting flags immediately after parameter parsing, before any early returns.
+- **`Scope::awaitAfterCancellation()` not marking cancellation Future as used**: Same issue as `awaitCompletion()` — the optional cancellation Future was only marked when the method reached `resume_when`, but early returns bypassed it. Fixed identically.
+
 ## [0.6.5] -
 
 ### Changed

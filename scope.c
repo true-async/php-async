@@ -273,6 +273,11 @@ METHOD(awaitCompletion)
 	Z_PARAM_OBJ_OF_CLASS(cancellation_obj, async_ce_awaitable)
 	ZEND_PARSE_PARAMETERS_END();
 
+	// Mark cancellation token as used immediately, before any early returns
+	zend_async_event_t *cancellation_event = ZEND_ASYNC_OBJECT_TO_EVENT(cancellation_obj);
+	ZEND_ASYNC_EVENT_SET_RESULT_USED(cancellation_event);
+	ZEND_ASYNC_EVENT_SET_EXC_CAUGHT(cancellation_event);
+
 	zend_coroutine_t *current_coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 	if (UNEXPECTED(current_coroutine == NULL)) {
 		return;
@@ -320,7 +325,7 @@ METHOD(awaitCompletion)
 	}
 
 	zend_async_resume_when(current_coroutine,
-						   ZEND_ASYNC_OBJECT_TO_EVENT(cancellation_obj),
+						   cancellation_event,
 						   false,
 						   zend_async_waker_callback_cancel,
 						   NULL);
@@ -344,6 +349,13 @@ METHOD(awaitAfterCancellation)
 	Z_PARAM_FUNC_OR_NULL(error_handler_fci, error_handler_fcc)
 	Z_PARAM_OBJ_OR_NULL(cancellation_obj)
 	ZEND_PARSE_PARAMETERS_END();
+
+	// Mark cancellation token as used immediately, before any early returns
+	if (cancellation_obj != NULL) {
+		zend_async_event_t *cancellation_event = ZEND_ASYNC_OBJECT_TO_EVENT(cancellation_obj);
+		ZEND_ASYNC_EVENT_SET_RESULT_USED(cancellation_event);
+		ZEND_ASYNC_EVENT_SET_EXC_CAUGHT(cancellation_event);
+	}
 
 	zend_coroutine_t *current_coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 	if (UNEXPECTED(current_coroutine == NULL)) {
