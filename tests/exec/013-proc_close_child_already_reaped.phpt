@@ -6,10 +6,6 @@ if (!function_exists("proc_open")) echo "skip proc_open() is not available";
 if (DIRECTORY_SEPARATOR === '\\') die('skip Unix-only test');
 $php = getenv('TEST_PHP_EXECUTABLE');
 if ($php === false) echo "skip no php executable defined";
-// Under ASAN, child process exit(42) takes much longer due to leak checking,
-// so usleep(200ms) is not enough for the child to become a zombie.
-// pcntl_waitpid returns 0 (still running) and the external reap never happens.
-if (getenv('USE_ZEND_ALLOC') === '0') die('skip ASAN slows child exit, making race condition unreliable');
 ?>
 --FILE--
 <?php
@@ -36,20 +32,15 @@ $c = spawn(function() use ($php) {
     $status = proc_get_status($process);
     $pid = $status['pid'];
 
-    // Wait for child to exit
-    usleep(200000);
+    // Wait for child to actually exit by reading stdout until EOF.
+    // This is deterministic regardless of ASAN/valgrind slowdown.
+    stream_get_contents($pipes[1]);
 
     // Simulate external reaping (like Go runtime doing waitpid(-1))
     // This steals the zombie before proc_close can get it.
     $reap_status = 0;
     $reaped = pcntl_waitpid($pid, $reap_status, WNOHANG);
-    if ($reaped == $pid) {
-        echo "Zombie reaped externally, exit=" . pcntl_wexitstatus($reap_status) . "\n";
-    } else {
-        echo "Could not reap (result=$reaped), trying waitpid(-1)\n";
-        $reaped = pcntl_waitpid(-1, $reap_status, WNOHANG);
-        echo "waitpid(-1) result: $reaped\n";
-    }
+    echo "Zombie reaped externally, exit=" . pcntl_wexitstatus($reap_status) . "\n";
 
     fclose($pipes[0]);
     fclose($pipes[1]);

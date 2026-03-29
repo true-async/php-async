@@ -21,7 +21,9 @@ $pdo = AsyncPDOPgSQLTest::poolFactory();
 $pdo->exec("DROP TABLE IF EXISTS test_pgsql_pool_cross");
 $pdo->exec("CREATE TABLE test_pgsql_pool_cross (id SERIAL PRIMARY KEY, val VARCHAR(50))");
 
-$coro1 = spawn(function() use ($pdo) {
+$results = [];
+
+$coro1 = spawn(function() use ($pdo, &$results) {
     $stmtA = $pdo->query("SELECT pg_backend_pid() as pid");
     $pid = $stmtA->fetch()['pid'];
 
@@ -33,12 +35,12 @@ $coro1 = spawn(function() use ($pdo) {
 
     $stmtC = $pdo->query("SELECT pg_backend_pid() as pid");
     $check = $stmtC->fetch()['pid'];
-    echo "Coro1 same conn: " . ($pid === $check ? "yes" : "no") . "\n";
+    $results['coro1'] = ($pid === $check ? "yes" : "no");
 
     return $pid;
 });
 
-$coro2 = spawn(function() use ($pdo) {
+$coro2 = spawn(function() use ($pdo, &$results) {
     $stmtA = $pdo->query("SELECT pg_backend_pid() as pid");
     $pid = $stmtA->fetch()['pid'];
 
@@ -50,7 +52,7 @@ $coro2 = spawn(function() use ($pdo) {
 
     $stmtC = $pdo->query("SELECT pg_backend_pid() as pid");
     $check = $stmtC->fetch()['pid'];
-    echo "Coro2 same conn: " . ($pid === $check ? "yes" : "no") . "\n";
+    $results['coro2'] = ($pid === $check ? "yes" : "no");
 
     return $pid;
 });
@@ -58,6 +60,10 @@ $coro2 = spawn(function() use ($pdo) {
 $pid1 = await($coro1);
 $pid2 = await($coro2);
 
+ksort($results);
+foreach ($results as $name => $same) {
+    echo "$name same conn: $same\n";
+}
 echo "Different connections across coroutines: " . ($pid1 !== $pid2 ? "yes" : "no") . "\n";
 
 $stmt = $pdo->query("SELECT val FROM test_pgsql_pool_cross ORDER BY id");
@@ -69,8 +75,8 @@ $pdo->exec("DROP TABLE IF EXISTS test_pgsql_pool_cross");
 echo "Done\n";
 ?>
 --EXPECT--
-Coro1 same conn: yes
-Coro2 same conn: yes
+coro1 same conn: yes
+coro2 same conn: yes
 Different connections across coroutines: yes
 Rows: coro1, coro2
 Done
