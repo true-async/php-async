@@ -38,8 +38,12 @@ $c = spawn(function() use ($php) {
 
     // Simulate external reaping (like Go runtime doing waitpid(-1))
     // This steals the zombie before proc_close can get it.
+    // Loop because there's a small window between pipe EOF and zombie state.
     $reap_status = 0;
-    $reaped = pcntl_waitpid($pid, $reap_status, WNOHANG);
+    do {
+        $reaped = pcntl_waitpid($pid, $reap_status, WNOHANG);
+        if ($reaped === 0) usleep(1000);
+    } while ($reaped === 0);
     echo "Zombie reaped externally, exit=" . pcntl_wexitstatus($reap_status) . "\n";
 
     fclose($pipes[0]);
