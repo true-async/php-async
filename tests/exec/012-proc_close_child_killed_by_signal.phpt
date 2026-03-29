@@ -6,6 +6,11 @@ if (!function_exists("proc_open")) echo "skip proc_open() is not available";
 if (DIRECTORY_SEPARATOR === '\\') die('skip Unix-only test');
 $php = getenv('TEST_PHP_EXECUTABLE');
 if ($php === false) echo "skip no php executable defined";
+// ASAN installs its own SIGSEGV handler via sigaction. When the child process
+// self-sends SIGSEGV (posix_kill(getpid(), SIGSEGV)), ASAN intercepts it and
+// calls _exit(1) instead of letting the process die from the signal.
+// This makes proc_close() return 1 (normal exit) instead of -11 (signal death).
+if (getenv('USE_ZEND_ALLOC') === '0') die('skip ASAN intercepts SIGSEGV and converts it to exit(1)');
 ?>
 --FILE--
 <?php
