@@ -6,6 +6,10 @@ if (!function_exists("proc_open")) echo "skip proc_open() is not available";
 if (DIRECTORY_SEPARATOR === '\\') die('skip Unix-only test');
 $php = getenv('TEST_PHP_EXECUTABLE');
 if ($php === false) echo "skip no php executable defined";
+// Under ASAN, child process exit(42) takes much longer due to leak checking,
+// so usleep(200ms) is not enough for the child to become a zombie.
+// pcntl_waitpid returns 0 (still running) and the external reap never happens.
+if (getenv('USE_ZEND_ALLOC') === '0') die('skip ASAN slows child exit, making race condition unreliable');
 ?>
 --FILE--
 <?php
