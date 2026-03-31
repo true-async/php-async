@@ -25,11 +25,17 @@ $coroutine2 = $scope->spawn(function() {
 
 echo "spawned coroutines\n";
 
-// Await completion from external scope
+// Await completion from external scope.
+// Must complete without timeout — if OperationCanceledException is thrown,
+// scope failed to notify completion when coroutines finished.
 $external = spawn(function() use ($scope) {
     echo "external waiting for scope completion\n";
-    $scope->awaitCompletion(timeout(1000));
-    echo "scope completed\n";
+    try {
+        $scope->awaitCompletion(timeout(1000));
+        echo "scope completed\n";
+    } catch (\Async\OperationCanceledException $e) {
+        echo "ERROR: timed out instead of completing\n";
+    }
 });
 
 echo "awaiting external\n";

@@ -181,11 +181,6 @@ static void pool_destroy_resource(async_pool_t *pool, zval *resource)
 
 		zval_ptr_dtor(&args[0]);
 		zval_ptr_dtor(&retval);
-
-		/* Ignore exceptions from destructor */
-		if (EG(exception)) {
-			zend_clear_exception();
-		}
 	}
 
 	zval_ptr_dtor(resource);
@@ -574,12 +569,17 @@ static bool pool_call_healthcheck(async_pool_t *pool, zval *resource)
 	return is_healthy;
 }
 
+static void pool_healthcheck_callback_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event)
+{
+	/* No-op: callback is embedded in async_pool_t, not heap-allocated */
+}
+
 static void pool_healthcheck_timer_callback(zend_async_event_t *timer_event,
 											zend_async_event_callback_t *callback,
 											void *result,
 											zend_object *exception)
 {
-	async_pool_t *pool = (async_pool_t *) callback;
+	async_pool_t *pool = (async_pool_t *) ((char *) callback - offsetof(async_pool_t, healthcheck_callback));
 	zend_async_pool_t *base = &pool->base;
 
 	if (ZEND_ASYNC_POOL_IS_CLOSED(pool)) {
@@ -608,19 +608,25 @@ static void pool_healthcheck_timer_callback(zend_async_event_t *timer_event,
 
 		if (is_healthy) {
 			/* Resource is healthy - return to buffer */
-			zval_circular_buffer_push(&pool->idle, &resource, false);
+			zval_circular_buffer_push(&pool->idle, &resource, true);
 			zval_ptr_dtor(&resource);
 		} else {
 			/* Resource is dead - destroy it */
 			pool_destroy_resource(pool, &resource);
+
+			if (UNEXPECTED(EG(exception))) {
+				break;
+			}
 
 			/* Create new one to maintain min_size */
 			uint32_t total = ASYNC_POOL_TOTAL(pool);
 			if (total < base->min_size) {
 				zval new_resource;
 				if (pool_create_resource(pool, &new_resource)) {
-					zval_circular_buffer_push(&pool->idle, &new_resource, false);
+					zval_circular_buffer_push(&pool->idle, &new_resource, true);
 					zval_ptr_dtor(&new_resource);
+				} else if (UNEXPECTED(EG(exception))) {
+					break;
 				}
 			}
 		}
@@ -636,11 +642,11 @@ static void pool_start_healthcheck_timer(async_pool_t *pool)
 	}
 
 	/* Check if healthcheck is set */
-	bool has_healthcheck = (base->handler_flags & ZEND_ASYNC_POOL_F_HEALTHCHECK_INTERNAL)
+	const bool has_healthcheck = (base->handler_flags & ZEND_ASYNC_POOL_F_HEALTHCHECK_INTERNAL)
 			? (base->healthcheck.internal != NULL)
 			: (base->healthcheck.fcall != NULL);
 
-	if (!has_healthcheck) {
+	if (false == has_healthcheck) {
 		return;
 	}
 
@@ -650,12 +656,12 @@ static void pool_start_healthcheck_timer(async_pool_t *pool)
 		return;
 	}
 
-	/* Use pool pointer as callback data */
-	zend_async_event_callback_t *callback = (zend_async_event_callback_t *) pool;
-	callback->callback = pool_healthcheck_timer_callback;
-	callback->ref_count = 1;
+	/* Use inline callback embedded in pool structure */
+	pool->healthcheck_callback.ref_count = 1;
+	pool->healthcheck_callback.callback = pool_healthcheck_timer_callback;
+	pool->healthcheck_callback.dispose = pool_healthcheck_callback_dispose;
 
-	pool->healthcheck_timer->base.add_callback(&pool->healthcheck_timer->base, callback);
+	pool->healthcheck_timer->base.add_callback(&pool->healthcheck_timer->base, &pool->healthcheck_callback);
 	pool->healthcheck_timer->base.start(&pool->healthcheck_timer->base);
 }
 
@@ -703,7 +709,7 @@ async_pool_t *zend_async_pool_create(zend_fcall_t *factory,
 	pool->active_count = 0;
 
 	/* Init idle buffer */
-	circular_buffer_ctor(&pool->idle, 8, sizeof(zval), &zend_std_persistent_allocator);
+	circular_buffer_ctor(&pool->idle, min_size > 0 ? min_size : 4, sizeof(zval), &zend_std_persistent_allocator);
 
 	/* Init waiters queue */
 	pool_queue_init(&pool->waiters);
@@ -712,9 +718,9 @@ async_pool_t *zend_async_pool_create(zend_fcall_t *factory,
 	for (uint32_t i = 0; i < min_size; i++) {
 		zval resource;
 		if (pool_create_resource(pool, &resource)) {
-			zval_circular_buffer_push(&pool->idle, &resource, false);
+			zval_circular_buffer_push(&pool->idle, &resource, true);
 			zval_ptr_dtor(&resource);
-		} else if (EG(exception)) {
+		} else if (UNEXPECTED(EG(exception))) {
 			/* Stop on first error */
 			break;
 		}
@@ -760,7 +766,7 @@ async_pool_t *zend_async_pool_create_internal(zend_async_pool_factory_fn factory
 	pool->active_count = 0;
 
 	/* Init idle buffer */
-	circular_buffer_ctor(&pool->idle, 8, sizeof(zval), &zend_std_persistent_allocator);
+	circular_buffer_ctor(&pool->idle, min_size > 0 ? min_size : 4, sizeof(zval), &zend_std_persistent_allocator);
 
 	/* Init waiters queue */
 	pool_queue_init(&pool->waiters);
@@ -769,7 +775,7 @@ async_pool_t *zend_async_pool_create_internal(zend_async_pool_factory_fn factory
 	for (uint32_t i = 0; i < min_size; i++) {
 		zval resource;
 		if (pool_create_resource(pool, &resource)) {
-			zval_circular_buffer_push(&pool->idle, &resource, false);
+			zval_circular_buffer_push(&pool->idle, &resource, true);
 			zval_ptr_dtor(&resource);
 		} else if (EG(exception)) {
 			/* Stop on first error */
@@ -785,7 +791,7 @@ async_pool_t *zend_async_pool_create_internal(zend_async_pool_factory_fn factory
 
 bool zend_async_pool_acquire(async_pool_t *pool, zval *result, zend_long timeout_ms)
 {
-	zend_async_pool_t *base = &pool->base;
+	const zend_async_pool_t *base = &pool->base;
 
 retry:
 	/* 1. Closed? */
@@ -809,6 +815,9 @@ retry:
 		if (!pool_call_before_acquire(pool, &resource)) {
 			/* Check failed - destroy and try next */
 			pool_destroy_resource(pool, &resource);
+			if (UNEXPECTED(EG(exception))) {
+				return false;
+			}
 			goto retry;
 		}
 
@@ -818,19 +827,20 @@ retry:
 	}
 
 	/* 3. Can create new? */
-	uint32_t total = ASYNC_POOL_TOTAL(pool);
+	const uint32_t total = ASYNC_POOL_TOTAL(pool);
 	if (total < base->max_size) {
 		if (pool_create_resource(pool, result)) {
 			pool->active_count++;
 			return true;
+		} else if (UNEXPECTED(EG(exception))) {
+			return false;
 		}
-		/* Factory failed - fall through to wait */
 	}
 
 	/* 4. Wait - like channel */
 	pool_wait_for_resource(pool, timeout_ms);
 
-	if (EG(exception)) {
+	if (UNEXPECTED(EG(exception))) {
 		return false;
 	}
 
@@ -868,7 +878,7 @@ retry:
 	}
 
 	/* Can create new? */
-	uint32_t total = ASYNC_POOL_TOTAL(pool);
+	const uint32_t total = ASYNC_POOL_TOTAL(pool);
 	if (total < base->max_size) {
 		if (pool_create_resource(pool, result)) {
 			pool->active_count++;
@@ -905,12 +915,12 @@ void zend_async_pool_release(async_pool_t *pool, zval *resource)
 	/* Have waiters? Wake first one - it will take resource in retry */
 	if (pool_wake_waiter(pool)) {
 		/* Return resource to buffer, waiter will take it */
-		zval_circular_buffer_push(&pool->idle, resource, false);
+		zval_circular_buffer_push(&pool->idle, resource, true);
 		return;
 	}
 
 	/* No waiters - just return to buffer */
-	zval_circular_buffer_push(&pool->idle, resource, false);
+	zval_circular_buffer_push(&pool->idle, resource, true);
 }
 
 void zend_async_pool_close(async_pool_t *pool)
@@ -931,12 +941,32 @@ void zend_async_pool_close(async_pool_t *pool)
 	pool_wake_all_with_exception(pool, ex);
 	OBJ_RELEASE(ex);
 
-	/* Destroy all idle resources */
+	/* Destroy all idle resources — must destroy all even if destructor throws */
 	zval resource;
+	zend_object *first_exception = NULL;
 	while (!circular_buffer_is_empty(&pool->idle)) {
 		if (zval_circular_buffer_pop(&pool->idle, &resource) == SUCCESS) {
+
 			pool_destroy_resource(pool, &resource);
+
+			if (UNEXPECTED(EG(exception))) {
+				zend_object *exception = EG(exception);
+				GC_ADDREF(exception);
+				zend_clear_exception();
+
+				if (first_exception != NULL) {
+					zend_exception_set_previous(exception, first_exception);
+				}
+
+				first_exception = exception;
+			}
 		}
+	}
+
+	if (first_exception != NULL) {
+		zval ex_zval;
+		ZVAL_OBJ(&ex_zval, first_exception);
+		zend_throw_exception_object(&ex_zval);
 	}
 }
 

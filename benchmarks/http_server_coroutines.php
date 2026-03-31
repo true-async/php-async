@@ -14,7 +14,7 @@
 ini_set('memory_limit', '512M');
 
 use function Async\spawn;
-use function Async\awaitAll;
+use function Async\await_all;
 
 // Configuration
 $host = $argv[1] ?? '127.0.0.1';
@@ -103,7 +103,7 @@ try {
     $server_task = startHttpServer($host, $port);
     
     // Run until interrupted
-    awaitAll([$server_task]);
+    await_all([$server_task]);
     
 } catch (Exception $e) {
     echo "Server error: " . $e->getMessage() . "\n";

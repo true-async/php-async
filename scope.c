@@ -273,6 +273,11 @@ METHOD(awaitCompletion)
 	Z_PARAM_OBJ_OF_CLASS(cancellation_obj, async_ce_awaitable)
 	ZEND_PARSE_PARAMETERS_END();
 
+	// Mark cancellation token as used immediately, before any early returns
+	zend_async_event_t *cancellation_event = ZEND_ASYNC_OBJECT_TO_EVENT(cancellation_obj);
+	ZEND_ASYNC_EVENT_SET_RESULT_USED(cancellation_event);
+	ZEND_ASYNC_EVENT_SET_EXC_CAUGHT(cancellation_event);
+
 	zend_coroutine_t *current_coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 	if (UNEXPECTED(current_coroutine == NULL)) {
 		return;
@@ -320,7 +325,7 @@ METHOD(awaitCompletion)
 	}
 
 	zend_async_resume_when(current_coroutine,
-						   ZEND_ASYNC_OBJECT_TO_EVENT(cancellation_obj),
+						   cancellation_event,
 						   false,
 						   zend_async_waker_callback_cancel,
 						   NULL);
@@ -344,6 +349,13 @@ METHOD(awaitAfterCancellation)
 	Z_PARAM_FUNC_OR_NULL(error_handler_fci, error_handler_fcc)
 	Z_PARAM_OBJ_OR_NULL(cancellation_obj)
 	ZEND_PARSE_PARAMETERS_END();
+
+	// Mark cancellation token as used immediately, before any early returns
+	if (cancellation_obj != NULL) {
+		zend_async_event_t *cancellation_event = ZEND_ASYNC_OBJECT_TO_EVENT(cancellation_obj);
+		ZEND_ASYNC_EVENT_SET_RESULT_USED(cancellation_event);
+		ZEND_ASYNC_EVENT_SET_EXC_CAUGHT(cancellation_event);
+	}
 
 	zend_coroutine_t *current_coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 	if (UNEXPECTED(current_coroutine == NULL)) {
@@ -383,7 +395,7 @@ METHOD(awaitAfterCancellation)
 	scope_coroutine_callback_t *scope_callback = (scope_coroutine_callback_t *) zend_async_coroutine_callback_new(
 			current_coroutine, callback_resolve_when_zombie_completed, sizeof(scope_coroutine_callback_t));
 	if (UNEXPECTED(scope_callback == NULL)) {
-		zend_async_waker_clean(current_coroutine);
+		ZEND_ASYNC_WAKER_DESTROY(current_coroutine);
 		RETURN_THROWS();
 	}
 
@@ -395,9 +407,9 @@ METHOD(awaitAfterCancellation)
 		scope_callback->error_fci_cache = NULL;
 	}
 
-	zend_async_resume_when(current_coroutine, &scope_object->scope->scope.event, true, NULL, &scope_callback->callback);
-	if (UNEXPECTED(EG(exception))) {
-		zend_async_waker_clean(current_coroutine);
+	if (UNEXPECTED(!zend_async_resume_when(current_coroutine, &scope_object->scope->scope.event, false, NULL,
+		&scope_callback->callback))) {
+		ZEND_ASYNC_WAKER_DESTROY(current_coroutine);
 		RETURN_THROWS();
 	}
 
@@ -790,6 +802,7 @@ void async_scope_notify_coroutine_finished(async_coroutine_t *coroutine)
 	ZEND_ASSERT(scope != NULL && "Coroutine must belong to a valid scope");
 
 	async_scope_remove_coroutine(scope, coroutine);
+	scope_check_completion_and_notify(scope, true);
 	scope->scope.try_to_dispose(&scope->scope);
 }
 
@@ -1085,8 +1098,12 @@ static bool scope_dispose(zend_async_event_t *scope_event)
 		return true;
 	}
 
-	if (ZEND_ASYNC_EVENT_REFCOUNT(scope_event) == 1) {
-		ZEND_ASYNC_EVENT_DEL_REF(scope_event);
+	// Keep ref_count=1 as a guard during disposal.
+	// Callbacks, child scope disposal, and finally handlers may create new child scopes
+	// that reference this scope as parent. They must not see ref_count=0.
+	// The DISPOSING flag prevents re-entrant calls to scope_dispose.
+	if (ZEND_ASYNC_EVENT_REFCOUNT(scope_event) == 0) {
+		ZEND_ASYNC_EVENT_ADD_REF(scope_event);
 	}
 
 	ZEND_ASYNC_SCOPE_SET_DISPOSING(&scope->scope);
@@ -1118,11 +1135,19 @@ static bool scope_dispose(zend_async_event_t *scope_event)
 
 	if (scope->finally_handlers != NULL && zend_hash_num_elements(scope->finally_handlers) > 0 &&
 		async_scope_call_finally_handlers(scope)) {
-		// If finally handlers were called, we don't dispose the scope yet
-		ZEND_ASYNC_EVENT_ADD_REF(&scope->scope.event);
+		// Finally handlers spawned coroutines — scope stays alive.
+		// Guard ref is already in place (ref_count was kept at 1).
 		if (critical_exception) {
 			async_spawn_and_throw(critical_exception, &scope->scope, 0);
 		}
+		ZEND_ASYNC_SCOPE_CLR_DISPOSING(&scope->scope);
+		return true;
+	}
+
+	// Drop the guard ref before freeing.
+	ZEND_ASYNC_EVENT_DEL_REF(scope_event);
+	if (ZEND_ASYNC_EVENT_REFCOUNT(scope_event) > 0) {
+		// Someone added refs during dispose — scope stays alive.
 		ZEND_ASYNC_SCOPE_CLR_DISPOSING(&scope->scope);
 		return true;
 	}
@@ -1440,7 +1465,7 @@ static void scope_check_completion_and_notify(async_scope_t *scope, bool with_zo
 	}
 
 	// Check if current scope is completed
-	if (SCOPE_IS_COMPLETELY_DONE(scope)) {
+	if (scope->scope.can_be_disposed(&scope->scope, with_zombies, false)) {
 		// Notify waiting callbacks for this scope
 		ZEND_ASYNC_CALLBACKS_NOTIFY(&scope->scope.event, NULL, NULL);
 

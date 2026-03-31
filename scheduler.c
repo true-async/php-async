@@ -367,17 +367,26 @@ static zend_always_inline async_coroutine_t *next_coroutine(void)
 
 static zend_always_inline bool return_fiber_to_pool(async_fiber_context_t *fiber_context)
 {
-	circular_buffer_t *buffer = &ASYNC_G(fiber_context_pool);
+	circular_buffer_t *pool = &ASYNC_G(fiber_context_pool);
 
-	if (buffer->capacity > 0 && false == circular_buffer_is_full(buffer)) {
-		if (EXPECTED(circular_buffer_push_ptr(buffer, fiber_context) != FAILURE)) {
-			return true;
-		}
-
-		async_throw_error("Failed to push fiber context to the pool");
+	if (pool->capacity == 0) {
 		return false;
 	}
 
+	const size_t pool_count = circular_buffer_count(pool);
+	const size_t queue_count = circular_buffer_count(&ASYNC_G(coroutine_queue));
+
+	/* Always keep minimum pool */
+	if (pool_count < ASYNC_FIBER_POOL_SIZE) {
+		return circular_buffer_push_ptr_with_resize(pool, fiber_context) == SUCCESS;
+	}
+
+	/* Grow: queue demands more fibers than pool has */
+	if (pool_count < queue_count) {
+		return circular_buffer_push_ptr_with_resize(pool, fiber_context) == SUCCESS;
+	}
+
+	/* Pool already covers the queue — destroy excess fiber */
 	return false;
 }
 
@@ -1458,13 +1467,14 @@ bool async_scheduler_coroutine_suspend(void)
 		const bool not_in_queue = ZEND_ASYNC_WAKER_NOT_IN_QUEUE(waker);
 
 		// Let's check that the coroutine has something to wait for;
-		// If a coroutine isn't waiting for anything, it must be in the execution queue.
-		// otherwise, it's a potential deadlock.
+		// A situation is possible where a coroutine has added events but has not yet called suspend,
+		// yet it has triggered an event without using a suspend function.
+		// Previously, this behavior caused an error, but now it is allowed.
+		// Example: curl_async.c calls curl_multi_socket_action() before suspend, which can trigger events immediately.
 		if (waker->events.nNumOfElements == 0 && not_in_queue) {
-			async_throw_error("The coroutine has no events to wait for");
-			zend_async_waker_clean(coroutine);
+			ZEND_ASYNC_WAKER_DESTROY(coroutine);
 			zend_exception_restore_fast(exception_ptr, prev_exception_ptr);
-			return false;
+			return true;
 		}
 
 		// Before starting the events, we change the status of the Waker.
@@ -1576,8 +1586,8 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 	transfer->context = NULL;
 
 	/* Determine the current error_reporting ini setting. */
-	zend_long error_reporting = INI_INT("error_reporting");
-	if (!error_reporting && !INI_STR("error_reporting")) {
+	zend_long error_reporting = zend_ini_long_literal("error_reporting");
+	if (!error_reporting && !zend_ini_str_literal("error_reporting")) {
 		error_reporting = E_ALL;
 	}
 

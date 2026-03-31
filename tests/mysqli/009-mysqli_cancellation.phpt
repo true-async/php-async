@@ -36,7 +36,7 @@ $long_query_coroutine = spawn(function() {
             $mysqli->close();
             return ['type' => 'long_query', 'status' => 'failed'];
         }
-    } catch (Exception $e) {
+    } catch (\Throwable $e) {
         return ['type' => 'long_query', 'status' => 'cancelled'];
     }
 });
@@ -76,7 +76,7 @@ $timeout_test = spawn(function() {
             $mysqli->close();
             return ['type' => 'timeout_test', 'status' => 'timeout_null'];
         }
-    } catch (Exception $e) {
+    } catch (\Throwable $e) {
         return ['type' => 'timeout_test', 'status' => 'timeout_cancelled'];
     }
 });
@@ -108,7 +108,7 @@ $prepared_cancel_test = spawn(function() {
         
         $mysqli->close();
         return ['type' => 'prepared_test', 'status' => 'prepared_completed'];
-    } catch (Exception $e) {
+    } catch (\Throwable $e) {
         return ['type' => 'prepared_test', 'status' => 'prepared_cancelled'];
     }
 });
@@ -131,7 +131,7 @@ $results[] = $manual_result;
 try {
     $long_result = await($long_query_coroutine);
     $results[] = $long_result;
-} catch (Exception $e) {
+} catch (\Throwable $e) {
     $results[] = ['type' => 'long_query', 'status' => 'cancelled'];
 }
 
@@ -146,7 +146,7 @@ $results[] = $prepared_canceller_result;
 try {
     $prepared_result = await($prepared_cancel_test);
     $results[] = $prepared_result;
-} catch (Exception $e) {
+} catch (\Throwable $e) {
     $results[] = ['type' => 'prepared_test', 'status' => 'prepared_cancelled'];
 }
 

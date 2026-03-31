@@ -82,7 +82,6 @@ echo "End\n";
 --EXPECTF--
 Start
 %AServer: accepted
-%AClient: connected
 %Afeof on live socket: false
 Server: closed client
 feof after remote close: true

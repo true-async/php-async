@@ -5,6 +5,49 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.6] -
+
+### Fixed
+- **`Scope::awaitCompletion()` not marking cancellation Future as used**: The cancellation token passed to `awaitCompletion()` was never marked with `RESULT_USED` / `EXC_CAUGHT`, causing a spurious "Future was never used" warning when the Future was destroyed. Additionally, early return paths (scope already finished, closed, or cancelled) skipped the marking entirely. Fixed by setting flags immediately after parameter parsing, before any early returns.
+- **`Scope::awaitAfterCancellation()` not marking cancellation Future as used**: Same issue as `awaitCompletion()` — the optional cancellation Future was only marked when the method reached `resume_when`, but early returns bypassed it. Fixed identically.
+- **Heap-use-after-free in `stream_socket_accept()` during coroutine cancellation**: When a coroutine blocked in `stream_socket_accept()` was cancelled during graceful shutdown, `network_async_accept_incoming()` extracted the exception's message string into `*error_string` without incrementing its refcount (`*error_string = Z_STR_P(message)`). The caller then called `zend_string_release_ex()`, freeing the string while the exception object still referenced it. On exception destruction, `zend_object_std_dtor` accessed the freed string — heap-use-after-free. Fixed by using `zend_string_copy()` to properly addref the borrowed string. Same bug existed in the synchronous path `php_network_accept_incoming_ex()` in `main/network.c` — fixed there too.
+
+## [0.6.5] - 2026-03-29
+
+### Changed
+- **ZEND_ASYNC_SUSPEND** No longer throws an error when called with an empty array of events.
+- **Waker inline storage optimization**: Embedded 2 trigger slots and 2 callback slots directly into the Waker struct, eliminating heap allocations for the most common case (1-2 events per await). Uses `capacity == 0` to mark inline triggers and `base.callback == NULL` to mark free inline callback slots. When more than 1 callback per event is needed, the inline trigger automatically promotes to a heap-allocated one. Benchmarks show ~3× speedup across all hot paths (`await`: 2.13 → 0.67 μs, `await_all` x2: 3.88 → 1.38 μs, Channel: 1.48 → 0.50 μs) with zero memory overhead.
+- **Adaptive fiber pool sizing**: The fiber context pool now grows dynamically based on coroutine queue pressure instead of being limited to a fixed size of 4. When demand exceeds the pool (queue size > pool count), the pool grows via `circular_buffer_push_ptr_with_resize`. When demand is low, excess fibers are destroyed instead of returned to the pool. A minimum of 4 fibers (`ASYNC_FIBER_POOL_SIZE`) is always retained. This eliminates costly fiber create/destroy cycles under bursty workloads, yielding a 10–15% improvement in context switch throughput (10k coroutines × 10 suspends: 490 → 566 switches/ms).
+
+### Fixed
+- **SIGSEGV in pool healthcheck callback**: The healthcheck timer callback was registered by casting the pool pointer directly to `zend_async_event_callback_t`, corrupting the pool's event structure fields and leaving the `dispose` function pointer uninitialized. When the pool was closed, `zend_async_callbacks_free` called the garbage dispose pointer, causing a segfault. Fixed by embedding a proper `zend_async_event_callback_t` inside `async_pool_t` and using `offsetof` to recover the pool pointer in the callback.
+- **`proc_close()` crash when child process already reaped**: When a child process was killed by a signal and its zombie was reaped externally (e.g. by a host runtime calling `waitpid(-1)`), `async_wait_process()` fell through to `libuv_process_event_start()` which threw `AsyncException: Failed to monitor process N: No child processes`. Fixed by handling `ECHILD` in both `async_wait_process()` (early return) and `libuv_process_event_start()` (treat as exited with unknown status).
+- **Pool acquire with failed factory caused use-after-free**: When `pool_create_resource()` threw an exception, `zend_async_pool_acquire()` fell through to `pool_wait_for_resource()` with a live `EG(exception)`, registering a coroutine callback on the pool event. At shutdown, the coroutine was freed first, leaving a dangling pointer that `pool_dispose` tried to dereference. Fixed by checking `EG(exception)` after factory failure and returning immediately.
+- **Missing exception checks in pool error paths**: `pool_destroy_resource()` and `pool_create_resource()` exceptions were not checked in healthcheck loop, `beforeAcquire` failure path, and `try_acquire`. Added `EG(exception)` checks to break/return on error instead of continuing with live exceptions.
+- **Pool close now chains destructor exceptions via `previous`**: When multiple resource destructors throw during `pool->close()`, all resources are still destroyed and exceptions are chained using `zend_exception_set_previous()` so no error is silently lost.
+- **Pool destructor exceptions now propagate**: Resource destructor exceptions were silently discarded by `zend_clear_exception()`. Removed the suppression so exceptions propagate normally to the caller.
+
+## [0.6.4] - 2026-03-25
+
+### Fixed
+- **NULL `driver_data` crash in PDO PgSQL pool mode**: `pgsql_stmt_execute()` called `in_transaction()` on `stmt->dbh`, which in pool mode is the template PDO object with `driver_data == NULL`. This caused a segfault when dereferencing `H->server` via `PQtransactionStatus()`. Fixed by using `stmt->pooled_conn` (the actual pooled connection) when available.
+
+## [0.6.3] - 2026-03-25
+
+### Fixed
+- **`Scope::awaitCompletion()` ignoring completion**: `async_scope_notify_coroutine_finished()` was missing the call to `scope_check_completion_and_notify()`, so `awaitCompletion()` never woke up when all coroutines finished and always waited until the timeout expired.
+- **`Scope::awaitAfterCancellation()` cleanup**: Replaced `zend_async_waker_clean()` with `ZEND_ASYNC_WAKER_DESTROY()` on error paths, and switched to checking the return value of `zend_async_resume_when()` instead of `EG(exception)`.
+- **Negative stream timeout causing poll event leak**: When a stream context timeout was negative (e.g. `PHP_INT_MIN`), the signed `tv_sec` overflowed to a huge positive value when cast to `zend_ulong` milliseconds. This created an async waker with a timer event that held an extra reference to the poll event (refcount 3 instead of 2), causing it to leak. Fixed by checking `tv_sec < 0` before the conversion and falling back to synchronous `php_pollfd_for()`.
+
+## [0.6.2] - 2026-03-24
+
+### Added
+- **Non-blocking `flock()`**: `flock()` no longer blocks the event loop. The lock operation is offloaded to the libuv thread pool via `zend_async_task_t`, allowing other coroutines to continue executing while waiting for a file lock.
+- **`zend_async_task_new()` API**: New factory function for creating thread pool tasks, registered through the reactor like timer and IO events. Replaces manual `pecalloc` + field initialization.
+
+### Fixed
+- **`await_*()` deadlock with already-completed awaitables**: When a coroutine or Future passed to `await_all()`, `await_any_or_fail()`, or other `await_*()` functions had already completed, it was skipped entirely (`ZEND_ASYNC_EVENT_IS_CLOSED` → `continue`), but `resolved_count` was never incremented. Since `total` still counted the skipped awaitable, `resolved_count` could never reach `total`, causing a deadlock. Fixed by using `ZEND_ASYNC_EVENT_REPLAY` to synchronously replay the stored result/exception through the normal callback path, correctly updating all counters. Additionally, when replay satisfies the waiting condition early (e.g. `await_any_or_fail` needs only one result), the loop now breaks immediately instead of subscribing to remaining awaitables and suspending unnecessarily.
+
 ## [0.6.1] - 2026-03-15
 
 ### Fixed
