@@ -1586,8 +1586,8 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 	transfer->context = NULL;
 
 	/* Determine the current error_reporting ini setting. */
-	zend_long error_reporting = INI_INT("error_reporting");
-	if (!error_reporting && !INI_STR("error_reporting")) {
+	zend_long error_reporting = zend_ini_long_literal("error_reporting");
+	if (!error_reporting && !zend_ini_str_literal("error_reporting")) {
 		error_reporting = E_ALL;
 	}
 
