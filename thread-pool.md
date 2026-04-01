@@ -104,6 +104,22 @@ struct _zend_async_task_s {
 | Структура данных | Отдельна от PHP-объекта, в persistent memory, atomic refcount для передачи между потоками |
 | Модули | `thread_channel.h/.c` и `thread_pool.h/.c` — отдельные файлы в ext/async |
 | Порядок реализации | Сначала ThreadChannel, потом ThreadPool (зависит от него) |
+| Уведомление waiters | `zend_async_trigger_event_t` — обёртка вокруг uv_async_send, мультишот, per-thread per-channel |
+| Back-pressure | Корутина подписывается на trigger event + SUSPEND. Другой поток дёргает trigger() для пробуждения |
+| Deadlock detection | Канал помнит потоки-писатели. recv() без writer'ов → throw (реализовать позже) |
+
+## Текущий статус back-pressure (WIP)
+
+Реализован механизм: корутина создаёт trigger event через `ensure_trigger()`, подписывается через
+`zend_async_resume_when()` + `zend_coroutine_event_callback_t`, вызывает `ZEND_ASYNC_SUSPEND()`.
+Другая сторона вызывает `fire_all_triggers()` который делает `trigger->trigger()` (= uv_async_send).
+
+**Проблема**: в однопоточном тесте sender suspend'ится на полном буфере, receiver забирает данные
+и вызывает fire_all_triggers, но sender не просыпается. Нужно отладить:
+1. Проверить что trigger event корректно зарегистрирован в sender_triggers HashTable
+2. Проверить что callback корутины корректно подписан на trigger event (add_callback)
+3. Проверить что ZEND_ASYNC_CALLBACKS_NOTIFY на trigger event вызывает callback sender'а
+4. Возможно проблема в lifecycle callback — dispose/ref_count
 
 ---
 

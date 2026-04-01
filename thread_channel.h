@@ -22,22 +22,6 @@
 #include <pthread.h>
 
 ///////////////////////////////////////////////////////////
-/// Thread-safe channel waiter
-///////////////////////////////////////////////////////////
-
-typedef struct _thread_channel_waiter_s {
-	zend_ulong thread_id;
-	zend_ulong coroutine_id;
-	zend_async_event_callback_t *callback;
-} thread_channel_waiter_t;
-
-typedef struct {
-	thread_channel_waiter_t *data;
-	uint32_t length;
-	uint32_t capacity;
-} thread_channel_waiter_queue_t;
-
-///////////////////////////////////////////////////////////
 /// Thread-safe channel (persistent memory)
 ///////////////////////////////////////////////////////////
 
@@ -50,19 +34,19 @@ struct _async_thread_channel_s {
 	/* Buffered data storage (pemalloc allocator) */
 	circular_buffer_t buffer;
 
-	/* Mutex protecting buffer and waiter queues */
+	/* Mutex protecting buffer and trigger mappings */
 	pthread_mutex_t mutex;
 
 	/* Channel capacity (always >= 1) */
 	int32_t capacity;
 
-	/* Mapping: thread_id → uv_async_t* for cross-thread notification.
-	 * Created lazily on first send/recv from a given thread. */
-	HashTable thread_handles;
-
-	/* Waiting coroutines (pemalloc'd) */
-	thread_channel_waiter_queue_t waiting_receivers;
-	thread_channel_waiter_queue_t waiting_senders;
+	/* Trigger events for cross-thread notification.
+	 * HashTable: thread_id (zend_ulong) → zend_async_trigger_event_t*
+	 * Created lazily on first send/recv from a given thread.
+	 * Coroutines subscribe to their thread's trigger event via add_callback.
+	 * Other threads fire trigger() to wake them up (thread-safe uv_async_send). */
+	HashTable receiver_triggers;  /* triggers for threads waiting to receive */
+	HashTable sender_triggers;    /* triggers for threads waiting to send */
 
 	/* Reference count for cross-thread sharing */
 	zend_atomic_int ref_count;

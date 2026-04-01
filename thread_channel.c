@@ -25,15 +25,10 @@
 #include "zend_exceptions.h"
 #include "zend_interfaces.h"
 #include "internal/zval_circular_buffer.h"
+#include "TSRM/TSRM.h"
 
 #define METHOD(name) PHP_METHOD(Async_ThreadChannel, name)
 #define THIS_CHANNEL() (ASYNC_THREAD_CHANNEL_FROM_OBJ(Z_OBJ_P(ZEND_THIS))->channel)
-
-#define THROW_IF_CLOSED(ch) \
-	if (UNEXPECTED(ZEND_ASYNC_EVENT_IS_CLOSED(&(ch)->channel.event))) { \
-		zend_throw_exception(async_ce_thread_channel_exception, "ThreadChannel is closed", 0); \
-		RETURN_THROWS(); \
-	}
 
 #define ENSURE_COROUTINE_CONTEXT \
 	if (UNEXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == NULL)) { \
@@ -48,46 +43,44 @@ zend_class_entry *async_ce_thread_channel_exception = NULL;
 static zend_object_handlers async_thread_channel_handlers;
 
 ///////////////////////////////////////////////////////////////////////////////
-// Waiter queue helpers (pemalloc)
+// Trigger event helpers
 ///////////////////////////////////////////////////////////////////////////////
 
-static void waiter_queue_init(thread_channel_waiter_queue_t *queue)
+static void trigger_dtor(zval *zv)
 {
-	queue->data = NULL;
-	queue->length = 0;
-	queue->capacity = 0;
+	zend_async_trigger_event_t *trigger = Z_PTR_P(zv);
+	trigger->base.dispose(&trigger->base);
 }
 
-static void waiter_queue_push(thread_channel_waiter_queue_t *queue, thread_channel_waiter_t *waiter)
+/* Ensure a trigger event exists for the current thread in the mapping.
+ * Must be called WITHOUT mutex held. */
+static zend_async_trigger_event_t *ensure_trigger(
+	async_thread_channel_t *ch, HashTable *triggers, zend_ulong thread_id)
 {
-	if (queue->length >= queue->capacity) {
-		uint32_t new_capacity = queue->capacity ? queue->capacity * 2 : 4;
-		queue->data = perealloc(queue->data, new_capacity * sizeof(thread_channel_waiter_t), 1);
-		queue->capacity = new_capacity;
+	pthread_mutex_lock(&ch->mutex);
+
+	zend_async_trigger_event_t *trigger = zend_hash_index_find_ptr(triggers, thread_id);
+	if (trigger) {
+		pthread_mutex_unlock(&ch->mutex);
+		return trigger;
 	}
-	queue->data[queue->length++] = *waiter;
+
+	trigger = ZEND_ASYNC_NEW_TRIGGER_EVENT();
+	if (trigger) {
+		zend_hash_index_add_ptr(triggers, thread_id, trigger);
+	}
+
+	pthread_mutex_unlock(&ch->mutex);
+	return trigger;
 }
 
-static bool waiter_queue_pop(thread_channel_waiter_queue_t *queue, thread_channel_waiter_t *out)
+/* Fire all trigger events in the given mapping to wake up waiting threads. */
+static void fire_all_triggers(HashTable *triggers)
 {
-	if (queue->length == 0) {
-		return false;
-	}
-	*out = queue->data[0];
-	queue->length--;
-	/* Swap with last — O(1) */
-	queue->data[0] = queue->data[queue->length];
-	return true;
-}
-
-static void waiter_queue_destroy(thread_channel_waiter_queue_t *queue)
-{
-	if (queue->data) {
-		pefree(queue->data, 1);
-		queue->data = NULL;
-	}
-	queue->length = 0;
-	queue->capacity = 0;
+	zend_async_trigger_event_t *trigger;
+	ZEND_HASH_FOREACH_PTR(triggers, trigger) {
+		trigger->trigger(trigger);
+	} ZEND_HASH_FOREACH_END();
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -101,18 +94,13 @@ static async_thread_channel_t *thread_channel_create(int32_t capacity)
 	ch->capacity = capacity;
 	zend_atomic_int_store(&ch->ref_count, 1);
 
-	/* Init mutex */
 	pthread_mutex_init(&ch->mutex, NULL);
 
-	/* Init ring buffer with pemalloc allocator — +1 for sentinel slot */
+	/* +1 for sentinel slot in circular buffer */
 	circular_buffer_ctor(&ch->buffer, capacity + 1, sizeof(zval), &zend_std_persistent_allocator);
 
-	/* Init thread handle mapping (persistent) */
-	zend_hash_init(&ch->thread_handles, 4, NULL, NULL, 1);
-
-	/* Init waiter queues */
-	waiter_queue_init(&ch->waiting_receivers);
-	waiter_queue_init(&ch->waiting_senders);
+	zend_hash_init(&ch->receiver_triggers, 0, NULL, trigger_dtor, 1);
+	zend_hash_init(&ch->sender_triggers, 0, NULL, trigger_dtor, 1);
 
 	return ch;
 }
@@ -127,16 +115,11 @@ static void thread_channel_destroy(async_thread_channel_t *ch)
 	}
 	circular_buffer_dtor(&ch->buffer);
 
-	/* TODO: close and free all uv_async_t handles in thread_handles */
-	zend_hash_destroy(&ch->thread_handles);
+	/* trigger_dtor handles dispose for each trigger */
+	zend_hash_destroy(&ch->receiver_triggers);
+	zend_hash_destroy(&ch->sender_triggers);
 
-	/* Destroy waiter queues */
-	waiter_queue_destroy(&ch->waiting_receivers);
-	waiter_queue_destroy(&ch->waiting_senders);
-
-	/* Destroy mutex */
 	pthread_mutex_destroy(&ch->mutex);
-
 	pefree(ch, 1);
 }
 
@@ -191,23 +174,23 @@ static bool thread_channel_stop(zend_async_event_t *event)
 
 static zend_string *thread_channel_info(zend_async_event_t *event)
 {
-	/* Event is first member of async_thread_channel_t via channel.event */
 	async_thread_channel_t *ch = (async_thread_channel_t *) event;
 
 	return zend_strpprintf(0,
-		"ThreadChannel(capacity=%d, receivers=%u, senders=%u)",
+		"ThreadChannel(capacity=%d, receiver_threads=%u, sender_threads=%u)",
 		ch->capacity,
-		ch->waiting_receivers.length,
-		ch->waiting_senders.length);
+		zend_hash_num_elements(&ch->receiver_triggers),
+		zend_hash_num_elements(&ch->sender_triggers));
 }
 
-static void thread_channel_event_init(async_thread_channel_t *ch, thread_channel_object_t *obj)
+static void thread_channel_event_init(async_thread_channel_t *ch)
 {
 	zend_async_event_t *event = &ch->channel.event;
 	memset(event, 0, sizeof(zend_async_event_t));
 
-	event->flags = ZEND_ASYNC_EVENT_F_ZEND_OBJ;
-	event->zend_object_offset = XtOffsetOf(thread_channel_object_t, std);
+	/* NOT setting ZEND_ASYNC_EVENT_F_ZEND_OBJ — event lives in persistent memory
+	 * (async_thread_channel_t), separate from zend_object (thread_channel_object_t).
+	 * The zend_object_offset trick doesn't work across different allocations. */
 	event->add_callback = thread_channel_add_callback;
 	event->del_callback = thread_channel_del_callback;
 	event->start = thread_channel_start;
@@ -222,7 +205,6 @@ static void thread_channel_event_init(async_thread_channel_t *ch, thread_channel
 
 static HashTable *async_thread_channel_get_gc(zend_object *object, zval **table, int *num)
 {
-	/* Thread channel data is in persistent memory — not GC-tracked */
 	*table = NULL;
 	*num = 0;
 	return NULL;
@@ -234,18 +216,21 @@ static zend_object *async_thread_channel_create_object(zend_class_entry *ce)
 
 	zend_object_std_init(&obj->std, ce);
 	obj->std.handlers = &async_thread_channel_handlers;
-	obj->channel = NULL; /* Allocated in __construct */
+	obj->channel = NULL;
 
 	return &obj->std;
 }
 
 static void async_thread_channel_dtor_object(zend_object *object)
 {
-	thread_channel_object_t *obj = ASYNC_THREAD_CHANNEL_FROM_OBJ(object);
+	const thread_channel_object_t *obj = ASYNC_THREAD_CHANNEL_FROM_OBJ(object);
 
 	if (obj->channel != NULL && !ZEND_ASYNC_EVENT_IS_CLOSED(&obj->channel->channel.event)) {
+		pthread_mutex_lock(&obj->channel->mutex);
 		ZEND_ASYNC_EVENT_SET_CLOSED(&obj->channel->channel.event);
-		/* TODO: wake all waiters with exception */
+		fire_all_triggers(&obj->channel->receiver_triggers);
+		fire_all_triggers(&obj->channel->sender_triggers);
+		pthread_mutex_unlock(&obj->channel->mutex);
 	}
 
 	zend_object_std_dtor(object);
@@ -283,7 +268,7 @@ METHOD(__construct)
 	thread_channel_object_t *obj = ASYNC_THREAD_CHANNEL_FROM_OBJ(Z_OBJ_P(ZEND_THIS));
 	obj->channel = thread_channel_create((int32_t) capacity);
 
-	thread_channel_event_init(obj->channel, obj);
+	thread_channel_event_init(obj->channel);
 }
 
 METHOD(send)
@@ -300,44 +285,59 @@ METHOD(send)
 	ENSURE_COROUTINE_CONTEXT
 
 	async_thread_channel_t *ch = THIS_CHANNEL();
-	THROW_IF_CLOSED(ch)
-
-	pthread_mutex_lock(&ch->mutex);
-
-	/* Check closed under lock */
-	if (UNEXPECTED(ZEND_ASYNC_EVENT_IS_CLOSED(&ch->channel.event))) {
-		pthread_mutex_unlock(&ch->mutex);
-		zend_throw_exception(async_ce_thread_channel_exception, "ThreadChannel is closed", 0);
-		RETURN_THROWS();
-	}
+	zend_ulong thread_id = (zend_ulong) tsrm_thread_id();
 
 	/* Transfer value to persistent memory */
 	zval persistent_copy;
 	async_thread_transfer_zval(&persistent_copy, value);
 
+retry:
+	pthread_mutex_lock(&ch->mutex);
+
+	/* Check closed under lock */
+	if (UNEXPECTED(ZEND_ASYNC_EVENT_IS_CLOSED(&ch->channel.event))) {
+		pthread_mutex_unlock(&ch->mutex);
+		async_thread_release_transferred_zval(&persistent_copy);
+		zend_throw_exception(async_ce_thread_channel_exception, "ThreadChannel is closed", 0);
+		RETURN_THROWS();
+	}
+
 	if (circular_buffer_count(&ch->buffer) < (size_t) ch->capacity) {
-		/* Buffer has space — push and notify waiting receiver */
+		/* Buffer has space — push and notify waiting receivers */
 		circular_buffer_push(&ch->buffer, &persistent_copy, false);
-
-		thread_channel_waiter_t waiter;
-		if (waiter_queue_pop(&ch->waiting_receivers, &waiter)) {
-			pthread_mutex_unlock(&ch->mutex);
-			/* TODO: uv_async_send to waiter's thread to resume coroutine */
-			(void) waiter;
-			return;
-		}
-
+		fire_all_triggers(&ch->receiver_triggers);
 		pthread_mutex_unlock(&ch->mutex);
 		return;
 	}
 
-	/* Buffer is full — need to wait for space */
-	/* TODO: register as waiting sender, unlock, ZEND_ASYNC_SUSPEND(), retry */
+	/* Buffer is full — suspend until space available */
 	pthread_mutex_unlock(&ch->mutex);
-	async_thread_release_transferred_zval(&persistent_copy);
-	zend_throw_exception(async_ce_thread_channel_exception,
-		"ThreadChannel is full (back-pressure not yet implemented)", 0);
-	RETURN_THROWS();
+
+	zend_async_trigger_event_t *trigger = ensure_trigger(ch, &ch->sender_triggers, thread_id);
+	if (UNEXPECTED(trigger == NULL)) {
+		async_thread_release_transferred_zval(&persistent_copy);
+		RETURN_THROWS();
+	}
+
+	zend_coroutine_event_callback_t *cb = ecalloc(1, sizeof(zend_coroutine_event_callback_t));
+	cb->base.callback = zend_async_waker_callback_resolve;
+	cb->base.ref_count = 1;
+	cb->coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	cb->event = &trigger->base;
+
+	zend_async_resume_when(ZEND_ASYNC_CURRENT_COROUTINE,
+		&trigger->base, false, zend_async_waker_callback_resolve, cb);
+
+	ZEND_ASYNC_SUSPEND();
+
+	ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&cb->base);
+
+	if (EG(exception)) {
+		async_thread_release_transferred_zval(&persistent_copy);
+		RETURN_THROWS();
+	}
+
+	goto retry;
 }
 
 METHOD(recv)
@@ -352,23 +352,18 @@ METHOD(recv)
 	ENSURE_COROUTINE_CONTEXT
 
 	async_thread_channel_t *ch = THIS_CHANNEL();
+	zend_ulong thread_id = (zend_ulong) tsrm_thread_id();
 
+retry:
 	pthread_mutex_lock(&ch->mutex);
 
 	if (circular_buffer_is_not_empty(&ch->buffer)) {
-		/* Data available — pop and notify waiting sender */
+		/* Data available — pop and notify waiting senders */
 		zval persistent_zval;
 		circular_buffer_pop(&ch->buffer, &persistent_zval);
-
-		thread_channel_waiter_t waiter;
-		if (waiter_queue_pop(&ch->waiting_senders, &waiter)) {
-			/* TODO: uv_async_send to waiter's thread to resume coroutine */
-			(void) waiter;
-		}
-
+		fire_all_triggers(&ch->sender_triggers);
 		pthread_mutex_unlock(&ch->mutex);
 
-		/* Load from persistent memory into current thread */
 		async_thread_load_zval(return_value, &persistent_zval);
 		async_thread_release_transferred_zval(&persistent_zval);
 		return;
@@ -381,11 +376,32 @@ METHOD(recv)
 		RETURN_THROWS();
 	}
 
-	/* TODO: register as waiting receiver, unlock, ZEND_ASYNC_SUSPEND(), retry */
+	/* Buffer empty, not closed — suspend until data available */
 	pthread_mutex_unlock(&ch->mutex);
-	zend_throw_exception(async_ce_thread_channel_exception,
-		"ThreadChannel is empty (blocking recv not yet implemented)", 0);
-	RETURN_THROWS();
+
+	zend_async_trigger_event_t *trigger = ensure_trigger(ch, &ch->receiver_triggers, thread_id);
+	if (UNEXPECTED(trigger == NULL)) {
+		RETURN_THROWS();
+	}
+
+	zend_coroutine_event_callback_t *cb = ecalloc(1, sizeof(zend_coroutine_event_callback_t));
+	cb->base.callback = zend_async_waker_callback_resolve;
+	cb->base.ref_count = 1;
+	cb->coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+	cb->event = &trigger->base;
+
+	zend_async_resume_when(ZEND_ASYNC_CURRENT_COROUTINE,
+		&trigger->base, false, zend_async_waker_callback_resolve, cb);
+
+	ZEND_ASYNC_SUSPEND();
+
+	ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&cb->base);
+
+	if (EG(exception)) {
+		RETURN_THROWS();
+	}
+
+	goto retry;
 }
 
 METHOD(close)
@@ -403,7 +419,8 @@ METHOD(close)
 
 	ZEND_ASYNC_EVENT_SET_CLOSED(&ch->channel.event);
 
-	/* TODO: wake all waiters with exception via uv_async_send */
+	fire_all_triggers(&ch->receiver_triggers);
+	fire_all_triggers(&ch->sender_triggers);
 
 	pthread_mutex_unlock(&ch->mutex);
 }
