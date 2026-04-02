@@ -51,6 +51,10 @@ static void libuv_restore_signal_handler(int signum)
 
 static void libuv_reactor_stop_with_exception(void);
 
+/* DNS private flags (bits 13+, private range for event subtypes) */
+#define LIBUV_DNS_F_CALLBACK_DONE    (1u << 13) /* libuv callback has fired */
+#define LIBUV_DNS_F_DISPOSE_PENDING  (1u << 14) /* dispose requested, callback owns the memory */
+
 // Forward declarations for global signal management
 static void libuv_add_signal_event(int signum, zend_async_event_t *event);
 static void libuv_remove_signal_event(int signum, zend_async_event_t *event);
@@ -2195,6 +2199,15 @@ libuv_new_filesystem_event(zend_string *path, const unsigned int flags, size_t e
 static void on_nameinfo_event(uv_getnameinfo_t *req, int status, const char *hostname, const char *service)
 {
 	async_dns_nameinfo_t *name_info = req->data;
+
+	name_info->event.base.flags |= LIBUV_DNS_F_CALLBACK_DONE;
+
+	/* dispose was called while callback was pending — finish disposal */
+	if (name_info->event.base.flags & LIBUV_DNS_F_DISPOSE_PENDING) {
+		name_info->event.base.dispose(&name_info->event.base);
+		return;
+	}
+
 	zend_object *exception = NULL;
 
 	name_info->event.hostname = NULL;
@@ -2271,6 +2284,13 @@ static bool libuv_dns_nameinfo_dispose(zend_async_event_t *event)
 
 	zend_async_callbacks_free(event);
 
+	/* libuv callback not yet fired — cannot free, callback owns the memory now */
+	if (!(event->flags & LIBUV_DNS_F_CALLBACK_DONE)) {
+		event->flags |= LIBUV_DNS_F_DISPOSE_PENDING;
+		uv_cancel((uv_req_t *) &((async_dns_nameinfo_t *) event)->uv_handle);
+		return true;
+	}
+
 	zend_async_dns_nameinfo_t *name_info = (zend_async_dns_nameinfo_t *) (event);
 
 	if (name_info->hostname != NULL) {
@@ -2326,6 +2346,18 @@ static zend_async_dns_nameinfo_t *libuv_getnameinfo(const struct sockaddr *addr,
 static void on_addrinfo_event(uv_getaddrinfo_t *req, int status, struct addrinfo *res)
 {
 	async_dns_addrinfo_t *addr_info = req->data;
+
+	addr_info->event.base.flags |= LIBUV_DNS_F_CALLBACK_DONE;
+
+	/* dispose was called while callback was pending — finish disposal */
+	if (addr_info->event.base.flags & LIBUV_DNS_F_DISPOSE_PENDING) {
+		if (res != NULL) {
+			uv_freeaddrinfo(res);
+		}
+		addr_info->event.base.dispose(&addr_info->event.base);
+		return;
+	}
+
 	zend_object *exception = NULL;
 
 	// Events of type addrinfo are triggered only once.
@@ -2388,10 +2420,14 @@ static bool libuv_dns_getaddrinfo_dispose(zend_async_event_t *event)
 
 	zend_async_callbacks_free(event);
 
-	async_dns_addrinfo_t *addr_info = (async_dns_addrinfo_t *) (event);
+	/* libuv callback not yet fired — cannot free, callback owns the memory now */
+	if (!(event->flags & LIBUV_DNS_F_CALLBACK_DONE)) {
+		event->flags |= LIBUV_DNS_F_DISPOSE_PENDING;
+		uv_cancel((uv_req_t *) &((async_dns_addrinfo_t *) event)->uv_handle);
+		return true;
+	}
 
-	// Note: The addrinfo structure is allocated by libuv and should not be freed manually!
-	libuv_close_handle_cb((uv_handle_t *) &addr_info->uv_handle);
+	pefree((async_dns_addrinfo_t *) event, 0);
 	return true;
 }
 
