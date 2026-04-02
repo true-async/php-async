@@ -183,16 +183,19 @@ foreach ($results as $i => $result) {
 gc_collect_cycles();
 echo "garbage collection forced\n";
 
-// Small delay to allow MySQL to process connection closures
-usleep(200000); // 0.2 seconds
+// Wait for MySQL to process connection closures
+$connection_diff = PHP_INT_MAX;
+for ($attempt = 0; $attempt < 3; $attempt++) {
+    usleep(200000);
+    $final_connections = getConnectionCount();
+    $connection_diff = $final_connections - $initial_connections;
+    if ($connection_diff <= 1) break;
+}
 
-$final_connections = getConnectionCount();
 echo "final connections: $final_connections\n";
-
-$connection_diff = $final_connections - $initial_connections;
 echo "connection difference: $connection_diff\n";
 
-if ($connection_diff <= 1) { // Allow for our own monitoring connection
+if ($connection_diff <= 1) {
     echo "cleanup: passed\n";
 } else {
     echo "cleanup: potential leak ($connection_diff extra connections)\n";
