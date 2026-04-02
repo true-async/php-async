@@ -1,5 +1,5 @@
 --TEST--
-PDO MySQL Pool: cancelled connection is destroyed, not returned to pool
+PDO MySQL Pool: retry query in same coroutine after cancel gets fresh connection
 --EXTENSIONS--
 pdo_mysql
 true_async
@@ -18,8 +18,8 @@ use function Async\spawn;
 use function Async\await;
 
 /*
- * Cancel coroutine during SLEEP query. conn_broken flag → pool destroys connection.
- * Next coroutine gets a fresh connection from pool.
+ * Coroutine catches cancel, then retries query on the same $pdo.
+ * acquire_conn must detect conn_broken and give a fresh connection.
  */
 
 $pdo = AsyncPDOMySQLTest::factory(options: [
@@ -29,36 +29,33 @@ $pdo = AsyncPDOMySQLTest::factory(options: [
     PDO::ATTR_POOL_MAX => 2,
 ]);
 
-$pool = $pdo->getPool();
 $ready = new Channel(1);
 
-$coroA = spawn(function() use ($pdo, $ready) {
+$coro = spawn(function() use ($pdo, $ready) {
+    // First query — will be cancelled.
+    // MySQL throws PDOException (2006 gone away), not AsyncCancellation,
+    // because the driver detects the broken connection first.
     try {
         $ready->send(true);
         $pdo->query("SELECT SLEEP(5)");
     } catch (\Throwable $e) {
-        // MySQL may throw PDOException(2006) or AsyncCancellation
+        echo "Caught: " . get_class($e) . "\n";
     }
+
+    // Retry — should get a fresh connection automatically
+    $stmt = $pdo->query("SELECT 42 as val");
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    echo "Retry result: " . $row['val'] . "\n";
 });
 
 $ready->recv();
-$coroA->cancel(new AsyncCancellation("test cancel"));
+$coro->cancel(new AsyncCancellation("test"));
 
-try { await($coroA); } catch (\Throwable $e) {}
+try { await($coro); } catch (AsyncCancellation $e) {}
 
-echo "Pool count after cancel: " . $pool->count() . "\n";
-
-// Coroutine B: pool creates fresh connection
-$coroB = spawn(function() use ($pdo) {
-    $stmt = $pdo->query("SELECT 42 as val");
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    echo "Coro B: val=" . $row['val'] . "\n";
-});
-
-await($coroB);
 echo "Done\n";
 ?>
 --EXPECTF--
-%APool count after cancel: %d
-Coro B: val=42
+%ACaught: %s
+Retry result: 42
 Done
