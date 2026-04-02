@@ -36,7 +36,7 @@ $coroA = spawn(function() use ($pdo, $ready) {
     $ready->send($connId);
 
     // Block here — KILL will interrupt this
-    $pdo->exec("SELECT SLEEP(5)");
+    $pdo->exec("SELECT SLEEP(30)");
     return "A:error=" . $pdo->errorCode();
 });
 

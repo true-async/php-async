@@ -34,7 +34,7 @@ $coroA = spawn(function() use ($pdo, $ready) {
     $ready->send($pid);
 
     // Block here — terminate will interrupt this
-    $pdo->exec("SELECT pg_sleep(5)");
+    $pdo->exec("SELECT pg_sleep(30)");
     return "A:error=" . $pdo->errorCode();
 });
 
