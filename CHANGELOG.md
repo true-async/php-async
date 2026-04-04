@@ -5,7 +5,12 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.6] -
+## [0.6.7] -
+
+### Added
+- **PDO Pool: `getAttribute()` support for pool attributes**: `$pdo->getAttribute(PDO::ATTR_POOL_ENABLED)` now returns `true`/`false` depending on whether the connection pool is active. `PDO::ATTR_POOL_MIN` and `PDO::ATTR_POOL_MAX` return the configured pool size limits (or `false` when pooling is disabled). `PDO::ATTR_POOL_HEALTHCHECK_INTERVAL` is a construction-only attribute and raises an error if read at runtime.
+
+## [0.6.6] - 2026-04-03
 
 ### Added
 - **PDO Pool: broken connection detection**: Pooled connections that lose server contact or get interrupted (e.g. cancelled coroutine, server restart, DBA kill) are now automatically detected and destroyed instead of being returned to the pool. This prevents the next coroutine from receiving a broken connection ("MySQL server has gone away", "another command is already in progress"). Works for both MySQL and PostgreSQL.
