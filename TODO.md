@@ -87,3 +87,43 @@ Eliminate the `dup()` workaround by ensuring async IO streams either:
 1. Never need `PHP_STREAM_AS_STDIO` cast (preferred), or
 2. Have a well-defined ownership model for the `FILE*` copy.
 
+---
+
+## PDO Pool: protocol-level query cancellation on coroutine cancel
+
+### Problem
+
+When a coroutine is cancelled during an active SQL query (`SELECT SLEEP(5)`),
+the cancellation interrupts `php_stream_read()` at the poll level. The MySQL/PgSQL
+protocol stream is left in an inconsistent state — the response packet is partially
+read or not read at all. The connection is broken ("MySQL server has gone away")
+but the pool doesn't know and returns it to the next coroutine.
+
+### Current workaround
+
+Destroy the connection instead of returning it to the pool when the coroutine
+finishes with an exception (implemented in `pdo_pool_binding_on_coroutine_finish`
+by checking the `exception` parameter).
+
+### Proper solution: protocol-level cancel
+
+Instead of destroying the connection, send a protocol-level cancel command
+via a **second connection**, then drain the response on the original connection:
+
+- **MySQL**: `KILL QUERY <thread_id>` — cancels the running query on the server.
+  The original connection receives an error response, protocol re-syncs.
+- **PostgreSQL**: `PQcancel()` — libpq already provides this. Sends a cancel
+  request to the backend, which interrupts the query and returns an error result.
+
+After the cancel, read and discard the error response on the original connection.
+The connection is now in a clean state and can be safely returned to the pool.
+
+### Implementation notes
+
+- Requires a helper/control connection per pool (or per cancel request)
+- MySQL `thread_id` available via `mysql_thread_id()` on the connection
+- PgSQL cancel object available via `PQgetCancel()` on the connection
+- Must handle the case where the query finishes before the cancel arrives
+- Driver-specific: each driver needs its own cancel implementation
+- Consider adding `cancel_query` method to `pdo_dbh_methods_t`
+

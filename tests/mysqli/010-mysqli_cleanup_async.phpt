@@ -179,23 +179,38 @@ foreach ($results as $i => $result) {
     echo "cleanup test " . ($i + 1) . ": $status\n";
 }
 
+// Collect connection IDs from results
+$conn_ids = [];
+foreach ($results as $r) {
+    if (isset($r['conn_id'])) {
+        $conn_ids[] = (int) $r['conn_id'];
+    }
+}
+
 // Force garbage collection
 gc_collect_cycles();
 echo "garbage collection forced\n";
 
-// Small delay to allow MySQL to process connection closures
-usleep(200000); // 0.2 seconds
+// Check that OUR connections are closed (not global Threads_connected)
+$checker = AsyncMySQLiTest::factory();
+$ids_list = implode(',', $conn_ids);
+$alive = 0;
+for ($attempt = 0; $attempt < 3; $attempt++) {
+    usleep(200000);
+    $result = $checker->query("SELECT COUNT(*) as cnt FROM information_schema.processlist WHERE id IN ($ids_list)");
+    $alive = (int) $result->fetch_assoc()['cnt'];
+    $result->free();
+    if ($alive === 0) break;
+}
+$checker->close();
 
-$final_connections = getConnectionCount();
-echo "final connections: $final_connections\n";
+echo "final connections: " . count($conn_ids) . " tracked, $alive still alive\n";
+echo "connection difference: $alive\n";
 
-$connection_diff = $final_connections - $initial_connections;
-echo "connection difference: $connection_diff\n";
-
-if ($connection_diff <= 1) { // Allow for our own monitoring connection
+if ($alive === 0) {
     echo "cleanup: passed\n";
 } else {
-    echo "cleanup: potential leak ($connection_diff extra connections)\n";
+    echo "cleanup: potential leak ($alive extra connections)\n";
 }
 
 echo "end\n";
@@ -235,7 +250,7 @@ cleanup test 4: coroutine_4_completed
 cleanup test 5: coroutine_5_completed
 cleanup test 6: coroutine_6_completed
 garbage collection forced
-final connections: %d
+final connections: %s
 connection difference: %d
 cleanup: passed
 end

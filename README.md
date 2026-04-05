@@ -36,7 +36,7 @@ no callbacks, no promises, no framework required.
 
 ## Installation
 
-PHP TRUE ASYNC requires **PHP 8.6+** and **LibUV ≥ 1.45.0**.
+PHP TRUE ASYNC requires **PHP 8.6+** and **LibUV ≥ 1.49.0** (≥ 1.45.0 minimum, see io_uring warning below).
 
 > Full installation instructions and pre-built packages: **[true-async.github.io/download](https://true-async.github.io/download.html)**
 
@@ -65,6 +65,31 @@ PHP TRUE ASYNC requires **PHP 8.6+** and **LibUV ≥ 1.45.0**.
    ```
 
    > **Note:** LibUV 1.45.0+ is required. Older versions have a critical busy-loop issue in `UV_RUN_ONCE` mode causing high CPU usage.
+
+   > **Warning (io_uring):** LibUV versions 1.45.0–1.48.x have a bug in the `io_uring` code path
+   > that causes a crash (`Assertion 'req->type == UV_FS' failed` in `uv__poll_io_uring`, `src/unix/linux.c:1156`)
+   > under sustained load when database connections are exhausted (e.g. PostgreSQL `max_connections` exceeded).
+   > The crash occurs because a non-filesystem completion event is processed by `uv__poll_io_uring`
+   > where only `UV_FS` requests are expected. This was fixed upstream between libuv 1.48 and 1.49
+   > (io_uring was disabled by default in 1.49, and CQ overflow handling was fixed in PR [#4601](https://github.com/libuv/libuv/pull/4601)).
+   >
+   > **Recommended:** Use **LibUV ≥ 1.49.0** (tested stable with 1.52.1).
+   > If stuck on 1.48.x, set `UV_USE_IO_URING=0` as a workaround.
+   >
+   > **io_uring SQPOLL (`UV_USE_IO_URING=1`):** Do **not** enable SQPOLL mode.
+   > Benchmarks with FrankenPHP (4 workers, 1000 req/s, 5 SQL queries per request) show
+   > that SQPOLL significantly degrades performance compared to the default:
+   >
+   > | | Default (io_uring FS only) | SQPOLL (`UV_USE_IO_URING=1`) |
+   > |---|---|---|
+   > | **avg latency** | 82 ms | 908 ms |
+   > | **median** | 38 ms | 63 ms |
+   > | **p95** | 106 ms | 290 ms |
+   > | **req/s** | 993 | 856 |
+   > | **dropped iterations** | 377 | 7745 |
+   >
+   > With LibUV ≥ 1.49, the default (io_uring for FS operations, no SQPOLL) is optimal.
+   > Leave `UV_USE_IO_URING` unset.
 
 4. **Configure and build:**
 

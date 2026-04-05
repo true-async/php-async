@@ -5,9 +5,22 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.6] -
+## [0.6.7] -
+
+### Added
+- **PDO Pool: `getAttribute()` support for pool attributes**: `$pdo->getAttribute(PDO::ATTR_POOL_ENABLED)` now returns `true`/`false` depending on whether the connection pool is active. `PDO::ATTR_POOL_MIN` and `PDO::ATTR_POOL_MAX` return the configured pool size limits (or `false` when pooling is disabled). `PDO::ATTR_POOL_HEALTHCHECK_INTERVAL` is a construction-only attribute and raises an error if read at runtime.
+
+## [0.6.6] - 2026-04-03
+
+### Added
+- **PDO Pool: broken connection detection**: Pooled connections that lose server contact or get interrupted (e.g. cancelled coroutine, server restart, DBA kill) are now automatically detected and destroyed instead of being returned to the pool. This prevents the next coroutine from receiving a broken connection ("MySQL server has gone away", "another command is already in progress"). Works for both MySQL and PostgreSQL.
+- **PDO Pool: transparent reconnect after broken connection**: When a coroutine catches an error from a broken connection and retries a query on the same `$pdo`, the pool automatically discards the broken connection and acquires a fresh one. No manual reconnection needed.
+- **PDO Pool: error state isolation between coroutines**: `$pdo->errorCode()` and `$pdo->errorInfo()` no longer leak error state from one coroutine to another. Each coroutine sees only its own errors.
+- **PDO Pool: `errorCode()` returns `"00000"` on first query**: Previously could return `NULL` when multiple coroutines ran their first query concurrently on fresh connections.
 
 ### Fixed
+- **Heap-use-after-free in DNS resolve on cancellation**: When a coroutine was cancelled while a DNS resolve (`gethostbyname`, database connect) was in flight, the DNS event memory was freed immediately in `dispose()` while the libuv thread pool callback was still pending. When libuv later invoked the callback, it accessed freed memory — crash or corruption. Fixed by deferring the free to the libuv callback itself: `dispose()` sets a `DISPOSE_PENDING` flag and the callback checks it on completion, taking ownership of the memory cleanup.
+- **Pool `max_size` not enforced during concurrent connection creation**: When multiple coroutines tried to open connections simultaneously (e.g. on application startup), the pool could create more connections than `max_size` allowed. Now the limit is strictly enforced — excess coroutines wait until a connection becomes available.
 - **`Scope::awaitCompletion()` not marking cancellation Future as used**: The cancellation token passed to `awaitCompletion()` was never marked with `RESULT_USED` / `EXC_CAUGHT`, causing a spurious "Future was never used" warning when the Future was destroyed. Additionally, early return paths (scope already finished, closed, or cancelled) skipped the marking entirely. Fixed by setting flags immediately after parameter parsing, before any early returns.
 - **`Scope::awaitAfterCancellation()` not marking cancellation Future as used**: Same issue as `awaitCompletion()` — the optional cancellation Future was only marked when the method reached `resume_when`, but early returns bypassed it. Fixed identically.
 - **Heap-use-after-free in `stream_socket_accept()` during coroutine cancellation**: When a coroutine blocked in `stream_socket_accept()` was cancelled during graceful shutdown, `network_async_accept_incoming()` extracted the exception's message string into `*error_string` without incrementing its refcount (`*error_string = Z_STR_P(message)`). The caller then called `zend_string_release_ex()`, freeing the string while the exception object still referenced it. On exception destruction, `zend_object_std_dtor` accessed the freed string — heap-use-after-free. Fixed by using `zend_string_copy()` to properly addref the borrowed string. Same bug existed in the synchronous path `php_network_accept_incoming_ex()` in `main/network.c` — fixed there too.

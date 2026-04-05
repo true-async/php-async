@@ -826,13 +826,16 @@ retry:
 		return true;
 	}
 
-	/* 3. Can create new? */
+	/* 3. Can create new? Reserve slot BEFORE factory call — factory may yield,
+	 * allowing other coroutines to pass the same check concurrently. */
 	const uint32_t total = ASYNC_POOL_TOTAL(pool);
 	if (total < base->max_size) {
+		pool->active_count++;
 		if (pool_create_resource(pool, result)) {
-			pool->active_count++;
 			return true;
-		} else if (UNEXPECTED(EG(exception))) {
+		}
+		pool->active_count--;
+		if (UNEXPECTED(EG(exception))) {
 			return false;
 		}
 	}
@@ -877,13 +880,14 @@ retry:
 		return true;
 	}
 
-	/* Can create new? */
+	/* Can create new? Reserve slot before factory (may yield). */
 	const uint32_t total = ASYNC_POOL_TOTAL(pool);
 	if (total < base->max_size) {
+		pool->active_count++;
 		if (pool_create_resource(pool, result)) {
-			pool->active_count++;
 			return true;
 		}
+		pool->active_count--;
 	}
 
 	/* No resource available */
