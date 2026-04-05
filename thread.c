@@ -688,11 +688,6 @@ static void thread_copy_op_array(thread_copy_ctx_t *ctx, zval *zv)
 
 #define THREAD_DEPTH_RELEASE(ctx) (ctx)->depth--
 
-typedef struct {
-	HashTable xlat;   /* old_ptr → new_ptr mapping */
-	uint32_t depth;
-} thread_transfer_ctx_t;
-
 static void thread_transfer_ctx_init(thread_transfer_ctx_t *ctx)
 {
 	zend_hash_init(&ctx->xlat, 32, NULL, NULL, 0);
@@ -788,44 +783,32 @@ static HashTable *thread_transfer_hash_table(thread_transfer_ctx_t *ctx, const H
 }
 /* }}} */
 
-/* {{{ thread_transfer_object — deep copy an object into persistent memory.
- *
- * pemalloc + memcpy the whole zend_object, then deep-copy each property
- * in the copy's properties_table. Repurpose ce/handlers fields for transit:
- *   ce       → persistent class name (zend_string *)
- *   handlers → properties count (cast to pointer)
- */
-static zend_object *thread_transfer_object(thread_transfer_ctx_t *ctx, const zend_object *src)
+/* Default transfer: pemalloc object of alloc_size (0 = auto), copy properties.
+ * Can be passed to transfer_obj handler as default_fn. */
+static zend_object *thread_transfer_object_default(
+	const zend_object *src, thread_transfer_ctx_t *ctx, size_t alloc_size)
 {
-	THREAD_DEPTH_CHECK(ctx, NULL);
-
-	zend_object *existing = thread_transfer_xlat_get(ctx, src);
-	if (existing) {
-		GC_ADDREF(existing);
-		THREAD_DEPTH_RELEASE(ctx);
-		return existing;
-	}
-
-	/* Dynamic properties (stdClass, __set) are not supported */
-	if (src->properties && zend_hash_num_elements(src->properties) > 0) {
-		zend_async_throw(ZEND_ASYNC_EXCEPTION_THREAD_TRANSFER,
-			"Cannot transfer object with dynamic properties between threads "
-			"(class %s). Use arrays instead", ZSTR_VAL(src->ce->name));
-		THREAD_DEPTH_RELEASE(ctx);
-		return NULL;
-	}
-
-	zend_class_entry *ce = src->ce;
+	const zend_class_entry *ce = src->ce;
 	const uint32_t prop_count = ce->default_properties_count;
+	const int offset = src->handlers->offset;
 	const size_t obj_size = sizeof(zend_object) + zend_object_properties_size(ce);
 
-	/* pemalloc + memcpy the entire object */
-	zend_object *dst = pemalloc(obj_size, 1);
+	if (alloc_size == 0) {
+		/* Auto-detect: offset (wrapper prefix) + zend_object + properties */
+		alloc_size = offset + obj_size;
+	}
+
+	/* alloc_size is the full wrapper size (including offset bytes before zend_object) */
+	char *base = pecalloc(1, alloc_size, 1);
+
+	zend_object *dst = (zend_object *)(base + offset);
+
+	/* Copy zend_object + properties_table */
 	memcpy(dst, src, obj_size);
 	GC_SET_REFCOUNT(dst, 1);
 
-	/* Register early so cycles are handled */
-	thread_transfer_xlat_put(ctx, src, dst);
+	/* Store offset for release — extra_flags is unused in transit */
+	dst->extra_flags = (uint32_t) offset;
 
 	/* Repurpose fields for transit */
 	dst->ce = (zend_class_entry *) thread_transfer_string(ctx, ce->name);
@@ -841,6 +824,44 @@ static zend_object *thread_transfer_object(thread_transfer_ctx_t *ctx, const zen
 			ZVAL_COPY_VALUE(prop, &transferred);
 		}
 	}
+
+	return dst;
+}
+
+static zend_object *thread_transfer_object(thread_transfer_ctx_t *ctx, const zend_object *src)
+{
+	THREAD_DEPTH_CHECK(ctx, NULL);
+
+	zend_object *existing = thread_transfer_xlat_get(ctx, src);
+	if (existing) {
+		GC_ADDREF(existing);
+		THREAD_DEPTH_RELEASE(ctx);
+		return existing;
+	}
+
+	/* Custom transfer handler (e.g. thread-safe shared objects) */
+	if (src->handlers->transfer_obj) {
+		zend_object *dst = src->handlers->transfer_obj(
+			(zend_object *) src, ctx, ZEND_OBJECT_TRANSFER,
+			(zend_object_transfer_default_fn) thread_transfer_object_default);
+		if (dst) {
+			thread_transfer_xlat_put(ctx, src, dst);
+		}
+		THREAD_DEPTH_RELEASE(ctx);
+		return dst;
+	}
+
+	/* Dynamic properties (stdClass, __set) are not supported */
+	if (src->properties && zend_hash_num_elements(src->properties) > 0) {
+		zend_async_throw(ZEND_ASYNC_EXCEPTION_THREAD_TRANSFER,
+			"Cannot transfer object with dynamic properties between threads "
+			"(class %s). Use arrays instead", ZSTR_VAL(src->ce->name));
+		THREAD_DEPTH_RELEASE(ctx);
+		return NULL;
+	}
+
+	zend_object *dst = thread_transfer_object_default(src, ctx, 0);
+	thread_transfer_xlat_put(ctx, src, dst);
 
 	THREAD_DEPTH_RELEASE(ctx);
 	return dst;
@@ -1005,16 +1026,12 @@ static HashTable *thread_load_hash_table(thread_transfer_ctx_t *ctx, const HashT
 	return dst;
 }
 
-static zend_object *thread_load_object(thread_transfer_ctx_t *ctx, const zend_object *src)
+/* Default load: resolve class, create emalloc object via create_object, copy properties.
+ * alloc_size is ignored for load (object created via zend_objects_new/create_object). */
+static zend_object *thread_load_object_default(
+	const zend_object *src, thread_transfer_ctx_t *ctx, size_t alloc_size)
 {
-	THREAD_DEPTH_CHECK(ctx, NULL);
-
-	zend_object *existing = thread_transfer_xlat_get(ctx, src);
-	if (existing) {
-		GC_ADDREF(existing);
-		THREAD_DEPTH_RELEASE(ctx);
-		return existing;
-	}
+	(void) alloc_size;
 
 	/* Read transit fields: ce = class_name, handlers = prop_count */
 	const zend_string *class_name = (const zend_string *) src->ce;
@@ -1034,14 +1051,17 @@ static zend_object *thread_load_object(thread_transfer_ctx_t *ctx, const zend_ob
 		}
 		zend_object *fallback = zend_objects_new(zend_standard_class_def);
 		object_properties_init(fallback, zend_standard_class_def);
-		THREAD_DEPTH_RELEASE(ctx);
 		return fallback;
 	}
 
-	/* Create a normal emalloc'd object */
-	zend_object *dst = zend_objects_new(ce);
-	thread_transfer_xlat_put(ctx, src, dst);
-	object_properties_init(dst, ce);
+	/* Create a normal emalloc'd object (uses create_object if defined) */
+	zend_object *dst;
+	if (ce->create_object) {
+		dst = ce->create_object(ce);
+	} else {
+		dst = zend_objects_new(ce);
+		object_properties_init(dst, ce);
+	}
 
 	/* Copy declared properties from transit object */
 	const uint32_t prop_count = MIN(src_prop_count,
@@ -1056,6 +1076,41 @@ static zend_object *thread_load_object(thread_transfer_ctx_t *ctx, const zend_ob
 			ZVAL_COPY_VALUE(&dst->properties_table[i], &copy);
 		}
 	}
+
+	return dst;
+}
+
+static zend_object *thread_load_object(thread_transfer_ctx_t *ctx, const zend_object *src)
+{
+	THREAD_DEPTH_CHECK(ctx, NULL);
+
+	zend_object *existing = thread_transfer_xlat_get(ctx, src);
+	if (existing) {
+		GC_ADDREF(existing);
+		THREAD_DEPTH_RELEASE(ctx);
+		return existing;
+	}
+
+	/* Read transit class name to resolve ce and check for transfer_obj handler */
+	const zend_string *class_name = (const zend_string *) src->ce;
+	zend_string *lookup_name = zend_string_init(
+		ZSTR_VAL(class_name), ZSTR_LEN(class_name), 0);
+	zend_class_entry *ce = zend_lookup_class(lookup_name);
+	zend_string_release(lookup_name);
+
+	if (ce && ce->default_object_handlers && ce->default_object_handlers->transfer_obj) {
+		zend_object *dst = ce->default_object_handlers->transfer_obj(
+			(zend_object *) src, ctx, ZEND_OBJECT_LOAD,
+			(zend_object_transfer_default_fn) thread_load_object_default);
+		if (dst) {
+			thread_transfer_xlat_put(ctx, src, dst);
+		}
+		THREAD_DEPTH_RELEASE(ctx);
+		return dst;
+	}
+
+	zend_object *dst = thread_load_object_default(src, ctx, 0);
+	thread_transfer_xlat_put(ctx, src, dst);
 
 	THREAD_DEPTH_RELEASE(ctx);
 	return dst;
@@ -1185,7 +1240,10 @@ static void thread_release_transferred_object(zend_object *obj)
 	}
 
 	zend_string_release(class_name);
-	pefree(obj, 1);
+
+	/* Free from base of allocation (offset stored in extra_flags by transfer_default) */
+	const uint32_t offset = obj->extra_flags;
+	pefree((char *)obj - offset, 1);
 }
 
 void async_thread_release_transferred_zval(zval *z)

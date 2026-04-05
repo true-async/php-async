@@ -132,6 +132,9 @@ void async_thread_snapshot_destroy_api(void *snapshot);
 /// Zval transfer — copy runtime values between threads
 ///////////////////////////////////////////////////////////
 
+/* thread_transfer_ctx_t is an alias for the Zend-level type */
+typedef zend_async_thread_transfer_ctx_t thread_transfer_ctx_t;
+
 /**
  * Copy a zval into persistent memory for cross-thread transfer.
  * Deep copies strings, arrays, and objects. Preserves identity

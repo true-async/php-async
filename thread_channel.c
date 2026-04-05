@@ -236,6 +236,34 @@ static void async_thread_channel_dtor_object(zend_object *object)
 	zend_object_std_dtor(object);
 }
 
+static zend_object *async_thread_channel_transfer_obj(
+	zend_object *object, zend_async_thread_transfer_ctx_t *ctx,
+	zend_object_transfer_kind_t kind, zend_object_transfer_default_fn default_fn)
+{
+	if (kind == ZEND_OBJECT_TRANSFER) {
+		/* Transfer: pemalloc wrapper via default, then copy channel pointer */
+		zend_object *dst = default_fn(object, ctx, sizeof(thread_channel_object_t));
+
+		thread_channel_object_t *src_obj = ASYNC_THREAD_CHANNEL_FROM_OBJ(object);
+		thread_channel_object_t *dst_obj = ASYNC_THREAD_CHANNEL_FROM_OBJ(dst);
+
+		thread_channel_addref(src_obj->channel);
+		dst_obj->channel = src_obj->channel;
+
+		return dst;
+	} else {
+		/* Load: create emalloc object via default, then restore channel pointer */
+		zend_object *dst = default_fn(object, ctx, 0);
+
+		thread_channel_object_t *src_obj = ASYNC_THREAD_CHANNEL_FROM_OBJ(object);
+		thread_channel_object_t *dst_obj = ASYNC_THREAD_CHANNEL_FROM_OBJ(dst);
+
+		dst_obj->channel = src_obj->channel;
+
+		return dst;
+	}
+}
+
 static void async_thread_channel_free_object(zend_object *object)
 {
 	thread_channel_object_t *obj = ASYNC_THREAD_CHANNEL_FROM_OBJ(object);
@@ -480,9 +508,11 @@ void async_register_thread_channel_ce(void)
 	async_ce_thread_channel->create_object = async_thread_channel_create_object;
 
 	memcpy(&async_thread_channel_handlers, &std_object_handlers, sizeof(zend_object_handlers));
+	async_ce_thread_channel->default_object_handlers = &async_thread_channel_handlers;
 	async_thread_channel_handlers.offset = XtOffsetOf(thread_channel_object_t, std);
 	async_thread_channel_handlers.get_gc = async_thread_channel_get_gc;
 	async_thread_channel_handlers.dtor_obj = async_thread_channel_dtor_object;
 	async_thread_channel_handlers.free_obj = async_thread_channel_free_object;
 	async_thread_channel_handlers.clone_obj = NULL;
+	async_thread_channel_handlers.transfer_obj = async_thread_channel_transfer_obj;
 }
