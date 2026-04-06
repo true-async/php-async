@@ -812,6 +812,7 @@ bool async_coroutine_resume(zend_coroutine_t *coroutine, zend_object *error, con
 	// we will execute it immediately!
 	if (UNEXPECTED(in_scheduler_context && coroutine == ZEND_ASYNC_CURRENT_COROUTINE)) {
 		waker->status = ZEND_ASYNC_WAKER_RESULT;
+		ZEND_ASYNC_WAKER_CLEAN_EVENTS(coroutine->waker);
 		return true;
 	}
 

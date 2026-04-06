@@ -3424,6 +3424,9 @@ static bool libuv_trigger_event_start(zend_async_event_t *event)
 {
 	EVENT_START_PROLOGUE(event);
 
+	async_trigger_event_t *trigger = (async_trigger_event_t *) event;
+	uv_ref((uv_handle_t *) &trigger->uv_handle);
+
 	event->loop_ref_count++;
 	ZEND_ASYNC_INCREASE_EVENT_COUNT(event);
 	return true;
@@ -3435,6 +3438,9 @@ static bool libuv_trigger_event_start(zend_async_event_t *event)
 static bool libuv_trigger_event_stop(zend_async_event_t *event)
 {
 	EVENT_STOP_PROLOGUE(event);
+
+	async_trigger_event_t *trigger = (async_trigger_event_t *) event;
+	uv_unref((uv_handle_t *) &trigger->uv_handle);
 
 	event->loop_ref_count = 0;
 	ZEND_ASYNC_DECREASE_EVENT_COUNT(event);
@@ -3481,6 +3487,10 @@ zend_async_trigger_event_t *libuv_new_trigger_event(size_t extra_size)
 		pefree(trigger, 0);
 		return NULL;
 	}
+
+	/* Handle is initialized but should not keep the event loop alive
+	 * until start() is explicitly called (e.g. when a coroutine suspends). */
+	uv_unref((uv_handle_t *) &trigger->uv_handle);
 
 	// Link the handle to the trigger event
 	trigger->uv_handle.data = trigger;

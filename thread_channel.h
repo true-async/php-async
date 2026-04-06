@@ -40,13 +40,12 @@ struct _async_thread_channel_s {
 	/* Channel capacity (always >= 1) */
 	int32_t capacity;
 
-	/* Trigger events for cross-thread notification.
-	 * HashTable: thread_id (zend_ulong) → zend_async_trigger_event_t*
-	 * Created lazily on first send/recv from a given thread.
-	 * Coroutines subscribe to their thread's trigger event via add_callback.
-	 * Other threads fire trigger() to wake them up (thread-safe uv_async_send). */
-	HashTable receiver_triggers;  /* triggers for threads waiting to receive */
-	HashTable sender_triggers;    /* triggers for threads waiting to send */
+	/* Per-wrapper trigger registrations.
+	 * HashTable: wrapper_ptr (zend_ulong) → zend_async_trigger_event_t*
+	 * Wrappers register their trigger when waiting for send/recv.
+	 * Other threads fire all registered triggers to wake waiters. */
+	HashTable receiver_triggers;  /* triggers from wrappers waiting to receive */
+	HashTable sender_triggers;    /* triggers from wrappers waiting to send */
 
 	/* Reference count for cross-thread sharing */
 	zend_atomic_int ref_count;
@@ -57,8 +56,9 @@ struct _async_thread_channel_s {
 ///////////////////////////////////////////////////////////
 
 typedef struct _thread_channel_object_s {
-	async_thread_channel_t *channel;  /* pemalloc'd, shared */
-	zend_object std;                  /* must be last */
+	ZEND_ASYNC_EVENT_REF_FIELDS                /* flags, zend_object_offset, *event → trigger */
+	async_thread_channel_t *channel;           /* pemalloc'd, shared */
+	zend_object std;                           /* must be last */
 } thread_channel_object_t;
 
 /* Class entries */
@@ -68,6 +68,10 @@ extern zend_class_entry *async_ce_thread_channel_exception;
 /* Convert zend_object to thread_channel_object_t */
 #define ASYNC_THREAD_CHANNEL_FROM_OBJ(obj) \
 	((thread_channel_object_t *)((char *)(obj) - XtOffsetOf(thread_channel_object_t, std)))
+
+/* Get trigger event from wrapper (stored via ZEND_ASYNC_EVENT_REF_FIELDS) */
+#define ASYNC_THREAD_CHANNEL_TRIGGER(obj) \
+	((zend_async_trigger_event_t *)(obj)->event)
 
 /* Registration function */
 void async_register_thread_channel_ce(void);
