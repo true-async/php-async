@@ -979,6 +979,12 @@ FUTURE_STATE_METHOD(isCompleted)
 	ZEND_PARSE_PARAMETERS_NONE();
 
 	const async_future_state_t *state = THIS_FUTURE_STATE;
+
+	/* Remote path: check shared state atomic flag */
+	if (state->shared_state != NULL && state->event == NULL) {
+		RETURN_BOOL(zend_atomic_int_load(&state->shared_state->completed));
+	}
+
 	const zend_future_t *future = (zend_future_t *) state->event;
 
 	if (UNEXPECTED(future == NULL)) {
