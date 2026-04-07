@@ -73,6 +73,9 @@ extern zend_class_entry *async_ce_thread_channel_exception;
 #define ASYNC_THREAD_CHANNEL_TRIGGER(obj) \
 	((zend_async_trigger_event_t *)(obj)->event)
 
+/* Create shared channel (C-level, no PHP wrapper) */
+async_thread_channel_t *async_thread_channel_create(int32_t capacity);
+
 /* Registration function */
 void async_register_thread_channel_ce(void);
 

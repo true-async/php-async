@@ -81,7 +81,7 @@ static void fire_all_triggers(HashTable *triggers)
 // Thread channel allocation / destruction
 ///////////////////////////////////////////////////////////////////////////////
 
-static async_thread_channel_t *thread_channel_create(int32_t capacity)
+async_thread_channel_t *async_thread_channel_create(int32_t capacity)
 {
 	async_thread_channel_t *ch = pecalloc(1, sizeof(async_thread_channel_t), 1);
 
@@ -255,7 +255,7 @@ METHOD(__construct)
 	}
 
 	thread_channel_object_t *obj = ASYNC_THREAD_CHANNEL_FROM_OBJ(Z_OBJ_P(ZEND_THIS));
-	obj->channel = thread_channel_create((int32_t) capacity);
+	obj->channel = async_thread_channel_create((int32_t) capacity);
 
 	thread_channel_event_init(obj->channel);
 }

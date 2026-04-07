@@ -2060,8 +2060,7 @@ static zend_string *libuv_thread_info(zend_async_event_t *event)
 
 /* {{{ libuv_new_thread_event */
 zend_async_thread_event_t *libuv_new_thread_event(
-	const zend_fcall_t *entry, const zend_fcall_t *bootloader, const uint32_t thread_flags, const size_t extra_size,
-	zend_async_thread_c_entry_t c_entry)
+	const zend_fcall_t *entry, const zend_fcall_t *bootloader, const uint32_t thread_flags, const size_t extra_size)
 {
 	START_REACTOR_OR_RETURN_NULL;
 
@@ -2094,9 +2093,6 @@ zend_async_thread_event_t *libuv_new_thread_event(
 
 	/* Set notify callback for child → parent notification */
 	thread_event->event.notify_parent = libuv_thread_notify;
-
-	/* C-level entry point (NULL for PHP closure threads) */
-	thread_event->event.c_entry = c_entry;
 
 	/* Create snapshot: deep-copy entry closure + optional bootloader + parent context */
 	if (entry != NULL) {
