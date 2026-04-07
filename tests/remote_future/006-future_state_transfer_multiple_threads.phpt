@@ -1,5 +1,5 @@
 --TEST--
-RemoteFuture: FutureState transferred — first thread to complete wins
+RemoteFuture: FutureState cannot be transferred to multiple threads
 --SKIPIF--
 <?php
 if (!PHP_ZTS) die('skip ZTS required');
@@ -18,28 +18,26 @@ spawn(function() {
     $state = new FutureState();
     $future = new Future($state);
 
-    // Both threads share the same FutureState — first to complete wins
     $t1 = spawn_thread(function() use ($state) {
         $state->complete("from t1");
     });
 
-    $t2 = spawn_thread(function() use ($state) {
-        // May or may not throw depending on timing
-        try {
+    // Second transfer should throw
+    try {
+        $t2 = spawn_thread(function() use ($state) {
             $state->complete("from t2");
-        } catch (\Error $e) {
-            // expected — already completed by t1
-        }
-    });
+        });
+        echo "ERROR: should have thrown\n";
+    } catch (\Throwable $e) {
+        echo "Caught: " . $e->getMessage() . "\n";
+    }
 
-    $result = await($future);
-    echo "Result starts with 'from t': " . (str_starts_with($result, "from t") ? "yes" : "no") . "\n";
-
+    echo await($future) . "\n";
     await($t1);
-    await($t2);
     echo "Done\n";
 });
 ?>
 --EXPECT--
-Result starts with 'from t': yes
+Caught: FutureState cannot be transferred to multiple threads
+from t1
 Done

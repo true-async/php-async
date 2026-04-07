@@ -749,6 +749,12 @@ static zend_object *async_future_state_transfer_obj(
 		/* Source thread: create shared_state, bind to original future */
 		async_future_state_t *src = FUTURE_STATE_FROM_OBJ(object);
 
+		if (src->shared_state != NULL) {
+			zend_throw_exception(NULL,
+				"FutureState cannot be transferred to multiple threads", 0);
+			return NULL;
+		}
+
 		zend_future_shared_state_t *shared = async_future_shared_state_create();
 		async_future_shared_state_bind(shared, (zend_future_t *) src->event);
 
