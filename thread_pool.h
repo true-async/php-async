@@ -17,8 +17,20 @@
 #define ASYNC_THREAD_POOL_H
 
 #include "php_async_api.h"
+#include "future.h"
+#include "internal/circular_buffer.h"
 #include <Zend/zend_async_API.h>
 #include <pthread.h>
+
+///////////////////////////////////////////////////////////
+/// Task (persistent memory, passed through internal queue)
+///////////////////////////////////////////////////////////
+
+typedef struct _async_thread_pool_task_s {
+	zval callable;                         /* transferred callable (pemalloc) */
+	zval args;                             /* transferred args array (pemalloc) */
+	zend_future_shared_state_t *state;     /* shared state for result delivery */
+} async_thread_pool_task_t;
 
 ///////////////////////////////////////////////////////////
 /// Thread pool (persistent memory, shared between threads)
@@ -27,14 +39,15 @@
 typedef struct _async_thread_pool_s async_thread_pool_t;
 
 struct _async_thread_pool_s {
-	/* Mutex protecting shared state */
+	/* Task queue */
+	circular_buffer_t task_queue;
+
+	/* Mutex + condvar for task queue synchronization */
 	pthread_mutex_t mutex;
+	pthread_cond_t cond;
 
 	/* Number of worker threads */
 	int32_t worker_count;
-
-	/* Task queue capacity */
-	int32_t queue_size;
 
 	/* Counts */
 	zend_atomic_int pending_count;   /* tasks in queue */
@@ -42,13 +55,9 @@ struct _async_thread_pool_s {
 
 	/* State flags */
 	zend_atomic_int closed;          /* no new submissions */
-	zend_atomic_int cancelled;       /* cancel all pending */
 
-	/* Internal task channel (shared, used by workers to receive tasks) */
-	struct _async_thread_channel_s *task_channel;
-
-	/* Worker thread events (array of worker_count pointers) */
-	zend_async_thread_event_t **workers;
+	/* Worker thread handles */
+	pthread_t *workers;              /* array of worker_count threads */
 
 	/* Reference count for cross-thread sharing */
 	zend_atomic_int ref_count;

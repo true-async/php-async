@@ -1543,7 +1543,7 @@ int async_thread_request_startup(const async_thread_snapshot_t *snapshot)
 	SG(request_info).no_headers = 1;
 
 	/* Set script filename from entry closure for error reporting */
-	if (snapshot->entry.func && snapshot->entry.func->filename) {
+	if (snapshot != NULL && snapshot->entry.func && snapshot->entry.func->filename) {
 		SG(request_info).path_translated = estrndup(
 			ZSTR_VAL(snapshot->entry.func->filename),
 			ZSTR_LEN(snapshot->entry.func->filename));
@@ -1702,7 +1702,7 @@ void async_thread_run(void *arg)
 	zend_atomic_int64_store(&event->thread_id, (int64_t) pthread_self());
 #endif
 
-	if (UNEXPECTED(snapshot == NULL)) {
+	if (UNEXPECTED(snapshot == NULL && event->c_entry == NULL)) {
 		goto notify;
 	}
 
@@ -1722,38 +1722,43 @@ void async_thread_run(void *arg)
 		goto notify;
 	} zend_end_try();
 
-	/* 2. Execute user closures */
+	/* 2. Execute entry point */
 	zend_first_try {
-		zval retval;
-		ZVAL_UNDEF(&retval);
+		if (event->c_entry != NULL) {
+			/* C-level entry point (e.g. thread pool worker loop) */
+			event->c_entry(event);
+		} else {
+			zval retval;
+			ZVAL_UNDEF(&retval);
 
-		/* Bootloader (optional) */
-		if (snapshot->bootloader.func != NULL) {
-			if (!thread_call_closure(&snapshot->bootloader, event, &retval)) {
-				goto cleanup;
-			}
-		}
-
-		/* Entry closure */
-		if (thread_call_closure(&snapshot->entry, event, &retval)) {
-			if (!Z_ISUNDEF(retval)) {
-				async_thread_transfer_zval(&event->result, &retval);
-
-				/* Transfer itself may fail (unsupported types, depth limit) */
-				if (UNEXPECTED(EG(exception))) {
-					zval exception_zval, transferred_exception;
-					ZVAL_OBJ_COPY(&exception_zval, EG(exception));
-					zend_clear_exception();
-					async_thread_transfer_zval(&transferred_exception, &exception_zval);
-					event->exception = Z_OBJ(transferred_exception);
-					zval_ptr_dtor(&exception_zval);
-					ZVAL_UNDEF(&event->result);
+			/* Bootloader (optional) */
+			if (snapshot->bootloader.func != NULL) {
+				if (!thread_call_closure(&snapshot->bootloader, event, &retval)) {
+					goto cleanup;
 				}
 			}
-		}
+
+			/* Entry closure */
+			if (thread_call_closure(&snapshot->entry, event, &retval)) {
+				if (!Z_ISUNDEF(retval)) {
+					async_thread_transfer_zval(&event->result, &retval);
+
+					/* Transfer itself may fail (unsupported types, depth limit) */
+					if (UNEXPECTED(EG(exception))) {
+						zval exception_zval, transferred_exception;
+						ZVAL_OBJ_COPY(&exception_zval, EG(exception));
+						zend_clear_exception();
+						async_thread_transfer_zval(&transferred_exception, &exception_zval);
+						event->exception = Z_OBJ(transferred_exception);
+						zval_ptr_dtor(&exception_zval);
+						ZVAL_UNDEF(&event->result);
+					}
+				}
+			}
 
 cleanup:
-		zval_ptr_dtor(&retval);
+			zval_ptr_dtor(&retval);
+		}
 	} zend_catch {
 		thread_capture_bailout(event, &fallback_message);
 	} zend_end_try();
