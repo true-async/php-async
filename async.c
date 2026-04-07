@@ -30,6 +30,7 @@
 #include "future.h"
 #include "channel.h"
 #include "thread_channel.h"
+#include "thread_pool.h"
 #include "pool.h"
 #include "task_group.h"
 #include "fs_watcher.h"
@@ -1507,6 +1508,7 @@ ZEND_MINIT_FUNCTION(async)
 	async_register_exceptions_ce();
 	async_register_channel_ce();
 	async_register_thread_channel_ce();
+	async_register_thread_pool_ce();
 	async_register_fs_watcher_ce();
 	async_register_circuit_breaker_ce();
 	async_ce_signal = register_class_Async_Signal();

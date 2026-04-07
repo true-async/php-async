@@ -1,0 +1,77 @@
+/*
++----------------------------------------------------------------------+
+  | Copyright (c) The PHP Group                                          |
+  +----------------------------------------------------------------------+
+  | This source file is subject to version 3.01 of the PHP license,      |
+  | that is bundled with this package in the file LICENSE, and is        |
+  | available through the world-wide-web at the following url:           |
+  | https://www.php.net/license/3_01.txt                                 |
+  | If you did not receive a copy of the PHP license and are unable to   |
+  | obtain it through the world-wide-web, please send a note to          |
+  | license@php.net so we can mail you a copy immediately.               |
+  +----------------------------------------------------------------------+
+  | Author: Edmond                                                       |
+  +----------------------------------------------------------------------+
+*/
+#ifndef ASYNC_THREAD_POOL_H
+#define ASYNC_THREAD_POOL_H
+
+#include "php_async_api.h"
+#include <Zend/zend_async_API.h>
+#include <pthread.h>
+
+///////////////////////////////////////////////////////////
+/// Thread pool (persistent memory, shared between threads)
+///////////////////////////////////////////////////////////
+
+typedef struct _async_thread_pool_s async_thread_pool_t;
+
+struct _async_thread_pool_s {
+	/* Mutex protecting shared state */
+	pthread_mutex_t mutex;
+
+	/* Number of worker threads */
+	int32_t worker_count;
+
+	/* Task queue capacity */
+	int32_t queue_size;
+
+	/* Counts */
+	zend_atomic_int pending_count;   /* tasks in queue */
+	zend_atomic_int running_count;   /* tasks being executed */
+
+	/* State flags */
+	zend_atomic_int closed;          /* no new submissions */
+	zend_atomic_int cancelled;       /* cancel all pending */
+
+	/* Internal task channel (shared, used by workers to receive tasks) */
+	struct _async_thread_channel_s *task_channel;
+
+	/* Worker thread events (array of worker_count pointers) */
+	zend_async_thread_event_t **workers;
+
+	/* Reference count for cross-thread sharing */
+	zend_atomic_int ref_count;
+};
+
+///////////////////////////////////////////////////////////
+/// PHP object wrapper (emalloc, per-thread)
+///////////////////////////////////////////////////////////
+
+typedef struct _thread_pool_object_s {
+	async_thread_pool_t *pool;     /* pemalloc'd, shared */
+	zend_object std;               /* must be last */
+} thread_pool_object_t;
+
+/* Class entries */
+extern zend_class_entry *async_ce_thread_pool;
+extern zend_class_entry *async_ce_thread_pool_exception;
+
+/* Convert zend_object to thread_pool_object_t */
+#define ASYNC_THREAD_POOL_FROM_OBJ(obj) \
+	((thread_pool_object_t *)((char *)(obj) - XtOffsetOf(thread_pool_object_t, std)))
+
+/* Registration function */
+void async_register_thread_pool_ce(void);
+
+#endif /* ASYNC_THREAD_POOL_H */
