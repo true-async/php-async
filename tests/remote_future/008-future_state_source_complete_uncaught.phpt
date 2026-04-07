@@ -1,5 +1,5 @@
 --TEST--
-RemoteFuture: FutureState transferred — double complete throws
+RemoteFuture: source thread loses write access after transfer: bug
 --SKIPIF--
 <?php
 if (!PHP_ZTS) die('skip ZTS required');
@@ -19,21 +19,18 @@ spawn(function() {
     $future = new Future($state);
 
     $thread = spawn_thread(function() use ($state) {
-        $state->complete("first");
-        try {
-            $state->complete("second");
-            return "ERROR: should have thrown";
-        } catch (\Throwable $e) {
-            return "Caught: " . $e->getMessage();
-        }
+        $state->complete("from thread");
     });
 
+    // Source thread should not be able to complete after transfer
+    $state->complete("from main");
+
     echo await($future) . "\n";
-    echo await($thread) . "\n";
+    await($thread);
     echo "Done\n";
 });
 ?>
---EXPECT--
-first
-Caught: FutureState is already completed
-Done
+--EXPECTF--
+Fatal error: Uncaught Async\AsyncException: FutureState ownership was transferred to another thread in %s:%d
+Stack trace:
+%A

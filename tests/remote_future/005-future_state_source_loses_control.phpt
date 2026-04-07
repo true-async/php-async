@@ -25,7 +25,7 @@ spawn(function() {
     // Source thread should not be able to complete after transfer
     try {
         $state->complete("from main");
-    } catch (\Error $e) {
+    } catch (\Throwable $e) {
         echo "Main blocked: " . $e->getMessage() . "\n";
     }
 

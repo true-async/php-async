@@ -760,8 +760,7 @@ static zend_object *async_future_state_transfer_obj(
 		src->shared_state = shared;
 
 		/* Deep copy to persistent memory — carries pointer for LOAD phase.
-		 * No addref: persistent copy is temporary, destination takes the
-		 * initial ref (ref=1 from create) in LOAD phase. */
+		 * No addref: persistent copy is temporary, LOAD phase does addref. */
 		zend_object *dst = default_fn(object, ctx, sizeof(async_future_state_t));
 		async_future_state_t *dst_state = FUTURE_STATE_FROM_OBJ(dst);
 		dst_state->shared_state = shared;
@@ -776,6 +775,7 @@ static zend_object *async_future_state_transfer_obj(
 
 		async_future_state_t *src_state = FUTURE_STATE_FROM_OBJ(object);
 		dst_state->shared_state = src_state->shared_state;
+		async_future_shared_state_addref(dst_state->shared_state);
 
 		/* default_fn called create_object which allocated a local future —
 		 * mark as ignored (suppress "unused" warning) and release it */
@@ -2022,7 +2022,7 @@ zend_future_shared_state_t *async_future_shared_state_create(void)
 	ZVAL_UNDEF(&state->transferred_result);
 	ZVAL_UNDEF(&state->transferred_exception);
 	ZEND_ATOMIC_INT_INIT(&state->completed, 0);
-	ZEND_ATOMIC_INT_INIT(&state->ref_count, 1);
+	ZEND_ATOMIC_INT_INIT(&state->ref_count, 0);
 	pthread_mutex_init(&state->mutex, NULL);
 	state->trigger = NULL;
 	state->target_future = NULL;
