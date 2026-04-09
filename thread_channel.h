@@ -76,6 +76,12 @@ extern zend_class_entry *async_ce_thread_channel_exception;
 /* Create shared channel (C-level, no PHP wrapper) */
 async_thread_channel_t *async_thread_channel_create(int32_t capacity);
 
+/* Close channel — wakes all waiters, rejects new send/recv */
+void async_thread_channel_close(async_thread_channel_t *ch);
+
+/* Addref shared channel */
+void async_thread_channel_addref(async_thread_channel_t *ch);
+
 /* Registration function */
 void async_register_thread_channel_ce(void);
 
