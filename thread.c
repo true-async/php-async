@@ -1543,7 +1543,7 @@ int async_thread_request_startup(const async_thread_snapshot_t *snapshot)
 	SG(request_info).no_headers = 1;
 
 	/* Set script filename from entry closure for error reporting */
-	if (snapshot->entry.func && snapshot->entry.func->filename) {
+	if (snapshot != NULL && snapshot->entry.func && snapshot->entry.func->filename) {
 		SG(request_info).path_translated = estrndup(
 			ZSTR_VAL(snapshot->entry.func->filename),
 			ZSTR_LEN(snapshot->entry.func->filename));
@@ -1702,7 +1702,7 @@ void async_thread_run(void *arg)
 	zend_atomic_int64_store(&event->thread_id, (int64_t) pthread_self());
 #endif
 
-	if (UNEXPECTED(snapshot == NULL)) {
+	if (UNEXPECTED(snapshot == NULL && event->internal_entry == NULL)) {
 		goto notify;
 	}
 
