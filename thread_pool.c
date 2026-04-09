@@ -51,10 +51,7 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 
 	(void)event;
 
-	/* Start scheduler — converts current execution into main coroutine */
-	if (!async_scheduler_launch()) {
-		return;
-	}
+	ZEND_ASYNC_SCHEDULER_INIT();
 
 	zval task;
 	while (channel->channel.receive(&channel->channel, &task)) {
@@ -62,6 +59,7 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 		zend_atomic_int_inc(&pool->running_count);
 
 		/* Extract: [snapshot_ptr, args_array, state_ptr] */
+		ZEND_ASSERT(Z_TYPE(task) == IS_ARRAY && "task must be an array");
 		zval *snapshot_zv = zend_hash_index_find(Z_ARRVAL(task), 0);
 		zval *args_zv = zend_hash_index_find(Z_ARRVAL(task), 1);
 		zval *state_zv = zend_hash_index_find(Z_ARRVAL(task), 2);

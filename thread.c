@@ -1307,14 +1307,11 @@ static void thread_copy_callable(
 static void thread_release_closure_copy(async_thread_closure_copy_t *copy)
 {
 	if (copy->bound_vars) {
-		zend_string *key;
 		zval *val;
-		ZEND_HASH_FOREACH_STR_KEY_VAL(copy->bound_vars, key, val) {
+		ZEND_HASH_FOREACH_VAL(copy->bound_vars, val) {
 			async_thread_release_transferred_zval(val);
-			if (key) {
-				zend_string_release(key);
-			}
 		} ZEND_HASH_FOREACH_END();
+		/* zend_hash_destroy releases string keys itself */
 		zend_hash_destroy(copy->bound_vars);
 		pefree(copy->bound_vars, 1);
 	}
@@ -1574,6 +1571,183 @@ void async_thread_request_shutdown(void)
 #endif
 }
 
+/* Closure struct layout — defined in zend_closures.c, not exported */
+typedef struct {
+	zend_object       std;
+	zend_function     func;
+	zval              this_ptr;
+	zend_class_entry *called_scope;
+	zif_handler       orig_internal_handler;
+} async_zend_closure_t;
+
+/**
+ * Copy op_array internals from persistent/arena memory into emalloc.
+ * After this call, the op_array is fully self-contained in emalloc
+ * and the persistent source (snapshot arena) can be freed.
+ */
+static void op_array_to_emalloc(zend_op_array *op_array)
+{
+	/* refcount — own copy */
+	uint32_t *rc = emalloc(sizeof(uint32_t));
+	*rc = 1;
+	op_array->refcount = rc;
+
+	/* function_name — already addref'd by zend_create_closure, but points to
+	 * persistent string. Create emalloc copy. */
+	if (op_array->function_name) {
+		zend_string *old = op_array->function_name;
+		op_array->function_name = zend_string_init(ZSTR_VAL(old), ZSTR_LEN(old), 0);
+		zend_string_release(old); /* release the addref from zend_create_closure */
+	}
+
+	/* filename */
+	if (op_array->filename) {
+		op_array->filename = zend_string_init(
+			ZSTR_VAL(op_array->filename), ZSTR_LEN(op_array->filename), 0);
+	}
+
+	/* literals */
+	const zval *orig_literals = op_array->literals;
+	if (op_array->literals) {
+		zval *new_literals = safe_emalloc(op_array->last_literal, sizeof(zval), 0);
+		for (uint32_t i = 0; i < op_array->last_literal; i++) {
+			ZVAL_COPY(&new_literals[i], &op_array->literals[i]);
+		}
+		op_array->literals = new_literals;
+	}
+
+	/* opcodes — copy and rebase constant references */
+	if (op_array->opcodes) {
+		zend_op *new_opcodes = safe_emalloc(op_array->last, sizeof(zend_op), 0);
+		memcpy(new_opcodes, op_array->opcodes, sizeof(zend_op) * op_array->last);
+
+#if ZEND_USE_ABS_CONST_ADDR
+		for (uint32_t i = 0; i < op_array->last; i++) {
+			zend_op *opline = &new_opcodes[i];
+			if (opline->op1_type == IS_CONST) {
+				opline->op1.zv = (zval *)((char *)opline->op1.zv +
+					((char *)op_array->literals - (char *)orig_literals));
+			}
+			if (opline->op2_type == IS_CONST) {
+				opline->op2.zv = (zval *)((char *)opline->op2.zv +
+					((char *)op_array->literals - (char *)orig_literals));
+			}
+		}
+#else
+		for (uint32_t i = 0; i < op_array->last; i++) {
+			zend_op *opline = &new_opcodes[i];
+			const zend_op *old_opline = &op_array->opcodes[i];
+			if (opline->op1_type == IS_CONST) {
+				opline->op1.constant =
+					(char *)(op_array->literals +
+						((zval *)((char *)(old_opline) +
+						(int32_t)opline->op1.constant) - orig_literals)) -
+					(char *)opline;
+			}
+			if (opline->op2_type == IS_CONST) {
+				opline->op2.constant =
+					(char *)(op_array->literals +
+						((zval *)((char *)(old_opline) +
+						(int32_t)opline->op2.constant) - orig_literals)) -
+					(char *)opline;
+			}
+		}
+#endif
+
+#if ZEND_USE_ABS_JMP_ADDR
+		for (uint32_t i = 0; i < op_array->last; i++) {
+			zend_op *opline = &new_opcodes[i];
+			switch (opline->opcode) {
+				case ZEND_JMP:
+				case ZEND_FAST_CALL:
+					opline->op1.jmp_addr = &new_opcodes[opline->op1.jmp_addr - op_array->opcodes];
+					break;
+				case ZEND_JMPZ:
+				case ZEND_JMPNZ:
+				case ZEND_JMPZ_EX:
+				case ZEND_JMPNZ_EX:
+				case ZEND_JMP_SET:
+				case ZEND_COALESCE:
+				case ZEND_FE_RESET_R:
+				case ZEND_FE_RESET_RW:
+				case ZEND_ASSERT_CHECK:
+				case ZEND_JMP_NULL:
+				case ZEND_BIND_INIT_STATIC_OR_JMP:
+				case ZEND_JMP_FRAMELESS:
+					opline->op2.jmp_addr = &new_opcodes[opline->op2.jmp_addr - op_array->opcodes];
+					break;
+				case ZEND_CATCH:
+					if (!(opline->extended_value & ZEND_LAST_CATCH)) {
+						opline->op2.jmp_addr = &new_opcodes[opline->op2.jmp_addr - op_array->opcodes];
+					}
+					break;
+				default:
+					break;
+			}
+		}
+#endif
+		op_array->opcodes = new_opcodes;
+	}
+
+	/* arg_info */
+	if (op_array->arg_info) {
+		zend_arg_info *src = op_array->arg_info;
+		uint32_t num_args = op_array->num_args;
+		if (op_array->fn_flags & ZEND_ACC_HAS_RETURN_TYPE) {
+			src--;
+			num_args++;
+		}
+		if (op_array->fn_flags & ZEND_ACC_VARIADIC) {
+			num_args++;
+		}
+		zend_arg_info *new_info = safe_emalloc(num_args, sizeof(zend_arg_info), 0);
+		memcpy(new_info, src, sizeof(zend_arg_info) * num_args);
+		for (uint32_t i = 0; i < num_args; i++) {
+			if (new_info[i].name) {
+				new_info[i].name = zend_string_init(
+					ZSTR_VAL(new_info[i].name), ZSTR_LEN(new_info[i].name), 0);
+			}
+		}
+		if (op_array->fn_flags & ZEND_ACC_HAS_RETURN_TYPE) {
+			new_info++;
+		}
+		op_array->arg_info = new_info;
+	}
+
+	/* vars */
+	if (op_array->vars) {
+		zend_string **new_vars = safe_emalloc(op_array->last_var, sizeof(zend_string *), 0);
+		for (int i = 0; i < op_array->last_var; i++) {
+			new_vars[i] = zend_string_init(
+				ZSTR_VAL(op_array->vars[i]), ZSTR_LEN(op_array->vars[i]), 0);
+		}
+		op_array->vars = new_vars;
+	}
+
+	/* live_range */
+	if (op_array->live_range) {
+		zend_live_range *new_lr = safe_emalloc(op_array->last_live_range, sizeof(zend_live_range), 0);
+		memcpy(new_lr, op_array->live_range, sizeof(zend_live_range) * op_array->last_live_range);
+		op_array->live_range = new_lr;
+	}
+
+	/* try_catch_array */
+	if (op_array->try_catch_array) {
+		zend_try_catch_element *new_tc = safe_emalloc(op_array->last_try_catch, sizeof(zend_try_catch_element), 0);
+		memcpy(new_tc, op_array->try_catch_array, sizeof(zend_try_catch_element) * op_array->last_try_catch);
+		op_array->try_catch_array = new_tc;
+	}
+
+	/* doc_comment */
+	if (op_array->doc_comment) {
+		op_array->doc_comment = zend_string_init(
+			ZSTR_VAL(op_array->doc_comment), ZSTR_LEN(op_array->doc_comment), 0);
+	}
+
+	/* Ensure destroy_op_array will efree literals (they are separately allocated) */
+	op_array->fn_flags &= ~ZEND_ACC_DONE_PASS_TWO;
+}
+
 void async_thread_create_closure(
 	const async_thread_closure_copy_t *copy, zval *closure_zv)
 {
@@ -1597,12 +1771,18 @@ void async_thread_create_closure(
 		ZEND_HASH_FOREACH_STR_KEY_VAL(copy->bound_vars, key, val) {
 			zval loaded;
 			async_thread_load_zval(&loaded, val);
-			zend_hash_add(loaded_vars, key, &loaded);
+			zend_string *local_key = zend_string_init(ZSTR_VAL(key), ZSTR_LEN(key), 0);
+			zend_hash_add(loaded_vars, local_key, &loaded);
+			zend_string_release(local_key);
 		} ZEND_HASH_FOREACH_END();
 		ZEND_MAP_PTR_INIT(func.op_array.static_variables_ptr, loaded_vars);
 	} else {
 		ZEND_MAP_PTR_INIT(func.op_array.static_variables_ptr, NULL);
 	}
+
+	/* Detach from persistent static_variables — we already loaded them
+	 * into loaded_vars / static_variables_ptr above */
+	func.op_array.static_variables = NULL;
 
 	/* Let zend_create_closure allocate runtime cache itself */
 	ZEND_MAP_PTR_INIT(func.op_array.run_time_cache, NULL);
@@ -1615,6 +1795,7 @@ void async_thread_create_closure(
 	if (loaded_vars) {
 		zend_array_destroy(loaded_vars);
 	}
+
 }
 
 /**
@@ -2102,6 +2283,66 @@ void async_thread_snapshot_destroy_api(void *snapshot)
 	async_thread_snapshot_destroy((async_thread_snapshot_t *) snapshot);
 }
 
+///////////////////////////////////////////////////////////
+/// Closure transfer_obj handler
+///////////////////////////////////////////////////////////
+
+/**
+ * Persistent wrapper for a transferred closure.
+ * Layout: [class_name_ptr | snapshot_ptr | zend_object shell]
+ * class_name stored in ce field (same convention as default transfer).
+ */
+static zend_object *closure_transfer_obj(
+	zend_object *object, zend_async_thread_transfer_ctx_t *ctx,
+	zend_object_transfer_kind_t kind, zend_object_transfer_default_fn default_fn)
+{
+	if (kind == ZEND_OBJECT_TRANSFER) {
+		/* Source thread → persistent: deep-copy closure via snapshot */
+		const zend_function *func = zend_get_closure_method_def(object);
+
+		zend_fcall_t fcall;
+		memset(&fcall, 0, sizeof(fcall));
+		fcall.fci_cache.function_handler = (zend_function *) func;
+
+		async_thread_snapshot_t *snapshot = async_thread_snapshot_create(&fcall, NULL);
+		if (snapshot == NULL) {
+			return NULL;
+		}
+
+		/* Minimal persistent shell: zend_object + 1 property slot for snapshot ptr */
+		size_t alloc_size = sizeof(zend_object) + sizeof(zval);
+		zend_object *dst = pecalloc(1, alloc_size, 1);
+		GC_SET_REFCOUNT(dst, 1);
+		dst->extra_flags = 0; /* offset = 0 */
+
+		/* Store class name for LOAD phase lookup */
+		dst->ce = (zend_class_entry *) thread_transfer_string(ctx, object->ce->name);
+		dst->handlers = (const zend_object_handlers *)(uintptr_t) 0; /* prop_count = 0 */
+		dst->properties = NULL;
+
+		/* Store snapshot pointer in first property slot */
+		ZVAL_LONG(&dst->properties_table[0], (zend_long)(uintptr_t) snapshot);
+
+		return dst;
+	} else {
+		/* Destination thread → emalloc: recreate closure from snapshot */
+		async_thread_snapshot_t *snapshot =
+			(async_thread_snapshot_t *)(uintptr_t) Z_LVAL(object->properties_table[0]);
+
+		zval closure_zv;
+		async_thread_create_closure(&snapshot->entry, &closure_zv);
+
+		/* Copy op_array internals from persistent arena into emalloc
+		 * so the closure is fully self-contained */
+		async_zend_closure_t *closure = (async_zend_closure_t *) Z_OBJ(closure_zv);
+		op_array_to_emalloc(&closure->func.op_array);
+
+		async_thread_snapshot_destroy(snapshot);
+
+		return Z_OBJ(closure_zv);
+	}
+}
+
 void async_register_thread_ce(void)
 {
 	async_ce_remote_exception = register_class_Async_RemoteException(async_ce_async_exception);
@@ -2117,4 +2358,7 @@ void async_register_thread_ce(void)
 	thread_object_handlers.dtor_obj = thread_object_dtor;
 	thread_object_handlers.free_obj = thread_object_free;
 	thread_object_handlers.get_gc = thread_object_gc;
+
+	/* Register transfer_obj for Closure — enables cross-thread closure transfer */
+	((zend_object_handlers *) zend_ce_closure->default_object_handlers)->transfer_obj = closure_transfer_obj;
 }
