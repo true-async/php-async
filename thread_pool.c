@@ -34,6 +34,25 @@ static zend_object_handlers thread_pool_handlers;
 #define THIS_POOL() (ASYNC_THREAD_POOL_FROM_OBJ(Z_OBJ_P(ZEND_THIS))->pool)
 
 ///////////////////////////////////////////////////////////
+/// Pool refcount
+///////////////////////////////////////////////////////////
+
+static void thread_pool_destroy(async_thread_pool_t *pool);
+
+static void thread_pool_addref(async_thread_pool_t *pool)
+{
+	zend_atomic_int_inc(&pool->ref_count);
+}
+
+static void thread_pool_delref(async_thread_pool_t *pool)
+{
+	int old = zend_atomic_int_dec(&pool->ref_count);
+	if (old == 1) {
+		thread_pool_destroy(pool);
+	}
+}
+
+///////////////////////////////////////////////////////////
 /// Worker entry — C handler called inside spawned thread
 ///////////////////////////////////////////////////////////
 
@@ -44,6 +63,8 @@ static zend_object_handlers thread_pool_handlers;
  * Each task is an array: [callable, args_array, shared_state_ptr_as_long]
  * transferred through ThreadChannel automatically.
  */
+static zend_function worker_root_function = { ZEND_INTERNAL_FUNCTION };
+
 static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *ctx)
 {
 	async_thread_pool_t *pool = (async_thread_pool_t *) ctx;
@@ -51,52 +72,75 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 
 	(void)event;
 
-	ZEND_ASYNC_SCHEDULER_INIT();
+	/* Create a fake internal frame so EG(current_execute_data) != NULL.
+	 * Without this, zend_throw_exception triggers bailout because it thinks
+	 * there is no PHP stack to catch the exception. */
+	zend_execute_data fake_frame = {0};
+	fake_frame.func = &worker_root_function;
+	fake_frame.prev_execute_data = EG(current_execute_data);
+	EG(current_execute_data) = &fake_frame;
 
-	zval task;
-	while (channel->channel.receive(&channel->channel, &task)) {
-		zend_atomic_int_dec(&pool->pending_count);
-		zend_atomic_int_inc(&pool->running_count);
+	zend_try {
+		ZEND_ASYNC_SCHEDULER_INIT();
 
-		/* Extract: [snapshot_ptr, args_array, state_ptr] */
-		ZEND_ASSERT(Z_TYPE(task) == IS_ARRAY && "task must be an array");
-		zval *snapshot_zv = zend_hash_index_find(Z_ARRVAL(task), 0);
-		zval *args_zv = zend_hash_index_find(Z_ARRVAL(task), 1);
-		zval *state_zv = zend_hash_index_find(Z_ARRVAL(task), 2);
+		if (UNEXPECTED(EG(exception))) {
+			zend_exception_error(EG(exception), E_WARNING);
+			zend_clear_exception();
+			goto done;
+		}
 
-		async_thread_snapshot_t *snapshot =
-			(async_thread_snapshot_t *)(uintptr_t) Z_LVAL_P(snapshot_zv);
-		zend_future_shared_state_t *state =
-			(zend_future_shared_state_t *)(uintptr_t) Z_LVAL_P(state_zv);
+		zval task;
+		while (channel->channel.receive(&channel->channel, &task)) {
+			ZEND_ASSERT(Z_TYPE(task) == IS_ARRAY);
 
-		/* Recreate closure from snapshot in this thread */
-		zval callable;
-		async_thread_create_closure(&snapshot->entry, &callable);
+			/* Extract: [snapshot_ptr, args_array, state_ptr] */
+			async_thread_snapshot_t *snapshot =
+				(async_thread_snapshot_t *)(uintptr_t) Z_LVAL_P(zend_hash_index_find(Z_ARRVAL(task), 0));
+			zval *args_zv = zend_hash_index_find(Z_ARRVAL(task), 1);
+			zend_future_shared_state_t *state =
+				(zend_future_shared_state_t *)(uintptr_t) Z_LVAL_P(zend_hash_index_find(Z_ARRVAL(task), 2));
 
-		/* Call the callable with args */
-		zval retval;
-		ZVAL_UNDEF(&retval);
-
-		zend_fcall_info fci;
-		zend_fcall_info_cache fcc;
-
-		if (zend_fcall_info_init(&callable, 0, &fci, &fcc, NULL, NULL) == SUCCESS) {
-			uint32_t argc = zend_hash_num_elements(Z_ARRVAL_P(args_zv));
+			zval callable, retval;
 			zval *params = NULL;
+			uint32_t param_count = 0;
+			ZVAL_UNDEF(&retval);
+			ZVAL_UNDEF(&callable);
 
-			if (argc > 0) {
-				params = emalloc(sizeof(zval) * argc);
-				uint32_t i = 0;
-				zval *arg;
-				ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(args_zv), arg) {
-					ZVAL_COPY(&params[i], arg);
-					i++;
-				} ZEND_HASH_FOREACH_END();
+			zend_atomic_int_dec(&pool->pending_count);
+			zend_atomic_int_inc(&pool->running_count);
+
+			async_thread_create_closure(&snapshot->entry, &callable);
+
+			if (UNEXPECTED(EG(exception))) {
+				async_future_shared_state_reject(state, EG(exception));
+				zend_clear_exception();
+				goto task_cleanup;
+			}
+
+			zend_fcall_info fci;
+			zend_fcall_info_cache fcc;
+
+			if (UNEXPECTED(zend_fcall_info_init(&callable, 0, &fci, &fcc, NULL, NULL) != SUCCESS)) {
+				if (EG(exception)) {
+					async_future_shared_state_reject(state, EG(exception));
+					zend_clear_exception();
+				}
+				goto task_cleanup;
 			}
 
 			fci.retval = &retval;
-			fci.param_count = argc;
-			fci.params = params;
+			param_count = zend_hash_num_elements(Z_ARRVAL_P(args_zv));
+
+			if (param_count > 0) {
+				params = emalloc(sizeof(zval) * param_count);
+				fci.params = params;
+				fci.param_count = param_count;
+				uint32_t i = 0;
+				zval *arg;
+				ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(args_zv), arg) {
+					ZVAL_COPY(&params[i++], arg);
+				} ZEND_HASH_FOREACH_END();
+			}
 
 			if (zend_call_function(&fci, &fcc) == SUCCESS && !EG(exception)) {
 				async_future_shared_state_complete(state, &retval);
@@ -105,33 +149,41 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 				zend_clear_exception();
 			}
 
-			if (params != NULL) {
-				for (uint32_t i = 0; i < argc; i++) {
+		task_cleanup:
+			if (params) {
+				for (uint32_t i = 0; i < param_count; i++) {
 					zval_ptr_dtor(&params[i]);
 				}
 				efree(params);
 			}
-		} else {
-			/* Callable init failed — reject with error */
-			if (EG(exception)) {
-				async_future_shared_state_reject(state, EG(exception));
-				zend_clear_exception();
-			}
+			zval_ptr_dtor(&retval);
+			zval_ptr_dtor(&callable);
+			async_thread_snapshot_destroy(snapshot);
+			async_future_shared_state_delref(state);
+			zval_ptr_dtor(&task);
+
+			zend_atomic_int_dec(&pool->running_count);
 		}
 
-		zval_ptr_dtor(&retval);
-		zval_ptr_dtor(&callable);
-		async_thread_snapshot_destroy(snapshot);
-		async_future_shared_state_delref(state);
-		zval_ptr_dtor(&task);
+		if (EG(exception)) {
+			if (!instanceof_function(EG(exception)->ce, async_ce_thread_channel_exception)) {
+				zend_exception_error(EG(exception), E_WARNING);
+			}
+			zend_clear_exception();
+		}
 
-		zend_atomic_int_dec(&pool->running_count);
-	}
+	done:
+		ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN(false);
 
-	/* receive threw "closed" exception — expected, clear it */
-	if (EG(exception)) {
-		zend_clear_exception();
-	}
+	} zend_catch {
+		/* bailout — fall through to cleanup */
+	} zend_end_try();
+
+	/* Restore execute_data */
+	EG(current_execute_data) = fake_frame.prev_execute_data;
+
+	/* Release worker's ref on pool */
+	thread_pool_delref(pool);
 }
 
 ///////////////////////////////////////////////////////////
@@ -146,15 +198,18 @@ static async_thread_pool_t *thread_pool_create(int32_t worker_count, int32_t que
 	ZEND_ATOMIC_INT_INIT(&pool->pending_count, 0);
 	ZEND_ATOMIC_INT_INIT(&pool->running_count, 0);
 	ZEND_ATOMIC_INT_INIT(&pool->closed, 0);
-	ZEND_ATOMIC_INT_INIT(&pool->ref_count, 1);
+	ZEND_ATOMIC_INT_INIT(&pool->ref_count, 1); /* PHP object holds 1 ref */
 
 	/* Create shared task channel */
 	pool->task_channel = async_thread_channel_create(queue_size);
 
-	/* Create worker threads */
-	pool->workers = ecalloc(worker_count, sizeof(zend_async_thread_event_t *));
+	/* Create worker threads (pemalloc — shared between threads) */
+	pool->workers = pecalloc(worker_count, sizeof(zend_async_thread_event_t *), 1);
 
 	for (int32_t i = 0; i < worker_count; i++) {
+		/* +1 ref for this worker */
+		thread_pool_addref(pool);
+
 		/* Create internal entry for this worker */
 		zend_async_thread_internal_entry_t *entry = pecalloc(1, sizeof(zend_async_thread_internal_entry_t), 1);
 		entry->handler = thread_pool_worker_handler;
@@ -164,6 +219,7 @@ static async_thread_pool_t *thread_pool_create(int32_t worker_count, int32_t que
 
 		if (UNEXPECTED(thread_event == NULL)) {
 			pefree(entry, 1);
+			thread_pool_delref(pool); /* undo addref for this worker */
 			zend_atomic_int_store(&pool->closed, 1);
 			pool->worker_count = i;
 			return pool;
@@ -236,15 +292,22 @@ static void thread_pool_drain_tasks(async_thread_pool_t *pool)
 	pthread_mutex_unlock(&ch->mutex);
 }
 
+/**
+ * Destroy the real pool. Called when ref_count reaches 0.
+ * By this point all workers have exited and released their refs.
+ */
 static void thread_pool_destroy(async_thread_pool_t *pool)
 {
-	thread_pool_close(pool);
 	thread_pool_drain_tasks(pool);
 
 	if (pool->task_channel != NULL) {
-		/* Channel may still have ref from workers — delref will destroy when last ref gone.
-		 * We don't hold a separate ref, so just NULL out. */
+		async_thread_channel_close(pool->task_channel);
 		pool->task_channel = NULL;
+	}
+
+	if (pool->workers != NULL) {
+		pefree(pool->workers, 1);
+		pool->workers = NULL;
 	}
 
 	pefree(pool, 1);
@@ -268,20 +331,21 @@ static void thread_pool_free_object(zend_object *object)
 	thread_pool_object_t *obj = ASYNC_THREAD_POOL_FROM_OBJ(object);
 
 	if (obj->pool != NULL) {
+		/* Close channel so workers exit */
 		thread_pool_close(obj->pool);
 
-		/* Stop and dispose worker thread events */
+		/* Wait for workers to finish (join) and free thread events */
 		for (int32_t i = 0; i < obj->pool->worker_count; i++) {
 			if (obj->pool->workers[i] != NULL) {
-				zend_async_event_t *event = &obj->pool->workers[i]->base;
-				if (event->dispose) {
-					event->dispose(event);
+				zend_async_event_t *ev = &obj->pool->workers[i]->base;
+				if (ev->dispose) {
+					ev->dispose(ev);
 				}
+				obj->pool->workers[i] = NULL;
 			}
 		}
-		efree(obj->pool->workers);
 
-		thread_pool_destroy(obj->pool);
+		thread_pool_delref(obj->pool);
 		obj->pool = NULL;
 	}
 
