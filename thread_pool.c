@@ -306,7 +306,7 @@ static void thread_pool_destroy(async_thread_pool_t *pool)
 	thread_pool_drain_tasks(pool);
 
 	if (pool->task_channel != NULL) {
-		async_thread_channel_close(pool->task_channel);
+		pool->task_channel->channel.event.dispose(&pool->task_channel->channel.event);
 		pool->task_channel = NULL;
 	}
 

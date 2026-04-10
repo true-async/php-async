@@ -228,6 +228,8 @@ static void thread_channel_close(zend_async_channel_t *channel)
 // Thread channel allocation / destruction
 ///////////////////////////////////////////////////////////////////////////////
 
+static bool thread_channel_event_dispose(zend_async_event_t *event);
+
 async_thread_channel_t *async_thread_channel_create(int32_t capacity)
 {
 	async_thread_channel_t *ch = pecalloc(1, sizeof(async_thread_channel_t), 1);
@@ -247,6 +249,7 @@ async_thread_channel_t *async_thread_channel_create(int32_t capacity)
 	ch->channel.send = thread_channel_send;
 	ch->channel.receive = thread_channel_receive;
 	ch->channel.close = thread_channel_close;
+	ch->channel.event.dispose = thread_channel_event_dispose;
 
 	return ch;
 }
@@ -285,8 +288,11 @@ void async_thread_channel_addref(async_thread_channel_t *ch)
 	} while (!zend_atomic_int_compare_exchange(&ch->ref_count, &old, old + 1));
 }
 
-static void thread_channel_delref(async_thread_channel_t *ch)
+static bool thread_channel_event_dispose(zend_async_event_t *event)
 {
+	/* channel.event is at offset 0, so direct cast is safe */
+	async_thread_channel_t *ch = (async_thread_channel_t *) event;
+
 	int old;
 	do {
 		old = zend_atomic_int_load(&ch->ref_count);
@@ -295,15 +301,8 @@ static void thread_channel_delref(async_thread_channel_t *ch)
 	if (old == 1) {
 		thread_channel_destroy(ch);
 	}
-}
 
-///////////////////////////////////////////////////////////////////////////////
-// Channel event (used only for closed flag, not for coroutine subscriptions)
-///////////////////////////////////////////////////////////////////////////////
-
-static void thread_channel_event_init(async_thread_channel_t *ch)
-{
-	memset(&ch->channel.event, 0, sizeof(zend_async_event_t));
+	return true;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -382,7 +381,7 @@ static void async_thread_channel_free_object(zend_object *object)
 	}
 
 	if (obj->channel != NULL) {
-		thread_channel_delref(obj->channel);
+		obj->channel->channel.event.dispose(&obj->channel->channel.event);
 		obj->channel = NULL;
 	}
 }
@@ -407,8 +406,6 @@ METHOD(__construct)
 
 	thread_channel_object_t *obj = ASYNC_THREAD_CHANNEL_FROM_OBJ(Z_OBJ_P(ZEND_THIS));
 	obj->channel = async_thread_channel_create((int32_t) capacity);
-
-	thread_channel_event_init(obj->channel);
 }
 
 METHOD(send)
