@@ -185,7 +185,6 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 static void thread_pool_close(async_thread_pool_t *pool);
 static void thread_pool_close_base(zend_async_thread_pool_t *pool);
 static void thread_pool_dispose_base(zend_async_thread_pool_t *pool);
-static void thread_pool_drain_base(zend_async_thread_pool_t *pool, bool reject);
 
 /**
  * Create and start a single worker thread.
@@ -234,7 +233,6 @@ zend_async_thread_pool_t *async_thread_pool_create(int32_t worker_count, int32_t
 	/* Set method pointers */
 	pool->base.close = thread_pool_close_base;
 	pool->base.dispose = thread_pool_dispose_base;
-	pool->base.drain = thread_pool_drain_base;
 
 	pool->task_channel = async_thread_channel_create(queue_size);
 	pool->base.workers = pecalloc(worker_count, sizeof(zend_async_thread_event_t *), 1);
@@ -285,10 +283,8 @@ static void thread_pool_drain_tasks(async_thread_pool_t *pool, bool reject)
 	}
 
 	zval persistent_task;
-	pthread_mutex_lock(&ch->mutex);
 	while (circular_buffer_is_not_empty(&ch->buffer) &&
 		   circular_buffer_pop(&ch->buffer, &persistent_task) == SUCCESS) {
-		pthread_mutex_unlock(&ch->mutex);
 
 		/* Load task to extract pointers */
 		zval task;
@@ -319,9 +315,7 @@ static void thread_pool_drain_tasks(async_thread_pool_t *pool, bool reject)
 		}
 
 		zval_ptr_dtor(&task);
-		pthread_mutex_lock(&ch->mutex);
 	}
-	pthread_mutex_unlock(&ch->mutex);
 }
 
 /**
@@ -355,11 +349,6 @@ static void thread_pool_destroy(async_thread_pool_t *pool)
 static zend_always_inline void thread_pool_dispose_base(zend_async_thread_pool_t *base)
 {
 	thread_pool_destroy((async_thread_pool_t *) base);
-}
-
-static zend_always_inline void thread_pool_drain_base(zend_async_thread_pool_t *base, bool reject)
-{
-	thread_pool_drain_tasks((async_thread_pool_t *) base, reject);
 }
 
 ///////////////////////////////////////////////////////////
@@ -665,7 +654,6 @@ METHOD(cancel)
 	}
 
 	thread_pool_close(pool);
-	thread_pool_drain_tasks(pool, true);
 }
 
 METHOD(isClosed)
