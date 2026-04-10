@@ -69,6 +69,7 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 {
 	async_thread_pool_t *pool = (async_thread_pool_t *) ctx;
 	async_thread_channel_t *channel = pool->task_channel;
+	int bailout = 0;
 
 	(void)event;
 
@@ -96,7 +97,7 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			/* Extract: [snapshot_ptr, args_array, state_ptr] */
 			async_thread_snapshot_t *snapshot =
 				(async_thread_snapshot_t *)(uintptr_t) Z_LVAL_P(zend_hash_index_find(Z_ARRVAL(task), 0));
-			zval *args_zv = zend_hash_index_find(Z_ARRVAL(task), 1);
+			const zval *args_zv = zend_hash_index_find(Z_ARRVAL(task), 1);
 			zend_future_shared_state_t *state =
 				(zend_future_shared_state_t *)(uintptr_t) Z_LVAL_P(zend_hash_index_find(Z_ARRVAL(task), 2));
 
@@ -176,7 +177,7 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 		ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN(false);
 
 	} zend_catch {
-		/* bailout — fall through to cleanup */
+		bailout = 1;
 	} zend_end_try();
 
 	/* Restore execute_data */
@@ -184,6 +185,10 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 
 	/* Release worker's ref on pool */
 	thread_pool_delref(pool);
+
+	if (bailout) {
+		zend_bailout();
+	}
 }
 
 ///////////////////////////////////////////////////////////
@@ -272,14 +277,14 @@ static void thread_pool_drain_tasks(async_thread_pool_t *pool)
 		async_thread_release_transferred_zval(&persistent_task);
 
 		/* [0] = snapshot_ptr, [1] = args, [2] = state_ptr */
-		zval *snapshot_zv = zend_hash_index_find(Z_ARRVAL(task), 0);
+		const zval *snapshot_zv = zend_hash_index_find(Z_ARRVAL(task), 0);
 		if (snapshot_zv != NULL && Z_TYPE_P(snapshot_zv) == IS_LONG) {
 			async_thread_snapshot_t *snapshot =
 				(async_thread_snapshot_t *)(uintptr_t) Z_LVAL_P(snapshot_zv);
 			async_thread_snapshot_destroy(snapshot);
 		}
 
-		zval *state_zv = zend_hash_index_find(Z_ARRVAL(task), 2);
+		const zval *state_zv = zend_hash_index_find(Z_ARRVAL(task), 2);
 		if (state_zv != NULL && Z_TYPE_P(state_zv) == IS_LONG) {
 			zend_future_shared_state_t *state =
 				(zend_future_shared_state_t *)(uintptr_t) Z_LVAL_P(state_zv);
@@ -386,11 +391,10 @@ METHOD(submit)
 	zend_fcall_info_cache fcc;
 	zval *args = NULL;
 	int args_count = 0;
-	HashTable *named_args = NULL;
 
 	ZEND_PARSE_PARAMETERS_START(1, -1)
 		Z_PARAM_FUNC(fci, fcc)
-		Z_PARAM_VARIADIC_WITH_NAMED(args, args_count, named_args)
+		Z_PARAM_VARIADIC('+', args, args_count)
 	ZEND_PARSE_PARAMETERS_END();
 
 	async_thread_pool_t *pool = THIS_POOL();
@@ -406,7 +410,7 @@ METHOD(submit)
 	}
 
 	/* 1. Create snapshot — deep-copies closure op_array + bound vars */
-	zend_fcall_t fcall = { .fci = fci, .fci_cache = fcc };
+	const zend_fcall_t fcall = { .fci = fci, .fci_cache = fcc };
 	async_thread_snapshot_t *snapshot = async_thread_snapshot_create(&fcall, NULL);
 
 	if (UNEXPECTED(snapshot == NULL)) {
@@ -493,7 +497,7 @@ METHOD(map)
 		RETURN_THROWS();
 	}
 
-	HashTable *ht = Z_ARRVAL_P(items);
+	const HashTable *ht = Z_ARRVAL_P(items);
 	uint32_t count = zend_hash_num_elements(ht);
 
 	if (count == 0) {
