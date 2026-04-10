@@ -352,12 +352,12 @@ static void thread_pool_destroy(async_thread_pool_t *pool)
 	pefree(pool, 1);
 }
 
-static void thread_pool_dispose_base(zend_async_thread_pool_t *base)
+static zend_always_inline void thread_pool_dispose_base(zend_async_thread_pool_t *base)
 {
 	thread_pool_destroy((async_thread_pool_t *) base);
 }
 
-static void thread_pool_drain_base(zend_async_thread_pool_t *base, bool reject)
+static zend_always_inline void thread_pool_drain_base(zend_async_thread_pool_t *base, bool reject)
 {
 	thread_pool_drain_tasks((async_thread_pool_t *) base, reject);
 }
