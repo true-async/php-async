@@ -39,19 +39,6 @@ static zend_object_handlers thread_pool_handlers;
 
 static void thread_pool_destroy(async_thread_pool_t *pool);
 
-static void thread_pool_addref(async_thread_pool_t *pool)
-{
-	zend_atomic_int_inc(&pool->ref_count);
-}
-
-static void thread_pool_delref(async_thread_pool_t *pool)
-{
-	int old = zend_atomic_int_dec(&pool->ref_count);
-	if (old == 1) {
-		thread_pool_destroy(pool);
-	}
-}
-
 ///////////////////////////////////////////////////////////
 /// Worker entry — C handler called inside spawned thread
 ///////////////////////////////////////////////////////////
@@ -107,8 +94,8 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			ZVAL_UNDEF(&retval);
 			ZVAL_UNDEF(&callable);
 
-			zend_atomic_int_dec(&pool->pending_count);
-			zend_atomic_int_inc(&pool->running_count);
+			zend_atomic_int_dec(&pool->base.pending_count);
+			zend_atomic_int_inc(&pool->base.running_count);
 
 			async_thread_create_closure(&snapshot->entry, &callable);
 
@@ -163,7 +150,7 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			async_future_shared_state_delref(state);
 			zval_ptr_dtor(&task);
 
-			zend_atomic_int_dec(&pool->running_count);
+			zend_atomic_int_dec(&pool->base.running_count);
 		}
 
 		if (EG(exception)) {
@@ -184,7 +171,7 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 	EG(current_execute_data) = fake_frame.prev_execute_data;
 
 	/* Release worker's ref on pool */
-	thread_pool_delref(pool);
+	ZEND_THREAD_POOL_DELREF(&pool->base);
 
 	if (bailout) {
 		zend_bailout();
@@ -196,6 +183,9 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 ///////////////////////////////////////////////////////////
 
 static void thread_pool_close(async_thread_pool_t *pool);
+static void thread_pool_close_base(zend_async_thread_pool_t *pool);
+static void thread_pool_dispose_base(zend_async_thread_pool_t *pool);
+static void thread_pool_drain_base(zend_async_thread_pool_t *pool, bool reject);
 
 /**
  * Create and start a single worker thread.
@@ -224,52 +214,62 @@ static bool thread_pool_start_worker(async_thread_pool_t *pool, int32_t index)
 	}
 
 	/* Thread is running — take refs */
-	pool->workers[index] = thread_event;
+	pool->base.workers[index] = thread_event;
 	ZEND_ASYNC_EVENT_ADD_REF(&thread_event->base); /* +1 for pool */
-	thread_pool_addref(pool);
+	ZEND_THREAD_POOL_ADDREF(&pool->base);
 
 	return true;
 }
 
-static async_thread_pool_t *thread_pool_create(int32_t worker_count, int32_t queue_size)
+zend_async_thread_pool_t *async_thread_pool_create(int32_t worker_count, int32_t queue_size)
 {
 	async_thread_pool_t *pool = pecalloc(1, sizeof(async_thread_pool_t), 1);
 
-	pool->worker_count = 0;
-	ZEND_ATOMIC_INT_INIT(&pool->pending_count, 0);
-	ZEND_ATOMIC_INT_INIT(&pool->running_count, 0);
-	ZEND_ATOMIC_INT_INIT(&pool->closed, 0);
-	ZEND_ATOMIC_INT_INIT(&pool->ref_count, 1); /* PHP object holds 1 ref */
+	pool->base.worker_count = 0;
+	ZEND_ATOMIC_INT_INIT(&pool->base.pending_count, 0);
+	ZEND_ATOMIC_INT_INIT(&pool->base.running_count, 0);
+	ZEND_ATOMIC_INT_INIT(&pool->base.closed, 0);
+	ZEND_ATOMIC_INT_INIT(&pool->base.ref_count, 1); /* PHP object holds 1 ref */
+
+	/* Set method pointers */
+	pool->base.close = thread_pool_close_base;
+	pool->base.dispose = thread_pool_dispose_base;
+	pool->base.drain = thread_pool_drain_base;
 
 	pool->task_channel = async_thread_channel_create(queue_size);
-	pool->workers = pecalloc(worker_count, sizeof(zend_async_thread_event_t *), 1);
+	pool->base.workers = pecalloc(worker_count, sizeof(zend_async_thread_event_t *), 1);
 
 	for (int32_t i = 0; i < worker_count; i++) {
 		if (UNEXPECTED(false == thread_pool_start_worker(pool, i))) {
-			pool->worker_count = i;
+			pool->base.worker_count = i;
 			thread_pool_close(pool);
 			zend_throw_exception(async_ce_thread_pool_exception,"Failed to start worker thread", 0);
-			return pool;
+			return &pool->base;
 		}
 
-		pool->worker_count = i + 1;
+		pool->base.worker_count = i + 1;
 	}
 
-	return pool;
+	return &pool->base;
 }
 
 static void thread_pool_close(async_thread_pool_t *pool)
 {
-	if (zend_atomic_int_load(&pool->closed)) {
+	if (zend_atomic_int_load(&pool->base.closed)) {
 		return;
 	}
 
-	zend_atomic_int_store(&pool->closed, 1);
+	zend_atomic_int_store(&pool->base.closed, 1);
 
 	/* Close task channel — workers see closed on next recv and exit */
 	if (pool->task_channel != NULL) {
 		pool->task_channel->channel.close(&pool->task_channel->channel);
 	}
+}
+
+static void thread_pool_close_base(zend_async_thread_pool_t *base)
+{
+	thread_pool_close((async_thread_pool_t *) base);
 }
 
 /**
@@ -338,18 +338,28 @@ static void thread_pool_destroy(async_thread_pool_t *pool)
 	}
 
 	/* Release pool's ref on each worker event (refcount 1→0 → full cleanup) */
-	if (pool->workers != NULL) {
-		for (int32_t i = 0; i < pool->worker_count; i++) {
-			if (pool->workers[i] != NULL) {
-				ZEND_ASYNC_EVENT_RELEASE(&pool->workers[i]->base);
-				pool->workers[i] = NULL;
+	if (pool->base.workers != NULL) {
+		for (int32_t i = 0; i < pool->base.worker_count; i++) {
+			if (pool->base.workers[i] != NULL) {
+				ZEND_ASYNC_EVENT_RELEASE(&pool->base.workers[i]->base);
+				pool->base.workers[i] = NULL;
 			}
 		}
-		pefree(pool->workers, 1);
-		pool->workers = NULL;
+		pefree(pool->base.workers, 1);
+		pool->base.workers = NULL;
 	}
 
 	pefree(pool, 1);
+}
+
+static void thread_pool_dispose_base(zend_async_thread_pool_t *base)
+{
+	thread_pool_destroy((async_thread_pool_t *) base);
+}
+
+static void thread_pool_drain_base(zend_async_thread_pool_t *base, bool reject)
+{
+	thread_pool_drain_tasks((async_thread_pool_t *) base, reject);
 }
 
 ///////////////////////////////////////////////////////////
@@ -375,9 +385,9 @@ static void thread_pool_free_object(zend_object *object)
 
 		/* Drop PHP object's ref on the pool.
 		 * Workers hold their own refs — when the last worker finishes
-		 * and does thread_pool_delref, pool refcount reaches 0 and
+		 * and does ZEND_THREAD_POOL_DELREF, pool refcount reaches 0 and
 		 * thread_pool_destroy releases pool's refs on worker events. */
-		thread_pool_delref(obj->pool);
+		ZEND_THREAD_POOL_DELREF(&obj->pool->base);
 		obj->pool = NULL;
 	}
 
@@ -409,7 +419,7 @@ METHOD(__construct)
 	}
 
 	thread_pool_object_t *obj = ASYNC_THREAD_POOL_FROM_OBJ(Z_OBJ_P(ZEND_THIS));
-	obj->pool = thread_pool_create((int32_t) workers, (int32_t) queue_size);
+	obj->pool = (async_thread_pool_t *) async_thread_pool_create((int32_t) workers, (int32_t) queue_size);
 }
 
 METHOD(submit)
@@ -431,7 +441,7 @@ METHOD(submit)
 		RETURN_THROWS();
 	}
 
-	if (UNEXPECTED(zend_atomic_int_load(&pool->closed))) {
+	if (UNEXPECTED(zend_atomic_int_load(&pool->base.closed))) {
 		zend_throw_exception(async_ce_thread_pool_exception, "ThreadPool is closed", 0);
 		RETURN_THROWS();
 	}
@@ -493,7 +503,7 @@ METHOD(submit)
 	}
 
 	zval_ptr_dtor(&task);
-	zend_atomic_int_inc(&pool->pending_count);
+	zend_atomic_int_inc(&pool->base.pending_count);
 
 	/* 4. Return Future PHP object */
 	ZEND_FUTURE_SET_USED(&remote->future);
@@ -519,7 +529,7 @@ METHOD(map)
 		RETURN_THROWS();
 	}
 
-	if (UNEXPECTED(zend_atomic_int_load(&pool->closed))) {
+	if (UNEXPECTED(zend_atomic_int_load(&pool->base.closed))) {
 		zend_throw_exception(async_ce_thread_pool_exception, "ThreadPool is closed", 0);
 		RETURN_THROWS();
 	}
@@ -595,7 +605,7 @@ METHOD(map)
 		}
 
 		zval_ptr_dtor(&task);
-		zend_atomic_int_inc(&pool->pending_count);
+		zend_atomic_int_inc(&pool->base.pending_count);
 
 		ZEND_FUTURE_SET_USED(&remote->future);
 		zend_object *future_obj = async_new_future_obj(&remote->future);
@@ -663,7 +673,7 @@ METHOD(isClosed)
 	ZEND_PARSE_PARAMETERS_NONE();
 
 	async_thread_pool_t *pool = THIS_POOL();
-	RETURN_BOOL(pool == NULL || zend_atomic_int_load(&pool->closed));
+	RETURN_BOOL(pool == NULL || zend_atomic_int_load(&pool->base.closed));
 }
 
 METHOD(getPendingCount)
@@ -671,7 +681,7 @@ METHOD(getPendingCount)
 	ZEND_PARSE_PARAMETERS_NONE();
 
 	async_thread_pool_t *pool = THIS_POOL();
-	RETURN_LONG(pool ? zend_atomic_int_load(&pool->pending_count) : 0);
+	RETURN_LONG(pool ? zend_atomic_int_load(&pool->base.pending_count) : 0);
 }
 
 METHOD(getRunningCount)
@@ -679,7 +689,7 @@ METHOD(getRunningCount)
 	ZEND_PARSE_PARAMETERS_NONE();
 
 	async_thread_pool_t *pool = THIS_POOL();
-	RETURN_LONG(pool ? zend_atomic_int_load(&pool->running_count) : 0);
+	RETURN_LONG(pool ? zend_atomic_int_load(&pool->base.running_count) : 0);
 }
 
 METHOD(count)
@@ -690,7 +700,7 @@ METHOD(count)
 	if (pool == NULL) {
 		RETURN_LONG(0);
 	}
-	RETURN_LONG(zend_atomic_int_load(&pool->pending_count) + zend_atomic_int_load(&pool->running_count));
+	RETURN_LONG(zend_atomic_int_load(&pool->base.pending_count) + zend_atomic_int_load(&pool->base.running_count));
 }
 
 METHOD(getWorkerCount)
@@ -698,7 +708,7 @@ METHOD(getWorkerCount)
 	ZEND_PARSE_PARAMETERS_NONE();
 
 	async_thread_pool_t *pool = THIS_POOL();
-	RETURN_LONG(pool ? pool->worker_count : 0);
+	RETURN_LONG(pool ? pool->base.worker_count : 0);
 }
 
 ///////////////////////////////////////////////////////////

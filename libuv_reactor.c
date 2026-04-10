@@ -23,6 +23,7 @@
 #include "php_async.h"
 #include "php_main.h"
 #include "thread.h"
+#include "thread_pool.h"
 #include "zend_common.h"
 
 #ifdef ZTS
@@ -4841,5 +4842,5 @@ void async_libuv_reactor_register(void)
 						   libuv_io_set_option,
 						   libuv_udp_set_membership);
 
-	zend_async_thread_pool_register(LIBUV_REACTOR_NAME, false, libuv_new_task, libuv_queue_task);
+	zend_async_thread_pool_register(LIBUV_REACTOR_NAME, false, libuv_new_task, libuv_queue_task, async_thread_pool_create);
 }

@@ -28,24 +28,11 @@
 typedef struct _async_thread_pool_s async_thread_pool_t;
 
 struct _async_thread_pool_s {
-	/* Number of worker threads */
-	int32_t worker_count;
+	/* Base structure (must be first for casting) */
+	zend_async_thread_pool_t base;
 
 	/* Task channel (shared, persistent memory) */
 	async_thread_channel_t *task_channel;
-
-	/* Counts (atomic — accessed from multiple threads) */
-	zend_atomic_int pending_count;
-	zend_atomic_int running_count;
-
-	/* State flags */
-	zend_atomic_int closed;
-
-	/* Worker thread events (array of worker_count, ecalloc'd in main) */
-	zend_async_thread_event_t **workers;
-
-	/* Reference count for cross-thread sharing */
-	zend_atomic_int ref_count;
 };
 
 ///////////////////////////////////////////////////////////
@@ -64,6 +51,9 @@ extern zend_class_entry *async_ce_thread_pool_exception;
 /* Convert zend_object to thread_pool_object_t */
 #define ASYNC_THREAD_POOL_FROM_OBJ(obj) \
 	((thread_pool_object_t *)((char *)(obj) - XtOffsetOf(thread_pool_object_t, std)))
+
+/* Factory — creates a new thread pool (returns base pointer for API registration) */
+zend_async_thread_pool_t *async_thread_pool_create(int32_t worker_count, int32_t queue_size);
 
 /* Registration function */
 void async_register_thread_pool_ce(void);
