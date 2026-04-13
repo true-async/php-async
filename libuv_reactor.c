@@ -5000,5 +5000,9 @@ void async_libuv_reactor_register(void)
 						   libuv_io_set_option,
 						   libuv_udp_set_membership);
 
-	zend_async_thread_pool_register(LIBUV_REACTOR_NAME, false, libuv_new_task, libuv_queue_task, async_thread_pool_create, libuv_start_thread);
+	zend_async_thread_pool_register(LIBUV_REACTOR_NAME, false,
+			libuv_new_task, libuv_queue_task,
+			async_thread_pool_create, libuv_start_thread,
+			async_thread_transfer_zval_ctx, async_thread_load_zval_ctx,
+			async_thread_xlat_put_ctx, async_thread_defer_release_ctx);
 }

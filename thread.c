@@ -693,10 +693,16 @@ static void thread_transfer_ctx_init(thread_transfer_ctx_t *ctx)
 {
 	zend_hash_init(&ctx->xlat, 32, NULL, NULL, 0);
 	ctx->depth = 0;
+	ctx->defer_release = NULL;
 }
 
 static void thread_transfer_ctx_destroy(thread_transfer_ctx_t *ctx)
 {
+	if (ctx->defer_release) {
+		zend_hash_destroy(ctx->defer_release);
+		efree(ctx->defer_release);
+		ctx->defer_release = NULL;
+	}
 	zend_hash_destroy(&ctx->xlat);
 }
 
@@ -1253,6 +1259,42 @@ void async_thread_release_transferred_zval(zval *z)
 	ZVAL_UNDEF(z);
 }
 
+/* }}} */
+
+/* {{{ Recursion helpers for transfer_obj handlers living in Zend core.
+ * Registered into the zend_async_thread_*_fn function pointers via
+ * zend_async_thread_pool_register so handlers (e.g. for WeakReference and
+ * WeakMap in Zend/zend_weakrefs.c) can recursively deep-copy child zvals
+ * within an existing ctx, preserving identity and handling cycles through
+ * the shared xlat table. */
+void async_thread_transfer_zval_ctx(
+	zend_async_thread_transfer_ctx_t *ctx, zval *dst, const zval *src)
+{
+	thread_transfer_zval_inner(ctx, dst, src);
+}
+
+void async_thread_load_zval_ctx(
+	zend_async_thread_transfer_ctx_t *ctx, zval *dst, const zval *src)
+{
+	thread_load_zval_inner(ctx, dst, src);
+}
+
+void async_thread_xlat_put_ctx(
+	zend_async_thread_transfer_ctx_t *ctx, const void *src, void *dst)
+{
+	thread_transfer_xlat_put(ctx, src, dst);
+}
+
+void async_thread_defer_release_ctx(
+	zend_async_thread_transfer_ctx_t *ctx, zval *z)
+{
+	if (ctx->defer_release == NULL) {
+		ctx->defer_release = emalloc(sizeof(HashTable));
+		zend_hash_init(ctx->defer_release, 8, NULL, ZVAL_PTR_DTOR, 0);
+	}
+	zend_hash_next_index_insert(ctx->defer_release, z);
+	ZVAL_UNDEF(z);
+}
 /* }}} */
 
 ///////////////////////////////////////////////////////////

@@ -153,6 +153,21 @@ void async_thread_load_zval(zval *dst, const zval *src);
  */
 void async_thread_release_transferred_zval(zval *z);
 
+/* Recursion helpers passed to zend_async_thread_pool_register() — expose
+ * thread_transfer_zval_inner / thread_load_zval_inner / xlat_put / a lazy
+ * defer-release list. Used by transfer_obj handlers in Zend core classes
+ * (e.g. WeakReference, WeakMap) that need to deep-copy child zvals within
+ * an existing ctx, share the xlat table with their caller, and defer the
+ * release of locally-created temporaries until the load ctx is torn down. */
+void async_thread_transfer_zval_ctx(
+	zend_async_thread_transfer_ctx_t *ctx, zval *dst, const zval *src);
+void async_thread_load_zval_ctx(
+	zend_async_thread_transfer_ctx_t *ctx, zval *dst, const zval *src);
+void async_thread_xlat_put_ctx(
+	zend_async_thread_transfer_ctx_t *ctx, const void *src, void *dst);
+void async_thread_defer_release_ctx(
+	zend_async_thread_transfer_ctx_t *ctx, zval *z);
+
 ///////////////////////////////////////////////////////////
 /// Thread exceptions
 ///////////////////////////////////////////////////////////
