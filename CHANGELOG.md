@@ -5,6 +5,14 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] -
+
+### Added
+- **`Async\ThreadPool`** (new class): pool of OS threads for executing PHP closures. `submit($callable, ...$args): Future`, `map(array $items, $callable): array`, `close()` (graceful), `cancel()` (rejects backlog with `Async\CancellationException`, running tasks still finish), `isClosed()`, `getWorkerCount()`, `getPendingCount()`, `getRunningCount()`. Implements `Countable`. Constructor `new ThreadPool(int $workers, int $queue_size = 0)`; queue is a thread-safe channel that suspends the submitting coroutine when full (backpressure).
+- **`Async\ThreadPoolException`** (new class): thrown from `submit()` / `map()` when the pool is closed.
+- **`Async\ThreadChannel`** (new class): thread-safe channel for transferring zvals between threads via deep-copy snapshot. `send()` / `receive()` suspend the calling coroutine instead of blocking the OS thread. Closures, including those with bound variables, transfer correctly through the snapshot machinery.
+- **`Async\ThreadChannelException`** (new class).
+
 ## [0.6.7] -
 
 ### Added
