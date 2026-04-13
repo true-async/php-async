@@ -18,6 +18,7 @@
 #include "thread_arginfo.h"
 #include "coroutine.h"
 #include "exceptions.h"
+#include "libuv_reactor.h"
 #include "php_async.h"
 #include "php.h"
 #include "php_main.h"
@@ -1433,11 +1434,11 @@ void async_thread_load_result(zend_async_thread_event_t *event)
 	ZEND_ASYNC_EVENT_CLR_EXCEPTION_HANDLED(&event->base);
 
 	/* Handle bailout from child thread (fatal error, OOM, exit()) */
-	if (UNEXPECTED(event->bailout_error_message != NULL)) {
+	if (UNEXPECTED(event->context && event->context->bailout_error_message != NULL)) {
 		event->exception = thread_create_transfer_exception(
-			event->bailout_error_message, NULL);
-		pefree(event->bailout_error_message, 1);
-		event->bailout_error_message = NULL;
+			event->context->bailout_error_message, NULL);
+		pefree(event->context->bailout_error_message, 1);
+		event->context->bailout_error_message = NULL;
 		ZEND_THREAD_SET_RESULT_LOADED(event);
 		return;
 	}
@@ -1855,33 +1856,34 @@ static bool thread_call_closure(
  *                  if PG(last_error_message) is NULL). Caller must set
  *                  its pointer to NULL after this call to avoid double-free.
  */
-static zend_always_inline void thread_capture_bailout(zend_async_thread_event_t *event, char **fallback)
+static zend_always_inline void thread_capture_bailout(zend_async_thread_context_t *context, char **fallback)
 {
 	const zend_string *last_error = PG(last_error_message);
 
 	if (last_error != NULL) {
-		event->bailout_error_message = pestrdup(ZSTR_VAL(last_error), 1);
+		context->bailout_error_message = pestrdup(ZSTR_VAL(last_error), 1);
 	} else {
-		event->bailout_error_message = *fallback;
+		context->bailout_error_message = *fallback;
 		*fallback = NULL;
 	}
 }
 
 void async_thread_run(void *arg)
 {
-	zend_async_thread_event_t *event = (zend_async_thread_event_t *) arg;
-	const async_thread_snapshot_t *snapshot = event->snapshot;
+	zend_async_thread_context_t *context = (zend_async_thread_context_t *) arg;
+	zend_async_thread_event_t *event = context->event; /* may be NULL */
+	const async_thread_snapshot_t *snapshot = context->snapshot;
 	bool request_started = false;
 	char *fallback_message = pestrdup("Unknown fatal error in child thread", 1);
 
 	/* Record OS thread ID */
 #ifdef _WIN32
-	zend_atomic_int64_store(&event->thread_id, (int64_t) GetCurrentThreadId());
+	zend_atomic_int64_store(&context->thread_id, (int64_t) GetCurrentThreadId());
 #else
-	zend_atomic_int64_store(&event->thread_id, (int64_t) pthread_self());
+	zend_atomic_int64_store(&context->thread_id, (int64_t) pthread_self());
 #endif
 
-	if (UNEXPECTED(snapshot == NULL && event->internal_entry == NULL)) {
+	if (UNEXPECTED(snapshot == NULL && context->internal_entry == NULL)) {
 		goto notify;
 	}
 
@@ -1897,18 +1899,18 @@ void async_thread_run(void *arg)
 		}
 		request_started = true;
 	} zend_catch {
-		thread_capture_bailout(event, &fallback_message);
+		thread_capture_bailout(context, &fallback_message);
 		goto notify;
 	} zend_end_try();
 
 	/* 2. Execute entry point */
 	zend_first_try {
-		if (event->internal_entry != NULL) {
-			/* C-level entry: copy ctx, free entry struct, call handler */
-			void (*handler)(zend_async_thread_event_t *, void *) = event->internal_entry->handler;
-			void *ctx = event->internal_entry->ctx;
-			pefree(event->internal_entry, 1);
-			event->internal_entry = NULL;
+		if (context->internal_entry != NULL) {
+			/* C-level entry: copy handler/ctx, free entry struct, call handler */
+			void (*handler)(zend_async_thread_event_t *, void *) = context->internal_entry->handler;
+			void *ctx = context->internal_entry->ctx;
+			pefree(context->internal_entry, 1);
+			context->internal_entry = NULL;
 
 			handler(event, ctx);
 			goto cleanup;
@@ -1945,7 +1947,7 @@ void async_thread_run(void *arg)
 cleanup:
 		zval_ptr_dtor(&retval);
 	} zend_catch {
-		thread_capture_bailout(event, &fallback_message);
+		thread_capture_bailout(context, &fallback_message);
 	} zend_end_try();
 
 	/* 3. Shut down PHP request — must happen BEFORE snapshot destroy
@@ -1957,18 +1959,26 @@ cleanup:
 		} zend_catch {
 			/* Bailout during shutdown — not much we can do,
 			 * but don't overwrite a prior bailout message. */
-			if (event->bailout_error_message == NULL) {
-				thread_capture_bailout(event, &fallback_message);
+			if (context->bailout_error_message == NULL) {
+				thread_capture_bailout(context, &fallback_message);
 			}
 		} zend_end_try();
 	}
 
 	/* 4. Free snapshot arena — safe now that all PHP objects referencing
 	 * arena-allocated op_array data have been destroyed by request shutdown. */
-	if (event->snapshot != NULL) {
-		async_thread_snapshot_destroy(event->snapshot);
-		event->snapshot = NULL;
+	if (context->snapshot != NULL) {
+		async_thread_snapshot_destroy(context->snapshot);
+		context->snapshot = NULL;
 	}
+
+	/* Snapshot handle before releasing the context — for a lightweight
+	 * pool worker the context is freed by the release below, so we must
+	 * read the handle now if we want to self-remove from the registry. */
+	const zend_async_thread_handle_t my_handle = context->handle;
+
+	/* Release thread runner's ref on context */
+	ZEND_ASYNC_THREAD_CONTEXT_RELEASE(context);
 
 	/* Free TSRM storage after all zend_end_try blocks.
 	 * Must be separate because zend_end_try accesses EG(bailout). */
@@ -1976,11 +1986,21 @@ cleanup:
 	ts_free_thread();
 #endif
 
+	/* Self-remove from the reactor's child thread registry.
+	 * Must happen after ts_free_thread so the main thread, once it wakes
+	 * in libuv_reactor_quiesce, can safely proceed into php_module_shutdown
+	 * without racing this child against ts_free_id(). */
+	if (my_handle != 0) {
+		async_libuv_thread_registry_remove(my_handle);
+	}
+
 notify:
 	if (fallback_message != NULL) {
 		pefree(fallback_message, 1);
 	}
-	event->notify_parent(event);
+	if (event) {
+		event->notify_parent(event);
+	}
 }
 
 ///////////////////////////////////////////////////////////

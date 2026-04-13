@@ -18,6 +18,7 @@
 #include "thread_pool_arginfo.h"
 #include "thread.h"
 #include "async_API.h"
+#include "exceptions.h"
 #include "php_async.h"
 #include "scheduler.h"
 #include "thread_channel.h"
@@ -52,13 +53,14 @@ static void thread_pool_destroy(async_thread_pool_t *pool);
  */
 static zend_function worker_root_function = { ZEND_INTERNAL_FUNCTION };
 
+/* event is always NULL for pool workers (started via ZEND_ASYNC_START_THREAD) */
 static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *ctx)
 {
 	async_thread_pool_t *pool = (async_thread_pool_t *) ctx;
 	async_thread_channel_t *channel = pool->task_channel;
 	int bailout = 0;
 
-	(void)event;
+	ZEND_ASSERT(event == NULL);
 
 	/* Create a fake internal frame so EG(current_execute_data) != NULL.
 	 * Without this, zend_throw_exception triggers bailout because it thinks
@@ -188,7 +190,7 @@ static void thread_pool_dispose_base(zend_async_thread_pool_t *pool);
 
 /**
  * Create and start a single worker thread.
- * On success, stores the event in pool->workers[index] and
+ * On success, stores the thread handle in pool->workers[index] and
  * increments pool refcount (+1 for the worker).
  * Returns true on success, false on failure.
  */
@@ -198,23 +200,25 @@ static bool thread_pool_start_worker(async_thread_pool_t *pool, int32_t index)
 	entry->handler = thread_pool_worker_handler;
 	entry->ctx = pool;
 
-	zend_async_thread_event_t *thread_event = ZEND_ASYNC_NEW_THREAD_EVENT(NULL, NULL);
+	/* Create thread context (no event for pool workers).
+	 * start_thread will add ref for the runner. */
+	zend_async_thread_context_t *context = pecalloc(1, sizeof(zend_async_thread_context_t), 1);
+	ZEND_ATOMIC_INT_INIT(&context->ref_count, 0);
+	ZEND_ATOMIC_INT64_INIT(&context->thread_id, 0);
+	context->snapshot = NULL;
+	context->bailout_error_message = NULL;
+	context->event = NULL;
+	context->internal_entry = NULL; /* set by start_thread */
 
-	if (UNEXPECTED(thread_event == NULL)) {
+	zend_async_thread_handle_t handle = ZEND_ASYNC_START_THREAD(entry, context);
+
+	if (UNEXPECTED(handle == 0)) {
 		pefree(entry, 1);
+		pefree(context, 1);
 		return false;
 	}
 
-	thread_event->internal_entry = entry;
-
-	if (UNEXPECTED(!thread_event->base.start(&thread_event->base))) {
-		ZEND_ASYNC_EVENT_RELEASE(&thread_event->base);
-		return false;
-	}
-
-	/* Thread is running — take refs */
-	pool->base.workers[index] = thread_event;
-	ZEND_ASYNC_EVENT_ADD_REF(&thread_event->base); /* +1 for pool */
+	pool->base.workers[index] = handle;
 	ZEND_THREAD_POOL_ADDREF(&pool->base);
 
 	return true;
@@ -235,7 +239,7 @@ zend_async_thread_pool_t *async_thread_pool_create(int32_t worker_count, int32_t
 	pool->base.dispose = thread_pool_dispose_base;
 
 	pool->task_channel = async_thread_channel_create(queue_size);
-	pool->base.workers = pecalloc(worker_count, sizeof(zend_async_thread_event_t *), 1);
+	pool->base.workers = pecalloc(worker_count, sizeof(zend_async_thread_handle_t), 1);
 
 	for (int32_t i = 0; i < worker_count; i++) {
 		if (UNEXPECTED(false == thread_pool_start_worker(pool, i))) {
@@ -305,15 +309,17 @@ static void thread_pool_drain_tasks(async_thread_pool_t *pool, bool reject)
 				(zend_future_shared_state_t *)(uintptr_t) Z_LVAL_P(state_zv);
 
 			if (reject) {
-				/* Mark as completed without rejecting — the future will
-				 * never resolve, which is acceptable for cancelled tasks.
-				 * The delref below releases the task's ref on shared_state. */
-				zend_atomic_int_store(&state->completed, 1);
+				zend_object *exception = async_new_exception(
+					async_ce_cancellation_exception,
+					"ThreadPool task was cancelled before execution");
+				async_future_shared_state_reject(state, exception);
+				OBJ_RELEASE(exception);
 			}
 
 			async_future_shared_state_delref(state);
 		}
 
+		zend_atomic_int_dec(&pool->base.pending_count);
 		zval_ptr_dtor(&task);
 	}
 }
@@ -331,14 +337,7 @@ static void thread_pool_destroy(async_thread_pool_t *pool)
 		pool->task_channel = NULL;
 	}
 
-	/* Release pool's ref on each worker event (refcount 1→0 → full cleanup) */
 	if (pool->base.workers != NULL) {
-		for (int32_t i = 0; i < pool->base.worker_count; i++) {
-			if (pool->base.workers[i] != NULL) {
-				ZEND_ASYNC_EVENT_RELEASE(&pool->base.workers[i]->base);
-				pool->base.workers[i] = NULL;
-			}
-		}
 		pefree(pool->base.workers, 1);
 		pool->base.workers = NULL;
 	}
@@ -654,6 +653,10 @@ METHOD(cancel)
 	}
 
 	thread_pool_close(pool);
+	/* Reject futures of tasks that had not yet been picked up by a worker.
+	 * Running tasks are allowed to finish naturally — cancel() only covers
+	 * the backlog, not already-in-flight computations. */
+	thread_pool_drain_tasks(pool, /*reject*/ true);
 }
 
 METHOD(isClosed)

@@ -81,6 +81,104 @@ static void libuv_cleanup_process_events(void);
 static void uv_stat_to_zend_stat(const uv_stat_t *uv_statbuf, zend_stat_t *zend_statbuf);
 
 ///////////////////////////////////////////////////////////
+/// Child thread registry
+///
+/// Process-global registry that tracks every OS thread spawned by the
+/// reactor (both event-backed threads and lightweight pool workers).
+///
+/// Purpose: let the main thread block before php_module_shutdown until
+/// all child threads have released TSRM and are safe to outrun.
+///
+/// - Add: main thread under registry_mutex, after uv_thread_create
+///   returns successfully, keyed by the OS handle.
+/// - Remove: child thread itself, right after ts_free_thread() and
+///   before returning from the OS entry point, so that entries only
+///   disappear once the thread has stopped touching Zend/TSRM state.
+/// - Quiesce: main thread waits on registry_cond until the table is
+///   empty, then caller may proceed into php_module_shutdown.
+///////////////////////////////////////////////////////////
+
+static HashTable     child_thread_registry;
+static uv_mutex_t    child_thread_registry_mutex;
+static uv_cond_t     child_thread_registry_cond;
+static bool          child_thread_registry_inited = false;
+
+static void libuv_thread_registry_init(void)
+{
+	if (child_thread_registry_inited) {
+		return;
+	}
+
+	zend_hash_init(&child_thread_registry, 8, NULL, NULL, 1 /* persistent */);
+
+	if (uv_mutex_init(&child_thread_registry_mutex) != 0) {
+		zend_error_noreturn(E_CORE_ERROR,
+				"libuv: failed to init child_thread_registry_mutex");
+	}
+
+	if (uv_cond_init(&child_thread_registry_cond) != 0) {
+		uv_mutex_destroy(&child_thread_registry_mutex);
+		zend_error_noreturn(E_CORE_ERROR,
+				"libuv: failed to init child_thread_registry_cond");
+	}
+
+	child_thread_registry_inited = true;
+}
+
+static void libuv_thread_registry_add(zend_async_thread_handle_t handle)
+{
+	libuv_thread_registry_init();
+
+	uv_mutex_lock(&child_thread_registry_mutex);
+	/* value payload is unused — the key alone is what we track */
+	zval placeholder;
+	ZVAL_NULL(&placeholder);
+	zend_hash_index_add(&child_thread_registry, (zend_ulong) handle, &placeholder);
+	uv_mutex_unlock(&child_thread_registry_mutex);
+}
+
+static void libuv_thread_registry_remove(zend_async_thread_handle_t handle)
+{
+	if (!child_thread_registry_inited) {
+		return;
+	}
+
+	uv_mutex_lock(&child_thread_registry_mutex);
+	zend_hash_index_del(&child_thread_registry, (zend_ulong) handle);
+	if (zend_hash_num_elements(&child_thread_registry) == 0) {
+		uv_cond_broadcast(&child_thread_registry_cond);
+	}
+	uv_mutex_unlock(&child_thread_registry_mutex);
+}
+
+/* {{{ libuv_reactor_quiesce — block until every child thread has
+ * released TSRM. Called from main thread at the very top of
+ * php_module_shutdown, before any module gets destroyed. */
+static void libuv_reactor_quiesce(void)
+{
+#ifdef ZTS
+	ZEND_ASSERT(tsrm_is_main_thread());
+#endif
+
+	if (!child_thread_registry_inited) {
+		return;
+	}
+
+	uv_mutex_lock(&child_thread_registry_mutex);
+	while (zend_hash_num_elements(&child_thread_registry) > 0) {
+		uv_cond_wait(&child_thread_registry_cond, &child_thread_registry_mutex);
+	}
+	uv_mutex_unlock(&child_thread_registry_mutex);
+}
+/* }}} */
+
+/* Exposed to thread.c so child threads can self-remove after ts_free_thread. */
+void async_libuv_thread_registry_remove(zend_async_thread_handle_t handle)
+{
+	libuv_thread_registry_remove(handle);
+}
+
+///////////////////////////////////////////////////////////
 /// Event info methods for deadlock diagnostics
 ///////////////////////////////////////////////////////////
 
@@ -1922,11 +2020,30 @@ static bool libuv_thread_event_start(zend_async_event_t *event)
 
 	async_thread_event_t *thread = (async_thread_event_t *) event;
 
-	const int ret = uv_thread_create(&thread->uv_handle, zend_async_thread_run_fn, &thread->event);
+	/* Add ref on context for the thread runner */
+	if (thread->event.context) {
+		thread->event.context->event = &thread->event;
+		ZEND_ASYNC_THREAD_CONTEXT_ADDREF(thread->event.context);
+	}
+
+	/* Ensure registry exists before uv_thread_create — once the child is
+	 * running, it may race us to the first self-remove call. */
+	libuv_thread_registry_init();
+
+	const int ret = uv_thread_create(&thread->uv_handle, zend_async_thread_run_fn, thread->event.context);
 
 	if (UNEXPECTED(ret != 0)) {
+		if (thread->event.context) {
+			zend_atomic_int_dec(&thread->event.context->ref_count);
+		}
+
 		async_throw_error("Failed to create thread: %s", uv_strerror(ret));
 		return false;
+	}
+
+	if (thread->event.context) {
+		thread->event.context->handle = (zend_async_thread_handle_t) thread->uv_handle;
+		libuv_thread_registry_add(thread->event.context->handle);
 	}
 
 	event->loop_ref_count++;
@@ -1972,9 +2089,10 @@ static bool libuv_thread_event_dispose(zend_async_event_t *event)
 
 	async_thread_event_t *thread = (async_thread_event_t *) event;
 
-	if (thread->event.snapshot) {
-		ZEND_ASYNC_THREAD_SNAPSHOT_DESTROY(thread->event.snapshot);
-		thread->event.snapshot = NULL;
+	/* Release event's ref on context */
+	if (thread->event.context) {
+		ZEND_ASYNC_THREAD_CONTEXT_RELEASE(thread->event.context);
+		thread->event.context = NULL;
 	}
 
 	if (thread->event.filename) {
@@ -2001,11 +2119,6 @@ static bool libuv_thread_event_dispose(zend_async_event_t *event)
 	}
 	ZVAL_UNDEF(&thread->event.result);
 	thread->event.exception = NULL;
-
-	if (thread->event.bailout_error_message) {
-		pefree(thread->event.bailout_error_message, 1);
-		thread->event.bailout_error_message = NULL;
-	}
 
 	uv_close((uv_handle_t *) &thread->uv_notify, libuv_close_handle_cb);
 	return true;
@@ -2051,8 +2164,10 @@ static zend_string *libuv_thread_info(zend_async_event_t *event)
 {
 	async_thread_event_t *thread = (async_thread_event_t *) event;
 
+	int64_t tid = thread->event.context ? zend_atomic_int64_load(&thread->event.context->thread_id) : 0;
+
 	return zend_strpprintf(0, "thread #%" PRId64 " spawned at %s:%u",
-		zend_atomic_int64_load(&thread->event.thread_id),
+		tid,
 		thread->event.filename ? ZSTR_VAL(thread->event.filename) : "unknown",
 		thread->event.lineno);
 }
@@ -2087,26 +2202,36 @@ zend_async_thread_event_t *libuv_new_thread_event(
 
 	ZVAL_UNDEF(&thread_event->event.result);
 	thread_event->event.exception = NULL;
-	thread_event->event.bailout_error_message = NULL;
-	ZEND_ATOMIC_INT64_INIT(&thread_event->event.thread_id, 0);
 	thread_event->event.filename = NULL;
 	thread_event->event.lineno = 0;
 
 	/* Set notify callback for child → parent notification */
 	thread_event->event.notify_parent = libuv_thread_notify;
 
+	/* Create thread context (persistent, ref-counted) */
+	zend_async_thread_context_t *ctx = pecalloc(1, sizeof(zend_async_thread_context_t), 1);
+	ZEND_ATOMIC_INT_INIT(&ctx->ref_count, 1); /* event holds one ref */
+	ZEND_ATOMIC_INT64_INIT(&ctx->thread_id, 0);
+	ctx->snapshot = NULL;
+	ctx->bailout_error_message = NULL;
+	ctx->event = NULL; /* set in start when thread is launched */
+	ctx->internal_entry = NULL;
+
 	/* Create snapshot: deep-copy entry closure + optional bootloader + parent context */
 	if (entry != NULL) {
-		thread_event->event.snapshot = ZEND_ASYNC_THREAD_SNAPSHOT_CREATE(entry, bootloader);
+		ctx->snapshot = ZEND_ASYNC_THREAD_SNAPSHOT_CREATE(entry, bootloader);
 	}
+
+	thread_event->event.context = ctx;
 
 	/* Initialize cross-thread notification handle */
 	const int ret = uv_async_init(UVLOOP, &thread_event->uv_notify, libuv_thread_notify_cb);
 
 	if (UNEXPECTED(ret != 0)) {
-		if (thread_event->event.snapshot) {
-			ZEND_ASYNC_THREAD_SNAPSHOT_DESTROY(thread_event->event.snapshot);
+		if (ctx->snapshot) {
+			ZEND_ASYNC_THREAD_SNAPSHOT_DESTROY(ctx->snapshot);
 		}
+		pefree(ctx, 1);
 		pefree(thread_event, 0);
 		async_throw_error("Failed to init thread notification: %s", uv_strerror(ret));
 		return NULL;
@@ -2115,6 +2240,38 @@ zend_async_thread_event_t *libuv_new_thread_event(
 	thread_event->uv_notify.data = thread_event;
 
 	return &thread_event->event;
+}
+
+/* }}} */
+
+/* {{{ libuv_start_thread — start lightweight thread via async_thread_run */
+static zend_async_thread_handle_t libuv_start_thread(
+	zend_async_thread_internal_entry_t *entry, zend_async_thread_context_t *context)
+{
+	/* entry ownership moves to context */
+	context->internal_entry = entry;
+
+	/* Add ref on context for the runner */
+	ZEND_ASYNC_THREAD_CONTEXT_ADDREF(context);
+
+	/* Ensure registry exists before uv_thread_create — once the child is
+	 * running, it may race us to the first self-remove call. */
+	libuv_thread_registry_init();
+
+	uv_thread_t uv_handle;
+	const int ret = uv_thread_create(&uv_handle, zend_async_thread_run_fn, context);
+
+	if (UNEXPECTED(ret != 0)) {
+		zend_atomic_int_dec(&context->ref_count);
+		context->internal_entry = NULL;
+		async_throw_error("Failed to create thread: %s", uv_strerror(ret));
+		return 0;
+	}
+
+	context->handle = (zend_async_thread_handle_t) uv_handle;
+	libuv_thread_registry_add(context->handle);
+
+	return (zend_async_thread_handle_t) uv_handle;
 }
 
 /* }}} */
@@ -4810,6 +4967,7 @@ void async_libuv_reactor_register(void)
 								libuv_reactor_shutdown,
 								libuv_reactor_execute,
 								libuv_reactor_loop_alive,
+								libuv_reactor_quiesce,
 								libuv_new_socket_event,
 								libuv_new_poll_event,
 								libuv_new_poll_proxy_event,
@@ -4842,5 +5000,5 @@ void async_libuv_reactor_register(void)
 						   libuv_io_set_option,
 						   libuv_udp_set_membership);
 
-	zend_async_thread_pool_register(LIBUV_REACTOR_NAME, false, libuv_new_task, libuv_queue_task, async_thread_pool_create);
+	zend_async_thread_pool_register(LIBUV_REACTOR_NAME, false, libuv_new_task, libuv_queue_task, async_thread_pool_create, libuv_start_thread);
 }
