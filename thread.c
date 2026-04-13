@@ -1287,15 +1287,24 @@ static void thread_copy_callable(
 		dst->bound_vars = pemalloc(sizeof(HashTable), 1);
 		zend_hash_init(dst->bound_vars, zend_hash_num_elements(static_vars), NULL, NULL, 1);
 
+		/* Shared transfer ctx across all bound vars: xlat preserves identity
+		 * so two captured variables pointing to the same object end up as the
+		 * same transit copy (otherwise each var would be transferred with its
+		 * own ctx → independent copies on the receiving side). */
+		thread_transfer_ctx_t transfer_ctx;
+		thread_transfer_ctx_init(&transfer_ctx);
+
 		zend_string *key;
 		zval *val;
 		ZEND_HASH_FOREACH_STR_KEY_VAL(static_vars, key, val) {
 			zval transferred;
-			async_thread_transfer_zval(&transferred, val);
+			thread_transfer_zval_inner(&transfer_ctx, &transferred, val);
 			zend_string *pkey = zend_string_dup(key, 1);
 			zend_hash_add(dst->bound_vars, pkey, &transferred);
 			zend_string_release(pkey);
 		} ZEND_HASH_FOREACH_END();
+
+		thread_transfer_ctx_destroy(&transfer_ctx);
 	} else {
 		dst->bound_vars = NULL;
 	}
@@ -1760,20 +1769,28 @@ void async_thread_create_closure(
 	 * and destroy_op_array returns early without freeing pemalloc'd data. */
 	func.op_array.refcount = NULL;
 
-	/* Load bound variables from persistent memory into child's emalloc */
+	/* Load bound variables from persistent memory into child's emalloc.
+	 * Shared load ctx: same reason as on the transfer side — preserves
+	 * identity across bound vars (same transit pointer → same loaded object). */
 	HashTable *loaded_vars = NULL;
 	if (copy->bound_vars) {
 		loaded_vars = zend_new_array(
 			zend_hash_num_elements(copy->bound_vars));
+
+		thread_transfer_ctx_t load_ctx;
+		thread_transfer_ctx_init(&load_ctx);
+
 		zend_string *key;
 		zval *val;
 		ZEND_HASH_FOREACH_STR_KEY_VAL(copy->bound_vars, key, val) {
 			zval loaded;
-			async_thread_load_zval(&loaded, val);
+			thread_load_zval_inner(&load_ctx, &loaded, val);
 			zend_string *local_key = zend_string_init(ZSTR_VAL(key), ZSTR_LEN(key), 0);
 			zend_hash_add(loaded_vars, local_key, &loaded);
 			zend_string_release(local_key);
 		} ZEND_HASH_FOREACH_END();
+
+		thread_transfer_ctx_destroy(&load_ctx);
 		ZEND_MAP_PTR_INIT(func.op_array.static_variables_ptr, loaded_vars);
 	} else {
 		ZEND_MAP_PTR_INIT(func.op_array.static_variables_ptr, NULL);
