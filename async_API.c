@@ -326,18 +326,30 @@ static zend_always_inline zend_async_event_t *zval_to_event(const zval *current)
  */
 static void async_waiting_callback_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event)
 {
+	if (callback->ref_count > 1) {
+		callback->ref_count--;
+		return;
+	} else if (UNEXPECTED(callback->ref_count == 0)) {
+		return;
+	}
+
 	async_await_callback_t *await_callback = (async_await_callback_t *) callback;
 	async_await_context_t *await_context = await_callback->await_context;
 
 	await_callback->await_context = NULL;
+	callback->ref_count = 0;
 
-	zval_ptr_dtor(&await_callback->key);
+	if (!Z_ISUNDEF(await_callback->key)) {
+		zval_ptr_dtor(&await_callback->key);
+		ZVAL_UNDEF(&await_callback->key);
+	}
 
 	if (await_context != NULL) {
 		await_context->dtor(await_context);
 	}
 
 	if (await_callback->prev_dispose != NULL) {
+		callback->ref_count = 1;
 		await_callback->prev_dispose(callback, event);
 	} else {
 		efree(callback);

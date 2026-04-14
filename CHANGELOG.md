@@ -13,10 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Async\ThreadChannel`** (new class): thread-safe channel for transferring zvals between threads via deep-copy snapshot. `send()` / `receive()` suspend the calling coroutine instead of blocking the OS thread. Closures, including those with bound variables, transfer correctly through the snapshot machinery.
 - **`Async\ThreadChannelException`** (new class).
 
-## [0.6.7] -
+## [0.6.7] - 2026-04-13
 
 ### Added
 - **PDO Pool: `getAttribute()` support for pool attributes**: `$pdo->getAttribute(PDO::ATTR_POOL_ENABLED)` now returns `true`/`false` depending on whether the connection pool is active. `PDO::ATTR_POOL_MIN` and `PDO::ATTR_POOL_MAX` return the configured pool size limits (or `false` when pooling is disabled). `PDO::ATTR_POOL_HEALTHCHECK_INTERVAL` is a construction-only attribute and raises an error if read at runtime.
+
+### Fixed
+- **Heap-use-after-free in `await_all()`/`await_*()` with string keys**: When any `await_*` function received an array with non-interned string keys (e.g. from `json_decode()` or `str_repeat()`), the returned results/errors arrays had incorrect refcount on those keys. The root cause: `async_waiting_callback_dispose` was called twice per callback (once from `zend_async_callbacks_remove` during `del_callback`, once from `ZEND_ASYNC_EVENT_CALLBACK_RELEASE`), but did not check `ref_count` — it unconditionally called `zval_ptr_dtor` on the key each time, decrementing the string refcount twice instead of once. When the calling function's local variables were freed (`i_free_compiled_variables`), the already-freed string was accessed again — heap-use-after-free. Fixed by adding ref_count guard to `async_waiting_callback_dispose`: when `ref_count > 1`, decrement and return without touching resources; only perform cleanup on the final dispose (`ref_count == 1`).
 
 ## [0.6.6] - 2026-04-03
 
