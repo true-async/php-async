@@ -1962,6 +1962,9 @@ void async_thread_run(void *arg)
 		goto notify;
 	} zend_end_try();
 
+	zval retval;
+	ZVAL_UNDEF(&retval);
+
 	/* 2. Execute entry point */
 	zend_first_try {
 		if (context->internal_entry != NULL) {
@@ -1974,9 +1977,6 @@ void async_thread_run(void *arg)
 			handler(event, ctx);
 			goto cleanup;
 		}
-
-		zval retval;
-		ZVAL_UNDEF(&retval);
 
 		/* Bootloader (optional) */
 		if (snapshot->bootloader.func != NULL) {
@@ -2036,7 +2036,6 @@ cleanup:
 	 * read the handle now if we want to self-remove from the registry. */
 	const zend_async_thread_handle_t my_handle = context->handle;
 
-	/* Release thread runner's ref on context */
 	ZEND_ASYNC_THREAD_CONTEXT_RELEASE(context);
 
 	/* Free TSRM storage after all zend_end_try blocks.
@@ -2057,6 +2056,7 @@ notify:
 	if (fallback_message != NULL) {
 		pefree(fallback_message, 1);
 	}
+
 	if (event) {
 		event->notify_parent(event);
 	}
