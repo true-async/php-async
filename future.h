@@ -18,7 +18,6 @@
 
 #include <php.h>
 #include <Zend/zend_async_API.h>
-#include <pthread.h>
 
 typedef struct _async_future_state_s async_future_state_t;
 typedef struct _async_future_s async_future_t;
@@ -107,8 +106,11 @@ typedef struct _zend_future_shared_state_s {
 	/** Atomic completion flag (0 = pending, 1 = completed) */
 	zend_atomic_int completed;
 
-	/** Mutex protecting the transition from pending to completed */
-	pthread_mutex_t mutex;
+	/** Mutex protecting the transition from pending to completed.
+	 *  Present only in ZTS builds — threading is ZTS-only. */
+#ifdef ZTS
+	MUTEX_T mutex;
+#endif
 
 	/** Transferred result value in persistent memory */
 	zval transferred_result;

@@ -703,14 +703,14 @@ static void async_future_state_object_free(zend_object *object)
 		 * take the mutex to safely stop the trigger. */
 		if (state->event != NULL && state->shared_state->trigger != NULL) {
 			if (!zend_atomic_int_load(&state->shared_state->completed)) {
-				pthread_mutex_lock(&state->shared_state->mutex);
+				ASYNC_MUTEX_LOCK(state->shared_state->mutex);
 
 				if (!zend_atomic_int_load(&state->shared_state->completed)) {
 					zend_atomic_int_store(&state->shared_state->completed, 1);
 					state->shared_state->trigger->base.stop(&state->shared_state->trigger->base);
 				}
 
-				pthread_mutex_unlock(&state->shared_state->mutex);
+				ASYNC_MUTEX_UNLOCK(state->shared_state->mutex);
 			}
 		}
 
@@ -1941,7 +1941,7 @@ void async_future_shared_state_destroy(zend_future_shared_state_t *state)
 		state->trigger = NULL;
 	}
 
-	pthread_mutex_destroy(&state->mutex);
+	ASYNC_MUTEX_DESTROY(state->mutex);
 	pefree(state, 1);
 }
 
@@ -2035,7 +2035,7 @@ zend_future_shared_state_t *async_future_shared_state_create(void)
 	ZVAL_UNDEF(&state->transferred_exception);
 	ZEND_ATOMIC_INT_INIT(&state->completed, 0);
 	ZEND_ATOMIC_INT_INIT(&state->ref_count, 0);
-	pthread_mutex_init(&state->mutex, NULL);
+	ASYNC_MUTEX_INIT(state->mutex);
 	state->trigger = NULL;
 	state->target_future = NULL;
 
@@ -2078,10 +2078,10 @@ void async_future_shared_state_complete(zend_future_shared_state_t *state, zval 
 		return;
 	}
 
-	pthread_mutex_lock(&state->mutex);
+	ASYNC_MUTEX_LOCK(state->mutex);
 
 	if (zend_atomic_int_load(&state->completed)) {
-		pthread_mutex_unlock(&state->mutex);
+		ASYNC_MUTEX_UNLOCK(state->mutex);
 		return;
 	}
 
@@ -2089,7 +2089,7 @@ void async_future_shared_state_complete(zend_future_shared_state_t *state, zval 
 	async_thread_transfer_zval(&state->transferred_result, result);
 	state->trigger->trigger(state->trigger);
 
-	pthread_mutex_unlock(&state->mutex);
+	ASYNC_MUTEX_UNLOCK(state->mutex);
 }
 
 /** @copydoc async_future_shared_state_reject */
@@ -2100,10 +2100,10 @@ void async_future_shared_state_reject(zend_future_shared_state_t *state, zend_ob
 		return;
 	}
 
-	pthread_mutex_lock(&state->mutex);
+	ASYNC_MUTEX_LOCK(state->mutex);
 
 	if (zend_atomic_int_load(&state->completed)) {
-		pthread_mutex_unlock(&state->mutex);
+		ASYNC_MUTEX_UNLOCK(state->mutex);
 		return;
 	}
 
@@ -2116,7 +2116,7 @@ void async_future_shared_state_reject(zend_future_shared_state_t *state, zend_ob
 
 	state->trigger->trigger(state->trigger);
 
-	pthread_mutex_unlock(&state->mutex);
+	ASYNC_MUTEX_UNLOCK(state->mutex);
 }
 
 /** @copydoc async_future_shared_state_source_cb */

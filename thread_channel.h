@@ -19,7 +19,6 @@
 #include "php_async_api.h"
 #include <Zend/zend_async_API.h>
 #include "internal/circular_buffer.h"
-#include <pthread.h>
 
 ///////////////////////////////////////////////////////////
 /// Thread-safe channel (persistent memory)
@@ -34,8 +33,11 @@ struct _async_thread_channel_s {
 	/* Buffered data storage (pemalloc allocator) */
 	circular_buffer_t buffer;
 
-	/* Mutex protecting buffer and trigger mappings */
-	pthread_mutex_t mutex;
+	/* Mutex protecting buffer and trigger mappings.
+	 * Present only in ZTS builds — threading is ZTS-only. */
+#ifdef ZTS
+	MUTEX_T mutex;
+#endif
 
 	/* Channel capacity (always >= 1) */
 	int32_t capacity;
