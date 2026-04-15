@@ -2217,9 +2217,17 @@ zend_async_thread_event_t *libuv_new_thread_event(
 	ctx->event = NULL; /* set in start when thread is launched */
 	ctx->internal_entry = NULL;
 
-	/* Create snapshot: deep-copy entry closure + optional bootloader + parent context */
+	/* Create snapshot: deep-copy entry closure + optional bootloader + parent context.
+	 * Snapshot creation may fail (return NULL) if a captured variable's
+	 * transfer_obj handler refuses — e.g. FutureState already transferred
+	 * to another thread. The exception is already set by the handler. */
 	if (entry != NULL) {
 		ctx->snapshot = ZEND_ASYNC_THREAD_SNAPSHOT_CREATE(entry, bootloader);
+		if (UNEXPECTED(ctx->snapshot == NULL)) {
+			pefree(ctx, 1);
+			pefree(thread_event, 0);
+			return NULL;
+		}
 	}
 
 	thread_event->event.context = ctx;

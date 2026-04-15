@@ -1381,13 +1381,22 @@ async_thread_snapshot_t *async_thread_snapshot_create(const zend_fcall_t *entry,
 
 	thread_copy_callable(&ctx, entry, &snapshot->entry);
 
-	if (bootloader != NULL) {
+	if (bootloader != NULL && !EG(exception)) {
 		thread_copy_callable(&ctx, bootloader, &snapshot->bootloader);
 	}
 
-	/* Store arena block list in snapshot for later cleanup */
+	/* Store arena block list in snapshot — needed even for the failure path
+	 * so that destroy can release any op_array data already copied. */
 	snapshot->arena_blocks = ctx.current_block;
 	thread_copy_ctx_destroy(&ctx);
+
+	/* Bound-var transfer or op_array copy may have thrown (e.g. a captured
+	 * object's transfer_obj handler refused). In that case the snapshot is
+	 * partially initialized — destroy it and propagate the exception. */
+	if (UNEXPECTED(EG(exception))) {
+		async_thread_snapshot_destroy(snapshot);
+		return NULL;
+	}
 
 	return snapshot;
 }
