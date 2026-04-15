@@ -563,6 +563,14 @@ static void thread_copy_op_array_ex(thread_copy_ctx_t *ctx, zend_op_array *op_ar
 				attributes = thread_copy_attributes(ctx, attributes);
 				ZVAL_PTR(literal, attributes);
 			}
+
+			/* Reset opcode handler to the standard VM handler. If opcache JIT
+			 * has compiled the source op_array, opline->handler was replaced
+			 * by a JIT stub with the source op_array's addresses baked in —
+			 * executing that stub on our copy (different literals, fresh
+			 * run_time_cache, child-thread map_ptr_base) crashes. Re-specialize
+			 * from the VM handler table so the copy runs on the interpreter. */
+			zend_vm_set_opcode_handler(opline);
 		}
 
 		op_array->opcodes = new_opcodes;
