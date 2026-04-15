@@ -25,8 +25,13 @@ spawn(function() {
     suspend();
     suspend();
 
+    // Using an intermediate $future variable used to crash at shutdown:
+    // the sync-settled path forgot to detach the waiter from the group's
+    // waiter_events[] vector, so task_group_free_object() double-disposed
+    // the already-wrapped future. Now it must work cleanly.
+    $future = $group->all();
     try {
-        $group->all()->await();
+        $future->await();
         echo "no-throw\n";
     } catch (CompositeException $e) {
         echo "count: ", count($e->getExceptions()), "\n";

@@ -1418,6 +1418,12 @@ METHOD(all)
 		}
 
 		task_set_remove_all_entries(group);
+		/* Detach from the group's waiter vector now that we've resolved
+		 * synchronously — otherwise task_group_free_object() would force a
+		 * second dispose on the same waiter while the returned Future
+		 * wrapper still holds its pointer, producing a use-after-free at
+		 * shutdown. Mirrors the drain-path cleanup in task_group_drain(). */
+		task_group_waiter_event_remove(waiter);
 	}
 
 	RETURN_OBJ(ZEND_ASYNC_NEW_FUTURE_OBJ(&waiter->future));
@@ -1447,6 +1453,8 @@ METHOD(race)
 		if (task_is_completed(zv)) {
 			ZEND_FUTURE_COMPLETE(&waiter->future, zv);
 			task_set_remove_entry(group, str_key, num_key);
+			/* Detach: see explanation in METHOD(all). */
+			task_group_waiter_event_remove(waiter);
 			goto return_future;
 		}
 		if (task_is_error(zv)) {
@@ -1454,6 +1462,8 @@ METHOD(race)
 			ZEND_FUTURE_REJECT(&waiter->future, entry->exception);
 			// ZEND_FUTURE_SET_EXCEPTION_CAUGHT(&waiter->future);
 			task_set_remove_entry(group, str_key, num_key);
+			/* Detach: see explanation in METHOD(all). */
+			task_group_waiter_event_remove(waiter);
 			goto return_future;
 		}
 	}
@@ -1487,6 +1497,8 @@ METHOD(any)
 		if (task_is_completed(zv)) {
 			ZEND_FUTURE_COMPLETE(&waiter->future, zv);
 			task_set_remove_entry(group, str_key, num_key);
+			/* Detach: see explanation in METHOD(all). */
+			task_group_waiter_event_remove(waiter);
 			goto return_future;
 		}
 	}
@@ -1498,6 +1510,8 @@ METHOD(any)
 		ZEND_FUTURE_REJECT(&waiter->future, composite);
 		// ZEND_FUTURE_SET_EXCEPTION_CAUGHT(&waiter->future);
 		OBJ_RELEASE(composite);
+		/* Detach: see explanation in METHOD(all). */
+		task_group_waiter_event_remove(waiter);
 	}
 
 return_future:

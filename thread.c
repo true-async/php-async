@@ -2110,6 +2110,17 @@ static zend_object *thread_object_create(zend_class_entry *class_entry)
 	return &thread->std;
 }
 
+/* Release the extra Thread ref bumped before dispatching finally handlers.
+ * Invoked by finally_handlers_iterator_dtor() once all handlers finish. */
+static void thread_finally_handlers_dtor(finally_handlers_context_t *context)
+{
+	if (context->target != NULL) {
+		async_thread_object_t *thread = (async_thread_object_t *) context->target;
+		context->target = NULL;
+		OBJ_RELEASE(&thread->std);
+	}
+}
+
 static void thread_object_dtor(zend_object *object)
 {
 	async_thread_object_t *thread = async_thread_object_from_obj(object);
@@ -2117,26 +2128,40 @@ static void thread_object_dtor(zend_object *object)
 	if (thread->thread_event != NULL) {
 		zend_async_event_t *event = &thread->thread_event->base;
 
-		/* Call finally handlers if the thread completed */
+		/* Call finally handlers if the thread completed.
+		 * async_call_finally_handlers() spawns a coroutine and requires a
+		 * valid parent scope. The Thread object has no PHP-side scope of
+		 * its own, so we borrow the async main scope. If we're already
+		 * past async shutdown (e.g. the Thread object is being destroyed
+		 * from zend_call_destructors after the scheduler has torn down),
+		 * it is not safe to spawn anything — just release the handlers. */
 		if (thread->finally_handlers != NULL
 			&& zend_hash_num_elements(thread->finally_handlers) > 0
 			&& ZEND_ASYNC_EVENT_IS_CLOSED(event)) {
 
-			finally_handlers_context_t *finally_context = ecalloc(1, sizeof(finally_handlers_context_t));
-			finally_context->target = thread;
-			finally_context->scope = NULL;
-			finally_context->dtor = NULL;
-			finally_context->params_count = 1;
-			ZVAL_OBJ(&finally_context->params[0], &thread->std);
+			zend_async_scope_t *run_scope =
+				ZEND_ASYNC_IS_OFF ? NULL : ZEND_ASYNC_MAIN_SCOPE;
 
-			HashTable *handlers = thread->finally_handlers;
-			thread->finally_handlers = NULL;
-
-			if (async_call_finally_handlers(handlers, finally_context, 0)) {
-				GC_ADDREF(&thread->std);
+			if (run_scope == NULL) {
+				zend_array_destroy(thread->finally_handlers);
+				thread->finally_handlers = NULL;
 			} else {
-				efree(finally_context);
-				zend_array_destroy(handlers);
+				finally_handlers_context_t *finally_context = ecalloc(1, sizeof(finally_handlers_context_t));
+				finally_context->target = thread;
+				finally_context->scope = run_scope;
+				finally_context->dtor = thread_finally_handlers_dtor;
+				finally_context->params_count = 1;
+				ZVAL_OBJ(&finally_context->params[0], &thread->std);
+
+				HashTable *handlers = thread->finally_handlers;
+				thread->finally_handlers = NULL;
+
+				if (async_call_finally_handlers(handlers, finally_context, 0)) {
+					GC_ADDREF(&thread->std);
+				} else {
+					efree(finally_context);
+					zend_array_destroy(handlers);
+				}
 			}
 		}
 
