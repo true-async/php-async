@@ -11,7 +11,7 @@ Start of phase: 77.45% lines / 88% functions (from §1 of the report).
 | # | Target | File | Budget | Status |
 |---|---|---|---|---|
 | 1 | finally handlers chain | `future.c:1192–1252` | ~60 lines | **DONE** (+5.42% → 85.80%) |
-| 2 | `Async\iterate` error paths | `async.c:859–987` | ~50 lines | pending |
+| 2 | `Async\iterate` + small `async.c` gaps | `async.c` | ~50 lines | **DONE** (+1.58% → 86.07%) |
 | 3 | TaskGroup cancel/race/error | `task_group.c:243–1457` | ~40 lines | pending |
 | 4 | Channel close/timeout | `channel.c:322–778` | ~40 lines | pending |
 | 5 | Thread internals | `thread.c:1957–2172` | ~40 lines | pending |
@@ -53,3 +53,37 @@ Remaining gaps in future.c (~14% of 958):
 - `Future::await` with `cancellation_event` argument (~40 lines)
 - `iterator.c`/`future_iterator_*` error paths (~30 lines, fragile)
 - Error paths behind `ecalloc` / `zend_new_array` failures (fault-injection only)
+
+### 2026-04-15 — async.c (target #2)
+
+`async.c` 84.49% → **86.07%** (+1.58%, ~12 lines of 761). The §6
+report over-estimated reachable lines in the `Async\iterate` block —
+the remaining gap is the per-iteration chain/exception merge path that
+requires both the iterator callback AND the cancel path to throw
+simultaneously, plus defensive `ecalloc`/`zend_new_array` failure
+branches. Instead, picked small surface-area wins across other async.c
+functions.
+
+Tests added (6):
+
+- **iterate/014** IteratorAggregate::getIterator() throwing propagates
+  through `Async\iterate` — covers L856-867.
+- **common/timeout_value_error** `Async\timeout(0)` / `-1` / `-1000`
+  → ValueError "must be greater than 0" (L694-697).
+- **common/await_any_of_exception_releases_arrays** non-iterable
+  futures arg → exception path releases results/errors arrays and
+  re-throws (L637-640).
+- **common/current_coroutine_not_in_coroutine** at script root —
+  "The current coroutine is not defined" (L772-775).
+- **common/current_context_at_root** `Async\current_context()` and
+  `Async\coroutine_context()` at script root return independent
+  Context objects (L717-720, L745-748).
+- **common/await_same_cancellation** passing the same event as both
+  awaitable and cancellation clears the cancellation slot (L306-307).
+- **sleep/003-delay_zero_immediate** `Async\delay(0)` enqueue fast
+  path without timer (L671-672).
+
+Remaining async.c gaps (~14%): iterate cancel-pending exception merge
+(L963-987), bailout paths inside `Async\protect` (L252-263), internal
+finally-handler dispatcher (L243-244), and thread spawn event creation
+error (L181-182). All either fault-injection or require bailout.
