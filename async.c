@@ -1291,6 +1291,14 @@ PHP_METHOD(Async_Timeout, cancel)
 
 	if (timeout->event != NULL) {
 		zend_async_timer_event_t *timer_event = timeout->event;
+		/* Mirror async_timeout_destroy_object(): clear timeout_ext->std before
+		 * dispose() so async_timeout_event_dispose() does NOT OBJ_RELEASE the
+		 * object. In the current architecture the event holds only a raw
+		 * pointer, not a counted reference, so releasing here would drop the
+		 * caller's live ref and leave userland $t dangling — tripping
+		 * IS_OBJ_VALID at shutdown. */
+		async_timeout_ext_t *timeout_ext = ASYNC_TIMEOUT_FROM_EVENT(&timer_event->base);
+		timeout_ext->std = NULL;
 		timeout->event = NULL;
 		timer_event->base.dispose(&timer_event->base);
 	}
