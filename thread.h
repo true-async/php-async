@@ -193,6 +193,14 @@ struct _async_thread_object_s
 	/* Pointer to the underlying thread event */
 	zend_async_thread_event_t *thread_event;
 
+	/* Scope active at the moment spawn_thread() was called. Used as the
+	 * parent for finally-handler dispatch so the handlers inherit the
+	 * caller's async context instead of being detached in the main scope.
+	 * Held via ZEND_ASYNC_EVENT_ADD_REF on the scope event and released
+	 * in thread_object_free(). May be NULL if spawn happened outside of
+	 * any scope (defensive). */
+	zend_async_scope_t *parent_scope;
+
 	/* Finally handlers array (zval callables) - lazy initialization */
 	HashTable *finally_handlers;
 

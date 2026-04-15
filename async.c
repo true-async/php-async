@@ -187,6 +187,15 @@ PHP_FUNCTION(Async_spawn_thread)
 	async_thread_object_t *thread_obj = async_thread_object_from_obj(obj);
 	thread_obj->thread_event = thread_event;
 
+	/* Capture the current scope as the parent for any finally-handlers that
+	 * may get registered later. Addref keeps the scope struct alive until
+	 * thread_object_free() releases it, so handlers always have a valid
+	 * parent even if the user drops their scope reference first. */
+	thread_obj->parent_scope = ZEND_ASYNC_CURRENT_SCOPE;
+	if (thread_obj->parent_scope != NULL) {
+		ZEND_ASYNC_EVENT_ADD_REF(&thread_obj->parent_scope->event);
+	}
+
 	/* Set event reference so ZEND_ASYNC_OBJECT_TO_EVENT() can resolve from this object */
 	ZEND_ASYNC_EVENT_REF_SET(thread_obj,
 		XtOffsetOf(async_thread_object_t, std), &thread_event->base);

@@ -2102,6 +2102,7 @@ static zend_object *thread_object_create(zend_class_entry *class_entry)
 	ZEND_ASYNC_EVENT_REF_SET(thread, XtOffsetOf(async_thread_object_t, std), NULL);
 
 	thread->thread_event = NULL;
+	thread->parent_scope = NULL;
 	thread->finally_handlers = NULL;
 
 	zend_object_std_init(&thread->std, class_entry);
@@ -2128,27 +2129,24 @@ static void thread_object_dtor(zend_object *object)
 	if (thread->thread_event != NULL) {
 		zend_async_event_t *event = &thread->thread_event->base;
 
-		/* Call finally handlers if the thread completed.
-		 * async_call_finally_handlers() spawns a coroutine and requires a
-		 * valid parent scope. The Thread object has no PHP-side scope of
-		 * its own, so we borrow the async main scope. If we're already
-		 * past async shutdown (e.g. the Thread object is being destroyed
-		 * from zend_call_destructors after the scheduler has torn down),
-		 * it is not safe to spawn anything — just release the handlers. */
+		/* Call finally handlers if the thread completed. The parent scope
+		 * was captured at spawn time and is kept alive by a refcount held
+		 * on thread->parent_scope (released in thread_object_free), so
+		 * async_call_finally_handlers() always has a valid parent to spawn
+		 * the handler-dispatch coroutine under. If the async subsystem is
+		 * already off (late zend_call_destructors path), it is not safe to
+		 * spawn anything — drop the handlers instead. */
 		if (thread->finally_handlers != NULL
 			&& zend_hash_num_elements(thread->finally_handlers) > 0
 			&& ZEND_ASYNC_EVENT_IS_CLOSED(event)) {
 
-			zend_async_scope_t *run_scope =
-				ZEND_ASYNC_IS_OFF ? NULL : ZEND_ASYNC_MAIN_SCOPE;
-
-			if (run_scope == NULL) {
+			if (thread->parent_scope == NULL || ZEND_ASYNC_IS_OFF) {
 				zend_array_destroy(thread->finally_handlers);
 				thread->finally_handlers = NULL;
 			} else {
 				finally_handlers_context_t *finally_context = ecalloc(1, sizeof(finally_handlers_context_t));
 				finally_context->target = thread;
-				finally_context->scope = run_scope;
+				finally_context->scope = thread->parent_scope;
 				finally_context->dtor = thread_finally_handlers_dtor;
 				finally_context->params_count = 1;
 				ZVAL_OBJ(&finally_context->params[0], &thread->std);
@@ -2180,6 +2178,17 @@ static void thread_object_dtor(zend_object *object)
 
 static void thread_object_free(zend_object *object)
 {
+	async_thread_object_t *thread = async_thread_object_from_obj(object);
+
+	/* Release the scope ref captured at spawn time. This runs after the
+	 * dtor has finished (and after any delayed finally-handlers kept the
+	 * Thread alive via GC_ADDREF), so the scope outlives every handler
+	 * that might reference it. */
+	if (thread->parent_scope != NULL) {
+		ZEND_ASYNC_EVENT_RELEASE(&thread->parent_scope->event);
+		thread->parent_scope = NULL;
+	}
+
 	zend_object_std_dtor(object);
 }
 
