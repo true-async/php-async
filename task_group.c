@@ -69,7 +69,7 @@ struct _task_group_waiter_event_s
 };
 
 /* Forward declarations */
-static void task_group_waiter_event_remove(const task_group_waiter_event_t *waiter);
+static void task_group_waiter_event_remove(task_group_waiter_event_t *waiter);
 
 ///////////////////////////////////////////////////////////
 /// Waiter event vtable (ITERATOR only — lightweight event)
@@ -173,7 +173,7 @@ static task_group_waiter_event_t *task_group_waiter_future_new(async_task_group_
 	return waiter;
 }
 
-static void task_group_waiter_event_remove(const task_group_waiter_event_t *waiter)
+static void task_group_waiter_event_remove(task_group_waiter_event_t *waiter)
 {
 	async_task_group_t *group = waiter->group;
 
@@ -190,9 +190,15 @@ static void task_group_waiter_event_remove(const task_group_waiter_event_t *wait
 			if (i < group->waiter_notify_index) {
 				group->waiter_notify_index--;
 			}
-			return;
+			break;
 		}
 	}
+
+	/* Detach from the group so a later dispose does not touch a freed
+	 * task_group — the synchronous-settled paths in all()/race()/any()
+	 * detach the waiter without wrapping it in dispose, leaving the wrapper
+	 * Future to outlive the task_group object. */
+	waiter->group = NULL;
 }
 
 #define METHOD(name) PHP_METHOD(Async_TaskGroup, name)
