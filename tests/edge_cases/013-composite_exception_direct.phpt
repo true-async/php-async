@@ -5,25 +5,27 @@ CompositeException: addException() and getExceptions() direct usage
 
 use Async\CompositeException;
 
-// Covers exceptions.c:37-47 (Async_CompositeException::addException),
-// L49-62 (Async_CompositeException::getExceptions) and the C API
-// async_composite_exception_add_exception() at L251-275 that addException delegates to.
+// Covers exceptions.c Async_CompositeException::addException / getExceptions
+// and the shared async_composite_exception_add_exception() helper. Exercises
+// the fresh-array init path, multi-add append path, and empty-read path.
 
 echo "start\n";
 
 $c = new CompositeException("composite");
 
+// Reading exceptions on a fresh composite must return [] (not a fatal).
+$empty = $c->getExceptions();
+var_dump($empty);
+
 $c->addException(new \RuntimeException("first"));
 $c->addException(new \LogicException("second"));
+$c->addException(new \Exception("third"));
 
 $list = $c->getExceptions();
-var_dump(is_array($list));
-var_dump(count($list) >= 1);
+var_dump(count($list));
 
-// Make sure the returned value is really an array of throwables.
-foreach ($list as $e) {
-    var_dump($e instanceof \Throwable);
-    break; // only check the first — the array contents may alias due to a known issue
+foreach ($list as $i => $e) {
+    echo $i, ": ", get_class($e), " - ", $e->getMessage(), "\n";
 }
 
 echo "end\n";
@@ -31,7 +33,10 @@ echo "end\n";
 ?>
 --EXPECT--
 start
-bool(true)
-bool(true)
-bool(true)
+array(0) {
+}
+int(3)
+0: RuntimeException - first
+1: LogicException - second
+2: Exception - third
 end

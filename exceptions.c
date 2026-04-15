@@ -43,7 +43,9 @@ PHP_METHOD(Async_CompositeException, addException)
 	ZEND_PARSE_PARAMETERS_END();
 
 	zval *object = ZEND_THIS;
-	async_composite_exception_add_exception(Z_OBJ_P(object), Z_OBJ_P(exception), true);
+	/* The PHP parameter binding lends us a borrowed reference — the caller
+	 * still owns it — so pass transfer=false and let the helper ADDREF. */
+	async_composite_exception_add_exception(Z_OBJ_P(object), Z_OBJ_P(exception), false);
 }
 
 PHP_METHOD(Async_CompositeException, getExceptions)
@@ -51,10 +53,12 @@ PHP_METHOD(Async_CompositeException, getExceptions)
 	ZEND_PARSE_PARAMETERS_NONE();
 
 	zval *object = ZEND_THIS;
+	/* silent=1 so an uninitialised typed property returns UNDEF instead of
+	 * throwing — an empty composite should read back as `[]`, not a fatal. */
 	zval *exceptions_prop = zend_read_property(
-			async_ce_composite_exception, Z_OBJ_P(object), "exceptions", sizeof("exceptions") - 1, 0, NULL);
+			async_ce_composite_exception, Z_OBJ_P(object), "exceptions", sizeof("exceptions") - 1, 1, NULL);
 
-	if (Z_TYPE_P(exceptions_prop) == IS_ARRAY) {
+	if (exceptions_prop != NULL && Z_TYPE_P(exceptions_prop) == IS_ARRAY) {
 		RETURN_ZVAL(exceptions_prop, 1, 0);
 	} else {
 		array_init(return_value);
@@ -255,10 +259,19 @@ async_composite_exception_add_exception(zend_object *composite, zend_object *exc
 		return;
 	}
 
-	zval *exceptions_prop = &composite->properties_table[7];
+	/* Read the typed `$exceptions` property through the proper property API.
+	 * Using silent=1 (BP_VAR_IS) returns UNDEF for an uninitialised typed
+	 * property instead of throwing "must not be accessed before initialisation". */
+	zval *exceptions_prop = zend_read_property(
+			async_ce_composite_exception, composite,
+			"exceptions", sizeof("exceptions") - 1, 1, NULL);
 
-	if (Z_TYPE_P(exceptions_prop) == IS_UNDEF) {
-		array_init(exceptions_prop);
+	zval fresh_array;
+	bool needs_update = (exceptions_prop == NULL || Z_TYPE_P(exceptions_prop) != IS_ARRAY);
+
+	if (needs_update) {
+		array_init(&fresh_array);
+		exceptions_prop = &fresh_array;
 	}
 
 	zval exception_zval;
@@ -269,8 +282,23 @@ async_composite_exception_add_exception(zend_object *composite, zend_object *exc
 		if (transfer) {
 			OBJ_RELEASE(exception);
 		}
-	} else if (false == transfer) {
+		if (needs_update) {
+			zval_ptr_dtor(&fresh_array);
+		}
+		return;
+	}
+
+	if (false == transfer) {
 		GC_ADDREF(exception);
+	}
+
+	if (needs_update) {
+		/* First write into the slot: go through update_property so the typed
+		 * array property is initialised (and type-checked). Subsequent adds
+		 * land directly in the stored array via the zend_read_property above. */
+		zend_update_property(async_ce_composite_exception, composite,
+				"exceptions", sizeof("exceptions") - 1, &fresh_array);
+		zval_ptr_dtor(&fresh_array);
 	}
 }
 

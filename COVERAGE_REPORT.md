@@ -86,9 +86,10 @@ Commits, in order, on branch `98-thread-pool`:
 ## 4. Bugs discovered via coverage testing
 
 Three real defects were surfaced by tests that were trying to land on
-previously-unreached lines.
+previously-unreached lines. **All three are now fixed** — see the per-bug
+"Fix" paragraphs below.
 
-### 4.1 `Async\Scope::disposeAfterTimeout()` leaks the scope refcount
+### 4.1 `Async\Scope::disposeAfterTimeout()` leaks the scope refcount — FIXED
 
 **Location:** `scope.c:675`
 ```c
@@ -112,7 +113,22 @@ phpt.
 discovery) and thereby ~52 lines in `scope.c:601-684` — the full
 `disposeAfterTimeout` timer pathway.
 
-### 4.2 `async_composite_exception_add_exception` writes to hard-coded slot 7
+**Fix:** `scope.c` now installs a custom `dispose` handler on the
+timeout callback (`scope_timeout_callback_dispose`) that releases the
+scope ref when the callback is freed without having transferred
+ownership. On the fire path, `scope_timeout_callback()` hands ownership
+of the scope ref to the spawned cancellation coroutine by clearing
+`scope_callback->scope` before disposing the timer, and
+`scope_timeout_coroutine_entry()` calls `ZEND_ASYNC_EVENT_RELEASE` after
+`SCOPE_CANCEL`. The raw `ref_count++` was replaced with the proper
+`ZEND_ASYNC_EVENT_ADD_REF` macro, and the `add_callback` failure path
+now releases the scope ref and frees the unclaimed callback (previously
+leaked on that error path too). A full end-to-end test of the fire
+path is still blocked by a separate, pre-existing leak in the
+cancellation-coroutine teardown that reproduces identically without
+this fix — out of scope for this change.
+
+### 4.2 `async_composite_exception_add_exception` writes to hard-coded slot 7 — FIXED
 
 **Location:** `exceptions.c:258`
 ```c
@@ -134,7 +150,23 @@ property, so:
 **Coverage impact:** test 013 had to be trimmed to a single-add
 scenario; the multi-add iteration branch (~3 lines) is blocked.
 
-### 4.3 `pool_strategy_report_failure` use-after-free
+**Fix:** `exceptions.c` now reads and writes `$exceptions` through
+`zend_read_property` / `zend_update_property` with the actual property
+name, so the engine resolves the correct typed-property slot
+regardless of inherited layout. `getExceptions()` switched from
+`silent=0` to `silent=1` (`BP_VAR_IS`) so an empty composite reads
+back as `[]` rather than triggering the typed-uninit fatal. A second
+latent bug surfaced while verifying the fix: the PHP method
+`addException` was passing `transfer=true` to the helper even though
+`Z_PARAM_OBJECT_OF_CLASS` only lends a borrowed reference — with the
+slot-7 corruption removed, this dangling-pointer path was exercised
+for the first time and made repeated adds all alias to the
+last-inserted object. Changed the method call site to `transfer=false`
+so the helper performs the `GC_ADDREF`. Test 013 was expanded to
+cover (a) empty-composite read, (b) three adds of different classes,
+(c) class/message round-trip.
+
+### 4.3 `pool_strategy_report_failure` use-after-free — FIXED
 
 **Location:** `pool.c:348-355`
 ```c
@@ -157,7 +189,15 @@ Minimal repro also exists (~15 lines of PHP).
 `pool_strategy_report_failure` function (~24 lines in `pool.c:322-364`)
 plus indirect coverage of the strategy-failure wiring.
 
-**Suggested fix for all three:** see §7.
+**Fix:** `pool.c` constructs the generic exception directly via
+`object_init_ex(zend_ce_exception)` + `zend_update_property_ex(MESSAGE)`
+instead of routing it through `zend_throw_exception` + `zend_clear_exception`.
+The exception no longer touches `EG(exception)`, so its lifetime is
+entirely local — tracked by an `owns_error` flag and released with
+`zval_ptr_dtor(&error_zval)` after the `reportFailure` call. New test
+`tests/pool/052-pool_strategy_report_failure_before_release.phpt`
+exercises the path via a pool with `beforeRelease: fn() => false` and
+verifies the strategy receives a well-formed `Exception` instance.
 
 ## 5. Dead zones — where coverage cannot realistically climb
 
@@ -285,11 +325,13 @@ After landing the full achievable budget, realistic ceiling is **~80%**.
 
 Ordered by ROI, highest first.
 
-1. **Fix the three bugs found in §4** (Opus-4 session list).
-   Fixing `disposeAfterTimeout` unlocks ~52 lines;
-   fixing `pool_strategy_report_failure` unlocks ~24 lines;
-   fixing `composite_exception properties_table[7]` unlocks ~5 lines
-   and removes a memory corruption.
+1. **~~Fix the three bugs found in §4~~** — DONE. All three bugs are
+   fixed in the current branch. `pool_strategy_report_failure` and the
+   `composite_exception` slot/lifetime bugs have new phpt coverage
+   (tests/pool/052, tests/edge_cases/013). The `disposeAfterTimeout`
+   ref-leak fix still lacks a dedicated regression test because the
+   timer-fires path reproduces a separate pre-existing leak identical
+   with and without the fix — see 4.1 note.
 
 2. **Delete the mostly-dead C API exports in §5.1** (or wire them into
    an `ext/async/tests/capi_probe/` test extension). Deleting is
