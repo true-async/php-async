@@ -13,7 +13,7 @@ Start of phase: 77.45% lines / 88% functions (from §1 of the report).
 | 1 | finally handlers chain | `future.c:1192–1252` | ~60 lines | **DONE** (+5.42% → 85.80%) |
 | 2 | `Async\iterate` + small `async.c` gaps | `async.c` | ~50 lines | **DONE** (+1.58% → 86.07%) |
 | 3 | TaskGroup cancel/race/error | `task_group.c:243–1457` | ~40 lines | **DONE** (+2.17% → 86.18%) |
-| 4 | Channel close/timeout | `channel.c:322–778` | ~40 lines | pending |
+| 4 | Channel iterator paths | `channel.c` | ~40 lines | **DONE** (+2.30% → 89.00%) |
 | 5 | Thread internals | `thread.c:1957–2172` | ~40 lines | pending |
 | 6 | fs_watcher coalesce | `fs_watcher.c:141–246` | ~20 lines | pending |
 | 7 | thread_pool submit-after-close | `thread_pool.c:483–592` | ~15 lines | pending |
@@ -124,3 +124,28 @@ Remaining task_group.c gaps (~14%): `task_group_dispose()`,
 `task_group_replay()`, `task_group_info()` — only called from the
 scheduler deadlock-debug reporter (see report §5.2), unreachable by
 phpt in practice.
+
+### 2026-04-15 — channel.c (target #4)
+
+`channel.c` 86.70% → **89.00%** (+2.30%, ~9 lines of 391).
+
+Tests added (2):
+
+- **channel/039-channel_iterator_unbuffered** `foreach` over an
+  unbuffered (rendezvous, capacity=0) channel — exercises
+  `channel_iterator_move_forward` L471-475 which reads directly from
+  `channel->rendezvous_value`. Existing test 008 only covered the
+  buffered `zval_circular_buffer_pop` branch.
+- **channel/040-channel_foreach_by_ref** `foreach ($ch as &$v)` →
+  "Cannot iterate channel by reference" Error — covers
+  `channel_get_iterator()` L517-519.
+
+Discovered but not added: direct `$channel->getIterator()` call hits
+METHOD(getIterator) at L772-778, but the method currently returns an
+`__iterator_wrapper` that fails the declared `: Iterator` return type
+with a Fatal error. Not a phpt-writable case.
+
+Remaining channel.c gaps (~11%): `channel_info()` / `channel_dispose()`
+deadlock-reporter paths (report §5.2), `async_channel_get_gc()` which
+requires GC walk during a cycle, and `channel_iterator_get_current_key`
+which is never called because channel iteration produces null keys.
