@@ -4,6 +4,7 @@ proc_close() after child process killed by signal (SIGSEGV)
 <?php
 if (!function_exists("proc_open")) echo "skip proc_open() is not available";
 if (DIRECTORY_SEPARATOR === '\\') die('skip Unix-only test');
+if (!function_exists("posix_kill")) die('skip ext/posix required');
 $php = getenv('TEST_PHP_EXECUTABLE');
 if ($php === false) echo "skip no php executable defined";
 // ASAN installs its own SIGSEGV handler via sigaction. When the child process
