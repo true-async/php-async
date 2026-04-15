@@ -1665,50 +1665,63 @@ static void op_array_to_emalloc(zend_op_array *op_array)
 			ZSTR_VAL(op_array->filename), ZSTR_LEN(op_array->filename), 0);
 	}
 
-	/* literals */
+	/* opcodes + literals
+	 *
+	 * Under !ZEND_USE_ABS_CONST_ADDR (64-bit) RT_CONSTANT stores the literal
+	 * as an int32_t offset from the opline. emalloc may place independent
+	 * allocations several GB apart, so we cannot call emalloc separately for
+	 * opcodes and literals — the offset would overflow and the VM would
+	 * read from unrelated memory. Mirror pass_two()'s layout: allocate one
+	 * block with opcodes first (16-byte aligned) and literals immediately
+	 * after. destroy_op_array() already knows this layout via the
+	 * ZEND_ACC_DONE_PASS_TWO flag, which we leave set. */
 	const zval *orig_literals = op_array->literals;
-	if (op_array->literals) {
-		zval *new_literals = safe_emalloc(op_array->last_literal, sizeof(zval), 0);
-		for (uint32_t i = 0; i < op_array->last_literal; i++) {
-			ZVAL_COPY(&new_literals[i], &op_array->literals[i]);
+	const zend_op *orig_opcodes = op_array->opcodes;
+
+	if (op_array->opcodes) {
+		const size_t opcodes_size =
+			ZEND_MM_ALIGNED_SIZE_EX(sizeof(zend_op) * op_array->last, 16);
+		const size_t literals_size = sizeof(zval) * op_array->last_literal;
+
+		zend_op *new_opcodes = (zend_op *) emalloc(opcodes_size + literals_size);
+		memcpy(new_opcodes, orig_opcodes, sizeof(zend_op) * op_array->last);
+
+		zval *new_literals = NULL;
+		if (op_array->last_literal) {
+			new_literals = (zval *) ((char *) new_opcodes + opcodes_size);
+			for (uint32_t i = 0; i < op_array->last_literal; i++) {
+				ZVAL_COPY(&new_literals[i], &orig_literals[i]);
+			}
 		}
 		op_array->literals = new_literals;
-	}
-
-	/* opcodes — copy and rebase constant references */
-	if (op_array->opcodes) {
-		zend_op *new_opcodes = safe_emalloc(op_array->last, sizeof(zend_op), 0);
-		memcpy(new_opcodes, op_array->opcodes, sizeof(zend_op) * op_array->last);
 
 #if ZEND_USE_ABS_CONST_ADDR
 		for (uint32_t i = 0; i < op_array->last; i++) {
 			zend_op *opline = &new_opcodes[i];
 			if (opline->op1_type == IS_CONST) {
 				opline->op1.zv = (zval *)((char *)opline->op1.zv +
-					((char *)op_array->literals - (char *)orig_literals));
+					((char *)new_literals - (char *)orig_literals));
 			}
 			if (opline->op2_type == IS_CONST) {
 				opline->op2.zv = (zval *)((char *)opline->op2.zv +
-					((char *)op_array->literals - (char *)orig_literals));
+					((char *)new_literals - (char *)orig_literals));
 			}
 		}
 #else
 		for (uint32_t i = 0; i < op_array->last; i++) {
 			zend_op *opline = &new_opcodes[i];
-			const zend_op *old_opline = &op_array->opcodes[i];
+			const zend_op *old_opline = &orig_opcodes[i];
 			if (opline->op1_type == IS_CONST) {
-				opline->op1.constant =
-					(char *)(op_array->literals +
-						((zval *)((char *)(old_opline) +
-						(int32_t)opline->op1.constant) - orig_literals)) -
-					(char *)opline;
+				zval *old_literal = (zval *)((char *) old_opline +
+					(int32_t) opline->op1.constant);
+				zval *new_literal = new_literals + (old_literal - orig_literals);
+				opline->op1.constant = (uint32_t)((char *) new_literal - (char *) opline);
 			}
 			if (opline->op2_type == IS_CONST) {
-				opline->op2.constant =
-					(char *)(op_array->literals +
-						((zval *)((char *)(old_opline) +
-						(int32_t)opline->op2.constant) - orig_literals)) -
-					(char *)opline;
+				zval *old_literal = (zval *)((char *) old_opline +
+					(int32_t) opline->op2.constant);
+				zval *new_literal = new_literals + (old_literal - orig_literals);
+				opline->op2.constant = (uint32_t)((char *) new_literal - (char *) opline);
 			}
 		}
 #endif
@@ -1719,7 +1732,7 @@ static void op_array_to_emalloc(zend_op_array *op_array)
 			switch (opline->opcode) {
 				case ZEND_JMP:
 				case ZEND_FAST_CALL:
-					opline->op1.jmp_addr = &new_opcodes[opline->op1.jmp_addr - op_array->opcodes];
+					opline->op1.jmp_addr = &new_opcodes[opline->op1.jmp_addr - orig_opcodes];
 					break;
 				case ZEND_JMPZ:
 				case ZEND_JMPNZ:
@@ -1733,11 +1746,11 @@ static void op_array_to_emalloc(zend_op_array *op_array)
 				case ZEND_JMP_NULL:
 				case ZEND_BIND_INIT_STATIC_OR_JMP:
 				case ZEND_JMP_FRAMELESS:
-					opline->op2.jmp_addr = &new_opcodes[opline->op2.jmp_addr - op_array->opcodes];
+					opline->op2.jmp_addr = &new_opcodes[opline->op2.jmp_addr - orig_opcodes];
 					break;
 				case ZEND_CATCH:
 					if (!(opline->extended_value & ZEND_LAST_CATCH)) {
-						opline->op2.jmp_addr = &new_opcodes[opline->op2.jmp_addr - op_array->opcodes];
+						opline->op2.jmp_addr = &new_opcodes[opline->op2.jmp_addr - orig_opcodes];
 					}
 					break;
 				default:
@@ -1803,8 +1816,9 @@ static void op_array_to_emalloc(zend_op_array *op_array)
 			ZSTR_VAL(op_array->doc_comment), ZSTR_LEN(op_array->doc_comment), 0);
 	}
 
-	/* Ensure destroy_op_array will efree literals (they are separately allocated) */
-	op_array->fn_flags &= ~ZEND_ACC_DONE_PASS_TWO;
+	/* Keep ZEND_ACC_DONE_PASS_TWO set: destroy_op_array() uses it to know
+	 * that literals are embedded in the opcodes allocation and skips the
+	 * separate efree(literals) call. */
 }
 
 void async_thread_create_closure(
