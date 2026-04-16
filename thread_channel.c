@@ -47,22 +47,6 @@ static zend_object_handlers async_thread_channel_handlers;
 // Trigger helpers
 ///////////////////////////////////////////////////////////////////////////////
 
-/* Ensure wrapper has a trigger event (lazy init). */
-static zend_async_trigger_event_t *ensure_wrapper_trigger(thread_channel_object_t *obj)
-{
-	if (obj->event == NULL) {
-		zend_async_trigger_event_t *trigger = ZEND_ASYNC_NEW_TRIGGER_EVENT();
-		ZEND_ASYNC_EVENT_REF_SET(obj, XtOffsetOf(thread_channel_object_t, std), &trigger->base);
-	}
-	return ASYNC_THREAD_CHANNEL_TRIGGER(obj);
-}
-
-/* Register wrapper's trigger in a channel trigger set. Mutex must be held. */
-static void register_trigger(HashTable *triggers, thread_channel_object_t *obj)
-{
-	zend_hash_index_update_ptr(triggers, (zend_ulong)(uintptr_t) obj, ASYNC_THREAD_CHANNEL_TRIGGER(obj));
-}
-
 /* Unregister wrapper's trigger from a channel trigger set. Mutex must be held. */
 static void unregister_trigger(HashTable *triggers, thread_channel_object_t *obj)
 {
