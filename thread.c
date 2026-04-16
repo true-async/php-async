@@ -739,6 +739,7 @@ static zend_string *thread_transfer_string(thread_transfer_ctx_t *ctx, const zen
 	}
 
 	zend_string *copy = zend_string_init(ZSTR_VAL(str), ZSTR_LEN(str), 1);
+	GC_MAKE_PERSISTENT_LOCAL(copy);
 	thread_transfer_xlat_put(ctx, str, copy);
 
 	return copy;
@@ -762,6 +763,7 @@ static HashTable *thread_transfer_hash_table(thread_transfer_ctx_t *ctx, const H
 	const uint32_t count = zend_hash_num_elements(src);
 
 	zend_hash_init(dst, count, NULL, NULL, 1);
+	GC_MAKE_PERSISTENT_LOCAL(dst);
 
 	if (count == 0) {
 		THREAD_DEPTH_RELEASE(ctx);
@@ -829,6 +831,7 @@ static zend_object *thread_transfer_object_default(
 	/* Copy zend_object + properties_table */
 	memcpy(dst, src, obj_size);
 	GC_SET_REFCOUNT(dst, 1);
+	GC_MAKE_PERSISTENT_LOCAL(dst);
 
 	/* Store offset for release — extra_flags is unused in transit */
 	dst->extra_flags = (uint32_t) offset;
@@ -1360,6 +1363,7 @@ static void thread_copy_callable(
 	if (static_vars && zend_hash_num_elements(static_vars) > 0) {
 		dst->bound_vars = pemalloc(sizeof(HashTable), 1);
 		zend_hash_init(dst->bound_vars, zend_hash_num_elements(static_vars), NULL, NULL, 1);
+		GC_MAKE_PERSISTENT_LOCAL(dst->bound_vars);
 
 		/* Shared transfer ctx across all bound vars: xlat preserves identity
 		 * so two captured variables pointing to the same object end up as the
@@ -2021,7 +2025,18 @@ void async_thread_run(void *arg)
 
 	/* 1a. Initialize TSRM — must happen before any zend_try
 	 * because zend_try uses EG(bailout) which requires TSRM. */
+#if ZEND_RC_DEBUG
+	/* Suppress RC_DEBUG during TSRM init/shutdown: many core extensions
+	 * (phar, pgsql, pcre, pdo, etc.) allocate persistent data in GINIT
+	 * without marking it GC_PERSISTENT_LOCAL. This is safe because each
+	 * thread gets its own globals copy — no cross-thread sharing. */
+	bool orig_rc_debug = zend_rc_debug;
+	zend_rc_debug = false;
+#endif
 	async_thread_tsrm_init();
+#if ZEND_RC_DEBUG
+	zend_rc_debug = orig_rc_debug;
+#endif
 
 	/* 1b. Start PHP request (can bailout).
 	 * zend_first_try initializes EG(bailout) for this thread. */
@@ -2114,7 +2129,13 @@ cleanup:
 	/* Free TSRM storage after all zend_end_try blocks.
 	 * Must be separate because zend_end_try accesses EG(bailout). */
 #ifdef ZTS
+# if ZEND_RC_DEBUG
+	zend_rc_debug = false;
+# endif
 	ts_free_thread();
+# if ZEND_RC_DEBUG
+	/* No restore — thread is dead, TLS is gone. */
+# endif
 #endif
 
 	/* Self-remove from the reactor's child thread registry.
@@ -2497,6 +2518,7 @@ static zend_object *closure_transfer_obj(
 		size_t alloc_size = sizeof(zend_object) + sizeof(zval);
 		zend_object *dst = pecalloc(1, alloc_size, 1);
 		GC_SET_REFCOUNT(dst, 1);
+		GC_MAKE_PERSISTENT_LOCAL(dst);
 		dst->extra_flags = 0; /* offset = 0 */
 
 		/* Store class name for LOAD phase lookup */
