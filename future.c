@@ -131,6 +131,7 @@ typedef struct
 {
 	zend_async_event_callback_t base;
 	async_future_t *future_obj;
+	zend_async_scope_t *scope;   /* Scope captured at map()/catch()/finally() call time */
 } async_future_callback_t;
 
 /**
@@ -1555,11 +1556,14 @@ static void async_future_callback_handler(zend_async_event_t *event,
 	}
 
 	// Create async_iterator with our zend_object_iterator
+	// Use the scope captured at map()/catch()/finally() time, not the current scope.
+	// This is critical for remote futures: the trigger callback fires in the
+	// scheduler context, but the mapper coroutine must run in the subscriber's scope.
 	async_iterator_t *async_iter = async_iterator_new(NULL,
 													  &new_iterator->it,
 													  NULL,
 													  future_mappers_handler,
-													  ZEND_ASYNC_CURRENT_SCOPE,
+													  future_callback->scope,
 													  0,                     /* concurrency: default */
 													  ZEND_COROUTINE_NORMAL, /* priority: default */
 													  0                      /* iterator size: default */
@@ -1709,6 +1713,7 @@ static void async_future_create_mapper(INTERNAL_FUNCTION_PARAMETERS, async_futur
 		callback->base.callback = async_future_callback_handler;
 		callback->base.dispose = async_future_callback_dispose;
 		callback->future_obj = source;
+		callback->scope = ZEND_ASYNC_CURRENT_SCOPE;
 		// We do not increment the object's reference count because this is a "weak reference".
 		// No GC_ADDREF(&source->std);
 

@@ -11,7 +11,9 @@ if ($php === false) echo "skip no php executable defined";
 // self-sends SIGSEGV (posix_kill(getpid(), SIGSEGV)), ASAN intercepts it and
 // calls _exit(1) instead of letting the process die from the signal.
 // This makes proc_close() return 1 (normal exit) instead of -11 (signal death).
-if (getenv('USE_ZEND_ALLOC') === '0') die('skip ASAN intercepts SIGSEGV and converts it to exit(1)');
+if (getenv('USE_ZEND_ALLOC') === '0' || getenv('SKIP_ASAN')) die('skip ASAN intercepts SIGSEGV and converts it to exit(1)');
+$ldd = shell_exec('ldd ' . escapeshellarg(getenv('TEST_PHP_EXECUTABLE')) . ' 2>/dev/null');
+if ($ldd && strpos($ldd, 'libasan') !== false) die('skip ASAN intercepts SIGSEGV and converts it to exit(1)');
 ?>
 --FILE--
 <?php
