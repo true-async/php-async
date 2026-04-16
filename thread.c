@@ -687,9 +687,7 @@ static void thread_copy_op_array(thread_copy_ctx_t *ctx, zval *zv)
 
 #define THREAD_DEPTH_CHECK(ctx, ret) do { \
 	if (UNEXPECTED((ctx)->depth >= THREAD_TRANSFER_MAX_DEPTH)) { \
-		zend_throw_error(NULL, \
-			"Maximum nesting depth (%u) exceeded during thread data transfer", \
-			THREAD_TRANSFER_MAX_DEPTH); \
+		(ctx)->error = "Maximum nesting depth exceeded during thread data transfer"; \
 		return ret; \
 	} \
 	(ctx)->depth++; \
@@ -702,6 +700,7 @@ static void thread_transfer_ctx_init(thread_transfer_ctx_t *ctx)
 	zend_hash_init(&ctx->xlat, 32, NULL, NULL, 0);
 	ctx->depth = 0;
 	ctx->defer_release = NULL;
+	ctx->error = NULL;
 }
 
 static void thread_transfer_ctx_destroy(thread_transfer_ctx_t *ctx)
@@ -728,6 +727,7 @@ static void thread_transfer_xlat_put(thread_transfer_ctx_t *ctx, const void *old
 static void thread_transfer_zval_inner(thread_transfer_ctx_t *ctx, zval *dst, const zval *src);
 static HashTable *thread_transfer_hash_table(thread_transfer_ctx_t *ctx, const HashTable *src);
 static zend_object *thread_transfer_object(thread_transfer_ctx_t *ctx, const zend_object *src);
+static void thread_release_transferred_zval(zval *z);
 
 /* Copy a zend_string into persistent memory */
 static zend_string *thread_transfer_string(thread_transfer_ctx_t *ctx, const zend_string *str)
@@ -774,6 +774,10 @@ static HashTable *thread_transfer_hash_table(thread_transfer_ctx_t *ctx, const H
 		ZEND_HASH_PACKED_FOREACH_KEY_VAL((HashTable *)src, idx, val) {
 			zval copy;
 			thread_transfer_zval_inner(ctx, &copy, val);
+			if (UNEXPECTED(ctx->error)) {
+				thread_release_transferred_zval(&copy);
+				break;
+			}
 			zend_hash_index_add(dst, idx, &copy);
 		} ZEND_HASH_FOREACH_END();
 	} else {
@@ -783,6 +787,10 @@ static HashTable *thread_transfer_hash_table(thread_transfer_ctx_t *ctx, const H
 		ZEND_HASH_MAP_FOREACH_KEY_VAL((HashTable *)src, idx, key, val) {
 			zval copy;
 			thread_transfer_zval_inner(ctx, &copy, val);
+			if (UNEXPECTED(ctx->error)) {
+				thread_release_transferred_zval(&copy);
+				break;
+			}
 			if (key) {
 				zend_string *pkey = thread_transfer_string(ctx, key);
 				zend_hash_add(dst, pkey, &copy);
@@ -836,6 +844,14 @@ static zend_object *thread_transfer_object_default(
 		if (Z_TYPE_P(prop) != IS_UNDEF) {
 			zval transferred;
 			thread_transfer_zval_inner(ctx, &transferred, prop);
+			if (UNEXPECTED(ctx->error)) {
+				/* Mark remaining properties as UNDEF so release won't
+				 * try to free uninitialized memory */
+				for (uint32_t j = i; j < prop_count; j++) {
+					ZVAL_UNDEF(&dst->properties_table[j]);
+				}
+				break;
+			}
 			ZVAL_COPY_VALUE(prop, &transferred);
 		}
 	}
@@ -868,9 +884,7 @@ static zend_object *thread_transfer_object(thread_transfer_ctx_t *ctx, const zen
 
 	/* Dynamic properties (stdClass, __set) are not supported */
 	if (src->properties && zend_hash_num_elements(src->properties) > 0) {
-		zend_async_throw(ZEND_ASYNC_EXCEPTION_THREAD_TRANSFER,
-			"Cannot transfer object with dynamic properties between threads "
-			"(class %s). Use arrays instead", ZSTR_VAL(src->ce->name));
+		ctx->error = "Cannot transfer object with dynamic properties between threads";
 		THREAD_DEPTH_RELEASE(ctx);
 		return NULL;
 	}
@@ -938,21 +952,17 @@ static zend_always_inline void thread_transfer_zval_inner(thread_transfer_ctx_t 
 		}
 
 		case IS_RESOURCE:
-			/* TODO: support resource transfer via opt-in cloning */
-			zend_throw_error(NULL,
-				"Cannot transfer a resource between threads");
+			ctx->error = "Cannot transfer a resource between threads";
 			ZVAL_NULL(dst);
 			break;
 
 		case IS_REFERENCE:
-			zend_throw_error(NULL,
-				"Cannot transfer a reference between threads");
+			ctx->error = "Cannot transfer a reference between threads";
 			ZVAL_NULL(dst);
 			break;
 
 		default:
-			zend_throw_error(NULL,
-				"Cannot transfer zval of type %d between threads", Z_TYPE_P(src));
+			ctx->error = "Cannot transfer zval of unsupported type between threads";
 			ZVAL_NULL(dst);
 			break;
 	}
@@ -974,6 +984,20 @@ void async_thread_transfer_zval(zval *dst, const zval *src)
 	thread_transfer_ctx_t ctx;
 	thread_transfer_ctx_init(&ctx);
 	thread_transfer_zval_inner(&ctx, dst, src);
+
+	if (UNEXPECTED(ctx.error)) {
+		/* Transfer failed — free any partially-allocated persistent memory
+		 * before throwing. We must throw AFTER cleanup because
+		 * zend_throw_error triggers zend_bailout() when there is no
+		 * active execute_data (which is the case during thread transfer). */
+		const char *error = ctx.error;
+		thread_release_transferred_zval(dst);
+		ZVAL_UNDEF(dst);
+		thread_transfer_ctx_destroy(&ctx);
+		zend_throw_error(NULL, "%s", error);
+		return;
+	}
+
 	thread_transfer_ctx_destroy(&ctx);
 }
 
@@ -1349,10 +1373,28 @@ static void thread_copy_callable(
 		ZEND_HASH_FOREACH_STR_KEY_VAL(static_vars, key, val) {
 			zval transferred;
 			thread_transfer_zval_inner(&transfer_ctx, &transferred, val);
+			if (UNEXPECTED(transfer_ctx.error)) {
+				thread_release_transferred_zval(&transferred);
+				break;
+			}
 			zend_string *pkey = zend_string_dup(key, 1);
 			zend_hash_add(dst->bound_vars, pkey, &transferred);
 			zend_string_release(pkey);
 		} ZEND_HASH_FOREACH_END();
+
+		if (UNEXPECTED(transfer_ctx.error)) {
+			/* Clean up partially transferred bound vars */
+			zval *v;
+			ZEND_HASH_FOREACH_VAL(dst->bound_vars, v) {
+				thread_release_transferred_zval(v);
+			} ZEND_HASH_FOREACH_END();
+			zend_hash_destroy(dst->bound_vars);
+			pefree(dst->bound_vars, 1);
+			dst->bound_vars = NULL;
+			thread_transfer_ctx_destroy(&transfer_ctx);
+			zend_throw_error(NULL, "%s", transfer_ctx.error);
+			return;
+		}
 
 		thread_transfer_ctx_destroy(&transfer_ctx);
 	} else {
