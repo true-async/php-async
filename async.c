@@ -16,6 +16,7 @@
 
 #include "zend_exceptions.h"
 #include "zend_closures.h"
+#include "zend_common.h"
 #ifdef HAVE_CONFIG_H
 #include <config.h>
 #endif
@@ -28,6 +29,8 @@
 #include "context.h"
 #include "future.h"
 #include "channel.h"
+#include "thread_channel.h"
+#include "thread_pool.h"
 #include "pool.h"
 #include "task_group.h"
 #include "fs_watcher.h"
@@ -37,6 +40,7 @@
 #include "async_arginfo.h"
 #include "zend_interfaces.h"
 #include "libuv_reactor.h"
+#include "thread.h"
 
 zend_class_entry *async_ce_awaitable = NULL;
 zend_class_entry *async_ce_completable = NULL;
@@ -139,6 +143,73 @@ PHP_FUNCTION(Async_spawn_with)
 	coroutine->coroutine.fcall = fcall;
 
 	RETURN_OBJ_COPY(&coroutine->std);
+}
+
+PHP_FUNCTION(Async_spawn_thread)
+{
+	THROW_IF_ASYNC_OFF;
+	THROW_IF_SCHEDULER_CONTEXT;
+
+	zval *entry_zv = NULL;
+	bool inherit = true;
+	zval *bootloader_zv = NULL;
+
+	ZEND_PARSE_PARAMETERS_START(1, 3)
+	Z_PARAM_OBJECT_OF_CLASS(entry_zv, zend_ce_closure)
+	Z_PARAM_OPTIONAL
+	Z_PARAM_BOOL(inherit)
+	Z_PARAM_OBJECT_OF_CLASS_OR_NULL(bootloader_zv, zend_ce_closure)
+	ZEND_PARSE_PARAMETERS_END();
+
+	SCHEDULER_LAUNCH;
+
+	const uint32_t thread_flags = inherit ? ZEND_THREAD_F_INHERIT : 0;
+
+	/* Build fcall structs from Closure zvals */
+	zend_fcall_t entry;
+	zend_fcall_info_init(entry_zv, 0, &entry.fci, &entry.fci_cache, NULL, NULL);
+
+	zend_fcall_t boot, *boot_ptr = NULL;
+	if (bootloader_zv != NULL
+		&& zend_fcall_info_init(bootloader_zv, 0, &boot.fci, &boot.fci_cache, NULL, NULL) == SUCCESS) {
+		boot_ptr = &boot;
+	}
+
+	zend_async_thread_event_t *thread_event =
+		ZEND_ASYNC_NEW_THREAD_EVENT_EX(&entry, boot_ptr, thread_flags, 0);
+
+	if (UNEXPECTED(thread_event == NULL)) {
+		RETURN_THROWS();
+	}
+
+	/* Create the Thread PHP object — takes ownership of the event (ref_count=1) */
+	zend_object *obj = async_ce_thread->create_object(async_ce_thread);
+	async_thread_object_t *thread_obj = async_thread_object_from_obj(obj);
+	thread_obj->thread_event = thread_event;
+
+	/* Capture the current scope as the parent for any finally-handlers that
+	 * may get registered later. Addref keeps the scope struct alive until
+	 * thread_object_free() releases it, so handlers always have a valid
+	 * parent even if the user drops their scope reference first. */
+	thread_obj->parent_scope = ZEND_ASYNC_CURRENT_SCOPE;
+	if (thread_obj->parent_scope != NULL) {
+		ZEND_ASYNC_EVENT_ADD_REF(&thread_obj->parent_scope->event);
+	}
+
+	/* Set event reference so ZEND_ASYNC_OBJECT_TO_EVENT() can resolve from this object */
+	ZEND_ASYNC_EVENT_REF_SET(thread_obj,
+		XtOffsetOf(async_thread_object_t, std), &thread_event->base);
+
+	/* Record spawn location */
+	zend_apply_current_filename_and_line(&thread_event->filename, &thread_event->lineno);
+
+	/* Start the thread */
+	if (UNEXPECTED(!thread_event->base.start(&thread_event->base))) {
+		OBJ_RELEASE(obj);
+		RETURN_THROWS();
+	}
+
+	RETURN_OBJ(obj);
 }
 
 PHP_FUNCTION(Async_suspend)
@@ -1229,6 +1300,14 @@ PHP_METHOD(Async_Timeout, cancel)
 
 	if (timeout->event != NULL) {
 		zend_async_timer_event_t *timer_event = timeout->event;
+		/* Mirror async_timeout_destroy_object(): clear timeout_ext->std before
+		 * dispose() so async_timeout_event_dispose() does NOT OBJ_RELEASE the
+		 * object. In the current architecture the event holds only a raw
+		 * pointer, not a counted reference, so releasing here would drop the
+		 * caller's live ref and leave userland $t dangling — tripping
+		 * IS_OBJ_VALID at shutdown. */
+		async_timeout_ext_t *timeout_ext = ASYNC_TIMEOUT_FROM_EVENT(&timer_event->base);
+		timeout_ext->std = NULL;
 		timeout->event = NULL;
 		timer_event->base.dispose(&timer_event->base);
 	}
@@ -1445,6 +1524,8 @@ ZEND_MINIT_FUNCTION(async)
 	async_register_context_ce();
 	async_register_exceptions_ce();
 	async_register_channel_ce();
+	async_register_thread_channel_ce();
+	async_register_thread_pool_ce();
 	async_register_fs_watcher_ce();
 	async_register_circuit_breaker_ce();
 	async_ce_signal = register_class_Async_Signal();
@@ -1452,6 +1533,7 @@ ZEND_MINIT_FUNCTION(async)
 	async_register_task_group_ce();
 	async_register_task_set_ce();
 	async_register_future_ce();
+	async_register_thread_ce();
 
 	async_scheduler_startup();
 	async_api_register();

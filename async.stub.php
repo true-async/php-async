@@ -103,6 +103,16 @@ function get_coroutines(): array {}
 function iterate(iterable $iterable, callable $callback, int $concurrency = 0, bool $cancelPending = true): void {}
 
 /**
+ * Spawn a new OS thread that runs the given closure.
+ *
+ * @param \Closure      $task       The closure to execute in the new thread.
+ * @param bool          $inherit    If true (default), inherit parent's function/class tables.
+ * @param \Closure|null $bootloader Optional closure executed in the thread before $task.
+ * @return Thread A thread handle that implements Completable.
+ */
+function spawn_thread(\Closure $task, bool $inherit = true, ?\Closure $bootloader = null): Thread {}
+
+/**
  * Start the graceful shutdown of the Scheduler.
  */
 function graceful_shutdown(?AsyncCancellation $cancellationError = null): void {}

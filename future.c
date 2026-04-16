@@ -25,6 +25,7 @@
 #include "scheduler.h"
 #include "iterator.h"
 #include "zend_smart_str.h"
+#include "thread.h"
 
 ///////////////////////////////////////////////////////////
 /// Architecture Overview
@@ -130,6 +131,7 @@ typedef struct
 {
 	zend_async_event_callback_t base;
 	async_future_t *future_obj;
+	zend_async_scope_t *scope;   /* Scope captured at map()/catch()/finally() call time */
 } async_future_callback_t;
 
 /**
@@ -685,6 +687,7 @@ static zend_object *async_future_state_object_create(zend_class_entry *ce)
 
 	ZEND_ASYNC_EVENT_REF_SET(state, XtOffsetOf(async_future_state_t, std), event);
 	ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(state->event);
+	state->shared_state = NULL;
 
 	zend_object_std_init(&state->std, ce);
 	object_properties_init(&state->std, ce);
@@ -696,6 +699,26 @@ static void async_future_state_object_free(zend_object *object)
 {
 	async_future_state_t *state = ASYNC_FUTURE_STATE_FROM_OBJ(object);
 
+	if (state->shared_state != NULL) {
+		/* Source side: if ownership was transferred but never completed,
+		 * take the mutex to safely stop the trigger. */
+		if (state->event != NULL && state->shared_state->trigger != NULL) {
+			if (!zend_atomic_int_load(&state->shared_state->completed)) {
+				ASYNC_MUTEX_LOCK(state->shared_state->mutex);
+
+				if (!zend_atomic_int_load(&state->shared_state->completed)) {
+					zend_atomic_int_store(&state->shared_state->completed, 1);
+					state->shared_state->trigger->base.stop(&state->shared_state->trigger->base);
+				}
+
+				ASYNC_MUTEX_UNLOCK(state->shared_state->mutex);
+			}
+		}
+
+		async_future_shared_state_delref(state->shared_state);
+		state->shared_state = NULL;
+	}
+
 	zend_future_t *future = (zend_future_t *) state->event;
 	state->event = NULL;
 
@@ -704,6 +727,73 @@ static void async_future_state_object_free(zend_object *object)
 	}
 
 	zend_object_std_dtor(&state->std);
+}
+
+/**
+ * @brief Transfer handler for FutureState — transfers write ownership to another thread.
+ *
+ * ZEND_OBJECT_TRANSFER (source thread):
+ *   Creates shared_state, binds trigger to original future, marks ownership transferred.
+ *
+ * ZEND_OBJECT_LOAD (destination thread):
+ *   Creates new FutureState with shared_state — complete()/error() write through it.
+ */
+/* Direct offset — safe for pemalloc objects where handlers may be invalid */
+#define FUTURE_STATE_FROM_OBJ(obj) \
+	((async_future_state_t *)((char *)(obj) - XtOffsetOf(async_future_state_t, std)))
+
+static zend_object *async_future_state_transfer_obj(
+	zend_object *object, zend_async_thread_transfer_ctx_t *ctx,
+	zend_object_transfer_kind_t kind, zend_object_transfer_default_fn default_fn)
+{
+	if (kind == ZEND_OBJECT_TRANSFER) {
+		/* Source thread: create shared_state, bind to original future */
+		async_future_state_t *src = FUTURE_STATE_FROM_OBJ(object);
+
+		if (src->shared_state != NULL) {
+			zend_throw_exception(NULL,
+				"FutureState cannot be transferred to multiple threads", 0);
+			return NULL;
+		}
+
+		zend_future_shared_state_t *shared = async_future_shared_state_create();
+		async_future_shared_state_bind(shared, (zend_future_t *) src->event);
+
+		/* Mark original future as used — it will be completed via trigger */
+		ZEND_FUTURE_SET_USED((zend_future_t *) src->event);
+
+		/* Source FutureState holds +1 ref (ownership transferred flag) */
+		async_future_shared_state_addref(shared);
+		src->shared_state = shared;
+
+		/* Deep copy to persistent memory — carries pointer for LOAD phase.
+		 * No addref: persistent copy is temporary, LOAD phase does addref. */
+		zend_object *dst = default_fn(object, ctx, sizeof(async_future_state_t));
+		async_future_state_t *dst_state = FUTURE_STATE_FROM_OBJ(dst);
+		dst_state->shared_state = shared;
+		dst_state->event = NULL;
+
+		return dst;
+	} else {
+		/* Destination thread: create emalloc FutureState with shared_state.
+		 * Takes the initial ref (ref=1) from create — no extra addref. */
+		zend_object *dst = default_fn(object, ctx, 0);
+		async_future_state_t *dst_state = FUTURE_STATE_FROM_OBJ(dst);
+
+		async_future_state_t *src_state = FUTURE_STATE_FROM_OBJ(object);
+		dst_state->shared_state = src_state->shared_state;
+		async_future_shared_state_addref(dst_state->shared_state);
+
+		/* default_fn called create_object which allocated a local future —
+		 * mark as ignored (suppress "unused" warning) and release it */
+		if (dst_state->event != NULL) {
+			ZEND_FUTURE_SET_IGNORED((zend_future_t *) dst_state->event);
+			ZEND_ASYNC_EVENT_RELEASE(dst_state->event);
+			dst_state->event = NULL;
+		}
+
+		return dst;
+	}
 }
 
 ///////////////////////////////////////////////////////////
@@ -797,6 +887,23 @@ FUTURE_STATE_METHOD(complete)
 
 	const async_future_state_t *state = THIS_FUTURE_STATE;
 
+	/* Ownership was transferred to another thread */
+	if (state->shared_state != NULL && state->event != NULL) {
+		async_throw_error("FutureState ownership was transferred to another thread");
+		RETURN_THROWS();
+	}
+
+	/* Remote path: complete via shared state (cross-thread) */
+	if (state->shared_state != NULL) {
+		if (zend_atomic_int_load(&state->shared_state->completed)) {
+			async_throw_error("FutureState is already completed");
+			RETURN_THROWS();
+		}
+		async_future_shared_state_complete(state->shared_state, result);
+		return;
+	}
+
+	/* Local path */
 	if (state->event == NULL) {
 		async_throw_error("FutureState is already destroyed");
 		RETURN_THROWS();
@@ -829,6 +936,23 @@ FUTURE_STATE_METHOD(error)
 
 	const async_future_state_t *state = THIS_FUTURE_STATE;
 
+	/* Ownership was transferred to another thread */
+	if (state->shared_state != NULL && state->event != NULL) {
+		async_throw_error("FutureState ownership was transferred to another thread");
+		RETURN_THROWS();
+	}
+
+	/* Remote path: reject via shared state (cross-thread) */
+	if (state->shared_state != NULL) {
+		if (zend_atomic_int_load(&state->shared_state->completed)) {
+			async_throw_error("FutureState is already completed");
+			RETURN_THROWS();
+		}
+		async_future_shared_state_reject(state->shared_state, Z_OBJ_P(throwable));
+		return;
+	}
+
+	/* Local path */
 	if (state->event == NULL) {
 		async_throw_error("FutureState is already destroyed");
 		RETURN_THROWS();
@@ -856,6 +980,12 @@ FUTURE_STATE_METHOD(isCompleted)
 	ZEND_PARSE_PARAMETERS_NONE();
 
 	const async_future_state_t *state = THIS_FUTURE_STATE;
+
+	/* Remote path: check shared state atomic flag */
+	if (state->shared_state != NULL && state->event == NULL) {
+		RETURN_BOOL(zend_atomic_int_load(&state->shared_state->completed));
+	}
+
 	const zend_future_t *future = (zend_future_t *) state->event;
 
 	if (UNEXPECTED(future == NULL)) {
@@ -1426,11 +1556,14 @@ static void async_future_callback_handler(zend_async_event_t *event,
 	}
 
 	// Create async_iterator with our zend_object_iterator
+	// Use the scope captured at map()/catch()/finally() time, not the current scope.
+	// This is critical for remote futures: the trigger callback fires in the
+	// scheduler context, but the mapper coroutine must run in the subscriber's scope.
 	async_iterator_t *async_iter = async_iterator_new(NULL,
 													  &new_iterator->it,
 													  NULL,
 													  future_mappers_handler,
-													  ZEND_ASYNC_CURRENT_SCOPE,
+													  future_callback->scope,
 													  0,                     /* concurrency: default */
 													  ZEND_COROUTINE_NORMAL, /* priority: default */
 													  0                      /* iterator size: default */
@@ -1580,6 +1713,7 @@ static void async_future_create_mapper(INTERNAL_FUNCTION_PARAMETERS, async_futur
 		callback->base.callback = async_future_callback_handler;
 		callback->base.dispose = async_future_callback_dispose;
 		callback->future_obj = source;
+		callback->scope = ZEND_ASYNC_CURRENT_SCOPE;
 		// We do not increment the object's reference count because this is a "weak reference".
 		// No GC_ADDREF(&source->std);
 
@@ -1781,6 +1915,355 @@ zend_object *async_new_future_obj(zend_future_t *future)
 }
 
 ///////////////////////////////////////////////////////////
+/// Shared future state — cross-thread future bridge
+///////////////////////////////////////////////////////////
+
+/**
+ * @brief Extended callback that carries a pointer to the shared state.
+ *
+ * Used for both the trigger callback (destination thread) and the source
+ * callback (source thread). The @c base field must be first so the struct
+ * can be cast from @c zend_async_event_callback_t*.
+ */
+typedef struct {
+	zend_async_event_callback_t base;
+	zend_future_shared_state_t *state;
+} shared_state_cb_t;
+
+/** @see async_future_shared_state_delref — called when ref_count reaches 0. */
+void async_future_shared_state_destroy(zend_future_shared_state_t *state)
+{
+	if (!Z_ISUNDEF(state->transferred_result)) {
+		async_thread_release_transferred_zval(&state->transferred_result);
+	}
+
+	if (!Z_ISUNDEF(state->transferred_exception)) {
+		async_thread_release_transferred_zval(&state->transferred_exception);
+	}
+
+	if (state->trigger != NULL) {
+		state->trigger->base.dispose(&state->trigger->base);
+		state->trigger = NULL;
+	}
+
+	ASYNC_MUTEX_DESTROY(state->mutex);
+	pefree(state, 1);
+}
+
+/**
+ * @brief Trigger callback — runs in the destination thread when the source
+ *        thread completes the shared state.
+ *
+ * Loads the transferred result or exception from persistent memory into
+ * the destination thread's emalloc heap, then resolves the target future.
+ */
+static void shared_state_trigger_cb(zend_async_event_t *event,
+	zend_async_event_callback_t *callback, void *result, zend_object *error)
+{
+	const shared_state_cb_t *cb = (const shared_state_cb_t *) callback;
+	zend_future_shared_state_t *state = cb->state;
+	zend_future_t *future = state->target_future;
+
+	if (!Z_ISUNDEF(state->transferred_exception)) {
+		zval exc_zval;
+		async_thread_load_zval(&exc_zval, &state->transferred_exception);
+		async_thread_release_transferred_zval(&state->transferred_exception);
+		ZVAL_UNDEF(&state->transferred_exception);
+
+		ZEND_FUTURE_REJECT(future, Z_OBJ(exc_zval));
+		zval_ptr_dtor(&exc_zval);
+	} else {
+		zval loaded;
+		async_thread_load_zval(&loaded, &state->transferred_result);
+		async_thread_release_transferred_zval(&state->transferred_result);
+		ZVAL_UNDEF(&state->transferred_result);
+
+		ZEND_FUTURE_COMPLETE(future, &loaded);
+		zval_ptr_dtor(&loaded);
+	}
+
+	/* Deactivate trigger — result delivered, no longer needed in event loop */
+	state->trigger->base.stop(&state->trigger->base);
+}
+
+/**
+ * @brief Dispose handler for the trigger callback.
+ *
+ * Does NOT delref shared_state — trigger is owned by shared_state directly,
+ * so shared_state outlives the trigger. No circular reference.
+ */
+static void shared_state_trigger_cb_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event)
+{
+	pefree(callback, 1);
+}
+
+/**
+ * @brief Source callback — runs in the source thread when the source future
+ *        completes.
+ *
+ * Transfers the source future's result or exception into the shared state
+ * (persistent memory) and fires the trigger to wake the destination thread.
+ */
+static void shared_state_source_cb(zend_async_event_t *event,
+	zend_async_event_callback_t *callback, void *result, zend_object *exception)
+{
+	const shared_state_cb_t *cb = (const shared_state_cb_t *) callback;
+	zend_future_shared_state_t *state = cb->state;
+	zend_future_t *source = (zend_future_t *) event;
+
+	if (source->exception != NULL) {
+		async_future_shared_state_reject(state, source->exception);
+	} else {
+		async_future_shared_state_complete(state, &source->result);
+	}
+}
+
+/**
+ * @brief Dispose handler for the source callback.
+ *
+ * Releases the shared state reference and frees the callback (emalloc —
+ * source callback lives in the source thread's heap).
+ */
+static void shared_state_source_cb_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event)
+{
+	shared_state_cb_t *cb = (shared_state_cb_t *) callback;
+	async_future_shared_state_delref(cb->state);
+	efree(cb);
+}
+
+/** @copydoc async_future_shared_state_create */
+zend_future_shared_state_t *async_future_shared_state_create(void)
+{
+	zend_future_shared_state_t *state = pecalloc(1, sizeof(zend_future_shared_state_t), 1);
+
+	ZVAL_UNDEF(&state->transferred_result);
+	ZVAL_UNDEF(&state->transferred_exception);
+	ZEND_ATOMIC_INT_INIT(&state->completed, 0);
+	ZEND_ATOMIC_INT_INIT(&state->ref_count, 0);
+	ASYNC_MUTEX_INIT(state->mutex);
+	state->trigger = NULL;
+	state->target_future = NULL;
+
+	return state;
+}
+
+/** @copydoc async_future_shared_state_bind */
+bool async_future_shared_state_bind(zend_future_shared_state_t *state, zend_future_t *target_future)
+{
+	state->target_future = target_future;
+
+	/* Create trigger on current thread's event loop */
+	state->trigger = ZEND_ASYNC_NEW_TRIGGER_EVENT();
+	if (UNEXPECTED(state->trigger == NULL)) {
+		return false;
+	}
+
+	/* Subscribe trigger callback — does NOT hold ref to shared state
+	 * (trigger is owned by shared_state, no circular reference) */
+	shared_state_cb_t *trigger_cb = pecalloc(1, sizeof(shared_state_cb_t), 1);
+	trigger_cb->base.callback = shared_state_trigger_cb;
+	trigger_cb->base.dispose = shared_state_trigger_cb_dispose;
+	trigger_cb->base.ref_count = 1;
+	trigger_cb->state = state;
+
+	state->trigger->base.add_callback(&state->trigger->base, &trigger_cb->base);
+
+	/* Activate trigger immediately — we're expecting a result from another thread,
+	 * so the event loop must stay alive until the trigger fires. */
+	state->trigger->base.start(&state->trigger->base);
+
+	return true;
+}
+
+/** @copydoc async_future_shared_state_complete */
+void async_future_shared_state_complete(zend_future_shared_state_t *state, zval *result)
+{
+	/* Fast path: already completed */
+	if (zend_atomic_int_load(&state->completed)) {
+		return;
+	}
+
+	ASYNC_MUTEX_LOCK(state->mutex);
+
+	if (zend_atomic_int_load(&state->completed)) {
+		ASYNC_MUTEX_UNLOCK(state->mutex);
+		return;
+	}
+
+	zend_atomic_int_store(&state->completed, 1);
+	async_thread_transfer_zval(&state->transferred_result, result);
+	state->trigger->trigger(state->trigger);
+
+	ASYNC_MUTEX_UNLOCK(state->mutex);
+}
+
+/** @copydoc async_future_shared_state_reject */
+void async_future_shared_state_reject(zend_future_shared_state_t *state, zend_object *exception)
+{
+	/* Fast path: already completed */
+	if (zend_atomic_int_load(&state->completed)) {
+		return;
+	}
+
+	ASYNC_MUTEX_LOCK(state->mutex);
+
+	if (zend_atomic_int_load(&state->completed)) {
+		ASYNC_MUTEX_UNLOCK(state->mutex);
+		return;
+	}
+
+	zend_atomic_int_store(&state->completed, 1);
+
+	zval exc_zval;
+	ZVAL_OBJ_COPY(&exc_zval, exception);
+	async_thread_transfer_zval(&state->transferred_exception, &exc_zval);
+	zval_ptr_dtor(&exc_zval);
+
+	state->trigger->trigger(state->trigger);
+
+	ASYNC_MUTEX_UNLOCK(state->mutex);
+}
+
+/** @copydoc async_future_shared_state_source_cb */
+
+zend_async_event_callback_t *async_future_shared_state_source_cb(zend_future_shared_state_t *state)
+{
+	async_future_shared_state_addref(state);
+
+	shared_state_cb_t *cb = ecalloc(1, sizeof(shared_state_cb_t));
+	cb->base.callback = shared_state_source_cb;
+	cb->base.dispose = shared_state_source_cb_dispose;
+	cb->base.ref_count = 1;
+	cb->state = state;
+
+	return &cb->base;
+}
+
+///////////////////////////////////////////////////////////
+/// Remote future — local future bound to a shared state
+///////////////////////////////////////////////////////////
+
+/**
+ * @brief Start handler for remote future.
+ *
+ * Proxies to the trigger's start to activate the uv_async handle
+ * in the event loop, so it keeps the loop alive while awaiting.
+ */
+static bool remote_future_start(zend_async_event_t *event)
+{
+	zend_future_remote_t *remote = (zend_future_remote_t *) event;
+
+	if (remote->state->trigger != NULL) {
+		return remote->state->trigger->base.start(&remote->state->trigger->base);
+	}
+
+	return true;
+}
+
+/**
+ * @brief Stop handler for remote future.
+ *
+ * Proxies to the trigger's stop to deactivate the uv_async handle.
+ */
+static bool remote_future_stop(zend_async_event_t *event)
+{
+	zend_future_remote_t *remote = (zend_future_remote_t *) event;
+
+	if (remote->state->trigger != NULL) {
+		return remote->state->trigger->base.stop(&remote->state->trigger->base);
+	}
+
+	return true;
+}
+
+/**
+ * @brief Dispose handler for remote future.
+ *
+ * Disposes the trigger, releases the shared state reference,
+ * cleans up the base future, and frees the remote future.
+ */
+static bool remote_future_dispose(zend_async_event_t *event)
+{
+	zend_future_remote_t *remote = (zend_future_remote_t *) event;
+	zend_future_t *future = &remote->future;
+
+	if (remote->state != NULL) {
+		if (remote->state->trigger != NULL) {
+			remote->state->trigger->base.dispose(&remote->state->trigger->base);
+			remote->state->trigger = NULL;
+		}
+		async_future_shared_state_delref(remote->state);
+		remote->state = NULL;
+	}
+
+	zval_ptr_dtor(&future->result);
+
+	if (future->exception != NULL) {
+		OBJ_RELEASE(future->exception);
+		future->exception = NULL;
+	}
+
+	if (future->filename != NULL) {
+		zend_string_release(future->filename);
+		future->filename = NULL;
+	}
+
+	if (future->completed_filename != NULL) {
+		zend_string_release(future->completed_filename);
+		future->completed_filename = NULL;
+	}
+
+	zend_async_callbacks_free(event);
+	zend_async_callbacks_vector_free(&future->resolve_callbacks, event);
+
+	efree(remote);
+
+	return true;
+}
+
+/** @copydoc async_new_remote_future */
+zend_future_remote_t *async_new_remote_future(zend_future_shared_state_t *state)
+{
+	zend_future_remote_t *remote = ecalloc(1, sizeof(zend_future_remote_t));
+	zend_future_t *future = &remote->future;
+	zend_async_event_t *event = &future->event;
+
+	ZVAL_UNDEF(&future->result);
+
+	/* Standard future handlers */
+	event->add_callback = zend_future_add_callback;
+	event->del_callback = zend_future_del_callback;
+	event->replay = zend_future_replay;
+	event->info = zend_future_info;
+	event->ref_count = 1;
+
+	/* Override start/stop/dispose to proxy through trigger */
+	event->start = remote_future_start;
+	event->stop = remote_future_stop;
+	event->dispose = remote_future_dispose;
+
+	ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(event);
+
+	future->resolve = zend_future_resolve;
+	future->resolve_callbacks.data = NULL;
+	future->resolve_callbacks.length = 0;
+	future->resolve_callbacks.capacity = 0;
+	future->filename = NULL;
+	future->lineno = 0;
+	future->completed_filename = NULL;
+	future->completed_lineno = 0;
+
+	/* Bind to shared state */
+	remote->state = state;
+	async_future_shared_state_addref(state);
+
+	/* Bind trigger + target on current thread */
+	async_future_shared_state_bind(state, future);
+
+	return remote;
+}
+
+///////////////////////////////////////////////////////////
 /// Class registration
 ///////////////////////////////////////////////////////////
 
@@ -1793,6 +2276,7 @@ void async_register_future_ce(void)
 	memcpy(&async_future_state_handlers, &std_object_handlers, sizeof(zend_object_handlers));
 	async_future_state_handlers.offset = XtOffsetOf(async_future_state_t, std);
 	async_future_state_handlers.free_obj = async_future_state_object_free;
+	async_future_state_handlers.transfer_obj = async_future_state_transfer_obj;
 	async_ce_future_state->default_object_handlers = &async_future_state_handlers;
 
 	/* Register Future class using generated registration */

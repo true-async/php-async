@@ -598,6 +598,28 @@ typedef struct
 	async_scope_t *scope;
 } scope_timeout_callback_t;
 
+/* Custom dispose: release the scope ref added by disposeAfterTimeout() when
+ * the callback is freed without having transferred ownership to a cancellation
+ * coroutine (e.g. timer cancelled before firing). If scope was cleared by
+ * scope_timeout_callback() — ownership was already transferred and there is
+ * nothing to release here. */
+static void scope_timeout_callback_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event)
+{
+	if (callback->ref_count > 1) {
+		callback->ref_count--;
+		return;
+	}
+
+	scope_timeout_callback_t *scope_callback = (scope_timeout_callback_t *) callback;
+	if (scope_callback->scope != NULL) {
+		ZEND_ASYNC_EVENT_RELEASE(&scope_callback->scope->scope.event);
+		scope_callback->scope = NULL;
+	}
+
+	callback->ref_count = 0;
+	efree(callback);
+}
+
 static void scope_timeout_coroutine_entry(void)
 {
 	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
@@ -613,6 +635,10 @@ static void scope_timeout_coroutine_entry(void)
 			async_new_exception(async_ce_cancellation_exception, "Scope has been disposed due to timeout");
 
 	ZEND_ASYNC_SCOPE_CANCEL(&scope->scope, exception, false, ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(&scope->scope));
+
+	/* Release the ref added in disposeAfterTimeout() and transferred to this
+	 * coroutine via scope_timeout_callback(). */
+	ZEND_ASYNC_EVENT_RELEASE(&scope->scope.event);
 }
 
 static void scope_timeout_callback(zend_async_event_t *event,
@@ -622,10 +648,18 @@ static void scope_timeout_callback(zend_async_event_t *event,
 {
 	scope_timeout_callback_t *scope_callback = (scope_timeout_callback_t *) callback;
 	async_scope_t *scope = scope_callback->scope;
+
+	/* Take ownership of the scope ref out of the callback so our dispose
+	 * handler does not release it when the timer event frees its callbacks. */
+	scope_callback->scope = NULL;
+
 	event->dispose(event);
 
 	zend_coroutine_t *coroutine = ZEND_ASYNC_SPAWN_WITH(ZEND_ASYNC_MAIN_SCOPE);
 	if (UNEXPECTED(coroutine == NULL)) {
+		if (scope != NULL) {
+			ZEND_ASYNC_EVENT_RELEASE(&scope->scope.event);
+		}
 		return;
 	}
 
@@ -671,15 +705,24 @@ METHOD(disposeAfterTimeout)
 		RETURN_THROWS();
 	}
 
+	callback->callback.dispose = scope_timeout_callback_dispose;
 	callback->scope = scope_object->scope;
-	callback->scope->scope.event.ref_count++;
+	ZEND_ASYNC_EVENT_ADD_REF(&callback->scope->scope.event);
 
 	if (!timer_event->base.add_callback(&timer_event->base, &callback->callback)) {
+		/* add_callback failed — the callback was not taken by the event, so our
+		 * custom dispose won't run. Release the scope ref and free the callback
+		 * by hand. */
+		ZEND_ASYNC_EVENT_RELEASE(&callback->scope->scope.event);
+		callback->scope = NULL;
+		efree(callback);
 		timer_event->base.dispose(&timer_event->base);
 		return;
 	}
 
 	if (!timer_event->base.start(&timer_event->base)) {
+		/* Timer's dispose will free callbacks (including ours), which triggers
+		 * scope_timeout_callback_dispose and releases the scope ref. */
 		timer_event->base.dispose(&timer_event->base);
 		return;
 	}

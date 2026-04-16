@@ -19,6 +19,7 @@
 #define LIBUV_REACTOR_VERSION "0.8.0"
 #define LIBUV_REACTOR_NAME "Libuv Reactor 0.8.0"
 #include <Zend/zend_async_API.h>
+#include "thread.h"
 
 #ifdef PHP_WIN32
 #include "libuv/uv.h"
@@ -96,6 +97,7 @@ struct _async_thread_event_t
 {
 	zend_async_thread_event_t event;
 	uv_thread_t uv_handle;
+	uv_async_t uv_notify;     /* Cross-thread notification handle */
 };
 
 struct _async_exec_event_t
@@ -173,5 +175,9 @@ struct _async_udp_req_t
 };
 
 void async_libuv_reactor_register(void);
+
+/* Called by async_thread_run in the child thread after ts_free_thread, so
+ * the registry entry vanishes only once the child is past TSRM/Zend access. */
+void async_libuv_thread_registry_remove(zend_async_thread_handle_t handle);
 
 #endif // LIBUV_REACTOR_H

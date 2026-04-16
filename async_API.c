@@ -25,6 +25,7 @@
 #include "scheduler.h"
 #include "scope.h"
 #include "task_group.h"
+#include "thread.h"
 #include "zend_common.h"
 
 zend_async_scope_t *async_provide_scope(zend_object *scope_provider)
@@ -278,6 +279,10 @@ static zend_class_entry *async_get_class_ce(zend_async_class type)
 			return async_ce_service_unavailable_exception;
 		case ZEND_ASYNC_EXCEPTION_OPERATION_CANCELLED:
 			return async_ce_operation_cancelled_exception;
+		case ZEND_ASYNC_EXCEPTION_THREAD_TRANSFER:
+			return async_ce_thread_transfer_exception;
+		case ZEND_ASYNC_EXCEPTION_REMOTE:
+			return async_ce_remote_exception;
 		default:
 			return NULL;
 	}
@@ -1278,5 +1283,9 @@ void async_api_register(void)
 								  async_new_future_obj,
 								  async_new_channel_obj_stub,
 								  async_new_group,
-								  engine_shutdown);
+								  engine_shutdown,
+								  async_thread_snapshot_create_api,
+								  async_thread_snapshot_destroy_api,
+								  async_thread_run,
+								  async_thread_load_result);
 }

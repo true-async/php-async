@@ -4,6 +4,7 @@ proc_close() when child zombie was already reaped externally
 <?php
 if (!function_exists("proc_open")) echo "skip proc_open() is not available";
 if (DIRECTORY_SEPARATOR === '\\') die('skip Unix-only test');
+if (!function_exists("pcntl_waitpid")) die('skip ext/pcntl required');
 $php = getenv('TEST_PHP_EXECUTABLE');
 if ($php === false) echo "skip no php executable defined";
 ?>

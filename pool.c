@@ -337,6 +337,7 @@ static void pool_strategy_report_failure(async_pool_t *pool, zend_object *error)
 	}
 
 	zval retval, source, error_zval;
+	bool owns_error = false;
 	ZVAL_UNDEF(&retval);
 
 	if (base->wrapper) {
@@ -348,10 +349,17 @@ static void pool_strategy_report_failure(async_pool_t *pool, zend_object *error)
 	if (error) {
 		ZVAL_OBJ(&error_zval, error);
 	} else {
-		/* Create a generic exception if none provided */
-		zend_object *ex = zend_throw_exception(NULL, "Resource validation failed", 0);
-		zend_clear_exception();
-		ZVAL_OBJ(&error_zval, ex);
+		/* Create a generic exception if none provided. Construct it directly
+		 * without going through zend_throw_exception(), which would transfer
+		 * ownership to EG(exception) and then zend_clear_exception() would
+		 * free the object — leaving a dangling pointer. */
+		object_init_ex(&error_zval, zend_ce_exception);
+		zval msg;
+		ZVAL_STRING(&msg, "Resource validation failed");
+		zend_update_property_ex(zend_ce_exception, Z_OBJ(error_zval),
+			ZSTR_KNOWN(ZEND_STR_MESSAGE), &msg);
+		zval_ptr_dtor(&msg);
+		owns_error = true;
 	}
 
 	zend_call_method_with_2_params(base->strategy.object, NULL, NULL, "reportFailure", &retval, &source, &error_zval);
@@ -361,6 +369,9 @@ static void pool_strategy_report_failure(async_pool_t *pool, zend_object *error)
 	}
 
 	zval_ptr_dtor(&retval);
+	if (owns_error) {
+		zval_ptr_dtor(&error_zval);
+	}
 }
 
 ///////////////////////////////////////////////////////////////////////////////

@@ -20,6 +20,43 @@
 #include "zend_exceptions.h"
 #include "zend_interfaces.h"
 
+#ifdef ZTS
+# include <TSRM.h>
+#endif
+
+/*
+ * Cross-platform mutex helpers for the async extension.
+ *
+ * Backed by TSRM's MUTEX_T under ZTS (CRITICAL_SECTION* on Windows,
+ * pthread_mutex_t* on POSIX). In non-ZTS builds the macros expand
+ * to no-ops — cross-thread primitives have no meaning without TSRM,
+ * and the whole threading feature of the extension is ZTS-only.
+ *
+ * API:
+ *   ASYNC_MUTEX_INIT(ref)     ref = tsrm_mutex_alloc();  (no-op in NTS)
+ *   ASYNC_MUTEX_DESTROY(ref)  tsrm_mutex_free(ref); ref = NULL;
+ *   ASYNC_MUTEX_LOCK(ref)     tsrm_mutex_lock(ref);
+ *   ASYNC_MUTEX_UNLOCK(ref)   tsrm_mutex_unlock(ref);
+ *
+ * Note: MUTEX_T is a pointer type. Pass the field directly
+ *       (e.g. state->mutex), not its address.
+ *
+ * Field declaration in a struct is intentionally NOT hidden behind a
+ * macro — declare it inline with `#ifdef ZTS MUTEX_T name; #endif`
+ * so that no public header has to pull in zend_common.h.
+ */
+#ifdef ZTS
+# define ASYNC_MUTEX_INIT(ref)     do { (ref) = tsrm_mutex_alloc(); } while (0)
+# define ASYNC_MUTEX_DESTROY(ref)  do { if ((ref) != NULL) { tsrm_mutex_free(ref); (ref) = NULL; } } while (0)
+# define ASYNC_MUTEX_LOCK(ref)     tsrm_mutex_lock(ref)
+# define ASYNC_MUTEX_UNLOCK(ref)   tsrm_mutex_unlock(ref)
+#else
+# define ASYNC_MUTEX_INIT(ref)     ((void) 0)
+# define ASYNC_MUTEX_DESTROY(ref)  ((void) 0)
+# define ASYNC_MUTEX_LOCK(ref)     ((void) 0)
+# define ASYNC_MUTEX_UNLOCK(ref)   ((void) 0)
+#endif
+
 #define IF_THROW_RETURN_VOID \
 	if (UNEXPECTED(EG(exception) != NULL)) { \
 		return; \

@@ -915,6 +915,87 @@ final class Timeout implements Completable
 }
 
 // ---------------------------------------------------------------------------
+// Thread Exceptions
+// ---------------------------------------------------------------------------
+
+/**
+ * Wraps an exception that originated in a child thread.
+ * The original exception is accessible via getRemoteException().
+ * @since 8.6
+ */
+class RemoteException extends AsyncException
+{
+    private ?\Throwable $remoteException = null;
+    private string $remoteClass = '';
+
+    /** Get the original exception from the child thread. */
+    public function getRemoteException(): ?\Throwable {}
+
+    /** Get the class name of the original exception in the child thread. */
+    public function getRemoteClass(): string {}
+}
+
+/**
+ * Thrown when data transfer between threads fails.
+ * @since 8.6
+ */
+class ThreadTransferException extends AsyncException {}
+
+// ---------------------------------------------------------------------------
+// Thread
+// ---------------------------------------------------------------------------
+
+/**
+ * Represents a running OS thread.
+ *
+ * Obtain a Thread via {@see spawn_thread()}.
+ * Each thread has its own PHP runtime (TSRM) and event loop.
+ *
+ * @since 8.6
+ */
+final class Thread implements Completable
+{
+    private function __construct() {}
+
+    /**
+     * Return true if the thread is currently running.
+     */
+    public function isRunning(): bool {}
+
+    /**
+     * Return true if the thread has completed execution.
+     */
+    public function isCompleted(): bool {}
+
+    /**
+     * Return true if the thread was cancelled.
+     */
+    public function isCancelled(): bool {}
+
+    /**
+     * Returns the thread result when finished.
+     * If the thread is not finished, returns null.
+     */
+    public function getResult(): mixed {}
+
+    /**
+     * Returns the thread exception when finished.
+     * If the thread is not finished, returns null.
+     */
+    public function getException(): mixed {}
+
+    /**
+     * Cancel the thread.
+     */
+    public function cancel(?AsyncCancellation $cancellation = null): void {}
+
+    /**
+     * Define a callback to be executed when the thread is finished.
+     */
+    public function finally(\Closure $callback): void {}
+}
+
+// ---------------------------------------------------------------------------
 // Channel
 // ---------------------------------------------------------------------------
 
@@ -1540,6 +1621,23 @@ function spawn(callable $task, mixed ...$args): Coroutine {}
  * @return Coroutine
  */
 function spawn_with(ScopeProvider $provider, callable $task, mixed ...$args): Coroutine {}
+
+/**
+ * Spawn a new OS thread that runs the given closure.
+ *
+ * The child thread gets its own PHP runtime (TSRM). With OPcache enabled,
+ * the parent's compiled code is shared via SHM (near-zero overhead).
+ * Without OPcache, a deep copy is performed (TODO).
+ *
+ * @param \Closure      $task       The closure to execute in the new thread.
+ * @param bool          $inherit    If true (default), inherit the parent's function/class tables
+ *                                  into the child thread. If false, only the closure and
+ *                                  autoloaders are transferred.
+ * @param \Closure|null $bootloader Optional closure executed in the thread before $task.
+ *                                  Use it to set up autoloaders, initialize DI, etc.
+ * @return Thread A thread handle implementing Completable.
+ */
+function spawn_thread(\Closure $task, bool $inherit = true, ?\Closure $bootloader = null): Thread {}
 
 /**
  * Yield control to the scheduler, allowing other coroutines to run.
