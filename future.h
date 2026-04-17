@@ -35,6 +35,14 @@ typedef enum
  * FutureState object structure.
  * Holds a reference to the underlying zend_future_t event.
  * Allows modification through complete() and error() methods.
+ *
+ * Source/destination invariant after cross-thread transfer:
+ *   - source  (owner)       — shared_state != NULL, event != NULL.
+ *                             Owns the shared_state->trigger handle.
+ *   - destination (consumer)— shared_state != NULL, event == NULL.
+ *                             Writes results/exceptions into shared_state
+ *                             and fires the trigger; never disposes it.
+ * Use ASYNC_FUTURE_STATE_IS_OWNER() to branch on this.
  */
 struct _async_future_state_s
 {
@@ -42,6 +50,10 @@ struct _async_future_state_s
 	zend_future_shared_state_t *shared_state;      /* Non-NULL after transfer to another thread */
 	zend_object std;                               /* Standard object */
 };
+
+/* True iff this FutureState is the source (owner) of a transferred shared_state. */
+#define ASYNC_FUTURE_STATE_IS_OWNER(state) \
+	((state)->shared_state != NULL && (state)->event != NULL)
 
 /**
  * Future object structure.

@@ -700,12 +700,8 @@ static void async_future_state_object_free(zend_object *object)
 	async_future_state_t *state = ASYNC_FUTURE_STATE_FROM_OBJ(object);
 
 	if (state->shared_state != NULL) {
-		/* Source side: ownership was transferred. Stop and dispose the trigger
-		 * here (on the source's thread — the one that created it) to avoid
-		 * uv_close being called from the destination thread during shared_state
-		 * destruction. After disposal, mark completed=1 to prevent the
-		 * destination thread from attempting to fire the (now dead) trigger. */
-		if (state->event != NULL) {
+		/* Owner tears down the cross-thread trigger on its own thread. */
+		if (ASYNC_FUTURE_STATE_IS_OWNER(state)) {
 			zend_async_trigger_event_t *trigger_to_dispose = NULL;
 
 			ASYNC_MUTEX_LOCK(state->shared_state->mutex);
@@ -714,15 +710,13 @@ static void async_future_state_object_free(zend_object *object)
 				state->shared_state->trigger = NULL;
 				zend_atomic_int_store(&state->shared_state->completed, 1);
 			}
+
+			state->shared_state->target_future = NULL;
 			ASYNC_MUTEX_UNLOCK(state->shared_state->mutex);
 
 			if (trigger_to_dispose != NULL) {
 				trigger_to_dispose->base.dispose(&trigger_to_dispose->base);
 			}
-
-			/* target_future reference is released alongside state->event below;
-			 * the shared_state no longer needs to read it via trigger_cb. */
-			state->shared_state->target_future = NULL;
 		}
 
 		async_future_shared_state_delref(state->shared_state);
@@ -787,6 +781,7 @@ static zend_object *async_future_state_transfer_obj(
 		zend_object *dst = default_fn(object, ctx, sizeof(async_future_state_t));
 		async_future_state_t *dst_state = FUTURE_STATE_FROM_OBJ(dst);
 		dst_state->shared_state = shared;
+		/* Destination invariant: event is NULL. See ASYNC_FUTURE_STATE_IS_OWNER. */
 		dst_state->event = NULL;
 
 		return dst;
@@ -803,7 +798,7 @@ static zend_object *async_future_state_transfer_obj(
 		src_state->shared_state = NULL;
 
 		/* default_fn called create_object which allocated a local future —
-		 * mark as ignored (suppress "unused" warning) and release it */
+		 * release it so destination invariant (event == NULL) holds. */
 		if (dst_state->event != NULL) {
 			ZEND_FUTURE_SET_IGNORED((zend_future_t *) dst_state->event);
 			ZEND_ASYNC_EVENT_RELEASE(dst_state->event);
@@ -2111,8 +2106,7 @@ void async_future_shared_state_complete(zend_future_shared_state_t *state, zval 
 	zend_atomic_int_store(&state->completed, 1);
 	async_thread_transfer_zval(&state->transferred_result, result);
 
-	/* Trigger may be NULL if the source FutureState was destroyed — in that
-	 * case nobody is listening for the result, just store it and bail. */
+	/* Owner may have already torn down the trigger — nobody to notify. */
 	if (state->trigger != NULL) {
 		state->trigger->trigger(state->trigger);
 	}
@@ -2142,8 +2136,7 @@ void async_future_shared_state_reject(zend_future_shared_state_t *state, zend_ob
 	async_thread_transfer_zval(&state->transferred_exception, &exc_zval);
 	zval_ptr_dtor(&exc_zval);
 
-	/* Trigger may be NULL if the source FutureState was destroyed — in that
-	 * case nobody is listening for the result, just store it and bail. */
+	/* Owner may have already torn down the trigger — nobody to notify. */
 	if (state->trigger != NULL) {
 		state->trigger->trigger(state->trigger);
 	}
