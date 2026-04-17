@@ -1983,20 +1983,24 @@ static void libuv_thread_notify_cb(uv_async_t *handle)
 
 	/* Load persistent result/exception into parent thread's emalloc */
 	ZEND_ASYNC_THREAD_LOAD_RESULT(&thread->event);
+
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		zend_object *exception = EG(exception);
+		GC_ADDREF(exception);
+		zend_clear_exception();
+
+		if (thread->event.exception != NULL) {
+			zend_exception_set_previous(thread->event.exception, exception);
+		} else {
+			thread->event.exception = exception;
+		}
+	}
+
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&thread->event.base, &thread->event.result, thread->event.exception);
 	thread->event.base.stop(&thread->event.base);
 
-	if (UNEXPECTED(thread->event.exception != NULL
-		&& false == ZEND_ASYNC_EVENT_IS_EXCEPTION_HANDLED(&thread->event.base))) {
-
-		if (UNEXPECTED(EG(exception) != NULL)) {
-			zend_exception_set_previous(thread->event.exception, EG(exception));
-			EG(exception) = thread->event.exception;
-		} else {
-			EG(exception) = thread->event.exception;
-		}
-
-		thread->event.exception = NULL;
+	if (ZEND_ASYNC_EVENT_IS_EXCEPTION_HANDLED(&thread->event.base)) {
+		ZEND_THREAD_SET_EXCEPTION_CONSUMED(&thread->event);
 	}
 
 	IF_EXCEPTION_STOP_REACTOR;
@@ -2105,7 +2109,11 @@ static bool libuv_thread_event_dispose(zend_async_event_t *event)
 	if (ZEND_THREAD_IS_RESULT_LOADED(&thread->event)) {
 		zval_ptr_dtor(&thread->event.result);
 		if (thread->event.exception) {
-			OBJ_RELEASE(thread->event.exception);
+			if (ZEND_THREAD_IS_EXCEPTION_CONSUMED(&thread->event)) {
+				OBJ_RELEASE(thread->event.exception);
+			} else {
+				EG(exception) = thread->event.exception;
+			}
 		}
 	} else {
 		if (!Z_ISUNDEF(thread->event.result)) {
@@ -2138,6 +2146,11 @@ static bool libuv_thread_replay(zend_async_event_t *event,
 
 	if (callback != NULL) {
 		callback->callback(event, callback, &thread_event->result, thread_event->exception);
+
+		if (ZEND_ASYNC_EVENT_IS_EXCEPTION_HANDLED(&thread_event->base)) {
+			ZEND_THREAD_SET_EXCEPTION_CONSUMED(thread_event);
+		}
+
 		return true;
 	}
 
@@ -2149,9 +2162,11 @@ static bool libuv_thread_replay(zend_async_event_t *event,
 		zval exc_zv;
 		ZVAL_OBJ_COPY(&exc_zv, thread_event->exception);
 		zend_throw_exception_object(&exc_zv);
+		ZEND_THREAD_SET_EXCEPTION_CONSUMED(thread_event);
 	} else if (exception != NULL && thread_event->exception != NULL) {
 		*exception = thread_event->exception;
 		GC_ADDREF(*exception);
+		ZEND_THREAD_SET_EXCEPTION_CONSUMED(thread_event);
 	}
 
 	return thread_event->exception != NULL || !Z_ISUNDEF(thread_event->result);
