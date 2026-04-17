@@ -2003,10 +2003,6 @@ static void libuv_thread_notify_cb(uv_async_t *handle)
 		ZEND_THREAD_SET_EXCEPTION_CONSUMED(&thread->event);
 	}
 
-	/* Release worker's ref — matches ADD_REF in libuv_thread_event_start.
-	 * After this call `thread` may be freed; don't touch it below. */
-	thread->event.base.dispose(&thread->event.base);
-
 	IF_EXCEPTION_STOP_REACTOR;
 }
 
@@ -2034,11 +2030,6 @@ static bool libuv_thread_event_start(zend_async_event_t *event)
 		ZEND_ASYNC_THREAD_CONTEXT_ADDREF(thread->event.context);
 	}
 
-	/* Worker writes to event->exception in thread_call_closure. Hold a ref
-	 * on the event itself so parent can't dispose+pefree it before worker
-	 * finishes. Released at the end of libuv_thread_notify_cb. */
-	ZEND_ASYNC_EVENT_ADD_REF(&thread->event.base);
-
 	/* Ensure registry exists before uv_thread_create — once the child is
 	 * running, it may race us to the first self-remove call. */
 	libuv_thread_registry_init();
@@ -2049,9 +2040,6 @@ static bool libuv_thread_event_start(zend_async_event_t *event)
 		if (thread->event.context) {
 			zend_atomic_int_dec(&thread->event.context->ref_count);
 		}
-
-		/* Worker never started — release the ref we took for it. */
-		ZEND_ASYNC_EVENT_DEL_REF(&thread->event.base);
 
 		async_throw_error("Failed to create thread: %s", uv_strerror(ret));
 		return false;
