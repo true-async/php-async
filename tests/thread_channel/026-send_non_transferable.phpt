@@ -12,7 +12,7 @@ use Async\ThreadChannel;
 $ch = new ThreadChannel(4);
 
 try {
-    $ch->send(fopen("/dev/null", "r"));
+    $ch->send(tmpfile());
     echo "ERROR: should have thrown\n";
 } catch (\Error $e) {
     echo "Caught: " . $e->getMessage() . "\n";
