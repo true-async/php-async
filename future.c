@@ -767,7 +767,13 @@ static zend_object *async_future_state_transfer_obj(
 		src->shared_state = shared;
 
 		/* Deep copy to persistent memory — carries pointer for LOAD phase.
-		 * No addref: persistent copy is temporary, LOAD phase does addref. */
+		 * Persistent copy holds its own +1 ref while in transit (sitting in
+		 * a channel between SEND and worker LOAD). Without this, main thread
+		 * may drop its src Future after send (local variable goes out of
+		 * scope) while the task is still queued, freeing shared_state and
+		 * causing UAF when worker's LOAD does addref. LOAD transfers this
+		 * ref to dst by setting persistent->shared_state = NULL. */
+		async_future_shared_state_addref(shared);
 		zend_object *dst = default_fn(object, ctx, sizeof(async_future_state_t));
 		async_future_state_t *dst_state = FUTURE_STATE_FROM_OBJ(dst);
 		dst_state->shared_state = shared;
@@ -782,7 +788,9 @@ static zend_object *async_future_state_transfer_obj(
 
 		async_future_state_t *src_state = FUTURE_STATE_FROM_OBJ(object);
 		dst_state->shared_state = src_state->shared_state;
-		async_future_shared_state_addref(dst_state->shared_state);
+		/* Transfer ref from persistent copy to dst — no addref. Detach the
+		 * persistent copy so its later release doesn't delref. */
+		src_state->shared_state = NULL;
 
 		/* default_fn called create_object which allocated a local future —
 		 * mark as ignored (suppress "unused" warning) and release it */
