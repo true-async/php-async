@@ -700,19 +700,29 @@ static void async_future_state_object_free(zend_object *object)
 	async_future_state_t *state = ASYNC_FUTURE_STATE_FROM_OBJ(object);
 
 	if (state->shared_state != NULL) {
-		/* Source side: if ownership was transferred but never completed,
-		 * take the mutex to safely stop the trigger. */
-		if (state->event != NULL && state->shared_state->trigger != NULL) {
-			if (!zend_atomic_int_load(&state->shared_state->completed)) {
-				ASYNC_MUTEX_LOCK(state->shared_state->mutex);
+		/* Source side: ownership was transferred. Stop and dispose the trigger
+		 * here (on the source's thread — the one that created it) to avoid
+		 * uv_close being called from the destination thread during shared_state
+		 * destruction. After disposal, mark completed=1 to prevent the
+		 * destination thread from attempting to fire the (now dead) trigger. */
+		if (state->event != NULL) {
+			zend_async_trigger_event_t *trigger_to_dispose = NULL;
 
-				if (!zend_atomic_int_load(&state->shared_state->completed)) {
-					zend_atomic_int_store(&state->shared_state->completed, 1);
-					state->shared_state->trigger->base.stop(&state->shared_state->trigger->base);
-				}
-
-				ASYNC_MUTEX_UNLOCK(state->shared_state->mutex);
+			ASYNC_MUTEX_LOCK(state->shared_state->mutex);
+			if (state->shared_state->trigger != NULL) {
+				trigger_to_dispose = state->shared_state->trigger;
+				state->shared_state->trigger = NULL;
+				zend_atomic_int_store(&state->shared_state->completed, 1);
 			}
+			ASYNC_MUTEX_UNLOCK(state->shared_state->mutex);
+
+			if (trigger_to_dispose != NULL) {
+				trigger_to_dispose->base.dispose(&trigger_to_dispose->base);
+			}
+
+			/* target_future reference is released alongside state->event below;
+			 * the shared_state no longer needs to read it via trigger_cb. */
+			state->shared_state->target_future = NULL;
 		}
 
 		async_future_shared_state_delref(state->shared_state);
@@ -2100,7 +2110,12 @@ void async_future_shared_state_complete(zend_future_shared_state_t *state, zval 
 
 	zend_atomic_int_store(&state->completed, 1);
 	async_thread_transfer_zval(&state->transferred_result, result);
-	state->trigger->trigger(state->trigger);
+
+	/* Trigger may be NULL if the source FutureState was destroyed — in that
+	 * case nobody is listening for the result, just store it and bail. */
+	if (state->trigger != NULL) {
+		state->trigger->trigger(state->trigger);
+	}
 
 	ASYNC_MUTEX_UNLOCK(state->mutex);
 }
@@ -2127,7 +2142,11 @@ void async_future_shared_state_reject(zend_future_shared_state_t *state, zend_ob
 	async_thread_transfer_zval(&state->transferred_exception, &exc_zval);
 	zval_ptr_dtor(&exc_zval);
 
-	state->trigger->trigger(state->trigger);
+	/* Trigger may be NULL if the source FutureState was destroyed — in that
+	 * case nobody is listening for the result, just store it and bail. */
+	if (state->trigger != NULL) {
+		state->trigger->trigger(state->trigger);
+	}
 
 	ASYNC_MUTEX_UNLOCK(state->mutex);
 }
