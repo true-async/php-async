@@ -2026,17 +2026,41 @@ void async_thread_run(void *arg)
 	/* 1a. Initialize TSRM — must happen before any zend_try
 	 * because zend_try uses EG(bailout) which requires TSRM. */
 #if ZEND_RC_DEBUG
-	/* Suppress RC_DEBUG during TSRM init/shutdown: many core extensions
-	 * (phar, pgsql, pcre, pdo, etc.) allocate persistent data in GINIT
-	 * without marking it GC_PERSISTENT_LOCAL. This is safe because each
-	 * thread gets its own globals copy — no cross-thread sharing. */
-	bool orig_rc_debug = zend_rc_debug;
+	/* Permanently disable zend_rc_debug for this process.
+	 *
+	 * zend_rc_debug is a DEBUG-only global flag (added by Dmitry Stogov
+	 * in 2017, commit 49ea143bbd in php/php-src) that asserts on every
+	 * GC_ADDREF/GC_DELREF: any GC_PERSISTENT refcounted must also have
+	 * GC_PERSISTENT_LOCAL. Intent — catch cross-thread refcount races
+	 * on shared persistent data.
+	 *
+	 * In practice, most PHP core and extension code allocates persistent
+	 * data in MINIT/GINIT without setting GC_PERSISTENT_LOCAL — it was
+	 * safe in the historical ZTS scenario (Apache worker MPM: TSRM init
+	 * once on server start, one thread per request, no shared mutables),
+	 * so nobody ever bothered marking. Only ~24 files in the entire
+	 * php-src tree use the flag at all.
+	 *
+	 * When user code spawns new PHP threads (this extension, or e.g.
+	 * ext/parallel), each child runs ts_resource() which copies main-thread
+	 * globals — including zend_constants. copy_zend_constant calls
+	 * GC_ADDREF on the constant's persistent `attributes` HashTable, which
+	 * has GC_PERSISTENT but not GC_PERSISTENT_LOCAL. Assert fires, worker
+	 * aborts. The same is true for many other persistent allocations made
+	 * by core extensions during their per-thread GINIT.
+	 *
+	 * We cannot fix every extension's GINIT — too many, including
+	 * third-party. The flag is DEBUG-only; production builds (release-ZTS)
+	 * never read it, so this loses no production safety. We do mark our
+	 * own pemalloc'd data with GC_PERSISTENT_LOCAL where appropriate.
+	 *
+	 * ext/parallel makes the same pragmatic choice (it never installs any
+	 * rc_debug guard around its ts_resource() in scheduler.c).
+	 *
+	 * Idempotent: flag may already be false from another worker. */
 	zend_rc_debug = false;
 #endif
 	async_thread_tsrm_init();
-#if ZEND_RC_DEBUG
-	zend_rc_debug = orig_rc_debug;
-#endif
 
 	/* 1b. Start PHP request (can bailout).
 	 * zend_first_try initializes EG(bailout) for this thread. */
@@ -2130,12 +2154,12 @@ cleanup:
 	 * Must be separate because zend_end_try accesses EG(bailout). */
 #ifdef ZTS
 # if ZEND_RC_DEBUG
+	/* See rationale at the startup site. ts_free_thread() runs the same
+	 * GINIT-mirror destructors for every loaded module, so the same
+	 * unmarked-persistent assert fires here without this. */
 	zend_rc_debug = false;
 # endif
 	ts_free_thread();
-# if ZEND_RC_DEBUG
-	/* No restore — thread is dead, TLS is gone. */
-# endif
 #endif
 
 	/* Self-remove from the reactor's child thread registry.
