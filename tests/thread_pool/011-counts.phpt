@@ -1,5 +1,5 @@
 --TEST--
-ThreadPool: getPendingCount, getRunningCount, count
+ThreadPool: getPendingCount, getRunningCount, getCompletedCount
 --SKIPIF--
 <?php
 if (!PHP_ZTS) die('skip ZTS required');
@@ -15,24 +15,25 @@ use function Async\await;
 spawn(function() {
     $pool = new ThreadPool(2);
 
-    echo "Before: count=" . $pool->count() . "\n";
+    echo "Before: pending=" . $pool->getPendingCount()
+        . " running=" . $pool->getRunningCount()
+        . " completed=" . $pool->getCompletedCount() . "\n";
 
     $f1 = $pool->submit(fn() => "a");
     $f2 = $pool->submit(fn() => "b");
 
-    echo "After submit: count=" . $pool->count() . "\n";
-
     await($f1);
     await($f2);
 
-    echo "After await: count=" . $pool->count() . "\n";
+    echo "After await: pending=" . $pool->getPendingCount()
+        . " running=" . $pool->getRunningCount()
+        . " completed=" . $pool->getCompletedCount() . "\n";
 
     $pool->close();
     echo "Done\n";
 });
 ?>
---EXPECTF--
-Before: count=0
-After submit: count=%d
-After await: count=0
+--EXPECT--
+Before: pending=0 running=0 completed=0
+After await: pending=0 running=0 completed=2
 Done

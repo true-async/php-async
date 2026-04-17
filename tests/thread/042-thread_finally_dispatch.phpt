@@ -1,5 +1,10 @@
 --TEST--
 Thread: finally() rejects non-callable; registration on a running thread fires at dtor
+--SKIPIF--
+<?php
+if (!PHP_ZTS) die('skip ZTS required');
+if (!function_exists('Async\spawn_thread')) die('skip spawn_thread not available');
+?>
 --FILE--
 <?php
 

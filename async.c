@@ -150,6 +150,11 @@ PHP_FUNCTION(Async_spawn_thread)
 	THROW_IF_ASYNC_OFF;
 	THROW_IF_SCHEDULER_CONTEXT;
 
+#ifndef ZTS
+	async_throw_error("spawn_thread() requires a Thread-Safe (ZTS) PHP build");
+	RETURN_THROWS();
+#endif
+
 	zval *entry_zv = NULL;
 	bool inherit = true;
 	zval *bootloader_zv = NULL;

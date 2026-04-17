@@ -10,21 +10,17 @@ if (!function_exists('Async\spawn_thread')) die('skip spawn_thread not available
 
 use function Async\spawn;
 use function Async\spawn_thread;
-use function Async\await;
 
 spawn(function() {
-    $thread = spawn_thread(function() {
-        echo "should not run\n";
-    });
-
     try {
-        $result = await($thread);
-        // On non-ZTS, thread should indicate failure
-        echo "exit_code should indicate error\n";
+        spawn_thread(function() {
+            echo "should not run\n";
+        });
+        echo "no throw\n";
     } catch (\Throwable $e) {
         echo "caught: " . $e->getMessage() . "\n";
     }
 });
 ?>
---EXPECTF--
-%s
+--EXPECT--
+caught: spawn_thread() requires a Thread-Safe (ZTS) PHP build

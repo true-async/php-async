@@ -1,5 +1,10 @@
 --TEST--
 ThreadPool: closures with try/catch, static vars and dynamic_func_defs transfer cleanly
+--SKIPIF--
+<?php
+if (!PHP_ZTS) die('skip ZTS required');
+if (!class_exists('Async\ThreadPool')) die('skip ThreadPool not available');
+?>
 --FILE--
 <?php
 

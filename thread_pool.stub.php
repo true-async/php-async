@@ -12,7 +12,7 @@ namespace Async;
  * @strict-properties
  * @not-serializable
  */
-final class ThreadPool implements \Countable
+final class ThreadPool
 {
     /**
      * @param int $workers Number of worker threads.
@@ -58,9 +58,10 @@ final class ThreadPool implements \Countable
     public function getRunningCount(): int {}
 
     /**
-     * Total number of tasks (pending + running).
+     * Number of tasks that have completed (successfully or with exception)
+     * since the pool was created. Monotonically increasing.
      */
-    public function count(): int {}
+    public function getCompletedCount(): int {}
 
     /**
      * Number of worker threads.

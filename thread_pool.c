@@ -102,6 +102,8 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			async_thread_create_closure(&snapshot->entry, &callable);
 
 			if (UNEXPECTED(EG(exception))) {
+				zend_atomic_int_dec(&pool->base.running_count);
+				zend_atomic_int_inc(&pool->base.completed_count);
 				async_future_shared_state_reject(state, EG(exception));
 				zend_clear_exception();
 				goto task_cleanup;
@@ -111,6 +113,8 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			zend_fcall_info_cache fcc;
 
 			if (UNEXPECTED(zend_fcall_info_init(&callable, 0, &fci, &fcc, NULL, NULL) != SUCCESS)) {
+				zend_atomic_int_dec(&pool->base.running_count);
+				zend_atomic_int_inc(&pool->base.completed_count);
 				if (EG(exception)) {
 					async_future_shared_state_reject(state, EG(exception));
 					zend_clear_exception();
@@ -132,11 +136,21 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 				} ZEND_HASH_FOREACH_END();
 			}
 
+			/* Decrement running and bump completed BEFORE notifying the awaiter
+			 * via complete/reject — otherwise a coroutine waking from await()
+			 * would observe stale running_count and a missing completed bump. */
 			if (zend_call_function(&fci, &fcc) == SUCCESS && !EG(exception)) {
+				zend_atomic_int_dec(&pool->base.running_count);
+				zend_atomic_int_inc(&pool->base.completed_count);
 				async_future_shared_state_complete(state, &retval);
 			} else if (EG(exception)) {
+				zend_atomic_int_dec(&pool->base.running_count);
+				zend_atomic_int_inc(&pool->base.completed_count);
 				async_future_shared_state_reject(state, EG(exception));
 				zend_clear_exception();
+			} else {
+				zend_atomic_int_dec(&pool->base.running_count);
+				zend_atomic_int_inc(&pool->base.completed_count);
 			}
 
 		task_cleanup:
@@ -151,8 +165,6 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			async_thread_snapshot_destroy(snapshot);
 			async_future_shared_state_delref(state);
 			zval_ptr_dtor(&task);
-
-			zend_atomic_int_dec(&pool->base.running_count);
 		}
 
 		if (EG(exception)) {
@@ -231,6 +243,7 @@ zend_async_thread_pool_t *async_thread_pool_create(int32_t worker_count, int32_t
 	pool->base.worker_count = 0;
 	ZEND_ATOMIC_INT_INIT(&pool->base.pending_count, 0);
 	ZEND_ATOMIC_INT_INIT(&pool->base.running_count, 0);
+	ZEND_ATOMIC_INT_INIT(&pool->base.completed_count, 0);
 	ZEND_ATOMIC_INT_INIT(&pool->base.closed, 0);
 	ZEND_ATOMIC_INT_INIT(&pool->base.ref_count, 1); /* PHP object holds 1 ref */
 
@@ -396,6 +409,12 @@ METHOD(__construct)
 		Z_PARAM_OPTIONAL
 		Z_PARAM_LONG(queue_size)
 	ZEND_PARSE_PARAMETERS_END();
+
+#ifndef ZTS
+	zend_throw_exception(async_ce_thread_pool_exception,
+		"ThreadPool requires a Thread-Safe (ZTS) PHP build", 0);
+	RETURN_THROWS();
+#endif
 
 	if (workers < 1) {
 		zend_argument_value_error(1, "must be >= 1");
@@ -683,15 +702,12 @@ METHOD(getRunningCount)
 	RETURN_LONG(pool ? zend_atomic_int_load(&pool->base.running_count) : 0);
 }
 
-METHOD(count)
+METHOD(getCompletedCount)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
 	async_thread_pool_t *pool = THIS_POOL();
-	if (pool == NULL) {
-		RETURN_LONG(0);
-	}
-	RETURN_LONG(zend_atomic_int_load(&pool->base.pending_count) + zend_atomic_int_load(&pool->base.running_count));
+	RETURN_LONG(pool ? zend_atomic_int_load(&pool->base.completed_count) : 0);
 }
 
 METHOD(getWorkerCount)
@@ -708,7 +724,7 @@ METHOD(getWorkerCount)
 
 void async_register_thread_pool_ce(void)
 {
-	async_ce_thread_pool = register_class_Async_ThreadPool(zend_ce_countable);
+	async_ce_thread_pool = register_class_Async_ThreadPool();
 	async_ce_thread_pool->create_object = thread_pool_create_object;
 
 	memcpy(&thread_pool_handlers, &std_object_handlers, sizeof(zend_object_handlers));
