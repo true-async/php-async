@@ -246,11 +246,24 @@ jobs:
           sudo mkdir -p /etc/php.d
           echo "opcache.enable_cli=1" | sudo tee /etc/php.d/opcache.ini
 
+      - name: Enable core dumps (ASAN only)
+        if: matrix.asan == true
+        run: |
+          sudo mkdir -p /tmp/cores
+          sudo chmod 1777 /tmp/cores
+          echo '/tmp/cores/core.%e.%p' | sudo tee /proc/sys/kernel/core_pattern
+          sudo sysctl -w kernel.core_uses_pid=0
+          ulimit -c unlimited
+          # Tell ASAN to abort (so glibc dumps core) instead of just exit
+          echo "ASAN_OPTIONS=abort_on_error=1:disable_coredump=0:unmap_shadow_on_exit=1" >> $GITHUB_ENV
+
       - name: Run basic tests
         working-directory: php-src/ext/async
+        continue-on-error: ${{ matrix.asan == true }}
         run: |
+          ulimit -c unlimited
           /usr/local/bin/php -v
-          
+
           # Configure test parameters based on ASAN
           TEST_PARAMS=""
           if [ "${{ matrix.asan }}" = "true" ]; then
@@ -259,7 +272,7 @@ jobs:
           else
             PARALLEL_JOBS="$(nproc)"
           fi
-          
+
           /usr/local/bin/php ../../run-tests.php \
             $TEST_PARAMS \
             -P -q -j$PARALLEL_JOBS \
@@ -270,6 +283,37 @@ jobs:
             --show-slow 4000 \
             --set-timeout 120 \
             .
+
+      - name: Collect core dumps + backtraces (ASAN only)
+        if: matrix.asan == true && always()
+        run: |
+          sudo apt-get install -y --no-install-recommends gdb
+          mkdir -p /tmp/bt
+          shopt -s nullglob
+          for core in /tmp/cores/core.*; do
+            base=$(basename "$core")
+            echo "=== $base ===" | tee /tmp/bt/${base}.bt.txt
+            sudo gdb -batch -nx \
+              -ex 'set pagination off' \
+              -ex 'set print pretty on' \
+              -ex 'thread apply all bt 60' \
+              /usr/local/bin/php "$core" >> /tmp/bt/${base}.bt.txt 2>&1 || true
+          done
+          ls -la /tmp/cores/ /tmp/bt/ || true
+
+      - name: Upload core dumps + backtraces (ASAN only)
+        if: matrix.asan == true && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: asan-cores-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            /tmp/cores/
+            /tmp/bt/
+            php-src/sapi/cli/php
+            php-src/ext/async/tests/thread_pool/*.out
+            php-src/ext/async/tests/thread_pool/*.diff
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Test OpCache
         working-directory: php-src/ext/async
