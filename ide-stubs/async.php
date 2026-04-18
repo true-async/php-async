@@ -686,7 +686,27 @@ final class Scope implements ScopeProvider
 /**
  * Write-side handle for a {@see Future}.
  *
- * The owner of a FutureState can resolve or reject the corresponding Future.
+ * FutureState holds the mutable half of the Future pair: it can be resolved
+ * (via {@see complete()}) or rejected (via {@see error()}) exactly once.
+ * The matching {@see Future} is the read-only consumer side.
+ *
+ * ## Cross-thread transfer
+ *
+ * FutureState is the **only** Future-related object that can be transferred
+ * between OS threads. Transferring FutureState also transfers **ownership**:
+ * only one thread may call complete()/error() — a second transfer throws.
+ *
+ * Typical pattern:
+ * ```php
+ * $state  = new FutureState();
+ * $future = new Future($state);          // parent keeps Future (read side)
+ *
+ * spawn_thread(function() use ($state) { // child gets FutureState (write side)
+ *     $state->complete(computeResult()); // wakes parent's await($future)
+ * });
+ *
+ * $result = await($future);
+ * ```
  *
  * @template T
  * @since 8.6
@@ -951,6 +971,11 @@ class ThreadTransferException extends AsyncException {}
  * Obtain a Thread via {@see spawn_thread()}.
  * Each thread has its own PHP runtime (TSRM) and event loop.
  *
+ * Data transfer between threads follows deep-copy semantics:
+ * scalars, arrays, objects with declared properties, Closures, WeakReference,
+ * WeakMap, and FutureState are transferable. stdClass, PHP references, and
+ * resources are not — attempting to transfer them throws ThreadTransferException.
+ *
  * @since 8.6
  */
 final class Thread implements Completable
@@ -993,6 +1018,232 @@ final class Thread implements Completable
      * Define a callback to be executed when the thread is finished.
      */
     public function finally(\Closure $callback): void {}
+}
+
+// ---------------------------------------------------------------------------
+// ThreadChannel
+// ---------------------------------------------------------------------------
+
+/**
+ * Exception thrown when operating on a closed or exhausted thread channel.
+ *
+ * @since 8.6
+ */
+class ThreadChannelException extends AsyncException {}
+
+/**
+ * Thread-safe buffered channel for message passing between OS threads.
+ *
+ * Unlike {@see Channel} (coroutine-only, single-thread), ThreadChannel uses
+ * persistent shared memory and a pthread mutex so that send() and recv() can
+ * be called concurrently from different OS threads.
+ *
+ * Each value is deep-copied into shared memory on send() and back into the
+ * receiving thread's heap on recv(). The same transfer rules apply as for
+ * {@see spawn_thread()}: stdClass, PHP references, and resources are rejected
+ * with {@see ThreadTransferException}.
+ *
+ * Always buffered (capacity ≥ 1). Rendezvous semantics (capacity = 0) are
+ * not supported.
+ *
+ * A ThreadChannel handle may itself be transferred via spawn_thread() so
+ * that multiple threads share the same underlying channel.
+ *
+ * @since 8.6
+ */
+final class ThreadChannel implements Awaitable, \Countable
+{
+    /**
+     * Create a new thread-safe channel.
+     *
+     * @param int $capacity Buffer size (must be ≥ 1, default 16).
+     */
+    public function __construct(int $capacity = 16) {}
+
+    /**
+     * Send a value into the channel.
+     *
+     * Suspends the current coroutine until buffer space is available (if the
+     * buffer is full). The value is deep-copied into persistent shared memory.
+     *
+     * @param mixed            $value
+     * @param Completable|null $cancellationToken Optional cancellation token.
+     * @throws ThreadChannelException      If the channel is closed.
+     * @throws ThreadTransferException     If the value cannot be transferred.
+     * @throws OperationCanceledException  If the cancellation token fires.
+     */
+    public function send(mixed $value, ?Completable $cancellationToken = null): void {}
+
+    /**
+     * Receive a value from the channel.
+     *
+     * Suspends the current coroutine until a value is available or the channel
+     * is closed. Returns any buffered values before throwing on close.
+     *
+     * @param Completable|null $cancellationToken Optional cancellation token.
+     * @return mixed The received value (copied into the current thread's heap).
+     * @throws ThreadChannelException      If the channel is closed and empty.
+     * @throws OperationCanceledException  If the cancellation token fires.
+     */
+    public function recv(?Completable $cancellationToken = null): mixed {}
+
+    /**
+     * Close the channel.
+     *
+     * After closing:
+     * - {@see send()} immediately throws {@see ThreadChannelException}.
+     * - {@see recv()} drains remaining buffered values, then throws.
+     * - All coroutines/threads suspended in send() or recv() are woken
+     *   with {@see ThreadChannelException}.
+     *
+     * Calling close() more than once is a safe no-op.
+     */
+    public function close(): void {}
+
+    /**
+     * Return true if the channel has been closed.
+     */
+    public function isClosed(): bool {}
+
+    /**
+     * Return the channel capacity set at construction.
+     */
+    public function capacity(): int {}
+
+    /**
+     * Return the number of values currently buffered.
+     */
+    public function count(): int {}
+
+    /**
+     * Return true if no values are currently buffered.
+     */
+    public function isEmpty(): bool {}
+
+    /**
+     * Return true if the buffer is at capacity.
+     */
+    public function isFull(): bool {}
+}
+
+// ---------------------------------------------------------------------------
+// ThreadPool
+// ---------------------------------------------------------------------------
+
+/**
+ * Exception thrown by ThreadPool operations (e.g. submitting to a closed pool).
+ *
+ * @since 8.6
+ */
+class ThreadPoolException extends \Exception {}
+
+/**
+ * Fixed-size pool of reusable OS worker threads for CPU-bound tasks.
+ *
+ * Worker threads are created once at construction and remain alive until
+ * the pool is closed or cancelled. Tasks submitted via {@see submit()} are
+ * transferred to workers through an internal {@see ThreadChannel}; each task
+ * returns a {@see Future} that resolves with the return value or rejects with
+ * the exception thrown inside the worker.
+ *
+ * The pool object itself may be transferred between OS threads (shared
+ * persistent memory with reference counting), so multiple threads can submit
+ * tasks to the same pool concurrently.
+ *
+ * Task callables and their arguments follow the same deep-copy transfer rules
+ * as {@see spawn_thread()}: scalars, arrays, objects with declared properties,
+ * Closures, WeakReference, WeakMap, and FutureState are accepted; stdClass,
+ * PHP references, and resources are rejected with {@see ThreadTransferException}.
+ *
+ * @since 8.6
+ */
+final class ThreadPool
+{
+    /**
+     * Create a pool with a fixed number of worker threads.
+     *
+     * Workers start immediately. Destroying the ThreadPool object without
+     * calling close() or cancel() first triggers a graceful shutdown.
+     *
+     * @param int $workers   Number of worker threads (typically = CPU core count).
+     * @param int $queueSize Maximum number of tasks that may wait in the queue.
+     *                       0 = default (workers × 4). When the queue is full,
+     *                       submit() suspends the caller until a slot opens.
+     */
+    public function __construct(int $workers, int $queueSize = 0) {}
+
+    /**
+     * Submit a callable for execution in a worker thread.
+     *
+     * The callable and any extra arguments are deep-copied to the worker.
+     * Returns a Future that resolves with the callable's return value, or
+     * rejects if the callable throws.
+     *
+     * @param callable $task    The callable to execute in a worker thread.
+     * @param mixed    ...$args Extra arguments passed to the callable.
+     * @return Future<mixed>
+     * @throws ThreadPoolException     If the pool is closed.
+     * @throws ThreadTransferException If the callable or args cannot be transferred.
+     */
+    public function submit(callable $task, mixed ...$args): Future {}
+
+    /**
+     * Apply a callable to each element of an array in parallel.
+     *
+     * Tasks are distributed across worker threads. Blocks the current
+     * coroutine until all tasks complete. Results are returned in the same
+     * order as the input array.
+     *
+     * @param array    $items Input array.
+     * @param callable $task  Called with each element; return value is collected.
+     * @return array Results indexed the same as $items.
+     * @throws ThreadPoolException If the pool is closed.
+     */
+    public function map(array $items, callable $task): array {}
+
+    /**
+     * Gracefully shut down the pool.
+     *
+     * Rejects new submissions immediately. Already-running tasks complete
+     * normally; pending (queued) tasks are cancelled with ThreadPoolException.
+     */
+    public function close(): void {}
+
+    /**
+     * Forcefully stop the pool.
+     *
+     * Cancels all pending tasks and signals workers to stop after finishing
+     * their current task.
+     */
+    public function cancel(): void {}
+
+    /**
+     * Return true if the pool has been closed or cancelled.
+     */
+    public function isClosed(): bool {}
+
+    /**
+     * Return the number of tasks currently waiting in the queue.
+     */
+    public function getPendingCount(): int {}
+
+    /**
+     * Return the number of tasks currently being executed by workers.
+     */
+    public function getRunningCount(): int {}
+
+    /**
+     * Return the total number of tasks completed since the pool was created.
+     *
+     * This counter is monotonically increasing and includes both successful
+     * and failed tasks.
+     */
+    public function getCompletedCount(): int {}
+
+    /**
+     * Return the number of worker threads in the pool.
+     */
+    public function getWorkerCount(): int {}
 }
 
 // ---------------------------------------------------------------------------
@@ -1629,6 +1880,29 @@ function spawn_with(ScopeProvider $provider, callable $task, mixed ...$args): Co
  * the parent's compiled code is shared via SHM (near-zero overhead).
  * Without OPcache, a deep copy is performed (TODO).
  *
+ * ## Returning values from threads
+ *
+ * The idiomatic way to return a value from a thread is via {@see FutureState} —
+ * the only Future-related object that can cross thread boundaries:
+ * ```php
+ * $state  = new FutureState();
+ * $future = new Future($state);
+ *
+ * spawn_thread(function() use ($state) {
+ *     $state->complete(computeResult());
+ * });
+ *
+ * $result = await($future);
+ * ```
+ *
+ * ## Transfer rules
+ *
+ * Arguments captured by the closure are deep-copied into the child thread.
+ * Transferable types: scalars, arrays, objects with declared properties,
+ * Closures, WeakReference, WeakMap, FutureState, ThreadChannel, ThreadPool.
+ * Non-transferable: stdClass, PHP references, resources — these throw
+ * {@see ThreadTransferException}.
+ *
  * @param \Closure      $task       The closure to execute in the new thread.
  * @param bool          $inherit    If true (default), inherit the parent's function/class tables
  *                                  into the child thread. If false, only the closure and
@@ -1636,6 +1910,7 @@ function spawn_with(ScopeProvider $provider, callable $task, mixed ...$args): Co
  * @param \Closure|null $bootloader Optional closure executed in the thread before $task.
  *                                  Use it to set up autoloaders, initialize DI, etc.
  * @return Thread A thread handle implementing Completable.
+ * @throws ThreadTransferException If the closure captures non-transferable values.
  */
 function spawn_thread(\Closure $task, bool $inherit = true, ?\Closure $bootloader = null): Thread {}
 
