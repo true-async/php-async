@@ -4577,16 +4577,36 @@ static void on_connection_event(uv_stream_t *server, int status)
 		exception = async_new_exception(
 				async_ce_input_output_exception, "Connection accept error: %s", uv_strerror(status));
 	} else {
-		uv_tcp_t client;
-		int result = uv_tcp_init(UVLOOP, &client);
+		/* The uv_tcp_t must outlive the uv_close callback that fires on a
+		 * later loop tick — a stack-allocated handle here dangles in libuv's
+		 * closing queue and crashes uv__finish_close at reactor shutdown. */
+		uv_tcp_t *client = pemalloc(sizeof(uv_tcp_t), 0);
+		int result = uv_tcp_init(UVLOOP, client);
 
 		if (result == 0) {
-			result = uv_accept(server, (uv_stream_t *) &client);
+			result = uv_accept(server, (uv_stream_t *) client);
 			if (result == 0) {
 				uv_os_fd_t fd;
-				result = uv_fileno((uv_handle_t *) &client, &fd);
+				result = uv_fileno((uv_handle_t *) client, &fd);
 				if (result == 0) {
-					client_socket = (zend_socket_t) fd;
+					/* Dup the fd so the accepted socket survives uv_close
+					 * of the internal handle below. The consumer owns the
+					 * dup'd fd and closes it when done. */
+#ifdef PHP_WIN32
+					WSAPROTOCOL_INFO info;
+					if (WSADuplicateSocket((SOCKET) fd, GetCurrentProcessId(), &info) == 0) {
+						client_socket = WSASocketW(info.iAddressFamily, info.iSocketType,
+								info.iProtocol, &info, 0, WSA_FLAG_OVERLAPPED);
+					}
+					if (client_socket == INVALID_SOCKET) {
+						result = UV_EIO;
+					}
+#else
+					client_socket = (zend_socket_t) dup((int) fd);
+					if (client_socket < 0) {
+						result = UV_EIO;
+					}
+#endif
 				}
 			}
 		}
@@ -4594,8 +4614,13 @@ static void on_connection_event(uv_stream_t *server, int status)
 		if (result < 0) {
 			exception = async_new_exception(
 					async_ce_input_output_exception, "Failed to accept connection: %s", uv_strerror(result));
-			uv_close((uv_handle_t *) &client, NULL);
 		}
+
+		/* Always close the uv handle; the close callback pefrees it via
+		 * handle->data. uv_close is safe on a handle that reached uv_tcp_init
+		 * but not uv_accept. */
+		client->data = client;
+		uv_close((uv_handle_t *) client, libuv_close_handle_cb);
 	}
 
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&listen_event->event.base, &client_socket, exception);
@@ -4708,7 +4733,7 @@ libuv_listen_get_local_address(zend_async_listen_event_t *listen_event, char *ho
 /* }}} */
 
 /* {{{ libuv_socket_listen */
-zend_async_listen_event_t *libuv_socket_listen(const char *host, int port, int backlog, size_t extra_size)
+zend_async_listen_event_t *libuv_socket_listen(const char *host, int port, int backlog, uint32_t flags, size_t extra_size)
 {
 	START_REACTOR_OR_RETURN_NULL;
 
@@ -4743,7 +4768,17 @@ zend_async_listen_event_t *libuv_socket_listen(const char *host, int port, int b
 		return NULL;
 	}
 
-	error = uv_tcp_bind(&listen_event->uv_handle, (struct sockaddr *) &addr, 0);
+	unsigned int bind_flags = 0;
+#ifdef UV_TCP_REUSEPORT
+	if (flags & ZEND_ASYNC_LISTEN_F_REUSEPORT) {
+		bind_flags |= UV_TCP_REUSEPORT;
+	}
+#endif
+	if (flags & ZEND_ASYNC_LISTEN_F_IPV6ONLY) {
+		bind_flags |= UV_TCP_IPV6ONLY;
+	}
+
+	error = uv_tcp_bind(&listen_event->uv_handle, (struct sockaddr *) &addr, bind_flags);
 	if (error < 0) {
 		async_throw_error("Failed to bind to %s:%d: %s", host, port, uv_strerror(error));
 		uv_close((uv_handle_t *) &listen_event->uv_handle, libuv_close_handle_cb);
