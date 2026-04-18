@@ -3808,8 +3808,16 @@ static void io_pipe_read_cb(uv_stream_t *pipe_stream, ssize_t bytes_read, const 
 		return;
 	}
 
-	uv_read_stop(pipe_stream);
-	io->active_req = NULL;
+	const bool multishot = ZEND_ASYNC_IO_IS_MULTISHOT(&io->base);
+	const bool terminal = (bytes_read < 0);
+
+	/* One-shot semantics: stop the reader after the first completion.
+	 * Multishot: stay armed until the caller closes the IO, except on EOF/error
+	 * which are always terminal. */
+	if (!multishot || terminal) {
+		uv_read_stop(pipe_stream);
+		io->active_req = NULL;
+	}
 
 	if (UNEXPECTED(req == NULL)) {
 		return;
@@ -3826,7 +3834,9 @@ static void io_pipe_read_cb(uv_stream_t *pipe_stream, ssize_t bytes_read, const 
 				async_ce_input_output_exception, "Pipe read error: %s", uv_strerror((int) bytes_read));
 	}
 
-	req->base.completed = true;
+	/* In multishot mode on a successful read, leave the request uncompleted so
+	 * it can be reused for the next chunk delivered by libuv. */
+	req->base.completed = !multishot || terminal;
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
 	IF_EXCEPTION_STOP_REACTOR;
 }
@@ -4815,8 +4825,16 @@ udp_recv_cb(uv_udp_t *udp_handle, ssize_t nread, const uv_buf_t *buf, const stru
 		return;
 	}
 
-	uv_udp_recv_stop(udp_handle);
-	io->active_req = NULL;
+	const bool multishot = ZEND_ASYNC_IO_IS_MULTISHOT(&io->base);
+	const bool terminal = (nread < 0);
+
+	/* One-shot semantics: stop the UDP reader after the first completion.
+	 * Multishot: stay armed until the caller closes the IO; errors are still
+	 * terminal and tear the operation down. */
+	if (!multishot || terminal) {
+		uv_udp_recv_stop(udp_handle);
+		io->active_req = NULL;
+	}
 
 	if (nread < 0) {
 		req->base.exception = async_throw_input_output("UDP recv failed: %s", uv_strerror((int) nread));
@@ -4832,7 +4850,7 @@ udp_recv_cb(uv_udp_t *udp_handle, ssize_t nread, const uv_buf_t *buf, const stru
 		}
 	}
 
-	req->base.completed = true;
+	req->base.completed = !multishot || terminal;
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
 }
 
