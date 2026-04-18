@@ -4779,7 +4779,9 @@ zend_async_listen_event_t *libuv_socket_listen(const char *host, int port, int b
 	}
 
 	unsigned int bind_flags = 0;
-#ifdef UV_TCP_REUSEPORT
+	/* UV_TCP_REUSEPORT is an enum value (not a #define), so #ifdef can't
+	 * detect it — gate on libuv version instead. Added in libuv 1.49.0. */
+#if UV_VERSION_HEX >= ((1 << 16) | (49 << 8))
 	if (flags & ZEND_ASYNC_LISTEN_F_REUSEPORT) {
 		bind_flags |= UV_TCP_REUSEPORT;
 	}
