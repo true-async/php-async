@@ -3717,10 +3717,20 @@ static bool libuv_io_event_stop(zend_async_event_t *event)
 
 	async_io_t *io = (async_io_t *) event;
 
-	/* Cancel pending stream read if any */
+	/* Cancel pending stream read if any. Callers may use event.stop() to
+	 * stop a multishot read without having previously called event.start()
+	 * (reactor-internal reads submitted via IO_READ bypass start/stop), so
+	 * we still need to run uv_read_stop even when loop_ref_count is 0. */
 	if (io->active_req != NULL && ZEND_ASYNC_IO_IS_STREAM(io->base.type)) {
 		uv_read_stop(&io->handle.stream);
 		io->active_req = NULL;
+	}
+
+	/* No loop ref to drop → do not touch the global active_event_count.
+	 * Otherwise we steal a count from some other event and the scheduler
+	 * later mis-detects deadlock. */
+	if (event->loop_ref_count == 0) {
+		return true;
 	}
 
 	event->loop_ref_count = 0;
