@@ -48,9 +48,20 @@ $pid = $ready->recv();
 delay(50);
 $killer->exec("SELECT pg_terminate_backend($pid)");
 
-echo await($coroA) . "\n";
-echo await($coroB) . "\n";
-delay(5);
+// Collect results into an order-independent array so the echo order
+// doesn't depend on which coroutine resolves first.
+$results = [await($coroA), await($coroB)];
+sort($results);
+foreach ($results as $r) {
+    echo $r . "\n";
+}
+
+// Pool cleanup after a terminated connection is asynchronous. Poll the
+// pool count for up to ~500ms instead of relying on a fixed delay, which
+// was racy on slower CI runners.
+for ($i = 0; $i < 50 && $pool->count() > 1; $i++) {
+    delay(10);
+}
 echo "Pool count: " . $pool->count() . "\n";
 echo "Done\n";
 ?>

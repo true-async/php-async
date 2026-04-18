@@ -16,13 +16,15 @@ use function Async\await;
 $ch = new ThreadChannel(8);
 
 spawn(function() use ($ch) {
-    // Two coroutines waiting on recv
+    // Two coroutines waiting on recv — the race between them determines
+    // which one receives which value, so the test collects the payloads
+    // into an order-independent array and sorts it before printing.
     $c1 = spawn(function() use ($ch) {
-        return "c1:" . $ch->recv();
+        return $ch->recv();
     });
 
     $c2 = spawn(function() use ($ch) {
-        return "c2:" . $ch->recv();
+        return $ch->recv();
     });
 
     // Thread sends two values — each coroutine gets one
@@ -33,13 +35,15 @@ spawn(function() use ($ch) {
 
     $results = [await($c1), await($c2)];
     sort($results);
-    echo implode("\n", $results) . "\n";
+    foreach ($results as $i => $v) {
+        echo $i . ":" . $v . "\n";
+    }
 
     await($thread);
     echo "Done\n";
 });
 ?>
 --EXPECT--
-c1:hello
-c2:world
+0:hello
+1:world
 Done
