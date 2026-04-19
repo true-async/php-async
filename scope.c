@@ -1478,6 +1478,14 @@ static bool scope_can_be_disposed(zend_async_scope_t *zend_scope, bool with_zomb
 		return false;
 	}
 
+	// Owner-pinned scopes (TaskGroup, curl event, etc.) refuse disposal while
+	// ZEND_ASYNC_SCOPE_F_OWNER_PINNED is set. The owner clears the flag in its
+	// dtor to release the pin. This prevents parent-cascade disposal from
+	// freeing a scope while the C-level owner still holds a raw pointer.
+	if (can_be_disposed && ZEND_ASYNC_SCOPE_IS_OWNER_PINNED(&scope->scope)) {
+		return false;
+	}
+
 	// If a Scope has no active coroutines,
 	// it can be disposed provided that it is either cancelled or
 	// its Zend object has already been destroyed.
