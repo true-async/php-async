@@ -766,6 +766,12 @@ static void task_group_drain(async_task_group_t *group)
 {
 	zval *zv;
 
+	/* Group is being torn down — scope was cleared in the dtor.
+	 * Pending entries will be freed by task_group_free_object. */
+	if (group->scope == NULL) {
+		return;
+	}
+
 	zend_hash_internal_pointer_reset(&group->tasks);
 
 	while (task_group_has_slot(group)) {
