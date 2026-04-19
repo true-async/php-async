@@ -4603,8 +4603,8 @@ static void on_connection_event(uv_stream_t *server, int status)
 					 * of the internal handle below. The consumer owns the
 					 * dup'd fd and closes it when done. */
 #ifdef PHP_WIN32
-					WSAPROTOCOL_INFO info;
-					if (WSADuplicateSocket((SOCKET) fd, GetCurrentProcessId(), &info) == 0) {
+					WSAPROTOCOL_INFOW info;
+					if (WSADuplicateSocketW((SOCKET) fd, GetCurrentProcessId(), &info) == 0) {
 						client_socket = WSASocketW(info.iAddressFamily, info.iSocketType,
 								info.iProtocol, &info, 0, WSA_FLAG_OVERLAPPED);
 					}
