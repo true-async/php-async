@@ -1040,8 +1040,17 @@ libuv_new_timer_event(const zend_ulong timeout, const zend_ulong nanoseconds, co
 	// Calculate final timeout with nanoseconds support
 	zend_ulong final_timeout = timeout;
 	if (nanoseconds > 0 && timeout == 0) {
-		// If only nanoseconds provided, convert to milliseconds with ceiling
-		final_timeout = (nanoseconds + 999999) / 1000000; // Round up to next millisecond
+		/* Saturate on overflow: (nanoseconds + 999999) would wrap near UINT64_MAX.
+		 * Also cap at UINT_MAX since event->event.timeout is `unsigned int`. */
+		if (nanoseconds > ZEND_ULONG_MAX - 999999) {
+			final_timeout = UINT_MAX;
+		} else {
+			/* Convert to milliseconds with ceiling, then cap. */
+			final_timeout = (nanoseconds + 999999) / 1000000;
+			if (final_timeout > UINT_MAX) {
+				final_timeout = UINT_MAX;
+			}
+		}
 	}
 
 	event->event.timeout = final_timeout;
@@ -4773,8 +4782,10 @@ zend_async_listen_event_t *libuv_socket_listen(const char *host, int port, int b
 
 	if (error < 0) {
 		async_throw_error("Failed to parse address %s:%d: %s", host, port, uv_strerror(error));
+		/* close_cb frees listen_event via handle->data; freeing here would UAF on
+		 * the next loop tick when libuv accesses the closing handle. */
+		listen_event->uv_handle.data = listen_event;
 		uv_close((uv_handle_t *) &listen_event->uv_handle, libuv_close_handle_cb);
-		pefree(listen_event, 0);
 		return NULL;
 	}
 
@@ -4793,8 +4804,8 @@ zend_async_listen_event_t *libuv_socket_listen(const char *host, int port, int b
 	error = uv_tcp_bind(&listen_event->uv_handle, (struct sockaddr *) &addr, bind_flags);
 	if (error < 0) {
 		async_throw_error("Failed to bind to %s:%d: %s", host, port, uv_strerror(error));
+		listen_event->uv_handle.data = listen_event;
 		uv_close((uv_handle_t *) &listen_event->uv_handle, libuv_close_handle_cb);
-		pefree(listen_event, 0);
 		return NULL;
 	}
 
@@ -4803,8 +4814,8 @@ zend_async_listen_event_t *libuv_socket_listen(const char *host, int port, int b
 	error = uv_fileno((uv_handle_t *) &listen_event->uv_handle, &fd);
 	if (error < 0) {
 		async_throw_error("Failed to get socket descriptor: %s", uv_strerror(error));
+		listen_event->uv_handle.data = listen_event;
 		uv_close((uv_handle_t *) &listen_event->uv_handle, libuv_close_handle_cb);
-		pefree(listen_event, 0);
 		return NULL;
 	}
 
