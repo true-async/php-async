@@ -545,8 +545,8 @@ METHOD(__construct)
 	Z_PARAM_LONG(capacity)
 	ZEND_PARSE_PARAMETERS_END();
 
-	if (capacity < 0) {
-		zend_argument_value_error(1, "must be >= 0");
+	if (capacity < 0 || capacity > INT32_MAX) {
+		zend_argument_value_error(1, "must be between 0 and %d", INT32_MAX);
 		RETURN_THROWS();
 	}
 

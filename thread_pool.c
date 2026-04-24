@@ -416,13 +416,19 @@ METHOD(__construct)
 	RETURN_THROWS();
 #endif
 
-	if (workers < 1) {
-		zend_argument_value_error(1, "must be >= 1");
+	if (workers < 1 || workers > INT32_MAX) {
+		zend_argument_value_error(1, "must be between 1 and %d", INT32_MAX);
+		RETURN_THROWS();
+	}
+
+	if (queue_size > INT32_MAX) {
+		zend_argument_value_error(2, "must be between 0 and %d", INT32_MAX);
 		RETURN_THROWS();
 	}
 
 	if (queue_size <= 0) {
-		queue_size = workers * 4;
+		/* Saturate default (4 * workers) instead of wrapping. */
+		queue_size = (workers > INT32_MAX / 4) ? INT32_MAX : workers * 4;
 	}
 
 	thread_pool_object_t *obj = ASYNC_THREAD_POOL_FROM_OBJ(Z_OBJ_P(ZEND_THIS));

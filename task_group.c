@@ -1338,22 +1338,29 @@ METHOD(__construct)
 
 	async_task_group_t *group = THIS_GROUP();
 
-	if (UNEXPECTED(concurrency < 0)) {
-		zend_argument_value_error(1, "must be greater than or equal to 0");
+	if (UNEXPECTED(concurrency < 0 || concurrency > UINT32_MAX)) {
+		zend_argument_value_error(1, "must be between 0 and %u", UINT32_MAX);
 		RETURN_THROWS();
 	}
 	group->concurrency = (uint32_t) concurrency;
 
-	if (UNEXPECTED(!queue_limit_is_null && queue_limit < 0)) {
-		zend_argument_value_error(2, "must be greater than or equal to 0");
+	if (UNEXPECTED(!queue_limit_is_null && (queue_limit < 0 || queue_limit > UINT32_MAX))) {
+		zend_argument_value_error(2, "must be between 0 and %u", UINT32_MAX);
 		RETURN_THROWS();
 	}
 
 	/* Default queue_limit: 2 * concurrency (gives a modest backpressure window).
 	 * Unlimited concurrency (0) always spawns immediately, so queue_limit is moot.
-	 * Explicit queue_limit = 0 opts into the legacy unbounded queue. */
+	 * Explicit queue_limit = 0 opts into the legacy unbounded queue.
+	 * Saturate on overflow instead of wrapping. */
 	if (queue_limit_is_null) {
-		group->queue_limit = (group->concurrency > 0) ? (group->concurrency * 2) : 0;
+		if (group->concurrency == 0) {
+			group->queue_limit = 0;
+		} else if (group->concurrency > UINT32_MAX / 2) {
+			group->queue_limit = UINT32_MAX;
+		} else {
+			group->queue_limit = group->concurrency * 2;
+		}
 	} else {
 		group->queue_limit = (uint32_t) queue_limit;
 	}
