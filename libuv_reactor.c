@@ -5058,6 +5058,90 @@ libuv_udp_set_membership(zend_async_io_t *io_base, const char *multicast_addr, c
 
 /* }}} */
 
+/* {{{ libuv_udp_bind — create a UDP socket and bind it to host:port.
+ *
+ * Needed by HTTP/3 listeners: one datagram socket serves N QUIC connections
+ * demultiplexed by DCID in user space. Mirrors the shape of libuv_socket_listen
+ * but for UDP — no accept(), the caller drives the reactor with recvfrom().
+ * Flags are ZEND_ASYNC_UDP_F_*; unknown bits silently ignored. */
+static zend_async_io_t *libuv_udp_bind(const char *host, int port, uint32_t flags, size_t extra_size)
+{
+	START_REACTOR_OR_RETURN_NULL;
+
+	async_io_t *io = pecalloc(1,
+			extra_size != 0 ? sizeof(async_io_t) + extra_size : sizeof(async_io_t), 0);
+
+	io->orig_fd = -1;
+	io->crt_fd = -1;
+	io->base.type = ZEND_ASYNC_IO_TYPE_UDP;
+	io->base.state = ZEND_ASYNC_IO_READABLE | ZEND_ASYNC_IO_WRITABLE;
+	io->base.event.ref_count = 1;
+	io->base.event.add_callback = libuv_add_callback;
+	io->base.event.del_callback = libuv_remove_callback;
+	io->base.event.start = libuv_io_event_start;
+	io->base.event.stop = libuv_io_event_stop;
+	io->base.event.dispose = libuv_io_event_dispose;
+	io->base.event.info = libuv_io_info;
+
+	int error = uv_udp_init(UVLOOP, &io->handle.udp);
+	if (UNEXPECTED(error < 0)) {
+		async_throw_error("Failed to initialize UDP handle: %s", uv_strerror(error));
+		pefree(io, 0);
+		return NULL;
+	}
+	io->handle.udp.data = io;
+
+	struct sockaddr_storage addr;
+	if (strchr(host, ':') != NULL) {
+		error = uv_ip6_addr(host, port, (struct sockaddr_in6 *) &addr);
+	} else {
+		error = uv_ip4_addr(host, port, (struct sockaddr_in *) &addr);
+	}
+	if (error < 0) {
+		async_throw_error("Failed to parse UDP address %s:%d: %s", host, port, uv_strerror(error));
+		uv_close((uv_handle_t *) &io->handle.udp, libuv_close_handle_cb);
+		return NULL;
+	}
+
+	unsigned int bind_flags = 0;
+	/* UV_UDP_REUSEPORT was added in libuv 1.49 as an enum value (not #define),
+	 * so gate on version rather than #ifdef. */
+#if UV_VERSION_HEX >= ((1 << 16) | (49 << 8))
+	if (flags & ZEND_ASYNC_UDP_F_REUSEPORT) {
+		bind_flags |= UV_UDP_REUSEPORT;
+	}
+#endif
+	if (flags & ZEND_ASYNC_UDP_F_IPV6ONLY) {
+		bind_flags |= UV_UDP_IPV6ONLY;
+	}
+	/* ZEND_ASYNC_UDP_F_RECV_GSO has no libuv flag; propagate via a per-recv
+	 * socket option once the handle is bound. Silently ignored on platforms
+	 * where UDP_GRO is unavailable. */
+
+	error = uv_udp_bind(&io->handle.udp, (struct sockaddr *) &addr, bind_flags);
+	if (error < 0) {
+		async_throw_error("Failed to bind UDP socket to %s:%d: %s", host, port, uv_strerror(error));
+		uv_close((uv_handle_t *) &io->handle.udp, libuv_close_handle_cb);
+		return NULL;
+	}
+
+	uv_os_fd_t fd;
+	error = uv_fileno((uv_handle_t *) &io->handle.udp, &fd);
+	if (error < 0) {
+		async_throw_error("Failed to resolve UDP socket descriptor: %s", uv_strerror(error));
+		uv_close((uv_handle_t *) &io->handle.udp, libuv_close_handle_cb);
+		return NULL;
+	}
+	io->base.descriptor.socket = (zend_socket_t) (uintptr_t) fd;
+	io->crt_fd = (int) (uintptr_t) fd;
+
+	zend_hash_index_add_new_ptr(&ASYNC_G(active_io_handles), async_ptr_to_index(io), io);
+
+	return &io->base;
+}
+
+/* }}} */
+
 void async_libuv_reactor_register(void)
 {
 	zend_async_reactor_register(LIBUV_REACTOR_NAME,
@@ -5097,7 +5181,8 @@ void async_libuv_reactor_register(void)
 						   libuv_udp_sendto,
 						   libuv_udp_recvfrom,
 						   libuv_io_set_option,
-						   libuv_udp_set_membership);
+						   libuv_udp_set_membership,
+						   libuv_udp_bind);
 
 	zend_async_thread_pool_register(LIBUV_REACTOR_NAME, false,
 			libuv_new_task, libuv_queue_task,
