@@ -39,5 +39,5 @@ spawn(function() {
 ?>
 --EXPECT--
 empty-any: Cannot call any() on an empty TaskGroup
-negative concurrency: Async\TaskGroup::__construct(): Argument #1 ($concurrency) must be greater than or equal to 0
+negative concurrency: Async\TaskGroup::__construct(): Argument #1 ($concurrency) must be between 0 and 4294967295
 dup int: Duplicate key 7 in TaskGroup

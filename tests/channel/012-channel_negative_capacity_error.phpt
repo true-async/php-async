@@ -15,5 +15,5 @@ try {
 echo "Done\n";
 ?>
 --EXPECTF--
-Caught: %s must be >= 0
+Caught: %s must be between 0 and 2147483647
 Done

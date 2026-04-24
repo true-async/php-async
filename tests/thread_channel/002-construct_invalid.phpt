@@ -20,6 +20,6 @@ try {
 echo "Done\n";
 ?>
 --EXPECT--
-Zero: Async\ThreadChannel::__construct(): Argument #1 ($capacity) must be >= 1
-Negative: Async\ThreadChannel::__construct(): Argument #1 ($capacity) must be >= 1
+Zero: Async\ThreadChannel::__construct(): Argument #1 ($capacity) must be between 1 and 2147483647
+Negative: Async\ThreadChannel::__construct(): Argument #1 ($capacity) must be between 1 and 2147483647
 Done

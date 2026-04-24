@@ -44,4 +44,4 @@ await($driver);
 --EXPECT--
 unbounded: done=10
 explicit_0: after1,after2,after3,after4,after5,task1,task2,task3,task4,task5
-negative: OK (Async\TaskGroup::__construct(): Argument #2 ($queueLimit) must be greater than or equal to 0)
+negative: OK (Async\TaskGroup::__construct(): Argument #2 ($queueLimit) must be between 0 and 4294967295)
