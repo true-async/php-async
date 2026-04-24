@@ -3770,6 +3770,20 @@ static bool libuv_io_event_dispose(zend_async_event_t *event)
 		libuv_io_close(&io->base);
 	}
 
+	/* Dispose any in-flight request left attached to the io. Multishot UDP
+	 * recv keeps one req alive for the lifetime of the handle; without this
+	 * the 2 KiB buffer plus the req struct leak on close. The dispose fn is
+	 * at the same offset for both zend_async_io_req_t and zend_async_udp_req_t
+	 * (completed, dispose) so a single call path covers TCP reads and UDP
+	 * recvfrom alike. */
+	if (io->active_req != NULL) {
+		async_io_req_t *req = io->active_req;
+		io->active_req = NULL;
+		if (req->base.dispose != NULL) {
+			req->base.dispose(&req->base);
+		}
+	}
+
 	if (event->loop_ref_count > 0) {
 		event->loop_ref_count = 1;
 		event->stop(event);
