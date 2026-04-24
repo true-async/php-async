@@ -53,7 +53,14 @@ struct _async_task_group_s
 
 	/* Concurrency settings */
 	uint32_t concurrency;      /* 0 = unlimited */
+	uint32_t queue_limit;      /* 0 = unbounded pending queue; >0 = spawn() suspends when pending_count >= queue_limit */
+	uint32_t pending_count;    /* number of PENDING entries in tasks HashTable */
 	int32_t active_coroutines; /* currently running coroutines */
+
+	/* FIFO queue of coroutines suspended in spawn() waiting for a queue slot.
+	 * Values are zend_async_trigger_event_t*, keyed by (zend_ulong)(uintptr_t)trigger.
+	 * Single-threaded: PHP HashTable preserves insertion order, giving FIFO semantics. */
+	HashTable slot_waiters;
 
 	/* Unified tasks array — preserves spawn() order.
 	 * Values:
@@ -102,7 +109,7 @@ extern zend_class_entry *async_ce_task_set;
 #define ASYNC_TASK_GROUP_FROM_EVENT(ev) ((async_task_group_t *) (ev))
 
 /* API */
-zend_async_group_t *async_new_group(uint32_t concurrency, zend_object *scope);
+zend_async_group_t *async_new_group(uint32_t concurrency, uint32_t queue_limit, zend_object *scope);
 void async_register_task_group_ce(void);
 void async_register_task_set_ce(void);
 

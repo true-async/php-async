@@ -221,6 +221,8 @@ static void task_group_on_coroutine_complete(zend_async_event_t *event,
 											 zend_async_event_callback_t *callback,
 											 void *result,
 											 zend_object *exception);
+static void task_group_fire_one_slot_waiter(async_task_group_t *group);
+static void task_group_fire_all_slot_waiters(async_task_group_t *group);
 
 ///////////////////////////////////////////////////////////
 /// task_entry_t lifecycle
@@ -420,11 +422,14 @@ static zend_object *task_group_create_object(zend_class_entry *ce)
 
 	group->scope = NULL;
 	group->concurrency = 0;
+	group->queue_limit = 0;
+	group->pending_count = 0;
 	group->active_coroutines = 0;
 	group->next_key = 0;
 	group->finally_handlers = NULL;
 
 	zend_hash_init(&group->tasks, 8, NULL, task_zval_dtor, 0);
+	zend_hash_init(&group->slot_waiters, 0, NULL, NULL, 0);
 
 	group->waiter_events = NULL;
 	group->waiter_events_length = 0;
@@ -436,6 +441,15 @@ static zend_object *task_group_create_object(zend_class_entry *ce)
 static void task_group_dtor_object(zend_object *object)
 {
 	async_task_group_t *group = ASYNC_TASK_GROUP_FROM_OBJ(object);
+
+	/* Wake all spawn() waiters before scope teardown.
+	 * After dtor runs, group->scope is cleared and do_spawn's resume path would
+	 * still see the group object but with scope==NULL — SEALED isn't necessarily
+	 * set, so we mark it explicitly so waiters throw instead of retrying. */
+	if (zend_hash_num_elements(&group->slot_waiters) > 0) {
+		ASYNC_TASK_GROUP_SET_SEALED(group);
+		task_group_fire_all_slot_waiters(group);
+	}
 
 	/* Report unhandled errors to scope exception handler */
 	if (!ZEND_ASYNC_EVENT_IS_EXCEPTION_HANDLED(&group->event) && group->scope != NULL) {
@@ -490,6 +504,11 @@ static void task_group_dtor_object(zend_object *object)
 static void task_group_free_object(zend_object *object)
 {
 	async_task_group_t *group = ASYNC_TASK_GROUP_FROM_OBJ(object);
+
+	/* Slot waiters should have been drained in dtor via task_group_fire_all_slot_waiters().
+	 * Any leftover entries are raw trigger pointers; the triggers themselves are
+	 * owned by the suspended coroutine's waker, so we only destroy the hash. */
+	zend_hash_destroy(&group->slot_waiters);
 
 	zend_hash_destroy(&group->tasks);
 
@@ -712,6 +731,43 @@ static bool task_group_has_slot(const async_task_group_t *group)
 	return group->concurrency == 0 || group->active_coroutines < (int32_t) group->concurrency;
 }
 
+/* Queue is full when queue_limit > 0 AND pending_count has reached the limit. */
+static zend_always_inline bool task_group_queue_is_full(const async_task_group_t *group)
+{
+	return group->queue_limit > 0 && group->pending_count >= group->queue_limit;
+}
+
+/* Wake one waiter (FIFO, head of slot_waiters) to let them push into the now-freed queue slot. */
+static void task_group_fire_one_slot_waiter(async_task_group_t *group)
+{
+	if (zend_hash_num_elements(&group->slot_waiters) == 0) {
+		return;
+	}
+
+	zend_async_trigger_event_t *trigger = NULL;
+	ZEND_HASH_FOREACH_PTR(&group->slot_waiters, trigger) {
+		break; /* take the first (FIFO head — HashTable preserves insertion order) */
+	} ZEND_HASH_FOREACH_END();
+
+	if (trigger != NULL) {
+		trigger->trigger(trigger);
+	}
+}
+
+/* Wake all waiters — used when group is sealed/cancelled/disposed so suspended
+ * spawners rejoin do_spawn, observe the terminal state, and throw. */
+static void task_group_fire_all_slot_waiters(async_task_group_t *group)
+{
+	if (zend_hash_num_elements(&group->slot_waiters) == 0) {
+		return;
+	}
+
+	zend_async_trigger_event_t *trigger;
+	ZEND_HASH_FOREACH_PTR(&group->slot_waiters, trigger) {
+		trigger->trigger(trigger);
+	} ZEND_HASH_FOREACH_END();
+}
+
 static void
 task_group_spawn_coroutine(async_task_group_t *group, zend_fcall_t *fcall, zval *key, task_entry_t *pending_entry)
 {
@@ -732,6 +788,13 @@ task_group_spawn_coroutine(async_task_group_t *group, zend_fcall_t *fcall, zval 
 		pending_entry->state = TASK_STATE_RUNNING;
 		pending_entry->coroutine = &coroutine->std;
 		GC_ADDREF(&coroutine->std);
+
+		ZEND_ASSERT(group->pending_count > 0);
+		group->pending_count--;
+
+		/* A queue slot just freed — wake one waiter (if any) so it can enqueue.
+		 * Fire after counter decrement so the waker sees the freed slot. */
+		task_group_fire_one_slot_waiter(group);
 	} else {
 		/* Direct spawn — create RUNNING entry in tasks */
 		task_entry_t *entry = task_entry_new_running(&coroutine->std);
@@ -1213,7 +1276,7 @@ static zend_object_iterator *task_group_get_iterator(zend_class_entry *ce, zval 
 /// API
 ///////////////////////////////////////////////////////////
 
-zend_async_group_t *async_new_group(uint32_t concurrency, zend_object *scope_obj)
+zend_async_group_t *async_new_group(uint32_t concurrency, uint32_t queue_limit, zend_object *scope_obj)
 {
 	zval zv;
 	object_init_ex(&zv, async_ce_task_group);
@@ -1225,6 +1288,7 @@ zend_async_group_t *async_new_group(uint32_t concurrency, zend_object *scope_obj
 
 	async_task_group_t *group = ASYNC_TASK_GROUP_FROM_OBJ(Z_OBJ(zv));
 	group->concurrency = concurrency;
+	group->queue_limit = queue_limit;
 
 	if (scope_obj != NULL) {
 		const async_scope_object_t *scope_object = (async_scope_object_t *) scope_obj;
@@ -1261,11 +1325,14 @@ zend_async_group_t *async_new_group(uint32_t concurrency, zend_object *scope_obj
 METHOD(__construct)
 {
 	zend_long concurrency = 0;
+	zend_long queue_limit = 0;
+	bool queue_limit_is_null = true;
 	zend_object *scope_obj = NULL;
 
-	ZEND_PARSE_PARAMETERS_START(0, 2)
+	ZEND_PARSE_PARAMETERS_START(0, 3)
 	Z_PARAM_OPTIONAL
 	Z_PARAM_LONG(concurrency)
+	Z_PARAM_LONG_OR_NULL(queue_limit, queue_limit_is_null)
 	Z_PARAM_OBJ_OF_CLASS_OR_NULL(scope_obj, async_ce_scope)
 	ZEND_PARSE_PARAMETERS_END();
 
@@ -1276,6 +1343,20 @@ METHOD(__construct)
 		RETURN_THROWS();
 	}
 	group->concurrency = (uint32_t) concurrency;
+
+	if (UNEXPECTED(!queue_limit_is_null && queue_limit < 0)) {
+		zend_argument_value_error(2, "must be greater than or equal to 0");
+		RETURN_THROWS();
+	}
+
+	/* Default queue_limit: 2 * concurrency (gives a modest backpressure window).
+	 * Unlimited concurrency (0) always spawns immediately, so queue_limit is moot.
+	 * Explicit queue_limit = 0 opts into the legacy unbounded queue. */
+	if (queue_limit_is_null) {
+		group->queue_limit = (group->concurrency > 0) ? (group->concurrency * 2) : 0;
+	} else {
+		group->queue_limit = (uint32_t) queue_limit;
+	}
 
 	if (scope_obj != NULL) {
 		const async_scope_object_t *scope_object = (async_scope_object_t *) scope_obj;
@@ -1338,6 +1419,37 @@ static void task_group_do_spawn(async_task_group_t *group,
 		return;
 	}
 
+	/* Backpressure: suspend caller while the queue is full.
+	 * Only applies when concurrency is set (otherwise spawn is always immediate),
+	 * and only when the concurrency slots are also exhausted (pending_count can only
+	 * grow past queue_limit after has_slot() returns false). */
+	while (!task_group_has_slot(group) && task_group_queue_is_full(group)) {
+		zend_async_trigger_event_t *trigger = ZEND_ASYNC_NEW_TRIGGER_EVENT();
+		zend_hash_index_update_ptr(&group->slot_waiters, (zend_ulong)(uintptr_t) trigger, trigger);
+
+		zend_async_resume_when(ZEND_ASYNC_CURRENT_COROUTINE,
+			&trigger->base, false, zend_async_waker_callback_resolve, NULL);
+		ZEND_ASYNC_SUSPEND();
+		ZEND_ASYNC_WAKER_DESTROY(ZEND_ASYNC_CURRENT_COROUTINE);
+
+		zend_hash_index_del(&group->slot_waiters, (zend_ulong)(uintptr_t) trigger);
+		trigger->base.dispose(&trigger->base);
+
+		if (UNEXPECTED(EG(exception))) {
+			return;
+		}
+
+		/* Re-check terminal state after resume — group may have been sealed/completed. */
+		if (UNEXPECTED(ASYNC_TASK_GROUP_IS_SEALED(group))) {
+			async_throw_error("Cannot spawn tasks on a sealed TaskGroup");
+			return;
+		}
+		if (UNEXPECTED(ASYNC_TASK_GROUP_IS_COMPLETED(group))) {
+			async_throw_error("Cannot spawn tasks on a completed TaskGroup");
+			return;
+		}
+	}
+
 	/* Build zend_fcall_t */
 	ZEND_ASYNC_FCALL_DEFINE(fcall, (*fci), (*fcc), args, args_count, named_args);
 
@@ -1354,6 +1466,8 @@ static void task_group_do_spawn(async_task_group_t *group,
 		} else {
 			zend_hash_index_add_new(&group->tasks, Z_LVAL_P(key_zv), &ptr_zv);
 		}
+
+		group->pending_count++;
 	}
 }
 
@@ -1575,6 +1689,9 @@ METHOD(cancel)
 	ASYNC_TASK_GROUP_SET_SEALED(group);
 	ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(&group->event);
 
+	/* Wake all spawn() waiters — they will rejoin do_spawn and see SEALED → throw. */
+	task_group_fire_all_slot_waiters(group);
+
 	/* Cancel running coroutines via scope.
 	 * Note: CLOSED is NOT set here — coroutines may still be running.
 	 * task_group_try_complete() will set CLOSED when all coroutines finish. */
@@ -1606,6 +1723,10 @@ METHOD(seal)
 	}
 
 	ASYNC_TASK_GROUP_SET_SEALED(group);
+
+	/* Wake all spawn() waiters — they will rejoin do_spawn and see SEALED → throw. */
+	task_group_fire_all_slot_waiters(group);
+
 	task_group_try_complete(group);
 }
 

@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.0] -
 
 ### Added
+- **`TaskGroup` / `TaskSet` constructor gains `queueLimit` parameter** (bounded pending queue, backpressure).
+  `new TaskGroup(concurrency: N, queueLimit: M)`. When the pending queue reaches `M` entries,
+  `spawn()` / `spawnWithKey()` suspend the calling coroutine until a queue slot frees instead of
+  allocating an unbounded pending entry. A slot frees whenever a pending task transitions to
+  RUNNING (i.e. when a running task finishes and `task_group_drain()` promotes the next pending
+  one). Waiters are resumed in FIFO order, one per freed slot. On `seal()` / `cancel()` / dtor all
+  waiters are woken at once — they rejoin `do_spawn()`, observe the terminal state, and throw
+  "Cannot spawn tasks on a sealed TaskGroup". Defaults: `queueLimit = null` resolves to
+  `2 × concurrency` (a modest backpressure window); `queueLimit = 0` explicitly selects the
+  legacy unbounded queue; with `concurrency = 0` (unlimited) `queueLimit` is ignored because
+  tasks always spawn immediately. Motivation: the previous behaviour allocated a `task_entry_t`
+  + `zend_fcall_t` for every over-concurrency `spawn()` call with no upper bound — a worker
+  thread running `while (true) { $job = $channel->recv(); $group->spawn($fn); }` would grow
+  `group->tasks` at ~500 MB/s when its own `$group->spawn()` outpaced the 100-slot concurrency,
+  and starving the main thread prevented the results collector from ever running (see the
+  `bench_ta.php` 1×100 IO scenario that hit 7 GB RSS with `completed=0` before OOM). New
+  regression tests: `tests/task_group/041-task_group_queue_limit.phpt`,
+  `tests/task_group/042-task_group_queue_limit_defaults.phpt`. BC note: the ABI signature of
+  `zend_async_new_group_fn` / `ZEND_ASYNC_NEW_GROUP()` now takes `uint32_t queue_limit` between
+  `concurrency` and `scope`. C callers of `async_new_group()` must pass the new argument
+  (there are none outside of `task_group.c` and the `new_group_stub` fallback in
+  `Zend/zend_async_API.c`). PHP-level positional callers of
+  `new TaskGroup($concurrency, $scope)` now pick up `null` → default queueLimit; callers
+  relying on positional `$scope` must use the named argument `scope:`.
 - **`Async\ThreadPool`** (new class): pool of OS threads for executing PHP closures. `submit($callable, ...$args): Future`, `map(array $items, $callable): array`, `close()` (graceful), `cancel()` (rejects backlog with `Async\CancellationException`, running tasks still finish), `isClosed()`, `getWorkerCount()`, `getPendingCount()`, `getRunningCount()`. Implements `Countable`. Constructor `new ThreadPool(int $workers, int $queue_size = 0)`; queue is a thread-safe channel that suspends the submitting coroutine when full (backpressure).
 - **`Async\ThreadPoolException`** (new class): thrown from `submit()` / `map()` when the pool is closed.
 - **`Async\ThreadChannel`** (new class): thread-safe channel for transferring zvals between threads via deep-copy snapshot. `send()` / `receive()` suspend the calling coroutine instead of blocking the OS thread. Closures, including those with bound variables, transfer correctly through the snapshot machinery.

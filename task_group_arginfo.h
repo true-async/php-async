@@ -1,8 +1,9 @@
 /* This is a generated file, edit task_group.stub.php instead.
- * Stub hash: 63dd5a44cbaa5c6227341696e727b8caa2f90d8d */
+ * Stub hash: manual-queue-limit-phase1 */
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Async_TaskGroup___construct, 0, 0, 0)
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, concurrency, IS_LONG, 1, "null")
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, queueLimit, IS_LONG, 1, "null")
 	ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, scope, Async\\Scope, 1, "null")
 ZEND_END_ARG_INFO()
 
