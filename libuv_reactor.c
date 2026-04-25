@@ -4864,6 +4864,17 @@ static void udp_send_cb(uv_udp_send_t *send_req, int status)
 {
 	async_udp_req_t *req = (async_udp_req_t *) send_req->data;
 
+	req->base.flags |= ZEND_ASYNC_UDP_REQ_F_CALLBACK_DONE;
+
+	/* Caller did fire-and-forget — invoked dispose() while we were in flight.
+	 * They have already torn down their callbacks and dropped the req
+	 * pointer; finish the deferred free here. udp_req_dispose now sees
+	 * CALLBACK_DONE and takes the normal free path. */
+	if (req->base.flags & ZEND_ASYNC_UDP_REQ_F_DISPOSE_PENDING) {
+		req->base.dispose(&req->base);
+		return;
+	}
+
 	if (status < 0) {
 		req->base.exception = async_throw_input_output("UDP send failed: %s", uv_strerror(status));
 	} else {
@@ -4931,6 +4942,24 @@ udp_recv_cb(uv_udp_t *udp_handle, ssize_t nread, const uv_buf_t *buf, const stru
 static void udp_req_dispose(zend_async_udp_req_t *base_req)
 {
 	async_udp_req_t *req = (async_udp_req_t *) base_req;
+
+	/* Sendto path with the send callback still in flight: defer the free
+	 * until udp_send_cb fires. uv_udp_send is not cancelable (kernel owns
+	 * the datagram once queued), so a fire-and-forget caller must let the
+	 * in-flight callback complete before this memory is reclaimed. The
+	 * callback re-enters dispose after setting CALLBACK_DONE — at that
+	 * point we take the free path below. Mirrors the rendezvous used by
+	 * libuv_dns_nameinfo_dispose.
+	 *
+	 * Discriminator: libuv_udp_sendto sets send_req.data = req. Recv reqs
+	 * leave it NULL (pecalloc-zeroed) and rely on io->active_req detach
+	 * (handled by udp_recv_cb on terminal) for safety. */
+	if (req->send_req.data == req
+	        && !(req->base.flags & ZEND_ASYNC_UDP_REQ_F_CALLBACK_DONE)
+	        && !req->base.completed) {
+		req->base.flags |= ZEND_ASYNC_UDP_REQ_F_DISPOSE_PENDING;
+		return;
+	}
 
 	if (req->base.buf != NULL) {
 		pefree(req->base.buf, 0);
