@@ -4095,11 +4095,13 @@ libuv_io_create(const zend_file_descriptor_t fd, const zend_async_io_type type, 
 			return NULL;
 		}
 
-#ifdef PHP_WIN32
-		const uv_os_sock_t sock = (uv_os_sock_t) _get_osfhandle(io_fd);
-#else
+		/* For TCP (and UDP) the caller passes the native socket value in
+		 * io_fd — a SOCKET on Windows, an int on POSIX — because zend_socket_t
+		 * is the kernel-level socket on both platforms. Do NOT run io_fd
+		 * through _get_osfhandle() on Windows: that would treat it as a
+		 * CRT fd, returning INVALID_HANDLE_VALUE for a real SOCKET and
+		 * making uv_tcp_open fail on every accepted connection. */
 		const uv_os_sock_t sock = (uv_os_sock_t) io_fd;
-#endif
 		error = uv_tcp_open(&io->handle.tcp, sock);
 
 		if (UNEXPECTED(error < 0)) {
