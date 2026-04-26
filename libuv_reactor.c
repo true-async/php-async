@@ -5011,6 +5011,41 @@ static zend_async_udp_req_t *libuv_udp_sendto(
 	return &req->base;
 }
 
+/* Synchronous best-effort UDP send. Wraps uv_udp_try_send → which
+ * itself wraps a single sendmsg() on the underlying fd. No request
+ * struct, no allocation, no callback — caller gets the result inline.
+ *
+ * Returns: bytes sent (almost always == count for UDP, since UDP is
+ * all-or-nothing per datagram), -EAGAIN when the kernel buffer is
+ * full and would block, or -errno on hard failure. */
+static ssize_t libuv_udp_try_send(
+		zend_async_io_t *io_base, const char *buf, size_t count,
+		const struct sockaddr *addr, socklen_t addr_len)
+{
+	(void) addr_len;
+	async_io_t *io = (async_io_t *) io_base;
+
+	if (UNEXPECTED(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
+		return -EBADF;
+	}
+	if (UNEXPECTED(io->base.type != ZEND_ASYNC_IO_TYPE_UDP)) {
+		return -ENOTSOCK;
+	}
+
+	uv_buf_t uv_buf = uv_buf_init((char *) buf, (unsigned int) count);
+	int rv = uv_udp_try_send(&io->handle.udp, &uv_buf, 1, addr);
+	if (rv >= 0) {
+		return (ssize_t) rv;
+	}
+	/* libuv returns its own negative-errno-like codes (UV_EAGAIN, etc.)
+	 * Most map 1:1 to POSIX errno; the caller cares about EAGAIN
+	 * specifically (back off + retry), other errors are terminal. */
+	if (rv == UV_EAGAIN) {
+		return -EAGAIN;
+	}
+	return (ssize_t) rv;
+}
+
 static zend_async_udp_req_t *libuv_udp_recvfrom(zend_async_io_t *io_base, size_t max_size)
 {
 	async_io_t *io = (async_io_t *) io_base;
@@ -5224,6 +5259,7 @@ void async_libuv_reactor_register(void)
 						   libuv_io_stat,
 						   libuv_io_seek,
 						   libuv_udp_sendto,
+						   libuv_udp_try_send,
 						   libuv_udp_recvfrom,
 						   libuv_io_set_option,
 						   libuv_udp_set_membership,
