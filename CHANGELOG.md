@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.0] -
 
 ### Added
+- **PDO_SQLite connection pool support** (`PDO::ATTR_POOL_ENABLED`). A pooled
+  `Pdo\Sqlite` template hands out a private `sqlite3*` per coroutine, with the
+  same `PDO::ATTR_POOL_MIN` / `POOL_MAX` / `POOL_HEALTHCHECK_INTERVAL` controls
+  as the other PDO drivers. UDFs, aggregates and collations registered on the
+  template via `createFunction` / `createAggregate` / `createCollation` are
+  applied to every slot. The registry freezes on the first acquire — any
+  further registration throws `PDOException` so that all coroutines see the
+  same set of UDFs. Single-connection methods that bind to a specific
+  `sqlite3*` (`setAuthorizer`, `openBlob`, `loadExtension`) throw on a pool
+  template. Unshareable in-memory DSNs (`:memory:`, `file:?mode=memory`
+  without `cache=shared`) are rejected at construction. Two new PDO-level
+  driver hooks (`pool_before_acquire`, `pool_before_release` on
+  `pdo_dbh_methods`) let other drivers plug into the slot hand-off without
+  leaking pool internals into `ext/pdo/pdo_pool.c`. Tests:
+  `ext/async/tests/pdo_sqlite/001..020`,
+  `ext/pdo_sqlite/tests/pool_001..005`. Known limitation: per-coroutine
+  personal UDFs (registered after the registry has frozen) are intentionally
+  out of scope — the per-release `sqlite3_create_function(NULL, …)` cleanup
+  cost is a poor fit for the hot pool path; bootstrap-time registration on
+  the template covers the realistic use case.
 - **`TaskGroup` / `TaskSet` constructor gains `queueLimit` parameter** (bounded pending queue, backpressure).
   `new TaskGroup(concurrency: N, queueLimit: M)`. When the pending queue reaches `M` entries,
   `spawn()` / `spawnWithKey()` suspend the calling coroutine until a queue slot frees instead of
