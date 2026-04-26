@@ -53,6 +53,9 @@ struct _async_poll_event_t
 	zend_async_poll_proxy_t **proxies;
 	uint32_t proxies_count;
 	uint32_t proxies_capacity;
+	/* Cached SOCK_DGRAM flag — UDP sockets do not need the recv(MSG_PEEK)
+	 * spurious-readable filter applied to stream sockets. */
+	bool is_dgram;
 };
 
 struct _async_timer_event_t

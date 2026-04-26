@@ -538,10 +538,15 @@ static void on_poll_event(uv_poll_t *handle, int status, int events)
 		events = ASYNC_DISCONNECT;
 	}
 
-	/* Filter spurious READABLE events on sockets.
+	/* Filter spurious READABLE events on stream sockets.
 	 * libuv uv_poll may signal readable when no data is actually available.
-	 * Use recv(MSG_PEEK) to verify; if WOULDBLOCK — remove the flag. */
-	if (status >= 0 && poll->event.is_socket && (events & ASYNC_READABLE)) {
+	 * Use recv(MSG_PEEK) to verify; if WOULDBLOCK — remove the flag.
+	 *
+	 * Skipped for SOCK_DGRAM: UDP readiness reflects datagram-queue presence
+	 * accurately, and a 0-byte datagram would falsely look like an empty stream
+	 * read. Avoiding the syscall is also a measurable win on busy UDP sockets
+	 * (e.g. ~1k recv/sec saved per single-connection HTTP/3 session). */
+	if (status >= 0 && poll->event.is_socket && !poll->is_dgram && (events & ASYNC_READABLE)) {
 		char peek_buf;
 		const int peek_ret = recv(poll->event.socket, &peek_buf, 1, MSG_PEEK);
 
@@ -849,6 +854,21 @@ libuv_new_poll_event(zend_file_descriptor_t fh, zend_socket_t socket, async_poll
 		error = uv_poll_init_socket(UVLOOP, &poll->uv_handle, socket);
 		poll->event.is_socket = true;
 		poll->event.socket = socket;
+
+		/* Detect SOCK_DGRAM once so on_poll_event can skip the recv(MSG_PEEK)
+		 * spurious-readable filter for UDP. UDP readiness reflects datagram-queue
+		 * presence accurately; the peek is pure overhead (and a 0-byte datagram
+		 * would even be misclassified as no-data on a stream socket path). */
+		int sock_type = 0;
+#ifdef PHP_WIN32
+		int optlen = (int) sizeof(sock_type);
+#else
+		socklen_t optlen = sizeof(sock_type);
+#endif
+		if (getsockopt(socket, SOL_SOCKET, SO_TYPE, (char *) &sock_type, &optlen) == 0
+			&& sock_type == SOCK_DGRAM) {
+			poll->is_dgram = true;
+		}
 	} else if (fh != ZEND_FD_NULL) {
 #ifdef PHP_WIN32
 		async_throw_error("Windows does not support file descriptor polling");
