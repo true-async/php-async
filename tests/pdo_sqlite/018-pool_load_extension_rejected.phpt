@@ -4,6 +4,12 @@ PDO_SQLite Pool: loadExtension is rejected on a pool template
 pdo
 pdo_sqlite
 true_async
+--SKIPIF--
+<?php
+if (!method_exists(Pdo\Sqlite::class, 'loadExtension')) {
+    die("skip Pdo\\Sqlite::loadExtension() not available (sqlite built without --enable-load-extension)");
+}
+?>
 --FILE--
 <?php
 require_once __DIR__ . '/inc/async_pdo_sqlite_test.inc';
