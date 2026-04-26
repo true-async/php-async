@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.0] -
 
 ### Added
+- **Timer rearm API** (`zend_async_timer_rearm_fn` /
+  `ZEND_ASYNC_TIMER_REARM`). Reschedules an existing timer event without
+  the `new_timer_event` + `uv_close` + `dispose` cycle, dropping three
+  per-cycle allocations on hot paths that constantly reset a timer
+  (e.g. QUIC retransmission timers, idle reapers, exponential backoff
+  loops). Opt-in via the new private timer flag
+  `ZEND_ASYNC_TIMER_F_MULTISHOT` (bit 13) — set after construction with
+  `ZEND_ASYNC_TIMER_SET_MULTISHOT(ev)`. A multishot timer does not
+  self-close on a one-shot fire; the owner is responsible for an
+  explicit `dispose()` at teardown. Existing one-shot timers are
+  unaffected (default path still self-closes). libuv reactor implements
+  rearm via a second `uv_timer_start` on the same handle (libuv-native).
+  Registered as a new parameter on `zend_async_reactor_register` —
+  third-party reactors must thread the new function pointer through
+  (NULL is rejected at register time? — current impl tolerates NULL,
+  caller must check `zend_async_timer_rearm_fn != NULL` before use).
 - **PDO_SQLite connection pool support** (`PDO::ATTR_POOL_ENABLED`). A pooled
   `Pdo\Sqlite` template hands out a private `sqlite3*` per coroutine, with the
   same `PDO::ATTR_POOL_MIN` / `POOL_MAX` / `POOL_HEALTHCHECK_INTERVAL` controls

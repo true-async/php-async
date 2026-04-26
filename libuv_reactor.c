@@ -937,8 +937,13 @@ static void on_timer_event(uv_timer_t *handle)
 {
 	async_timer_event_t *timer_event = handle->data;
 
-	// If the timer is not periodic, we close it after the first execution.
-	if (false == timer_event->event.is_periodic) {
+	/* One-shot timers self-close on fire so that callers do not have to
+	 * remember to dispose() in the common path. MULTISHOT opts out of
+	 * that — a callback that wants to rearm the same slot would race
+	 * against close_event otherwise. The owner of a multishot timer is
+	 * responsible for an explicit dispose() at teardown. */
+	if (false == timer_event->event.is_periodic
+		&& false == ZEND_ASYNC_TIMER_IS_MULTISHOT(&timer_event->event)) {
 		close_event(&timer_event->event.base);
 	}
 
@@ -1018,6 +1023,82 @@ static bool libuv_timer_dispose(zend_async_event_t *event)
 
 /* }}} */
 
+/* {{{ compute_timer_timeout
+ *
+ * Resolve (timeout_ms, nanoseconds) → final ms with overflow saturation.
+ * Shared by libuv_new_timer_event and libuv_timer_rearm so both paths
+ * round and cap identically. */
+static zend_ulong compute_timer_timeout(const zend_ulong timeout, const zend_ulong nanoseconds)
+{
+	zend_ulong final_timeout = timeout;
+	if (nanoseconds > 0 && timeout == 0) {
+		/* Saturate on overflow: (nanoseconds + 999999) would wrap near UINT64_MAX.
+		 * Also cap at UINT_MAX since event->event.timeout is `unsigned int`. */
+		if (nanoseconds > ZEND_ULONG_MAX - 999999) {
+			final_timeout = UINT_MAX;
+		} else {
+			/* Convert to milliseconds with ceiling, then cap. */
+			final_timeout = (nanoseconds + 999999) / 1000000;
+			if (final_timeout > UINT_MAX) {
+				final_timeout = UINT_MAX;
+			}
+		}
+	}
+	return final_timeout;
+}
+/* }}} */
+
+/* {{{ libuv_timer_rearm
+ *
+ * Reschedule an already-running (or stopped) MULTISHOT timer with a new
+ * timeout. libuv accepts a second uv_timer_start on the same handle as a
+ * native rearm — no realloc, no uv_close. The original callbacks and
+ * refcount survive untouched. */
+static bool libuv_timer_rearm(zend_async_timer_event_t *event,
+                              const zend_ulong timeout, const zend_ulong nanoseconds)
+{
+	if (event == NULL) {
+		return false;
+	}
+	if (ZEND_ASYNC_EVENT_IS_CLOSED(&event->base)) {
+		return false;
+	}
+	if (false == ZEND_ASYNC_TIMER_IS_MULTISHOT(event)) {
+		/* Non-multishot timers self-close on fire; rearm would race the
+		 * close path. Misuse, fail loudly in debug builds. */
+		ZEND_ASSERT(0 && "rearm requires ZEND_ASYNC_TIMER_F_MULTISHOT");
+		return false;
+	}
+
+	async_timer_event_t *t = (async_timer_event_t *) event;
+	const zend_ulong final_timeout = compute_timer_timeout(timeout, nanoseconds);
+
+	const int error = uv_timer_start(&t->uv_handle,
+	                                 on_timer_event,
+	                                 final_timeout,
+	                                 event->is_periodic ? final_timeout : 0);
+	if (error < 0) {
+		async_throw_error("Failed to rearm timer handle: %s", uv_strerror(error));
+		return false;
+	}
+
+	event->timeout = (unsigned int) final_timeout;
+
+	/* loop_ref_count: rearm does not add a ref. The first start() already
+	 * bumped it; if the timer fired and we are rearming from inside the
+	 * callback, on_timer_event left ref_count alone (only close_event
+	 * touches it, and MULTISHOT bypasses close_event). If the user
+	 * stop()'d the timer before rearm, loop_ref_count was decremented to
+	 * 0 there — re-bump to mirror start(). */
+	if (event->base.loop_ref_count == 0) {
+		event->base.loop_ref_count = 1;
+		ZEND_ASYNC_INCREASE_EVENT_COUNT(&event->base);
+	}
+
+	return true;
+}
+/* }}} */
+
 /* {{{ libuv_new_timer_event */
 zend_async_timer_event_t *
 libuv_new_timer_event(const zend_ulong timeout, const zend_ulong nanoseconds, const bool is_periodic, size_t extra_size)
@@ -1037,21 +1118,7 @@ libuv_new_timer_event(const zend_ulong timeout, const zend_ulong nanoseconds, co
 
 	event->uv_handle.data = event;
 
-	// Calculate final timeout with nanoseconds support
-	zend_ulong final_timeout = timeout;
-	if (nanoseconds > 0 && timeout == 0) {
-		/* Saturate on overflow: (nanoseconds + 999999) would wrap near UINT64_MAX.
-		 * Also cap at UINT_MAX since event->event.timeout is `unsigned int`. */
-		if (nanoseconds > ZEND_ULONG_MAX - 999999) {
-			final_timeout = UINT_MAX;
-		} else {
-			/* Convert to milliseconds with ceiling, then cap. */
-			final_timeout = (nanoseconds + 999999) / 1000000;
-			if (final_timeout > UINT_MAX) {
-				final_timeout = UINT_MAX;
-			}
-		}
-	}
+	const zend_ulong final_timeout = compute_timer_timeout(timeout, nanoseconds);
 
 	event->event.timeout = final_timeout;
 	event->event.is_periodic = is_periodic;
@@ -5235,6 +5302,7 @@ void async_libuv_reactor_register(void)
 								libuv_new_poll_event,
 								libuv_new_poll_proxy_event,
 								libuv_new_timer_event,
+								libuv_timer_rearm,
 								libuv_new_signal_event,
 								libuv_new_process_event,
 								libuv_new_thread_event,
