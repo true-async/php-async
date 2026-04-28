@@ -69,6 +69,9 @@ ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_delay, 0, 1, IS_VOID, 0)
 	ZEND_ARG_TYPE_INFO(0, ms, IS_LONG, 0)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_available_parallelism, 0, 0, IS_LONG, 0)
+ZEND_END_ARG_INFO()
+
 ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_Async_timeout, 0, 1, Async\\Awaitable, 0)
 	ZEND_ARG_TYPE_INFO(0, ms, IS_LONG, 0)
 ZEND_END_ARG_INFO()
@@ -153,6 +156,7 @@ ZEND_FUNCTION(Async_await_all);
 ZEND_FUNCTION(Async_await_any_of_or_fail);
 ZEND_FUNCTION(Async_await_any_of);
 ZEND_FUNCTION(Async_delay);
+ZEND_FUNCTION(Async_available_parallelism);
 ZEND_FUNCTION(Async_timeout);
 ZEND_FUNCTION(Async_current_context);
 ZEND_FUNCTION(Async_coroutine_context);
@@ -181,6 +185,7 @@ static const zend_function_entry ext_functions[] = {
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "await_any_of_or_fail"), zif_Async_await_any_of_or_fail, arginfo_Async_await_any_of_or_fail, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "await_any_of"), zif_Async_await_any_of, arginfo_Async_await_any_of, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "delay"), zif_Async_delay, arginfo_Async_delay, 0, NULL, NULL)
+	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "available_parallelism"), zif_Async_available_parallelism, arginfo_Async_available_parallelism, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "timeout"), zif_Async_timeout, arginfo_Async_timeout, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "current_context"), zif_Async_current_context, arginfo_Async_current_context, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "coroutine_context"), zif_Async_coroutine_context, arginfo_Async_coroutine_context, 0, NULL, NULL)

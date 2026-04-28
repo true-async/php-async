@@ -697,6 +697,18 @@ PHP_FUNCTION(Async_delay)
 	zend_async_waker_clean(coroutine);
 }
 
+PHP_FUNCTION(Async_available_parallelism)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	if (UNEXPECTED(zend_async_available_parallelism_fn == NULL)) {
+		async_throw_error("Reactor is not registered");
+		RETURN_THROWS();
+	}
+
+	RETURN_LONG((zend_long) ZEND_ASYNC_AVAILABLE_PARALLELISM());
+}
+
 PHP_FUNCTION(Async_timeout)
 {
 	zend_long ms = 0;

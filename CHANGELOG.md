@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.0] -
 
 ### Added
+- **`Async\available_parallelism(): int`** — returns the number of CPUs
+  usable by the current process (cgroup quotas, `sched_setaffinity`, etc.),
+  i.e. the value libuv recommends for thread-pool / worker sizing. Backed
+  by `uv_available_parallelism()` (libuv ≥1.44) with a `uv_cpu_info()`
+  fallback on older libuv. Always returns ≥1. Exposed at the API level
+  via `zend_async_available_parallelism_fn` / the
+  `ZEND_ASYNC_AVAILABLE_PARALLELISM()` macro, registered as a new
+  parameter on `zend_async_reactor_register` — third-party reactors must
+  thread the new function pointer through. **ABI bump v0.9.1 → v0.10.0.**
 - **Timer rearm API** (`zend_async_timer_rearm_fn` /
   `ZEND_ASYNC_TIMER_REARM`). Reschedules an existing timer event without
   the `new_timer_event` + `uv_close` + `dispose` cycle, dropping three

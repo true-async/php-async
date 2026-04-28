@@ -63,6 +63,14 @@ function await_any_of(int $count, iterable $triggers, ?Awaitable $cancellation =
 
 function delay(int $ms): void {}
 
+/**
+ * Returns the number of CPUs available to the current process.
+ *
+ * Honours cgroup CPU quotas, sched_setaffinity, and similar limits — the
+ * value libuv recommends for thread-pool / worker sizing. Always >= 1.
+ */
+function available_parallelism(): int {}
+
 function timeout(int $ms): Awaitable {}
 
 function current_context(): Context {}

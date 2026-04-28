@@ -5309,6 +5309,26 @@ static zend_async_io_t *libuv_udp_bind(const char *host, int port, uint32_t flag
 
 /* }}} */
 
+/* uv_available_parallelism was added in libuv 1.44. On older libuv, fall back
+ * to uv_cpu_info()->count, which is just nproc — doesn't honour cgroup quotas
+ * but is the best we can do without the new API. Always returns >= 1. */
+static unsigned int libuv_available_parallelism(void)
+{
+#if UV_VERSION_HEX >= ((1 << 16) | (44 << 8))
+	return uv_available_parallelism();
+#else
+	uv_cpu_info_t *info = NULL;
+	int count = 0;
+	if (uv_cpu_info(&info, &count) == 0) {
+		uv_free_cpu_info(info, count);
+		if (count > 0) {
+			return (unsigned int) count;
+		}
+	}
+	return 1;
+#endif
+}
+
 void async_libuv_reactor_register(void)
 {
 	zend_async_reactor_register(LIBUV_REACTOR_NAME,
@@ -5332,7 +5352,8 @@ void async_libuv_reactor_register(void)
 								libuv_freeaddrinfo,
 								libuv_new_exec_event,
 								libuv_exec,
-								libuv_new_trigger_event);
+								libuv_new_trigger_event,
+								libuv_available_parallelism);
 
 	zend_async_socket_listening_register(LIBUV_REACTOR_NAME, false, libuv_socket_listen);
 
