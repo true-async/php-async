@@ -36,6 +36,7 @@
 #include "fs_watcher.h"
 #include "iterator.h"
 #include "async_API.h"
+#include "cpu_info.h"
 #include "zend_enum.h"
 #include "async_arginfo.h"
 #include "zend_interfaces.h"
@@ -1551,6 +1552,7 @@ ZEND_MINIT_FUNCTION(async)
 	async_register_task_set_ce();
 	async_register_future_ce();
 	async_register_thread_ce();
+	async_register_cpu_snapshot_ce();
 
 	async_scheduler_startup();
 	async_api_register();
@@ -1563,6 +1565,7 @@ ZEND_MINIT_FUNCTION(async)
 ZEND_MSHUTDOWN_FUNCTION(async)
 {
 	UNREGISTER_INI_ENTRIES();
+	async_cpu_info_module_shutdown();
 
 	return SUCCESS;
 }
@@ -1586,6 +1589,8 @@ PHP_RSHUTDOWN_FUNCTION(async)
 		ASYNC_G(root_context) = NULL;
 		OBJ_RELEASE(&root_context->std);
 	}
+
+	async_cpu_usage_reset_state();
 
 	return SUCCESS;
 }
