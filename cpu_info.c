@@ -19,7 +19,6 @@
 */
 
 #include "cpu_info.h"
-#include "async_arginfo.h"
 
 #include <stdio.h>
 #include <stdlib.h>
