@@ -15,7 +15,9 @@
 
 PHP_ASYNC_API extern zend_class_entry *async_ce_cpu_snapshot;
 
-void async_register_cpu_snapshot_ce(void);
+/* Initialise module-level state for cpu_usage(). Call from MINIT after the
+ * generated register_class_Async_CpuSnapshot() has populated async_ce_cpu_snapshot. */
+void async_cpu_info_module_init(void);
 
 /* Reset module-level state held for cpu_usage(). Call from RSHUTDOWN. */
 void async_cpu_usage_reset_state(void);

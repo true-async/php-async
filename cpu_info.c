@@ -359,10 +359,8 @@ PHP_FUNCTION(Async_cpu_usage)
  * Lifecycle
  * ==================================================================== */
 
-void async_register_cpu_snapshot_ce(void)
+void async_cpu_info_module_init(void)
 {
-	async_ce_cpu_snapshot = register_class_Async_CpuSnapshot();
-
 #ifdef ZTS
 	if (cpu_usage_mutex == NULL) {
 		cpu_usage_mutex = tsrm_mutex_alloc();

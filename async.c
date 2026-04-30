@@ -1552,7 +1552,8 @@ ZEND_MINIT_FUNCTION(async)
 	async_register_task_set_ce();
 	async_register_future_ce();
 	async_register_thread_ce();
-	async_register_cpu_snapshot_ce();
+	async_ce_cpu_snapshot = register_class_Async_CpuSnapshot();
+	async_cpu_info_module_init();
 
 	async_scheduler_startup();
 	async_api_register();
