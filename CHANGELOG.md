@@ -8,6 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.0] -
 
 ### Added
+- **CPU usage probes** — cross-platform process and host CPU monitoring,
+  identical fields and semantics on Linux and Windows. Suitable for
+  backpressure decisions in long-running coroutines and for emitting
+  telemetry from PHP-level metrics loops.
+  - `Async\CpuSnapshot::now(): CpuSnapshot` — immutable point-in-time
+    snapshot. Final, readonly, private constructor, no dynamic
+    properties. Exposes raw monotonic counters: `wallNs`, `processUserNs`,
+    `processSystemNs`, `systemIdleNs`, `systemBusyNs`, `cpuCount`. Single
+    values are not directly meaningful — callers compute deltas between
+    two snapshots themselves.
+  - `Async\cpu_usage(): array` — telemetry-friendly wrapper that maintains
+    an internal "previous" snapshot per process and returns ready-to-use
+    percentages: `process_cores`, `process_percent`, `system_percent`,
+    `cpu_count`, `interval_sec`, `loadavg`. The first call seeds the
+    internal state and returns zeros; subsequent calls return the delta
+    against the previously stored snapshot. State is reset in `RSHUTDOWN`.
+  - `Async\loadavg(): ?array` — POSIX 1/5/15-minute system load averages.
+    Returns `null` on Windows (no native equivalent; emulating CPU% as
+    loadavg has different semantics and would mislead callers).
+  Linux uses `clock_gettime(CLOCK_MONOTONIC)`, `getrusage(RUSAGE_SELF)`,
+  `/proc/stat` and `getloadavg()`. Windows uses `QueryPerformanceCounter`,
+  `GetProcessTimes`, `GetSystemTimes` and
+  `GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)`. ZTS-safe via
+  `tsrm_mutex`. Inside containers, `system*` fields reflect the host
+  rather than the cgroup; for per-process backpressure prefer the
+  `process*` fields, which automatically account for affinity and cgroup
+  CPU throttling. **No `zend_async_API` changes.**
 - **`Async\available_parallelism(): int`** — returns the number of CPUs
   usable by the current process (cgroup quotas, `sched_setaffinity`, etc.),
   i.e. the value libuv recommends for thread-pool / worker sizing. Backed

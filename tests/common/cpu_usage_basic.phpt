@@ -35,13 +35,11 @@ var_dump($second['system_percent']  <= 100.0);
 var_dump($second['cpu_count']      === $first['cpu_count']);
 
 // loadavg: array of three floats on POSIX, null on Windows.
-if (PHP_OS_FAMILY === 'Windows') {
-    var_dump($second['loadavg'] === null);
-} else {
-    var_dump(is_array($second['loadavg']));
-    var_dump(count($second['loadavg']) === 3);
-    var_dump(is_float($second['loadavg'][0]));
-}
+$la = $second['loadavg'];
+$loadavg_ok = PHP_OS_FAMILY === 'Windows'
+    ? $la === null
+    : is_array($la) && count($la) === 3 && is_float($la[0]) && is_float($la[1]) && is_float($la[2]);
+var_dump($loadavg_ok);
 
 // Arity check.
 try {
@@ -52,9 +50,7 @@ try {
 
 echo "done\n";
 ?>
---EXPECTF--
-bool(true)
-bool(true)
+--EXPECT--
 bool(true)
 bool(true)
 bool(true)
