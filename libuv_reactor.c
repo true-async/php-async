@@ -3904,17 +3904,36 @@ static void libuv_io_req_dispose(zend_async_io_req_t *base_req)
 /* }}} */
 
 /* {{{ IO pipe callbacks */
-static void io_pipe_alloc_cb(uv_handle_t *pipe_handle, size_t suggested_size, uv_buf_t *output)
+static void libuv_io_alloc_cb(uv_handle_t *handle, size_t suggested_size, uv_buf_t *output)
 {
-	const async_io_t *io = (async_io_t *) pipe_handle->data;
-	async_io_req_t *req = io->active_req;
+	async_io_t *io = (async_io_t *) handle->data;
 
+	/* User-controlled allocator: lets the owner pick a sliding offset into
+	 * its own buffer so multishot stays armed across consecutive reads. */
+	if (io->base.alloc_cb != NULL) {
+#ifdef _WIN32
+		/* uv_buf_t = { ULONG len; char *base; } — copy. */
+		zend_async_buf_t b = { NULL, 0 };
+		io->base.alloc_cb(&io->base, suggested_size, &b);
+		output->base = b.base;
+		output->len  = (ULONG) b.len;
+#else
+		_Static_assert(sizeof(zend_async_buf_t) == sizeof(uv_buf_t)
+				&& offsetof(zend_async_buf_t, base) == offsetof(uv_buf_t, base)
+				&& offsetof(zend_async_buf_t, len)  == offsetof(uv_buf_t, len),
+				"zend_async_buf_t must match uv_buf_t");
+		io->base.alloc_cb(&io->base, suggested_size, (zend_async_buf_t *) output);
+#endif
+		return;
+	}
+
+	/* Legacy: static (buf, max_size) frozen at submit time on the req. */
+	async_io_req_t *req = io->active_req;
 	if (UNEXPECTED(req == NULL || req->base.buf == NULL)) {
 		output->base = NULL;
 		output->len = 0;
 		return;
 	}
-
 	output->base = req->base.buf;
 	output->len = (unsigned int) req->max_size;
 }
@@ -4309,7 +4328,7 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, char *buf, s
 
 		io->active_req = req;
 
-		const int error = uv_read_start(&io->handle.stream, io_pipe_alloc_cb, io_pipe_read_cb);
+		const int error = uv_read_start(&io->handle.stream, libuv_io_alloc_cb, io_pipe_read_cb);
 
 		if (UNEXPECTED(error < 0)) {
 			io->active_req = NULL;
