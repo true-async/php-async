@@ -9,13 +9,16 @@ if test "$PHP_ASYNC" = "yes"; then
   AC_DEFINE([PHP_ASYNC], 1, [Enable True Async API])
 
   dnl Register extension source files.
+  dnl -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 routes EG()/ASYNC_G()/ZEND_ASYNC_G()
+  dnl macros through __thread storage (TSRMLS_CACHE) instead of pthread_getspecific.
+  dnl On the bench profile this category accounts for ~4% of total CPU.
   PHP_NEW_EXTENSION([async],
     [async.c coroutine.c scope.c scheduler.c exceptions.c iterator.c async_API.c \
      context.c libuv_reactor.c future.c channel.c pool.c task_group.c fs_watcher.c \
      thread.c thread_channel.c thread_pool.c cpu_info.c \
      internal/allocator.c internal/circular_buffer.c \
      zend_common.c],
-    $ext_shared)
+    $ext_shared,,[-DZEND_ENABLE_STATIC_TSRMLS_CACHE=1])
 
   dnl Optionally install headers (if desired for public use).
   PHP_INSTALL_HEADERS([ext/async],
