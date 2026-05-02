@@ -3908,6 +3908,18 @@ static void libuv_io_req_dispose(zend_async_io_req_t *base_req)
 {
 	async_io_req_t *req = (async_io_req_t *) base_req;
 
+	/* Vectored fire-and-forget early-teardown path: writev request that never
+	 * reached io_pipe_writev_cb (submit-time error). Release every owned
+	 * zend_string ref stored in the trailing slot array. The completion cb
+	 * zeroes writev_nbufs after its own release loop, so no double-release. */
+	if (req->writev_nbufs > 0) {
+		zend_string **slots = (zend_string **)((char *) req + sizeof(*req));
+		for (unsigned i = 0; i < req->writev_nbufs; i++) {
+			zend_string_release(slots[i]);
+		}
+		req->writev_nbufs = 0;
+	}
+
 	/* Fire-and-forget ownership transfer: hand the buffer back via free_cb
 	 * if the request was submitted with one but never made it to the
 	 * completion callback (e.g. submit-time error in libuv_io_write).
@@ -4045,6 +4057,38 @@ static void io_pipe_write_cb(uv_write_t *write_request, int status)
 	}
 
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
+	IF_EXCEPTION_STOP_REACTOR;
+}
+
+/* Vectored fire-and-forget completion. Releases every owned zend_string ref
+ * stored in the trailing slot array, then frees the request. No NOTIFY:
+ * writev is fire-and-forget by design (no caller awaits this req). On
+ * write error the connection layer surfaces the failure on its next read
+ * attempt and tears the conn down, just like ZEND_ASYNC_IO_WRITE_EX. */
+static void io_pipe_writev_cb(uv_write_t *write_request, int status)
+{
+	async_io_req_t *req = (async_io_req_t *) write_request->data;
+
+	if (status == 0) {
+		req->base.transferred = (ssize_t) req->max_size;
+	} else {
+		req->base.transferred = -1;
+		req->base.exception = async_new_exception(
+				async_ce_input_output_exception, "Pipe writev error: %s", uv_strerror(status));
+	}
+	req->base.completed = true;
+
+	zend_string **slots = (zend_string **)((char *) req + sizeof(*req));
+	for (unsigned i = 0; i < req->writev_nbufs; i++) {
+		zend_string_release(slots[i]);
+	}
+	req->writev_nbufs = 0;
+
+	if (req->base.exception != NULL) {
+		zend_object_release(req->base.exception);
+		req->base.exception = NULL;
+	}
+	pefree(req, 0);
 	IF_EXCEPTION_STOP_REACTOR;
 }
 
@@ -4543,6 +4587,71 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 	}
 
 	ZEND_ASYNC_INCREASE_EVENT_COUNT(&io->base.event);
+	return &req->base;
+}
+
+/* }}} */
+
+/* {{{ libuv_io_writev — vectored fire-and-forget write */
+static zend_async_io_req_t *libuv_io_writev(zend_async_io_t *io_base,
+                                            zend_string * const *bufs, unsigned nbufs)
+{
+	async_io_t *io = (async_io_t *) io_base;
+
+	if (UNEXPECTED(nbufs == 0)) {
+		return NULL;
+	}
+
+	if (UNEXPECTED(io->base.state & ZEND_ASYNC_IO_CLOSED)
+	    || UNEXPECTED(!ZEND_ASYNC_IO_IS_STREAM(io->base.type))) {
+		/* Caller already transferred ownership; release before bailing
+		 * so callers can stay oblivious to NULL-return cleanup. */
+		for (unsigned i = 0; i < nbufs; i++) {
+			zend_string_release(bufs[i]);
+		}
+		async_throw_error(io->base.state & ZEND_ASYNC_IO_CLOSED
+				? "Cannot write to closed IO handle"
+				: "Vectored write only valid on stream IO");
+		return NULL;
+	}
+
+	/* Single allocation: req plus a flex array of `nbufs` zend_string slots
+	 * laid out immediately after the req struct. Keeps owned refs together
+	 * with the request so dispose / completion need only the req pointer. */
+	const size_t slots_bytes = (size_t) nbufs * sizeof(zend_string *);
+	async_io_req_t *req = pecalloc(1, sizeof(*req) + slots_bytes, 0);
+	req->base.dispose = libuv_io_req_dispose;
+	req->io = io;
+	req->writev_nbufs = (uint16_t) nbufs;
+
+	zend_string **slots = (zend_string **)((char *) req + sizeof(*req));
+
+	/* uv_buf_t array is stack-allocated for the duration of uv_write — libuv
+	 * copies the pointers/lengths into its internal request before returning,
+	 * so the array can vanish as soon as uv_write completes. nbufs is small
+	 * for HTTP (2-3); UIO_MAXIOV (1024 on Linux) is the upper kernel cap. */
+	uv_buf_t tmp[nbufs];
+	size_t total = 0;
+	for (unsigned i = 0; i < nbufs; i++) {
+		slots[i] = bufs[i];                              /* take ownership */
+		const size_t len = ZSTR_LEN(bufs[i]);
+		tmp[i] = uv_buf_init(ZSTR_VAL(bufs[i]),
+				(unsigned int)(len > UINT_MAX ? UINT_MAX : len));
+		total += len;
+	}
+	req->max_size = total;
+	req->write_req.data = req;
+
+	const int error = uv_write(&req->write_req, &io->handle.stream,
+			tmp, nbufs, io_pipe_writev_cb);
+
+	if (UNEXPECTED(error < 0)) {
+		async_throw_error("Failed to start vectored write: %s", uv_strerror(error));
+		/* dispose handles writev_nbufs cleanup uniformly. */
+		libuv_io_req_dispose(&req->base);
+		return NULL;
+	}
+
 	return &req->base;
 }
 
@@ -5435,6 +5544,7 @@ void async_libuv_reactor_register(void)
 						   libuv_io_create,
 						   libuv_io_read,
 						   libuv_io_write,
+						   libuv_io_writev,
 						   libuv_io_close,
 						   libuv_io_await,
 						   libuv_io_flush,

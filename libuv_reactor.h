@@ -160,6 +160,12 @@ struct _async_io_req_t
 	size_t max_size;
 	bool buf_owned;
 
+	/* Vectored write ownership: when non-zero, the request was submitted via
+	 * libuv_io_writev and owns `writev_nbufs` zend_string references stored
+	 * in a trailing flex array right after the req struct (single pecalloc).
+	 * Completion / dispose paths release each ref. Zero means non-writev. */
+	uint16_t writev_nbufs;
+
 	union
 	{
 		uv_write_t write_req;
