@@ -448,6 +448,24 @@ bool libuv_reactor_execute(bool no_wait)
 
 /* }}} */
 
+/* {{{ libuv_now
+ *
+ * Cheap monotonic-ish "now" in milliseconds. uv_now() returns the loop's
+ * cached wall time (refreshed once per uv_run iteration); reads are a
+ * single load with no syscall and no vDSO. Suitable for deadline
+ * arithmetic and low-precision timestamping. For sub-ms-precision
+ * sampling (CoDel sojourn / service times) callers must continue to use
+ * zend_hrtime(). */
+static uint64_t libuv_now(void)
+{
+	if (UNEXPECTED(!ASYNC_G(reactor_started))) {
+		return 0;
+	}
+	return uv_now(UVLOOP);
+}
+
+/* }}} */
+
 /* {{{ libuv_reactor_loop_alive */
 bool libuv_reactor_loop_alive(void)
 {
@@ -5407,7 +5425,8 @@ void async_libuv_reactor_register(void)
 								libuv_new_exec_event,
 								libuv_exec,
 								libuv_new_trigger_event,
-								libuv_available_parallelism);
+								libuv_available_parallelism,
+								libuv_now);
 
 	zend_async_socket_listening_register(LIBUV_REACTOR_NAME, false, libuv_socket_listen);
 
