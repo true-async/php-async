@@ -3890,7 +3890,18 @@ static void libuv_io_req_dispose(zend_async_io_req_t *base_req)
 {
 	async_io_req_t *req = (async_io_req_t *) base_req;
 
-	if (req->buf_owned && req->base.buf != NULL) {
+	/* Fire-and-forget ownership transfer: hand the buffer back via free_cb
+	 * if the request was submitted with one but never made it to the
+	 * completion callback (e.g. submit-time error in libuv_io_write).
+	 * io_pipe_write_cb clears free_cb after its own invocation, so we
+	 * never double-free here. */
+	if (req->base.free_cb != NULL) {
+		zend_async_io_write_free_cb_t free_cb = req->base.free_cb;
+		void *buf = req->base.buf;
+		req->base.free_cb = NULL;
+		req->base.buf     = NULL;
+		free_cb(buf, req->io != NULL ? &req->io->base : NULL);
+	} else if (req->buf_owned && req->base.buf != NULL) {
 		pefree(req->base.buf, 0);
 	}
 
@@ -3994,6 +4005,27 @@ static void io_pipe_write_cb(uv_write_t *write_request, int status)
 	}
 
 	req->base.completed = true;
+
+	/* Fire-and-forget mode: caller transferred buffer ownership via free_cb
+	 * and is not awaiting this req. Hand the buffer back via free_cb,
+	 * dispose the req inline, skip NOTIFY (no coroutine is parked on the
+	 * io event for this write). On status<0 the connection layer will see
+	 * the error on its next read attempt and tear the conn down. */
+	if (req->base.free_cb != NULL) {
+		zend_async_io_write_free_cb_t free_cb = req->base.free_cb;
+		void *buf = req->base.buf;
+		req->base.free_cb = NULL;
+		req->base.buf     = NULL;
+		free_cb(buf, &io->base);
+		if (req->base.exception != NULL) {
+			zend_object_release(req->base.exception);
+			req->base.exception = NULL;
+		}
+		pefree(req, 0);
+		IF_EXCEPTION_STOP_REACTOR;
+		return;
+	}
+
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
 	IF_EXCEPTION_STOP_REACTOR;
 }
@@ -4386,7 +4418,8 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, char *buf, s
 /* }}} */
 
 /* {{{ libuv_io_write */
-static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char *buf, const size_t count)
+static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char *buf, const size_t count,
+                                           zend_async_io_write_free_cb_t free_cb)
 {
 	async_io_t *io = (async_io_t *) io_base;
 
@@ -4397,6 +4430,8 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 
 	async_io_req_t *req = pecalloc(1, sizeof(async_io_req_t), 0);
 	req->base.dispose = libuv_io_req_dispose;
+	req->base.buf     = (char *) buf;
+	req->base.free_cb = free_cb;
 	req->io = io;
 	req->max_size = count;
 
