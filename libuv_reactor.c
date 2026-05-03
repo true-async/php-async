@@ -14,7 +14,6 @@
   +----------------------------------------------------------------------+
 */
 #include "libuv_reactor.h"
-#include <Zend/zend_alloca.h>
 #include <Zend/zend_async_API.h>
 #include <Zend/zend_closures.h>
 #include <main/php.h>
