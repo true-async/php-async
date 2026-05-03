@@ -14,6 +14,7 @@
   +----------------------------------------------------------------------+
 */
 #include "libuv_reactor.h"
+#include <Zend/zend_alloca.h>
 #include <Zend/zend_async_API.h>
 #include <Zend/zend_closures.h>
 #include <main/php.h>
@@ -4626,11 +4627,10 @@ static zend_async_io_req_t *libuv_io_writev(zend_async_io_t *io_base,
 
 	zend_string **slots = (zend_string **)((char *) req + sizeof(*req));
 
-	/* uv_buf_t array is stack-allocated for the duration of uv_write — libuv
-	 * copies the pointers/lengths into its internal request before returning,
-	 * so the array can vanish as soon as uv_write completes. nbufs is small
-	 * for HTTP (2-3); UIO_MAXIOV (1024 on Linux) is the upper kernel cap. */
-	uv_buf_t tmp[nbufs];
+	/* uv_buf_t array lives only for the duration of uv_write — libuv copies
+	 * the pointers/lengths before returning. nbufs is small for HTTP (2-3). */
+	ALLOCA_FLAG(tmp_heap)
+	uv_buf_t *tmp = do_alloca((size_t) nbufs * sizeof(uv_buf_t), tmp_heap);
 	size_t total = 0;
 	for (unsigned i = 0; i < nbufs; i++) {
 		slots[i] = bufs[i];                              /* take ownership */
@@ -4644,6 +4644,7 @@ static zend_async_io_req_t *libuv_io_writev(zend_async_io_t *io_base,
 
 	const int error = uv_write(&req->write_req, &io->handle.stream,
 			tmp, nbufs, io_pipe_writev_cb);
+	free_alloca(tmp, tmp_heap);
 
 	if (UNEXPECTED(error < 0)) {
 		async_throw_error("Failed to start vectored write: %s", uv_strerror(error));
