@@ -15,6 +15,10 @@
 */
 #include <Zend/zend_async_API.h>
 
+#if defined(__linux__)
+# include <time.h>   /* clock_gettime(CLOCK_MONOTONIC_COARSE) for cheap main-loop reactor throttle */
+#endif
+
 #include "coroutine.h"
 #include "internal/zval_circular_buffer.h"
 #include "scheduler.h"
@@ -1367,7 +1371,18 @@ static zend_always_inline bool scheduler_next_tick(void)
 	execute_microtasks();
 	TRY_HANDLE_SUSPEND_EXCEPTION_BOOL();
 
+	/* Coarse monotonic clock for the 100ms throttle: ~5ns vs ~25ns
+	 * vdso for zend_hrtime. Granularity 4-10ms (CONFIG_HZ-dependent)
+	 * is irrelevant against a 100ms threshold. Non-Linux falls back
+	 * to zend_hrtime so behaviour stays identical there. */
+#if defined(__linux__) && defined(CLOCK_MONOTONIC_COARSE)
+	struct timespec __tick_ts;
+	clock_gettime(CLOCK_MONOTONIC_COARSE, &__tick_ts);
+	const uint64_t current_time =
+		(uint64_t)__tick_ts.tv_sec * 1000000000ULL + (uint64_t)__tick_ts.tv_nsec;
+#else
 	const uint64_t current_time = zend_hrtime();
+#endif
 	bool has_handles = true;
 
 	if (UNEXPECTED(current_time - ASYNC_G(last_reactor_tick) > REACTOR_CHECK_INTERVAL)) {
@@ -1676,7 +1691,45 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 			TRY_HANDLE_EXCEPTION();
 
 			has_next_coroutine = circular_buffer_count(coroutine_queue) > 0;
-			has_handles = ZEND_ASYNC_REACTOR_EXECUTE(has_next_coroutine);
+
+			/* Reactor throttle for the main scheduler loop. When there is
+			 * no runnable coroutine we MUST tick (uv_run UV_RUN_ONCE
+			 * blocks until something happens, that's the only way out).
+			 * When there ARE runnable coroutines, every iteration would
+			 * otherwise call uv_run(NOWAIT) → epoll_pwait → io_uring_enter
+			 * just to discover nothing new since the last tick.
+			 *
+			 * For micro-coroutines (HTTP/2 hello-world: 32 stream handlers
+			 * finish in single-digit microseconds each), the per-iteration
+			 * tick costs more than the coroutine itself — measured 23x
+			 * more syscalls than the suspend-based path which is throttled
+			 * via REACTOR_CHECK_INTERVAL in scheduler_next_tick.
+			 *
+			 * Use CLOCK_MONOTONIC_COARSE: ~5ns vs ~25ns vdso for hrtime,
+			 * with 4-10ms granularity (depends on CONFIG_HZ). The
+			 * granularity itself is the throttle window — comparing
+			 * `coarse_now == last_coarse_tick` skips reactor until the
+			 * kernel's jiffies counter advances. Non-Linux: behaviour
+			 * unchanged (no throttle, same as before). */
+			bool need_reactor = !has_next_coroutine;
+#if defined(__linux__) && defined(CLOCK_MONOTONIC_COARSE)
+			static __thread uint64_t last_coarse_tick_ns = 0;
+			if (!need_reactor) {
+				struct timespec ts;
+				clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
+				const uint64_t now_ns = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+				if (now_ns != last_coarse_tick_ns) {
+					last_coarse_tick_ns = now_ns;
+					need_reactor = true;
+				}
+			}
+#else
+			need_reactor = true;
+#endif
+
+			if (need_reactor) {
+				has_handles = ZEND_ASYNC_REACTOR_EXECUTE(has_next_coroutine);
+			}
 
 			if (circular_buffer_is_not_empty(resumed_coroutines)) {
 				process_resumed_coroutines();
