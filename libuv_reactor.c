@@ -349,6 +349,9 @@ static zend_string *libuv_task_info(zend_async_event_t *event)
 	}
 
 #define EVENT_STOP_PROLOGUE(event) \
+	if (event->loop_ref_count == 0) { \
+		return true; \
+	} \
 	if (event->loop_ref_count > 1) { \
 		event->loop_ref_count--; \
 		if (UNEXPECTED(ZEND_ASYNC_EVENT_IS_CLOSED(event))) { \
