@@ -717,6 +717,28 @@ static bool resolve_deadlocks(void)
 		return false;
 	}
 
+	/* Last-chance reactor drain: even when active_event_count==0, libuv may
+	 * still have pending close callbacks (uv_close completions) or EBADF
+	 * notifications for fds closed externally (e.g. mysqli->close() from a
+	 * different coroutine). These callbacks are queued inside libuv
+	 * independently of our active_event_count counter and require a uv_run
+	 * tick to execute. The throttle in the main loop can suppress that tick
+	 * when runnable coroutines are present, so we may arrive here before the
+	 * callbacks had a chance to run.
+	 *
+	 * UV_RUN_NOWAIT drains whatever is already pending without blocking. If
+	 * any callback wakes a coroutine it ends up in coroutine_queue — that
+	 * means this was a false-positive deadlock detection, not a real one. */
+	ZEND_ASYNC_REACTOR_EXECUTE(true);
+
+	if (circular_buffer_is_not_empty(&ASYNC_G(resumed_coroutines))) {
+		process_resumed_coroutines();
+	}
+
+	if (circular_buffer_is_not_empty(&ASYNC_G(coroutine_queue))) {
+		return false;
+	}
+
 	dump_deadlock_info(real_coroutines);
 
 	// Create deadlock exception to be set as exit_exception
