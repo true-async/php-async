@@ -851,6 +851,13 @@ void bailout_all_coroutines(void)
 			break;
 		}
 
+		/* Coroutine is no longer in the queue — clear the QUEUED status
+		 * before we hand it off to bailout. */
+		if (EXPECTED(async_coroutine->coroutine.waker != NULL
+			&& async_coroutine->coroutine.waker->status == ZEND_ASYNC_WAKER_QUEUED)) {
+			async_coroutine->coroutine.waker->status = ZEND_ASYNC_WAKER_RESULT;
+		}
+
 		if (async_coroutine->fiber_context) {
 			ZEND_ASYNC_CURRENT_COROUTINE = &async_coroutine->coroutine;
 			fiber_switch_context_ex(async_coroutine, ZEND_FIBER_TRANSFER_FLAG_BAILOUT);
