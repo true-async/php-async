@@ -36,6 +36,8 @@
 #include "zend_common.h"
 #include "zend_map_ptr.h"
 #include "main/SAPI.h"
+#include "main/php_streams.h"
+#include "zend_constants.h"
 
 ///////////////////////////////////////////////////////////
 /// 0. Deep copy — arena-based op_array copy
@@ -1637,6 +1639,61 @@ void async_thread_tsrm_init(void)
 #endif
 }
 
+/**
+ * Per-thread STDIN/STDOUT/STDERR registration.
+ *
+ * Mirrors cli_register_file_handles() (sapi/cli/php_cli.c) but runs once per
+ * child thread instead of once per process. CLI registers these constants
+ * only in main()'s thread; in ZTS, EG(zend_constants) and EG(regular_list)
+ * are per-thread, so child threads see neither the constants nor the
+ * underlying php_stream resources unless we recreate them here.
+ *
+ * Each thread gets its OWN php_stream wrapping the shared fd 0/1/2:
+ * concurrent fwrite() from different threads goes through independent
+ * buffers; the resulting write(2) calls hit a shared fd but are atomic for
+ * short messages (<= PIPE_BUF) per POSIX. Sharing a single php_stream
+ * across threads would be a data race — its buffer/position/refcount are
+ * not guarded.
+ *
+ * PHP_STREAM_FLAG_NO_RSCR_DTOR_CLOSE keeps request shutdown from closing
+ * fd 0/1/2 — other threads/the parent still need them.
+ */
+static void async_thread_register_file_handles(void)
+{
+	php_stream *s_in  = php_stream_open_wrapper_ex("php://stdin",  "rb", 0, NULL, NULL);
+	php_stream *s_out = php_stream_open_wrapper_ex("php://stdout", "wb", 0, NULL, NULL);
+	php_stream *s_err = php_stream_open_wrapper_ex("php://stderr", "wb", 0, NULL, NULL);
+
+	if (s_in == NULL || s_out == NULL || s_err == NULL) {
+		if (s_in)  php_stream_close(s_in);
+		if (s_out) php_stream_close(s_out);
+		if (s_err) php_stream_close(s_err);
+		return;
+	}
+
+	s_in->flags  |= PHP_STREAM_FLAG_NO_RSCR_DTOR_CLOSE;
+	s_out->flags |= PHP_STREAM_FLAG_NO_RSCR_DTOR_CLOSE;
+	s_err->flags |= PHP_STREAM_FLAG_NO_RSCR_DTOR_CLOSE;
+
+	zend_constant ic, oc, ec;
+
+	php_stream_to_zval(s_in,  &ic.value);
+	php_stream_to_zval(s_out, &oc.value);
+	php_stream_to_zval(s_err, &ec.value);
+
+	Z_CONSTANT_FLAGS(ic.value) = 0;
+	ic.name = zend_string_init_interned("STDIN", sizeof("STDIN") - 1, 0);
+	zend_register_constant(&ic);
+
+	Z_CONSTANT_FLAGS(oc.value) = 0;
+	oc.name = zend_string_init_interned("STDOUT", sizeof("STDOUT") - 1, 0);
+	zend_register_constant(&oc);
+
+	Z_CONSTANT_FLAGS(ec.value) = 0;
+	ec.name = zend_string_init_interned("STDERR", sizeof("STDERR") - 1, 0);
+	zend_register_constant(&ec);
+}
+
 int async_thread_request_startup(const async_thread_snapshot_t *snapshot)
 {
 #ifdef ZTS
@@ -1647,6 +1704,8 @@ int async_thread_request_startup(const async_thread_snapshot_t *snapshot)
 		ts_free_thread();
 		return FAILURE;
 	}
+
+	async_thread_register_file_handles();
 
 	/* Suppress HTTP-specific behavior */
 	PG(during_request_startup) = 0;
