@@ -1658,6 +1658,7 @@ void async_thread_tsrm_init(void)
  * PHP_STREAM_FLAG_NO_RSCR_DTOR_CLOSE keeps request shutdown from closing
  * fd 0/1/2 — other threads/the parent still need them.
  */
+#ifdef ZTS
 static void async_thread_register_file_handles(void)
 {
 	php_stream *s_in  = php_stream_open_wrapper_ex("php://stdin",  "rb", 0, NULL, NULL);
@@ -1693,6 +1694,7 @@ static void async_thread_register_file_handles(void)
 	ec.name = zend_string_init_interned("STDERR", sizeof("STDERR") - 1, 0);
 	zend_register_constant(&ec);
 }
+#endif
 
 int async_thread_request_startup(const async_thread_snapshot_t *snapshot)
 {
