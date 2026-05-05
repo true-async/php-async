@@ -1832,7 +1832,52 @@ static void op_array_to_emalloc(zend_op_array *op_array)
 		if (op_array->last_literal) {
 			new_literals = (zval *) ((char *) new_opcodes + opcodes_size);
 			for (uint32_t i = 0; i < op_array->last_literal; i++) {
-				ZVAL_COPY(&new_literals[i], &orig_literals[i]);
+				/* Deep-copy refcounted literals into the worker's heap.
+				 * ZVAL_COPY alone only bumps the refcount and leaves the
+				 * payload (zend_string / zend_array) in the source
+				 * persistent arena. async_thread_snapshot_destroy() runs
+				 * right after op_array_to_emalloc and frees that arena;
+				 * any opcode that later reads such a literal (e.g. the
+				 * function-name string for INIT_FCALL_SPEC_CONST) reads
+				 * freed memory and segfaults under load. Strings and
+				 * arrays are the only refcounted literal types Zend emits
+				 * for user op_arrays. */
+				const zval *src = &orig_literals[i];
+				zval *dst = &new_literals[i];
+				switch (Z_TYPE_P(src)) {
+					case IS_STRING: {
+						/* Always deep-copy. The IS_STR_INTERNED flag is
+						 * unreliable here: thread_copy_string marks every
+						 * arena-allocated string as INTERNED|PERMANENT to
+						 * skip refcount/release on the source side, so a
+						 * literal that looks interned is actually living
+						 * in the snapshot's persistent arena and will die
+						 * with async_thread_snapshot_destroy() right
+						 * after this function returns.
+						 *
+						 * The hash must be precomputed: INIT_FCALL_SPEC_CONST
+						 * uses zend_hash_find_known_hash which trusts
+						 * key->h without recomputing — a freshly emalloc'd
+						 * string has h=0 and lookup hits bucket 0 with a
+						 * garbage pointer (asserts in debug builds). */
+						zend_string *fresh = zend_string_init(
+							Z_STRVAL_P(src), Z_STRLEN_P(src), 0);
+						zend_string_hash_val(fresh);
+						ZVAL_NEW_STR(dst, fresh);
+						break;
+					}
+					case IS_ARRAY:
+						ZVAL_ARR(dst, zend_array_dup(Z_ARR_P(src)));
+						break;
+					default:
+						/* Scalars (long/double/bool/null) and IS_CONSTANT_AST:
+						 * the latter is resolved into a string/array at
+						 * compile time for closures, so we don't expect it
+						 * here. ZVAL_COPY handles scalars (no payload to
+						 * deep-copy) and AST refcount bump if it ever shows. */
+						ZVAL_COPY(dst, src);
+						break;
+				}
 			}
 		}
 		op_array->literals = new_literals;
