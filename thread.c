@@ -1754,6 +1754,33 @@ typedef struct {
 	zif_handler       orig_internal_handler;
 } async_zend_closure_t;
 
+/* Deep-copy a zend_type into emalloc memory. Mirrors thread_copy_type
+ * (persistent arena variant) but uses emalloc + zend_string_init so the
+ * resulting type tree is self-contained in the worker's request heap.
+ * Without this, arg_info[i].type points at zend_string slots inside the
+ * source persistent arena; once that arena is destroyed in the parent
+ * thread, the worker's zend_lookup_class_ex reads garbage as zend_string
+ * length and triggers a multi-exabyte _emalloc → memory_limit bailout. */
+static void op_array_emalloc_copy_type(zend_type *type)
+{
+	if (ZEND_TYPE_HAS_LIST(*type)) {
+		const zend_type_list *old_list = ZEND_TYPE_LIST(*type);
+		size_t size = ZEND_TYPE_LIST_SIZE(old_list->num_types);
+		zend_type_list *new_list = emalloc(size);
+		memcpy(new_list, old_list, size);
+		ZEND_TYPE_FULL_MASK(*type) &= ~_ZEND_TYPE_ARENA_BIT;
+		ZEND_TYPE_SET_LIST(*type, new_list);
+		zend_type *single;
+		ZEND_TYPE_LIST_FOREACH_MUTABLE(new_list, single) {
+			op_array_emalloc_copy_type(single);
+		} ZEND_TYPE_LIST_FOREACH_END();
+	} else if (ZEND_TYPE_HAS_NAME(*type)) {
+		zend_string *old_name = ZEND_TYPE_NAME(*type);
+		zend_string *fresh = zend_string_init(ZSTR_VAL(old_name), ZSTR_LEN(old_name), 0);
+		ZEND_TYPE_SET_PTR(*type, fresh);
+	}
+}
+
 /**
  * Copy op_array internals from persistent/arena memory into emalloc.
  * After this call, the op_array is fully self-contained in emalloc
@@ -1894,6 +1921,7 @@ static void op_array_to_emalloc(zend_op_array *op_array)
 				new_info[i].name = zend_string_init(
 					ZSTR_VAL(new_info[i].name), ZSTR_LEN(new_info[i].name), 0);
 			}
+			op_array_emalloc_copy_type(&new_info[i].type);
 		}
 		if (op_array->fn_flags & ZEND_ACC_HAS_RETURN_TYPE) {
 			new_info++;
