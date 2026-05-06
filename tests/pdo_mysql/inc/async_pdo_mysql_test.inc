@@ -44,6 +44,38 @@ class AsyncPDOMySQLTest {
     }
     
     /**
+     * Create a pool-enabled PDO instance.
+     */
+    static function poolFactory(int $poolMax = 3, array $extra = []): PDO {
+        $host = MYSQL_TEST_HOST;
+        $port = MYSQL_TEST_PORT;
+        $socket = MYSQL_TEST_SOCKET;
+        $db = MYSQL_TEST_DB;
+        $charset = MYSQL_TEST_CHARSET;
+
+        $dsn = "mysql:host={$host}";
+        if ($port) {
+            $dsn .= ";port={$port}";
+        }
+        if ($socket) {
+            $dsn .= ";unix_socket={$socket}";
+        }
+        if ($db) {
+            $dsn .= ";dbname={$db}";
+        }
+        if ($charset) {
+            $dsn .= ";charset={$charset}";
+        }
+
+        return new PDO($dsn, MYSQL_TEST_USER, MYSQL_TEST_PASSWD, $extra + [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_POOL_ENABLED => true,
+            PDO::ATTR_POOL_MIN => 0,
+            PDO::ATTR_POOL_MAX => $poolMax,
+        ]);
+    }
+
+    /**
      * Create a PDO connection without specifying database (for database creation)
      */
     static function factoryWithoutDB($host = null, $user = null, $pass = null, $options = array()) {

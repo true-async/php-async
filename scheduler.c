@@ -1872,6 +1872,13 @@ to_bailout_all_coroutines:
 	}
 
 	// It's the scheduler fiber, so we must finalize it.
+	// On graceful shutdown the do-while above may exit (PHP_DEBUG escape valve)
+	// while libuv still has pending close-callbacks for handles that were
+	// uv_close()'d but whose completion has not run yet. Drain them with a few
+	// UV_RUN_NOWAIT ticks so active_event_count drops to 0 before we assert.
+	for (int i = 0; i < 8 && ZEND_ASYNC_REACTOR_LOOP_ALIVE(); ++i) {
+		ZEND_ASYNC_REACTOR_EXECUTE(true);
+	}
 	ZEND_ASSERT(ZEND_ASYNC_REACTOR_LOOP_ALIVE() == false && "The event loop must be stopped");
 
 	fiber_pool_cleanup();
