@@ -8,6 +8,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.0] -
 
 ### Added
+- **PDO Pool: opt-in prepared-statement cache** — per-physical-connection
+  LRU cache of server-side prepared statements, transparent to user code.
+  Enabled by passing `PDO::ATTR_POOL_STMT_CACHE_SIZE => N` to the PDO
+  constructor (alongside `ATTR_POOL_ENABLED`). Default `0` disables the
+  cache and preserves current behaviour. On a cache hit `prepare()` reuses
+  the existing server-side prepared statement on that physical connection
+  with **zero wire traffic** — no `PQprepare`, no Parse round-trip. This
+  collapses the canonical "prepare-on-every-request" pool pattern to
+  "prepare once per physical connection, execute many times", which is
+  the same shape jackc/pgx, sqlx, pgjdbc and Npgsql converged on years ago.
+  - **Driver coverage:** `pdo_pgsql` only in this release. The cache layer
+    itself is driver-agnostic; `pdo_mysql` will follow.
+  - **Key:** the canonical SQL (`zend_string` returned by
+    `pdo_parse_params`, with `?` rewritten to `$1, $2, …`). Two PHP-level
+    SQLs that rewrite to the same wire form share a slot.
+  - **Storage:** standard Zend `HashTable`, insertion-order-as-LRU. On hit
+    the entry is moved to MRU via `del + add_new`. On overflow the oldest
+    entry is evicted and best-effort `DEALLOCATE`d on the wire.
+  - **Bypassed automatically** for `PDO_CURSOR_SCROLL`,
+    `ATTR_EMULATE_PREPARES => true`, `PDO_PGSQL_ATTR_DISABLE_PREPARES`, and
+    non-pool PDO handles. No semantic change for existing code.
+  - **Memory bounded** by the configured capacity per physical conn. On
+    connection close the cache is freed without `DEALLOCATE` (server-side
+    state goes away with the session).
+  - **Concurrency:** the cache lives on the physical `pdo_dbh_t` (pool
+    slot). A slot is held by at most one coroutine at a time, so all
+    cache mutation is single-owner — no locking. Each thread in the
+    `ThreadPool` case has its own pool, so the same invariant holds.
+  - **Plan invalidation is handled transparently.** When PostgreSQL retires
+    a cached plan after DDL (e.g. `ALTER TABLE` changing a column type)
+    the next `EXECUTE` fails with SQLSTATE `0A000` (`feature_not_supported`,
+    "cached plan must not change result type") or `26000`
+    (`invalid_sql_statement_name`). The driver detects these classes,
+    evicts the cache entry, best-effort `DEALLOCATE`s the stale server-side
+    stmt, re-issues `PQprepare` with the same name, re-inserts into the
+    cache and re-executes — all in a single retry, invisible to user code.
+  - **Known limitation:** pgbouncer transaction mode requires
+    `STMT_CACHE_SIZE => 0` because named prepared statements break across
+    pooled checkouts at the bouncer layer. Unbuffered + plan-invalidation
+    retry is best-effort (the buffered path is the primary target).
+  - New constant: `PDO::ATTR_POOL_STMT_CACHE_SIZE`. New API in
+    `ext/pdo/pdo_pool.{h,c}`: `pdo_pool_stmt_cache_create`,
+    `_destroy`, `_lookup`, `_insert`, `_take`, `_entry_free`,
+    `_size`, `_capacity`. Driver integration in
+    `ext/pdo_pgsql/pgsql_driver.c::pgsql_handle_preparer`.
+  - **Performance:** measured **~2.9× throughput** on a tight
+    `prepare+execute+fetch` loop against local Postgres (debug build,
+    ZTS, `-O0`); `strace -c` confirms a 3:1 reduction in wire syscalls
+    (`sendto` 3008→1007, `recvfrom` 6010→2008 per 1000 iterations);
+    callgrind shows a 25 % drop in user-space instruction count, with
+    the entire pool+cache layer accounting for ~0.5 % of CPU. Full
+    methodology, raw numbers and reproduction recipe in
+    [`docs/pdo-pool-stmt-cache-perf.md`](docs/pdo-pool-stmt-cache-perf.md).
+
+
 - **CPU usage probes** — cross-platform process and host CPU monitoring,
   identical fields and semantics on Linux and Windows. Suitable for
   backpressure decisions in long-running coroutines and for emitting
