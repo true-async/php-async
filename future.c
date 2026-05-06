@@ -515,6 +515,14 @@ static bool zend_future_event_stop(zend_async_event_t *event)
 
 static bool zend_future_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
 {
+	zend_future_t *future = (zend_future_t *) event;
+
+	/* Late subscribe on a completed future: notify already fired, fire inline. */
+	if (ZEND_FUTURE_IS_COMPLETED(future)) {
+		callback->callback(event, callback, &future->result, future->exception);
+		return EG(exception) == NULL;
+	}
+
 	return zend_async_callbacks_push(event, callback);
 }
 
