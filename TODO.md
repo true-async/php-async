@@ -1,5 +1,48 @@
 # TrueAsync TODO
 
+## ThreadPool::submit_internal — early-completion race on the awaitable event
+
+### Problem
+
+When a worker finishes between `pool->submit_internal(...)` returning the
+event and the caller registering its completion callback (via
+`zend_async_callbacks_push` or `zend_async_resume_when`), the
+notification can be lost: callbacks fire on the event at completion
+time, and a callback registered afterwards never sees it.
+
+In `true-async-server`'s pool helper this is currently masked because
+worker handlers run forever (HttpServer event loop, until SIGKILL). The
+race will surface as soon as workers can finish quickly — including the
+follow-up cross-thread `stop()` broadcast.
+
+### Suggested fix
+
+Either:
+
+1. Make the future event returned by `submit_internal` a **replay-aware**
+   awaitable — late-registered callbacks observe the prior completion
+   state and fire immediately. Single-shot `notify` events need to flip
+   to a "completed" sticky state so the next `add_callback` short-
+   circuits.
+
+2. Or document the contract: caller MUST register all callbacks before
+   yielding. In practice that means `zend_async_callbacks_push` /
+   `resume_when` calls happen synchronously after `submit_internal` and
+   before any `ZEND_ASYNC_SUSPEND`. Callers race-prone-by-design.
+
+Option 1 is the safer default — matches PHP-level `Future::await()`
+semantics (a Future awaited after completion resolves immediately).
+
+### Where to look
+
+- `ext/async/thread_pool.c` — `thread_pool_submit_internal_impl`
+  returns `&remote->future.event`.
+- `ext/async/future.c` — Future event lifecycle / completion flag.
+- Reference consumer: `true-async-server` `http_server_class.c`,
+  function `http_server_start_pool`.
+
+---
+
 ## Windows: stream_select() does not support pipes
 
 ### Problem
