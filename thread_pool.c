@@ -48,9 +48,24 @@ static void thread_pool_destroy(async_thread_pool_t *pool);
  * @brief Worker loop — receives tasks from channel, executes, completes.
  *
  * ctx = async_thread_pool_t* (shared pool).
- * Each task is an array: [callable, args_array, shared_state_ptr_as_long]
- * transferred through ThreadChannel automatically.
+ *
+ * Each task is a 4-element array:
+ *   [0] kind        — TASK_KIND_CLOSURE | TASK_KIND_INTERNAL (long)
+ *   [1] payload_a   — closure: snapshot_ptr ; internal: handler_ptr
+ *   [2] payload_b   — closure: args_array   ; internal: ctx_ptr
+ *   [3] state_ptr   — shared future state (long)
+ *
+ * The discriminator lets the worker dispatch either to the PHP-closure
+ * code path (snapshot + zend_call_function) or to a C-handler call
+ * (handler(event, ctx)) without changing the channel transport.
  */
+#define TASK_SLOT_KIND      0
+#define TASK_SLOT_PAYLOAD_A 1
+#define TASK_SLOT_PAYLOAD_B 2
+#define TASK_SLOT_STATE     3
+#define TASK_KIND_CLOSURE   0
+#define TASK_KIND_INTERNAL  1
+
 static zend_function worker_root_function = { ZEND_INTERNAL_FUNCTION };
 
 /* event is always NULL for pool workers (started via ZEND_ASYNC_START_THREAD) */
@@ -83,21 +98,61 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 		while (channel->channel.receive(&channel->channel, &task)) {
 			ZEND_ASSERT(Z_TYPE(task) == IS_ARRAY);
 
-			/* Extract: [snapshot_ptr, args_array, state_ptr] */
-			async_thread_snapshot_t *snapshot =
-				(async_thread_snapshot_t *)(uintptr_t) Z_LVAL_P(zend_hash_index_find(Z_ARRVAL(task), 0));
-			const zval *args_zv = zend_hash_index_find(Z_ARRVAL(task), 1);
+			const zend_long kind =
+				Z_LVAL_P(zend_hash_index_find(Z_ARRVAL(task), TASK_SLOT_KIND));
 			zend_future_shared_state_t *state =
-				(zend_future_shared_state_t *)(uintptr_t) Z_LVAL_P(zend_hash_index_find(Z_ARRVAL(task), 2));
+				(zend_future_shared_state_t *)(uintptr_t) Z_LVAL_P(
+					zend_hash_index_find(Z_ARRVAL(task), TASK_SLOT_STATE));
+
+			zend_atomic_int_dec(&pool->base.pending_count);
+			zend_atomic_int_inc(&pool->base.running_count);
+
+			if (kind == TASK_KIND_INTERNAL) {
+				/* C-handler task — payload_a is handler ptr, payload_b is
+				 * caller's pemalloc'd ctx. Handler frees ctx itself before
+				 * returning; pool only takes ownership when dispatch fails
+				 * (handled in drain path). */
+				zend_thread_pool_internal_handler_t handler =
+					(zend_thread_pool_internal_handler_t)(uintptr_t) Z_LVAL_P(
+						zend_hash_index_find(Z_ARRVAL(task), TASK_SLOT_PAYLOAD_A));
+				void *handler_ctx = (void *)(uintptr_t) Z_LVAL_P(
+					zend_hash_index_find(Z_ARRVAL(task), TASK_SLOT_PAYLOAD_B));
+
+				/* event arg reserved for future extension (handler stashing
+				 * result/exception). The shared_state's external event lives
+				 * behind a private struct field; until a public accessor lands
+				 * we pass NULL. Handler completes via return + EG(exception). */
+				handler(NULL, handler_ctx);
+
+				zend_atomic_int_dec(&pool->base.running_count);
+				zend_atomic_int_inc(&pool->base.completed_count);
+
+				if (EG(exception)) {
+					async_future_shared_state_reject(state, EG(exception));
+					zend_clear_exception();
+				} else {
+					zval undef;
+					ZVAL_UNDEF(&undef);
+					async_future_shared_state_complete(state, &undef);
+				}
+
+				async_future_shared_state_delref(state);
+				zval_ptr_dtor(&task);
+				continue;
+			}
+
+			/* TASK_KIND_CLOSURE — original PHP-closure path. */
+			async_thread_snapshot_t *snapshot =
+				(async_thread_snapshot_t *)(uintptr_t) Z_LVAL_P(
+					zend_hash_index_find(Z_ARRVAL(task), TASK_SLOT_PAYLOAD_A));
+			const zval *args_zv =
+				zend_hash_index_find(Z_ARRVAL(task), TASK_SLOT_PAYLOAD_B);
 
 			zval callable, retval;
 			zval *params = NULL;
 			uint32_t param_count = 0;
 			ZVAL_UNDEF(&retval);
 			ZVAL_UNDEF(&callable);
-
-			zend_atomic_int_dec(&pool->base.pending_count);
-			zend_atomic_int_inc(&pool->base.running_count);
 
 			async_thread_create_closure(&snapshot->entry, &callable);
 
@@ -236,6 +291,65 @@ static bool thread_pool_start_worker(async_thread_pool_t *pool, int32_t index)
 	return true;
 }
 
+/**
+ * C-level submit. Posts a TASK_KIND_INTERNAL onto the same task_channel
+ * the PHP submit uses; the worker dispatches by kind. ctx is opaque to
+ * the pool — caller owns its lifecycle (success: handler frees or
+ * decrefs; failure: caller cleans up after seeing NULL return).
+ */
+static zend_async_event_t *thread_pool_submit_internal_impl(
+	zend_async_thread_pool_t *base,
+	zend_thread_pool_internal_handler_t handler,
+	void *ctx)
+{
+	async_thread_pool_t *pool = (async_thread_pool_t *) base;
+
+	if (UNEXPECTED(zend_atomic_int_load(&pool->base.closed))) {
+		zend_throw_exception(async_ce_thread_pool_exception, "ThreadPool is closed", 0);
+		return NULL;
+	}
+
+	zend_future_shared_state_t *state = async_future_shared_state_create();
+	zend_future_remote_t *remote = async_new_remote_future(state);
+	if (UNEXPECTED(remote == NULL)) {
+		async_future_shared_state_destroy(state);
+		zend_throw_exception(async_ce_thread_pool_exception, "Failed to create future", 0);
+		return NULL;
+	}
+
+	/* +1 ref for the task — worker delrefs after complete/reject. */
+	async_future_shared_state_addref(state);
+
+	/* Pack: [kind=1, handler_ptr, ctx_ptr, state_ptr] */
+	zval task;
+	array_init_size(&task, 4);
+	zval slot;
+	ZVAL_LONG(&slot, TASK_KIND_INTERNAL);
+	zend_hash_next_index_insert_new(Z_ARRVAL(task), &slot);
+	ZVAL_LONG(&slot, (zend_long)(uintptr_t) handler);
+	zend_hash_next_index_insert_new(Z_ARRVAL(task), &slot);
+	ZVAL_LONG(&slot, (zend_long)(uintptr_t) ctx);
+	zend_hash_next_index_insert_new(Z_ARRVAL(task), &slot);
+	ZVAL_LONG(&slot, (zend_long)(uintptr_t) state);
+	zend_hash_next_index_insert_new(Z_ARRVAL(task), &slot);
+
+	if (UNEXPECTED(!pool->task_channel->channel.send(&pool->task_channel->channel, &task))) {
+		zval_ptr_dtor(&task);
+		async_future_shared_state_delref(state);
+		ZEND_ASYNC_EVENT_RELEASE(&remote->future.event);
+		if (!EG(exception)) {
+			zend_throw_exception(async_ce_thread_pool_exception, "ThreadPool channel is closed", 0);
+		}
+		return NULL;
+	}
+
+	zval_ptr_dtor(&task);
+	zend_atomic_int_inc(&pool->base.pending_count);
+
+	ZEND_FUTURE_SET_USED(&remote->future);
+	return &remote->future.event;
+}
+
 zend_async_thread_pool_t *async_thread_pool_create(int32_t worker_count, int32_t queue_size)
 {
 	async_thread_pool_t *pool = pecalloc(1, sizeof(async_thread_pool_t), 1);
@@ -250,6 +364,7 @@ zend_async_thread_pool_t *async_thread_pool_create(int32_t worker_count, int32_t
 	/* Set method pointers */
 	pool->base.close = thread_pool_close_base;
 	pool->base.dispose = thread_pool_dispose_base;
+	pool->base.submit_internal = thread_pool_submit_internal_impl;
 
 	pool->task_channel = async_thread_channel_create(queue_size);
 	pool->base.workers = pecalloc(worker_count, sizeof(zend_async_thread_handle_t), 1);
@@ -308,15 +423,28 @@ static void thread_pool_drain_tasks(async_thread_pool_t *pool, bool reject)
 		async_thread_load_zval(&task, &persistent_task);
 		async_thread_release_transferred_zval(&persistent_task);
 
-		/* [0] = snapshot_ptr, [1] = args, [2] = state_ptr */
-		const zval *snapshot_zv = zend_hash_index_find(Z_ARRVAL(task), 0);
-		if (snapshot_zv != NULL && Z_TYPE_P(snapshot_zv) == IS_LONG) {
-			async_thread_snapshot_t *snapshot =
-				(async_thread_snapshot_t *)(uintptr_t) Z_LVAL_P(snapshot_zv);
-			async_thread_snapshot_destroy(snapshot);
+		/* Branch on kind to free the right payload. Both kinds share
+		 * slot[3] = state_ptr. */
+		const zval *kind_zv = zend_hash_index_find(Z_ARRVAL(task), TASK_SLOT_KIND);
+		const zend_long kind = (kind_zv != NULL && Z_TYPE_P(kind_zv) == IS_LONG)
+			? Z_LVAL_P(kind_zv) : TASK_KIND_CLOSURE;
+
+		if (kind == TASK_KIND_INTERNAL) {
+			/* Internal task — handler never ran. ctx is caller-owned;
+			 * pool doesn't touch it. The shared_state's callbacks fire
+			 * via reject below so the caller observes cancellation. */
+		} else {
+			/* Closure task — slot[1] is the snapshot. */
+			const zval *snapshot_zv =
+				zend_hash_index_find(Z_ARRVAL(task), TASK_SLOT_PAYLOAD_A);
+			if (snapshot_zv != NULL && Z_TYPE_P(snapshot_zv) == IS_LONG) {
+				async_thread_snapshot_t *snapshot =
+					(async_thread_snapshot_t *)(uintptr_t) Z_LVAL_P(snapshot_zv);
+				async_thread_snapshot_destroy(snapshot);
+			}
 		}
 
-		const zval *state_zv = zend_hash_index_find(Z_ARRVAL(task), 2);
+		const zval *state_zv = zend_hash_index_find(Z_ARRVAL(task), TASK_SLOT_STATE);
 		if (state_zv != NULL && Z_TYPE_P(state_zv) == IS_LONG) {
 			zend_future_shared_state_t *state =
 				(zend_future_shared_state_t *)(uintptr_t) Z_LVAL_P(state_zv);
@@ -482,9 +610,13 @@ METHOD(submit)
 	/* +1 ref for the task — worker will delref after complete/reject */
 	async_future_shared_state_addref(state);
 
-	/* 3. Pack task: [snapshot_ptr, args_array, state_ptr] */
+	/* 3. Pack task: [kind=0, snapshot_ptr, args_array, state_ptr] */
 	zval task;
-	array_init_size(&task, 3);
+	array_init_size(&task, 4);
+
+	zval kind_zv;
+	ZVAL_LONG(&kind_zv, TASK_KIND_CLOSURE);
+	zend_hash_next_index_insert_new(Z_ARRVAL(task), &kind_zv);
 
 	zval snapshot_zv;
 	ZVAL_LONG(&snapshot_zv, (zend_long)(uintptr_t) snapshot);
@@ -586,9 +718,13 @@ METHOD(map)
 
 		async_future_shared_state_addref(state);
 
-		/* Pack task: [snapshot_ptr, args_array(1 item), state_ptr] */
+		/* Pack task: [kind=0, snapshot_ptr, args_array(1 item), state_ptr] */
 		zval task;
-		array_init_size(&task, 3);
+		array_init_size(&task, 4);
+
+		zval kind_zv;
+		ZVAL_LONG(&kind_zv, TASK_KIND_CLOSURE);
+		zend_hash_next_index_insert_new(Z_ARRVAL(task), &kind_zv);
 
 		zval snapshot_zv;
 		ZVAL_LONG(&snapshot_zv, (zend_long)(uintptr_t) snapshot);

@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.0] -
 
 ### Added
+- **`ThreadPool::submit_internal` (C-only)** — new public C-level method
+  on `zend_async_thread_pool_t` for submitting a C-handler task to an
+  existing pool without going through the closure-snapshot pipeline.
+  Handler signature: `void (*)(zend_async_event_t *, void *ctx)`. Pool
+  treats `ctx` as opaque (never reads, never frees); caller owns the
+  lifecycle. Returns an awaitable `zend_async_event_t *` whose complete
+  callbacks fire after the handler returns. Closes the API gap that
+  previously forced C-level pool consumers through the PHP-level
+  `submit(callable)` path — internal methods have no op_array, so the
+  snapshot serialiser segfaulted.
+- **Top-level transfer/load helpers** — `zend_async_thread_transfer_zval_toplevel_fn`,
+  `zend_async_thread_load_zval_toplevel_fn`,
+  `zend_async_thread_release_transferred_zval_fn` (with matching
+  `ZEND_ASYNC_THREAD_*_TOPLEVEL` macros). Convenience wrappers that
+  allocate and tear down the cross-thread transfer ctx internally —
+  for callers shipping a single zval per worker.
 - **PDO Pool: opt-in prepared-statement cache** — per-physical-connection
   LRU cache of server-side prepared statements, transparent to user code.
   Enabled by passing `PDO::ATTR_POOL_STMT_CACHE_SIZE => N` to the PDO
