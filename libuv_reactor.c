@@ -4212,6 +4212,321 @@ static void io_file_stat_cb(uv_fs_t *fs_request)
 
 /* }}} */
 
+/* {{{ Sendfile + fs_open backends (zend_async_API v0.11) */
+
+/* Per-request state for zend_async_io_sendfile. Wraps async_io_req_t
+ * (the base req exposed to the public API) with sendfile-specific
+ * bookkeeping: the destination io, current offset / remaining length,
+ * and the fallback path's separate uv_write_t plus chunk buffer.
+ *
+ * The fallback path alternates uv_fs_read into fb_buf and uv_write
+ * onto the destination stream. fb_write is a stand-alone handle
+ * because the union in async_io_req_t can hold only one in-flight uv
+ * request at a time and the read/write handoff would otherwise race
+ * with itself. */
+#define ASYNC_SENDFILE_FB_CHUNK_SIZE (64u * 1024u)
+
+typedef struct {
+	async_io_req_t base;
+	uv_write_t     fb_write;
+	async_io_t    *dst_io;
+	zend_off_t     offset;        /* -1 = read from current position */
+	size_t         remaining;
+	size_t         transferred;
+	size_t         last_chunk;    /* bytes carried by the in-flight fb_write */
+	char          *fb_buf;
+	size_t         fb_buf_cap;
+} async_sendfile_req_t;
+
+static void libuv_sendfile_req_dispose(zend_async_io_req_t *base_req)
+{
+	async_sendfile_req_t *req = (async_sendfile_req_t *) base_req;
+	if (req->fb_buf != NULL) {
+		pefree(req->fb_buf, 0);
+		req->fb_buf = NULL;
+	}
+	if (base_req->exception != NULL) {
+		zend_object_release(base_req->exception);
+		base_req->exception = NULL;
+	}
+	pefree(req, 0);
+}
+
+/* Single completion path for both zero-copy and fallback flows. Counts
+ * the event off the source io and notifies any caller waiting on it. */
+static void sendfile_complete(async_sendfile_req_t *req,
+                              const int error_code, const char *err_kind)
+{
+	async_io_t *src_io = req->base.io;
+
+	if (error_code == 0) {
+		req->base.base.transferred = (ssize_t) req->transferred;
+	} else {
+		req->base.base.transferred =
+				req->transferred > 0 ? (ssize_t) req->transferred : -1;
+		if (req->base.base.exception == NULL && err_kind != NULL) {
+			req->base.base.exception = async_new_exception(
+					async_ce_input_output_exception, "%s: %s",
+					err_kind, uv_strerror(error_code));
+		}
+	}
+
+	req->base.base.completed = true;
+	ZEND_ASYNC_DECREASE_EVENT_COUNT(&src_io->base.event);
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&src_io->base.event, &req->base.base,
+	                            req->base.base.exception);
+	IF_EXCEPTION_STOP_REACTOR;
+}
+
+/* Zero-copy path completion. uv_fs_sendfile may return early if the
+ * kernel only flushes part of `length` in one go — resubmit until the
+ * full byte count is sent or the kernel returns an error. */
+static void io_sendfile_zc_cb(uv_fs_t *fs_request)
+{
+	async_sendfile_req_t *req = (async_sendfile_req_t *) fs_request->data;
+	const ssize_t result = (ssize_t) fs_request->result;
+	uv_fs_req_cleanup(fs_request);
+
+	if (result < 0) {
+		sendfile_complete(req, (int) result, "Sendfile");
+		return;
+	}
+
+	req->transferred += (size_t) result;
+	if (req->offset >= 0) {
+		req->offset += result;
+	}
+
+	if (result == 0 || (size_t) result >= req->remaining) {
+		req->remaining = 0;
+		sendfile_complete(req, 0, NULL);
+		return;
+	}
+
+	req->remaining -= (size_t) result;
+
+	const int err = uv_fs_sendfile(UVLOOP, &req->base.fs_req,
+			req->dst_io->crt_fd, req->base.io->crt_fd,
+			req->offset, req->remaining, io_sendfile_zc_cb);
+	if (UNEXPECTED(err < 0)) {
+		sendfile_complete(req, err, "Sendfile resubmit");
+	}
+}
+
+static void io_sendfile_fb_write_cb(uv_write_t *write_request, int status);
+
+/* Fallback path: read a chunk from the file descriptor, then write it
+ * onto the destination stream. Repeats until req->remaining hits zero
+ * (or premature EOF). */
+static void io_sendfile_fb_read_cb(uv_fs_t *fs_request)
+{
+	async_sendfile_req_t *req = (async_sendfile_req_t *) fs_request->data;
+	const ssize_t n = (ssize_t) fs_request->result;
+	uv_fs_req_cleanup(fs_request);
+
+	if (n < 0) {
+		sendfile_complete(req, (int) n, "Sendfile fallback read");
+		return;
+	}
+	if (n == 0) {
+		/* Premature EOF — file shorter than requested length. Complete
+		 * with whatever we already transferred. */
+		sendfile_complete(req, 0, NULL);
+		return;
+	}
+
+	req->last_chunk = (size_t) n;
+	if (req->offset >= 0) {
+		req->offset += n;
+	}
+
+	const uv_buf_t buf = uv_buf_init(req->fb_buf, (unsigned int) n);
+	req->fb_write.data = req;
+
+	const int err = uv_write(&req->fb_write, &req->dst_io->handle.stream,
+			&buf, 1, io_sendfile_fb_write_cb);
+	if (UNEXPECTED(err < 0)) {
+		sendfile_complete(req, err, "Sendfile fallback write submit");
+	}
+}
+
+static void io_sendfile_fb_write_cb(uv_write_t *write_request, const int status)
+{
+	async_sendfile_req_t *req = (async_sendfile_req_t *) write_request->data;
+
+	if (status < 0) {
+		sendfile_complete(req, status, "Sendfile fallback write");
+		return;
+	}
+
+	/* uv_write is all-or-error: status == 0 means every byte of
+	 * last_chunk landed on the wire. */
+	req->transferred += req->last_chunk;
+	req->remaining   -= req->last_chunk;
+	req->last_chunk   = 0;
+
+	if (req->remaining == 0) {
+		sendfile_complete(req, 0, NULL);
+		return;
+	}
+
+	/* Read the next chunk. */
+	const size_t want = req->remaining < req->fb_buf_cap
+			? req->remaining : req->fb_buf_cap;
+	const uv_buf_t rbuf = uv_buf_init(req->fb_buf, (unsigned int) want);
+	req->base.fs_req.data = req;
+
+	const int err = uv_fs_read(UVLOOP, &req->base.fs_req,
+			req->base.io->crt_fd, &rbuf, 1, req->offset,
+			io_sendfile_fb_read_cb);
+	if (UNEXPECTED(err < 0)) {
+		sendfile_complete(req, err, "Sendfile fallback read submit");
+	}
+}
+
+/* {{{ libuv_io_sendfile */
+static zend_async_io_req_t *
+libuv_io_sendfile(zend_async_io_t *out_io_base, zend_async_io_t *in_io_base,
+                  const zend_off_t offset, const size_t length)
+{
+	async_io_t *out_io = (async_io_t *) out_io_base;
+	async_io_t *in_io  = (async_io_t *) in_io_base;
+
+	if (UNEXPECTED(out_io_base->state & ZEND_ASYNC_IO_CLOSED)) {
+		async_throw_error("Cannot sendfile: destination IO closed");
+		return NULL;
+	}
+	if (UNEXPECTED(in_io_base->state & ZEND_ASYNC_IO_CLOSED)) {
+		async_throw_error("Cannot sendfile: source IO closed");
+		return NULL;
+	}
+	if (UNEXPECTED(in_io_base->type != ZEND_ASYNC_IO_TYPE_FILE)) {
+		async_throw_error("Sendfile source must be a file IO handle");
+		return NULL;
+	}
+
+	async_sendfile_req_t *req = pecalloc(1, sizeof(async_sendfile_req_t), 0);
+	req->base.base.dispose = libuv_sendfile_req_dispose;
+	req->base.io     = in_io;
+	req->dst_io      = out_io;
+	req->offset      = offset;
+	req->remaining   = length;
+
+	if (length == 0) {
+		req->base.base.transferred = 0;
+		req->base.base.completed   = true;
+		return &req->base.base;
+	}
+
+	const bool zero_copy = (out_io_base->state & ZEND_ASYNC_IO_ZERO_COPY_OK) != 0
+			&& ZEND_ASYNC_IO_IS_STREAM(out_io_base->type);
+
+	req->base.fs_req.data = req;
+
+	if (zero_copy) {
+		const int err = uv_fs_sendfile(UVLOOP, &req->base.fs_req,
+				out_io->crt_fd, in_io->crt_fd,
+				offset, length, io_sendfile_zc_cb);
+		if (UNEXPECTED(err < 0)) {
+			async_throw_error("Failed to start sendfile: %s", uv_strerror(err));
+			libuv_sendfile_req_dispose(&req->base.base);
+			return NULL;
+		}
+	} else {
+		/* Fallback: read into a chunk buffer, write onto out_io stream.
+		 * Buffer is owned by the request and freed in dispose. */
+		req->fb_buf_cap = length < ASYNC_SENDFILE_FB_CHUNK_SIZE
+				? length : ASYNC_SENDFILE_FB_CHUNK_SIZE;
+		req->fb_buf = pemalloc(req->fb_buf_cap, 0);
+
+		const uv_buf_t rbuf = uv_buf_init(req->fb_buf,
+				(unsigned int) req->fb_buf_cap);
+		const int err = uv_fs_read(UVLOOP, &req->base.fs_req,
+				in_io->crt_fd, &rbuf, 1, offset, io_sendfile_fb_read_cb);
+		if (UNEXPECTED(err < 0)) {
+			async_throw_error("Failed to start sendfile fallback: %s",
+					uv_strerror(err));
+			libuv_sendfile_req_dispose(&req->base.base);
+			return NULL;
+		}
+	}
+
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(&in_io->base.event);
+	return &req->base.base;
+}
+/* }}} */
+
+/* fs_open: async open(2) via libuv's thread pool. The completion
+ * callback writes the resulting fd (or negative errno) to req->result
+ * and notifies the caller's event listener. */
+typedef struct {
+	zend_async_io_req_t base;
+	uv_fs_t             fs_req;
+	zend_async_event_t  event;       /* a stand-alone event so we can NOTIFY
+	                                  * without piggy-backing on an io_t (we
+	                                  * don't have one yet — that's the point). */
+} async_fs_open_req_t;
+
+static void libuv_fs_open_req_dispose(zend_async_io_req_t *base_req)
+{
+	async_fs_open_req_t *req = (async_fs_open_req_t *) base_req;
+	if (base_req->exception != NULL) {
+		zend_object_release(base_req->exception);
+		base_req->exception = NULL;
+	}
+	pefree(req, 0);
+}
+
+static bool fs_open_event_start(zend_async_event_t *event) { (void)event; return true; }
+static bool fs_open_event_stop (zend_async_event_t *event) { (void)event; return true; }
+
+static void io_fs_open_cb(uv_fs_t *fs_request)
+{
+	async_fs_open_req_t *req = (async_fs_open_req_t *) fs_request->data;
+	const ssize_t result = (ssize_t) fs_request->result;
+	uv_fs_req_cleanup(fs_request);
+
+	req->base.result = result;
+	if (result < 0) {
+		req->base.exception = async_new_exception(
+				async_ce_input_output_exception, "Open error: %s",
+				uv_strerror((int) result));
+	}
+	req->base.completed = true;
+
+	ZEND_ASYNC_DECREASE_EVENT_COUNT(&req->event);
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&req->event, &req->base, req->base.exception);
+	IF_EXCEPTION_STOP_REACTOR;
+}
+
+static zend_async_io_req_t *
+libuv_fs_open(const char *path, const int flags, const int mode)
+{
+	START_REACTOR_OR_RETURN_NULL;
+
+	async_fs_open_req_t *req = pecalloc(1, sizeof(*req), 0);
+	req->base.dispose = libuv_fs_open_req_dispose;
+	req->fs_req.data  = req;
+
+	/* Minimal stand-alone event so callers can hang an
+	 * add_callback on this req's completion the same way they would
+	 * on an io's event. */
+	req->event.start = fs_open_event_start;
+	req->event.stop  = fs_open_event_stop;
+
+	const int err = uv_fs_open(UVLOOP, &req->fs_req, path, flags, mode,
+			io_fs_open_cb);
+	if (UNEXPECTED(err < 0)) {
+		async_throw_error("Failed to start open: %s", uv_strerror(err));
+		libuv_fs_open_req_dispose(&req->base);
+		return NULL;
+	}
+
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(&req->event);
+	return &req->base;
+}
+/* }}} */
+
 /* {{{ libuv_io_create */
 static zend_async_io_t *
 libuv_io_create(const zend_file_descriptor_t fd, const zend_async_io_type type, const uint32_t state)
@@ -5553,6 +5868,8 @@ void async_libuv_reactor_register(void)
 						   libuv_io_flush,
 						   libuv_io_stat,
 						   libuv_io_seek,
+						   libuv_io_sendfile,
+						   libuv_fs_open,
 						   libuv_udp_sendto,
 						   libuv_udp_try_send,
 						   libuv_udp_recvfrom,
