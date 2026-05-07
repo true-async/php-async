@@ -4351,97 +4351,83 @@ libuv_io_sendfile(zend_async_io_t *out_io_base, zend_async_io_t *in_io_base,
 }
 /* }}} */
 
-/* fs_open: async open(2) via libuv's thread pool. The completion
- * callback writes the resulting fd (or negative errno) to req->result
- * and notifies the caller's event listener. */
+static zend_async_io_t *libuv_io_create(zend_file_descriptor_t fd,
+                                        zend_async_io_type type,
+                                        uint32_t state);
+
+/* fs_open: async open(2) via libuv's thread pool. Returns a pending
+ * io_t immediately — fd is filled in by the completion callback. The
+ * caller add_callback's on io->base.event for the ready/error
+ * notification.
+ *
+ * State on submit: type=FILE, state=0 (no READABLE/WRITABLE).
+ * On success completion: crt_fd set, state |= READABLE, NOTIFY result=NULL.
+ * On error completion: state |= CLOSED, NOTIFY result=NULL exception=non-NULL. */
 typedef struct {
-	zend_async_io_req_t base;
-	uv_fs_t             fs_req;
-	zend_async_event_t  event;       /* a stand-alone event so we can NOTIFY
-	                                  * without piggy-backing on an io_t (we
-	                                  * don't have one yet — that's the point). */
-} async_fs_open_req_t;
+	uv_fs_t       fs_req;
+	async_io_t   *io;
+} libuv_fs_open_state_t;
 
-static void libuv_fs_open_req_dispose(zend_async_io_req_t *base_req)
+static void libuv_fs_open_cb(uv_fs_t *fs_request)
 {
-	async_fs_open_req_t *req = (async_fs_open_req_t *) base_req;
-	if (base_req->exception != NULL) {
-		zend_object_release(base_req->exception);
-		base_req->exception = NULL;
-	}
-	pefree(req, 0);
-}
-
-static bool fs_open_event_start(zend_async_event_t *event) { (void)event; return true; }
-static bool fs_open_event_stop (zend_async_event_t *event) { (void)event; return true; }
-
-static void io_fs_open_cb(uv_fs_t *fs_request)
-{
-	async_fs_open_req_t *req = (async_fs_open_req_t *) fs_request->data;
+	libuv_fs_open_state_t *state = (libuv_fs_open_state_t *) fs_request->data;
+	async_io_t *io = state->io;
 	const ssize_t result = (ssize_t) fs_request->result;
 	uv_fs_req_cleanup(fs_request);
 
-	req->base.result = result;
-	if (result < 0) {
-		req->base.exception = async_new_exception(
+	zend_object *exception = NULL;
+
+	if (result >= 0) {
+		io->crt_fd = (int) result;
+		io->base.descriptor.fd = (int) result;
+		io->base.state |= ZEND_ASYNC_IO_READABLE;
+	} else {
+		io->base.state |= ZEND_ASYNC_IO_CLOSED | ZEND_ASYNC_IO_EOF;
+		exception = async_new_exception(
 				async_ce_input_output_exception, "Open error: %s",
 				uv_strerror((int) result));
 	}
-	req->base.completed = true;
 
-	ZEND_ASYNC_DECREASE_EVENT_COUNT(&req->event);
-	ZEND_ASYNC_CALLBACKS_NOTIFY(&req->event, &req->base, req->base.exception);
+	pefree(state, 0);
+
+	ZEND_ASYNC_DECREASE_EVENT_COUNT(&io->base.event);
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, NULL, exception);
+	if (exception != NULL) {
+		zend_object_release(exception);
+	}
 	IF_EXCEPTION_STOP_REACTOR;
 }
 
-static bool fs_open_event_add_callback(zend_async_event_t *event,
-                                       zend_async_event_callback_t *callback)
-{
-	return zend_async_callbacks_push(event, callback);
-}
-
-static bool fs_open_event_del_callback(zend_async_event_t *event,
-                                       zend_async_event_callback_t *callback)
-{
-	return zend_async_callbacks_remove(event, callback);
-}
-
-static bool fs_open_event_dispose(zend_async_event_t *event)
-{
-	zend_async_callbacks_free(event);
-	return true;
-}
-
-static zend_async_io_req_t *
+static zend_async_io_t *
 libuv_fs_open(const char *path, const int flags, const int mode)
 {
 	START_REACTOR_OR_RETURN_NULL;
 
-	async_fs_open_req_t *req = pecalloc(1, sizeof(*req), 0);
-	req->base.dispose = libuv_fs_open_req_dispose;
-	req->base.event   = &req->event;
-	req->fs_req.data  = req;
+	/* Allocate a pending FILE io_t up front — fd unknown, state empty.
+	 * libuv_io_create handles the event-vtable wiring; we patch fd
+	 * and READABLE in the completion callback below. */
+	zend_async_io_t *io_base = libuv_io_create(
+			(zend_file_descriptor_t) -1, ZEND_ASYNC_IO_TYPE_FILE, 0);
+	if (UNEXPECTED(io_base == NULL)) {
+		return NULL;
+	}
+	async_io_t *io = (async_io_t *) io_base;
 
-	/* Stand-alone event — callers add_callback here to receive the
-	 * completion notification once the thread-pool worker runs the
-	 * uv_fs_open and io_fs_open_cb fires. */
-	req->event.ref_count    = 1;
-	req->event.start        = fs_open_event_start;
-	req->event.stop         = fs_open_event_stop;
-	req->event.add_callback = fs_open_event_add_callback;
-	req->event.del_callback = fs_open_event_del_callback;
-	req->event.dispose      = fs_open_event_dispose;
+	libuv_fs_open_state_t *state = pecalloc(1, sizeof(*state), 0);
+	state->io = io;
+	state->fs_req.data = state;
 
-	const int err = uv_fs_open(UVLOOP, &req->fs_req, path, flags, mode,
-			io_fs_open_cb);
+	const int err = uv_fs_open(UVLOOP, &state->fs_req, path, flags, mode,
+			libuv_fs_open_cb);
 	if (UNEXPECTED(err < 0)) {
 		async_throw_error("Failed to start open: %s", uv_strerror(err));
-		libuv_fs_open_req_dispose(&req->base);
+		pefree(state, 0);
+		io_base->event.dispose(&io_base->event);
 		return NULL;
 	}
 
-	ZEND_ASYNC_INCREASE_EVENT_COUNT(&req->event);
-	return &req->base;
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(&io->base.event);
+	return io_base;
 }
 /* }}} */
 
