@@ -213,6 +213,7 @@ static bool engine_shutdown(void)
 	circular_buffer_dtor(&ASYNC_G(coroutine_queue));
 	circular_buffer_dtor(&ASYNC_G(resumed_coroutines));
 	zend_hash_destroy(&ASYNC_G(coroutines));
+	zend_hash_destroy(&ASYNC_G(deadlock_channels));
 
 	if (ASYNC_G(root_context) != NULL) {
 		async_context_t *root_context = (async_context_t *) ASYNC_G(root_context);

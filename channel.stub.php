@@ -5,9 +5,25 @@
 namespace Async;
 
 /**
+ * Why a channel was closed.
+ */
+enum ChannelCloseReason: string
+{
+    case EXPLICIT       = 'explicit';
+    case DISPOSED       = 'disposed';
+    case NO_PRODUCERS   = 'no producers timeout';
+    case NO_CONSUMERS   = 'no consumers timeout';
+    case DEADLOCK       = 'deadlock';
+    case SCOPE_DISPOSED = 'scope disposed';
+}
+
+/**
  * Exception thrown when attempting to send to or receive from a closed channel.
  */
-class ChannelException extends AsyncException {}
+class ChannelException extends AsyncException
+{
+    public ChannelCloseReason $reason;
+}
 
 /**
  * Channel is a concurrency primitive for message passing between coroutines.
@@ -27,8 +43,24 @@ final class Channel implements Awaitable, \IteratorAggregate, \Countable
      * @param int $capacity
      *   0  = unbuffered (rendezvous) - send blocks until receive
      *  >0  = bounded buffer
+     * @param int $noProducerTimeout
+     *   Deadlock timeout (ms) while at least one receiver is blocked waiting
+     *   for data. 0 = disabled. Default 5000.
+     * @param int $noConsumerTimeout
+     *   Deadlock timeout (ms) while at least one sender is blocked waiting
+     *   for space. 0 = disabled. Default 5000.
+     * @param bool $hardTimeouts
+     *   false (default): timers are hidden from the event loop — they do not
+     *   keep the loop alive on their own; the global deadlock resolver is
+     *   eligible to close the channel sooner.
+     *   true: timers are real events that keep the loop alive until they fire.
      */
-    public function __construct(int $capacity = 0) {}
+    public function __construct(
+        int $capacity = 0,
+        int $noProducerTimeout = 5000,
+        int $noConsumerTimeout = 5000,
+        bool $hardTimeouts = false,
+    ) {}
 
     /**
      * Send a value into the channel (blocking).

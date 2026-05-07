@@ -122,6 +122,12 @@ uint64_t last_reactor_tick;
 /* Debug: print coroutine wait info on deadlock detection */
 bool debug_deadlock;
 
+/* Soft-timer channels currently in potential-deadlock state.
+ * Closed in bulk by async_channel_resolve_deadlocks() when the scheduler
+ * sees the loop empty, so deadlocks surface as ChannelException with
+ * reason "deadlock_resolved" rather than as a generic Deadlock error. */
+HashTable deadlock_channels;
+
 #ifdef PHP_WIN32
 #endif
 ZEND_END_MODULE_GLOBALS(async)

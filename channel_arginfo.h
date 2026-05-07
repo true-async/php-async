@@ -1,8 +1,11 @@
 /* This is a generated file, edit channel.stub.php instead.
- * Stub hash: efd35c2b09db63fda28eb831273d0be269aa58d4 */
+ * Stub hash: 4a9b8d21c826adbfa5ee050d0b9a65a49781f29b */
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Async_Channel___construct, 0, 0, 0)
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, capacity, IS_LONG, 0, "0")
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, noProducerTimeout, IS_LONG, 0, "5000")
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, noConsumerTimeout, IS_LONG, 0, "5000")
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, hardTimeouts, _IS_BOOL, 0, "false")
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_Channel_send, 0, 1, IS_VOID, 0)
@@ -68,12 +71,56 @@ static const zend_function_entry class_Async_Channel_methods[] = {
 	ZEND_FE_END
 };
 
+static zend_class_entry *register_class_Async_ChannelCloseReason(void)
+{
+	zend_class_entry *class_entry = zend_register_internal_enum("Async\\ChannelCloseReason", IS_STRING, NULL);
+
+	zval enum_case_EXPLICIT_value;
+	zend_string *enum_case_EXPLICIT_value_str = zend_string_init("explicit", strlen("explicit"), 1);
+	ZVAL_STR(&enum_case_EXPLICIT_value, enum_case_EXPLICIT_value_str);
+	zend_enum_add_case_cstr(class_entry, "EXPLICIT", &enum_case_EXPLICIT_value);
+
+	zval enum_case_DISPOSED_value;
+	zend_string *enum_case_DISPOSED_value_str = zend_string_init("disposed", strlen("disposed"), 1);
+	ZVAL_STR(&enum_case_DISPOSED_value, enum_case_DISPOSED_value_str);
+	zend_enum_add_case_cstr(class_entry, "DISPOSED", &enum_case_DISPOSED_value);
+
+	zval enum_case_NO_PRODUCERS_value;
+	zend_string *enum_case_NO_PRODUCERS_value_str = zend_string_init("no producers timeout", strlen("no producers timeout"), 1);
+	ZVAL_STR(&enum_case_NO_PRODUCERS_value, enum_case_NO_PRODUCERS_value_str);
+	zend_enum_add_case_cstr(class_entry, "NO_PRODUCERS", &enum_case_NO_PRODUCERS_value);
+
+	zval enum_case_NO_CONSUMERS_value;
+	zend_string *enum_case_NO_CONSUMERS_value_str = zend_string_init("no consumers timeout", strlen("no consumers timeout"), 1);
+	ZVAL_STR(&enum_case_NO_CONSUMERS_value, enum_case_NO_CONSUMERS_value_str);
+	zend_enum_add_case_cstr(class_entry, "NO_CONSUMERS", &enum_case_NO_CONSUMERS_value);
+
+	zval enum_case_DEADLOCK_value;
+	zend_string *enum_case_DEADLOCK_value_str = zend_string_init("deadlock", strlen("deadlock"), 1);
+	ZVAL_STR(&enum_case_DEADLOCK_value, enum_case_DEADLOCK_value_str);
+	zend_enum_add_case_cstr(class_entry, "DEADLOCK", &enum_case_DEADLOCK_value);
+
+	zval enum_case_SCOPE_DISPOSED_value;
+	zend_string *enum_case_SCOPE_DISPOSED_value_str = zend_string_init("scope disposed", strlen("scope disposed"), 1);
+	ZVAL_STR(&enum_case_SCOPE_DISPOSED_value, enum_case_SCOPE_DISPOSED_value_str);
+	zend_enum_add_case_cstr(class_entry, "SCOPE_DISPOSED", &enum_case_SCOPE_DISPOSED_value);
+
+	return class_entry;
+}
+
 static zend_class_entry *register_class_Async_ChannelException(zend_class_entry *class_entry_Async_AsyncException)
 {
 	zend_class_entry ce, *class_entry;
 
 	INIT_NS_CLASS_ENTRY(ce, "Async", "ChannelException", NULL);
 	class_entry = zend_register_internal_class_with_flags(&ce, class_entry_Async_AsyncException, 0);
+
+	zval property_reason_default_value;
+	ZVAL_UNDEF(&property_reason_default_value);
+	zend_string *property_reason_name = zend_string_init("reason", sizeof("reason") - 1, true);
+	zend_string *property_reason_class_Async_ChannelCloseReason = zend_string_init("Async\\ChannelCloseReason", sizeof("Async\\ChannelCloseReason")-1, 1);
+	zend_declare_typed_property(class_entry, property_reason_name, &property_reason_default_value, ZEND_ACC_PUBLIC, NULL, (zend_type) ZEND_TYPE_INIT_CLASS(property_reason_class_Async_ChannelCloseReason, 0, 0));
+	zend_string_release_ex(property_reason_name, true);
 
 	return class_entry;
 }

@@ -21,6 +21,7 @@
 #include "async_API.h"
 #include "scheduler.h"
 #include "coroutine.h"
+#include "zend_enum.h"
 #include "channel_arginfo.h"
 #include "zend_exceptions.h"
 #include "zend_interfaces.h"
@@ -41,7 +42,7 @@
 
 #define THROW_IF_CLOSED(channel) \
 	if (UNEXPECTED(ZEND_ASYNC_EVENT_IS_CLOSED(&(channel)->channel.event))) { \
-		zend_throw_exception(async_ce_channel_exception, "Channel is closed", 0); \
+		zend_throw_exception_internal(make_channel_exception((channel)->close_reason)); \
 		RETURN_THROWS(); \
 	}
 
@@ -61,7 +62,47 @@
 
 zend_class_entry *async_ce_channel = NULL;
 zend_class_entry *async_ce_channel_exception = NULL;
+zend_class_entry *async_ce_channel_close_reason = NULL;
 static zend_object_handlers async_channel_handlers;
+
+static zend_object *channel_close_reason_case(channel_close_reason_t reason)
+{
+	/* Enum cases live in a request-scoped constants table, so we can't pre-fetch
+	 * them at MINIT — resolve lazily on first use. */
+	static zend_object *cases[CHANNEL_CLOSE_REASON_COUNT];
+	if (UNEXPECTED(cases[CHANNEL_CLOSE_EXPLICIT] == NULL)) {
+		cases[CHANNEL_CLOSE_EXPLICIT]       = zend_enum_get_case_cstr(async_ce_channel_close_reason, "EXPLICIT");
+		cases[CHANNEL_CLOSE_DISPOSED]       = zend_enum_get_case_cstr(async_ce_channel_close_reason, "DISPOSED");
+		cases[CHANNEL_CLOSE_NO_PRODUCERS]   = zend_enum_get_case_cstr(async_ce_channel_close_reason, "NO_PRODUCERS");
+		cases[CHANNEL_CLOSE_NO_CONSUMERS]   = zend_enum_get_case_cstr(async_ce_channel_close_reason, "NO_CONSUMERS");
+		cases[CHANNEL_CLOSE_DEADLOCK]       = zend_enum_get_case_cstr(async_ce_channel_close_reason, "DEADLOCK");
+		cases[CHANNEL_CLOSE_SCOPE_DISPOSED] = zend_enum_get_case_cstr(async_ce_channel_close_reason, "SCOPE_DISPOSED");
+	}
+	return cases[reason];
+}
+
+static zend_object *make_channel_exception(channel_close_reason_t reason)
+{
+	const char *message;
+	switch (reason) {
+		case CHANNEL_CLOSE_EXPLICIT:       message = "Channel is closed"; break;
+		case CHANNEL_CLOSE_DISPOSED:       message = "Channel disposed"; break;
+		case CHANNEL_CLOSE_NO_PRODUCERS:   message = "Channel deadlock: no producers"; break;
+		case CHANNEL_CLOSE_NO_CONSUMERS:   message = "Channel deadlock: no consumers"; break;
+		case CHANNEL_CLOSE_DEADLOCK:       message = "Channel deadlock"; break;
+		case CHANNEL_CLOSE_SCOPE_DISPOSED: message = "Channel closed: owner scope disposed"; break;
+		default:                           message = "Channel is closed"; break;
+	}
+
+	zend_object *ex = async_new_exception(async_ce_channel_exception, "%s", message);
+
+	zval reason_val;
+	ZVAL_OBJ_COPY(&reason_val, channel_close_reason_case(reason));
+	zend_update_property(async_ce_channel_exception, ex, "reason", sizeof("reason") - 1, &reason_val);
+	zval_ptr_dtor(&reason_val);
+
+	return ex;
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 // Waiter
@@ -167,6 +208,106 @@ static bool channel_queue_remove(zend_async_callbacks_vector_t *queue, channel_w
 }
 
 ///////////////////////////////////////////////////////////////////////////////
+// Deadlock timer
+///////////////////////////////////////////////////////////////////////////////
+
+static void channel_close(async_channel_t *channel, channel_close_reason_t reason);
+
+static void channel_deadlock_callback_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event)
+{
+	/* Embedded callback — no heap free. */
+}
+
+static void channel_deadlock_fire(zend_async_event_t *timer_event,
+								  zend_async_event_callback_t *callback,
+								  void *result,
+								  zend_object *exception)
+{
+	async_channel_t *channel = (async_channel_t *) ((char *) callback - XtOffsetOf(async_channel_t, deadlock_callback));
+
+	if (ZEND_ASYNC_EVENT_IS_CLOSED(&channel->channel.event)) {
+		return;
+	}
+
+	channel_close(channel, channel->pending_timeout_reason);
+}
+
+/* Stops the timer; does not touch close_reason. */
+static void channel_disarm_deadlock_timer(async_channel_t *channel)
+{
+	if (channel->deadlock_timer == NULL) {
+		return;
+	}
+
+	zend_async_event_t *base = &channel->deadlock_timer->base;
+	base->stop(base);
+	base->del_callback(base, &channel->deadlock_callback);
+	ZEND_ASYNC_EVENT_RELEASE(base);
+	channel->deadlock_timer = NULL;
+
+	zend_hash_index_del(&ASYNC_G(deadlock_channels), (zend_ulong) (uintptr_t) channel);
+}
+
+static void channel_arm_deadlock_timer(async_channel_t *channel, channel_close_reason_t reason, int32_t timeout_ms)
+{
+	if (timeout_ms <= 0 || channel->deadlock_timer != NULL ||
+		ZEND_ASYNC_EVENT_IS_CLOSED(&channel->channel.event)) {
+		return;
+	}
+
+	zend_async_timer_event_t *timer = ZEND_ASYNC_NEW_TIMER_EVENT((zend_ulong) timeout_ms, false);
+	if (timer == NULL) {
+		return;
+	}
+
+	if (!channel->hard_timeouts) {
+		ZEND_ASYNC_EVENT_SET_HIDDEN(&timer->base);
+		/* Soft timers don't keep the loop alive on their own, so register
+		 * for early bulk-close by the global deadlock resolver. */
+		zend_hash_index_add_ptr(&ASYNC_G(deadlock_channels), (zend_ulong) (uintptr_t) channel, channel);
+	}
+
+	channel->deadlock_callback.ref_count = 1;
+	channel->deadlock_callback.callback = channel_deadlock_fire;
+	channel->deadlock_callback.dispose = channel_deadlock_callback_dispose;
+
+	timer->base.add_callback(&timer->base, &channel->deadlock_callback);
+	if (!timer->base.start(&timer->base)) {
+		timer->base.del_callback(&timer->base, &channel->deadlock_callback);
+		ZEND_ASYNC_EVENT_RELEASE(&timer->base);
+		return;
+	}
+
+	channel->deadlock_timer = timer;
+	channel->pending_timeout_reason = reason;
+}
+
+/* Invariant: at most one of waiting_receivers/waiting_senders is non-empty —
+ * a sender and receiver match up immediately. */
+static void channel_refresh_deadlock_timer(async_channel_t *channel)
+{
+	const bool has_recv = channel->waiting_receivers.length > 0;
+	const bool has_send = channel->waiting_senders.length > 0;
+
+	if (!has_recv && !has_send) {
+		channel_disarm_deadlock_timer(channel);
+		return;
+	}
+
+	const channel_close_reason_t reason = has_recv ? CHANNEL_CLOSE_NO_PRODUCERS : CHANNEL_CLOSE_NO_CONSUMERS;
+	const int32_t timeout = has_recv ? channel->no_producer_timeout_ms : channel->no_consumer_timeout_ms;
+
+	if (channel->deadlock_timer != NULL) {
+		if (channel->pending_timeout_reason == reason) {
+			return;
+		}
+		channel_disarm_deadlock_timer(channel);
+	}
+
+	channel_arm_deadlock_timer(channel, reason, timeout);
+}
+
+///////////////////////////////////////////////////////////////////////////////
 // Wake operations
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -201,6 +342,7 @@ static bool channel_wake_receiver(async_channel_t *channel)
 		waiter->callback.base.callback(&channel->channel.event, &waiter->callback.base, NULL, NULL);
 	}
 
+	channel_refresh_deadlock_timer(channel);
 	ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
 	return true;
 }
@@ -214,6 +356,7 @@ static bool channel_wake_sender(async_channel_t *channel)
 
 	channel->channel.event.del_callback(&channel->channel.event, &waiter->callback.base);
 	waiter->callback.base.callback(&channel->channel.event, &waiter->callback.base, NULL, NULL);
+	channel_refresh_deadlock_timer(channel);
 	ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
 	return true;
 }
@@ -241,6 +384,105 @@ static void channel_wake_all(async_channel_t *channel, zend_object *exception)
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&channel->channel.event, NULL, exception);
 }
 
+static void channel_close(async_channel_t *channel, channel_close_reason_t reason)
+{
+	if (ZEND_ASYNC_EVENT_IS_CLOSED(&channel->channel.event)) {
+		return;
+	}
+
+	channel->close_reason = reason;
+	ZEND_ASYNC_EVENT_SET_CLOSED(&channel->channel.event);
+	channel_disarm_deadlock_timer(channel);
+
+	zend_object *ex = make_channel_exception(reason);
+	channel_wake_all(channel, ex);
+	OBJ_RELEASE(ex);
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Owner scope binding
+///////////////////////////////////////////////////////////////////////////////
+
+static void channel_scope_close_fire(zend_async_event_t *scope_event,
+									 zend_async_event_callback_t *callback,
+									 void *result,
+									 zend_object *exception)
+{
+	async_channel_t *channel = (async_channel_t *) ((char *) callback - XtOffsetOf(async_channel_t, scope_close_callback));
+
+	channel_close(channel, CHANNEL_CLOSE_SCOPE_DISPOSED);
+}
+
+/* Called by the scope's callbacks_free during scope teardown. After this point
+ * the scope event is gone — drop our pointer so the channel doesn't try to
+ * del_callback on freed memory in free_obj. */
+static void channel_scope_close_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event)
+{
+	async_channel_t *channel = (async_channel_t *) ((char *) callback - XtOffsetOf(async_channel_t, scope_close_callback));
+	channel->owner_scope_event = NULL;
+}
+
+static void channel_bind_to_owner_scope(async_channel_t *channel)
+{
+	zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
+	if (scope == NULL) {
+		scope = ZEND_ASYNC_MAIN_SCOPE;
+	}
+	if (scope == NULL || ZEND_ASYNC_EVENT_IS_CLOSED(&scope->event)) {
+		return;
+	}
+
+	channel->scope_close_callback.ref_count = 1;
+	channel->scope_close_callback.callback = channel_scope_close_fire;
+	channel->scope_close_callback.dispose = channel_scope_close_dispose;
+	channel->owner_scope_event = &scope->event;
+
+	scope->event.add_callback(&scope->event, &channel->scope_close_callback);
+}
+
+static void channel_unbind_from_owner_scope(async_channel_t *channel)
+{
+	if (channel->owner_scope_event == NULL) {
+		return;
+	}
+
+	zend_async_event_t *scope_event = channel->owner_scope_event;
+	channel->owner_scope_event = NULL;
+	scope_event->del_callback(scope_event, &channel->scope_close_callback);
+}
+
+bool async_channel_resolve_deadlocks(void)
+{
+	HashTable *registry = &ASYNC_G(deadlock_channels);
+	if (zend_hash_num_elements(registry) == 0) {
+		return false;
+	}
+
+	/* Snapshot — closing a channel mutates the registry via disarm. */
+	HashTable snapshot;
+	zend_hash_init(&snapshot, zend_hash_num_elements(registry), NULL, NULL, 0);
+
+	async_channel_t *channel;
+	ZEND_HASH_FOREACH_PTR(registry, channel)
+	{
+		zend_hash_index_add_ptr(&snapshot, (zend_ulong) (uintptr_t) channel, channel);
+	}
+	ZEND_HASH_FOREACH_END();
+
+	bool resolved = false;
+	ZEND_HASH_FOREACH_PTR(&snapshot, channel)
+	{
+		if (!ZEND_ASYNC_EVENT_IS_CLOSED(&channel->channel.event)) {
+			channel_close(channel, CHANNEL_CLOSE_DEADLOCK);
+			resolved = true;
+		}
+	}
+	ZEND_HASH_FOREACH_END();
+
+	zend_hash_destroy(&snapshot);
+	return resolved;
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // Wait operations
 ///////////////////////////////////////////////////////////////////////////////
@@ -260,6 +502,7 @@ channel_wait_for(async_channel_t *channel, zend_async_callbacks_vector_t *queue,
 	waiter->future = NULL;
 
 	channel_queue_push(queue, waiter);
+	channel_refresh_deadlock_timer(channel);
 
 	zend_async_resume_when(ZEND_ASYNC_CURRENT_COROUTINE,
 						   &channel->channel.event,
@@ -282,6 +525,7 @@ channel_wait_for(async_channel_t *channel, zend_async_callbacks_vector_t *queue,
 		/* Was still in queue (cancellation/close case) - release queue's ref */
 		ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
 	}
+	channel_refresh_deadlock_timer(channel);
 	/* Release our initial ref */
 	ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
 }
@@ -385,6 +629,17 @@ static zend_object *async_channel_create_object(zend_class_entry *ce)
 	ZVAL_UNDEF(&channel->rendezvous_value);
 	channel->rendezvous_has_value = false;
 
+	channel->no_producer_timeout_ms = 0;
+	channel->no_consumer_timeout_ms = 0;
+	channel->hard_timeouts = false;
+	channel->deadlock_timer = NULL;
+	channel->pending_timeout_reason = CHANNEL_CLOSE_EXPLICIT;
+	channel->close_reason = CHANNEL_CLOSE_EXPLICIT;
+	memset(&channel->deadlock_callback, 0, sizeof(channel->deadlock_callback));
+
+	channel->owner_scope_event = NULL;
+	memset(&channel->scope_close_callback, 0, sizeof(channel->scope_close_callback));
+
 	return &channel->std;
 }
 
@@ -392,12 +647,7 @@ static void async_channel_dtor_object(zend_object *object)
 {
 	async_channel_t *channel = ASYNC_CHANNEL_FROM_OBJ(object);
 
-	if (!ZEND_ASYNC_EVENT_IS_CLOSED(&channel->channel.event)) {
-		ZEND_ASYNC_EVENT_SET_CLOSED(&channel->channel.event);
-		zend_object *ex = async_new_exception(async_ce_channel_exception, "Channel is closed");
-		channel_wake_all(channel, ex);
-		OBJ_RELEASE(ex);
-	}
+	channel_close(channel, CHANNEL_CLOSE_DISPOSED);
 
 	zend_object_std_dtor(object);
 }
@@ -406,6 +656,8 @@ static void async_channel_free_object(zend_object *object)
 {
 	async_channel_t *channel = ASYNC_CHANNEL_FROM_OBJ(object);
 
+	channel_unbind_from_owner_scope(channel);
+	channel_disarm_deadlock_timer(channel);
 	zend_async_callbacks_free(&channel->channel.event);
 	channel_free_queues(channel);
 
@@ -539,19 +791,36 @@ static zend_object_iterator *channel_get_iterator(zend_class_entry *ce, zval *ob
 METHOD(__construct)
 {
 	zend_long capacity = 0;
+	zend_long no_producer_timeout = 5000;
+	zend_long no_consumer_timeout = 5000;
+	bool hard_timeouts = false;
 
-	ZEND_PARSE_PARAMETERS_START(0, 1)
+	ZEND_PARSE_PARAMETERS_START(0, 4)
 	Z_PARAM_OPTIONAL
 	Z_PARAM_LONG(capacity)
+	Z_PARAM_LONG(no_producer_timeout)
+	Z_PARAM_LONG(no_consumer_timeout)
+	Z_PARAM_BOOL(hard_timeouts)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (capacity < 0 || capacity > INT32_MAX) {
 		zend_argument_value_error(1, "must be between 0 and %d", INT32_MAX);
 		RETURN_THROWS();
 	}
+	if (no_producer_timeout < 0 || no_producer_timeout > INT32_MAX) {
+		zend_argument_value_error(2, "must be between 0 and %d", INT32_MAX);
+		RETURN_THROWS();
+	}
+	if (no_consumer_timeout < 0 || no_consumer_timeout > INT32_MAX) {
+		zend_argument_value_error(3, "must be between 0 and %d", INT32_MAX);
+		RETURN_THROWS();
+	}
 
 	async_channel_t *channel = THIS_CHANNEL;
 	channel->capacity = (int32_t) capacity;
+	channel->no_producer_timeout_ms = (int32_t) no_producer_timeout;
+	channel->no_consumer_timeout_ms = (int32_t) no_consumer_timeout;
+	channel->hard_timeouts = hard_timeouts;
 
 	if (capacity > 0) {
 		/* circular_buffer uses one slot as sentinel, so allocate capacity+1 */
@@ -561,6 +830,8 @@ METHOD(__construct)
 			RETURN_THROWS();
 		}
 	}
+
+	channel_bind_to_owner_scope(channel);
 }
 
 METHOD(send)
@@ -703,7 +974,7 @@ METHOD(recvAsync)
 		ZEND_FUTURE_COMPLETE(future, &result);
 		zval_ptr_dtor(&result);
 	} else if (ZEND_ASYNC_EVENT_IS_CLOSED(&channel->channel.event)) {
-		zend_object *ex = async_new_exception(async_ce_channel_exception, "Channel is closed");
+		zend_object *ex = make_channel_exception(channel->close_reason);
 		ZEND_FUTURE_REJECT(future, ex);
 		OBJ_RELEASE(ex);
 	} else {
@@ -726,17 +997,7 @@ METHOD(close)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	async_channel_t *channel = THIS_CHANNEL;
-
-	if (ZEND_ASYNC_EVENT_IS_CLOSED(&channel->channel.event)) {
-		return;
-	}
-
-	ZEND_ASYNC_EVENT_SET_CLOSED(&channel->channel.event);
-
-	zend_object *ex = async_new_exception(async_ce_channel_exception, "Channel is closed");
-	channel_wake_all(channel, ex);
-	OBJ_RELEASE(ex);
+	channel_close(THIS_CHANNEL, CHANNEL_CLOSE_EXPLICIT);
 }
 
 METHOD(isClosed)
@@ -789,17 +1050,18 @@ METHOD(getIterator)
 
 void async_register_channel_ce(void)
 {
-	async_ce_channel_exception = register_class_Async_ChannelException(async_ce_async_exception);
-
-	async_ce_channel = register_class_Async_Channel(async_ce_awaitable, zend_ce_aggregate, zend_ce_countable);
+	async_ce_channel_close_reason = register_class_Async_ChannelCloseReason();
+	async_ce_channel_exception    = register_class_Async_ChannelException(async_ce_async_exception);
+	async_ce_channel              = register_class_Async_Channel(async_ce_awaitable, zend_ce_aggregate, zend_ce_countable);
 
 	async_ce_channel->create_object = async_channel_create_object;
-	async_ce_channel->get_iterator = channel_get_iterator;
+	async_ce_channel->get_iterator  = channel_get_iterator;
 
 	memcpy(&async_channel_handlers, &std_object_handlers, sizeof(zend_object_handlers));
-	async_channel_handlers.offset = XtOffsetOf(async_channel_t, std);
-	async_channel_handlers.get_gc = async_channel_get_gc;
-	async_channel_handlers.dtor_obj = async_channel_dtor_object;
-	async_channel_handlers.free_obj = async_channel_free_object;
+	async_channel_handlers.offset    = XtOffsetOf(async_channel_t, std);
+	async_channel_handlers.get_gc    = async_channel_get_gc;
+	async_channel_handlers.dtor_obj  = async_channel_dtor_object;
+	async_channel_handlers.free_obj  = async_channel_free_object;
 	async_channel_handlers.clone_obj = NULL;
+
 }

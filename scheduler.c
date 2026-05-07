@@ -25,6 +25,7 @@
 #include "php_async.h"
 #include "exceptions.h"
 #include "scope.h"
+#include "channel.h"
 #include "zend_common.h"
 #include "zend_observer.h"
 
@@ -657,6 +658,14 @@ static void dump_deadlock_info(const zend_long real_coroutines)
 
 static bool resolve_deadlocks(void)
 {
+	/* Channel-level resolution: close soft-timer channels in potential-deadlock
+	 * state so blocked coroutines surface ChannelException(DEADLOCK). If any
+	 * channel was closed, return — wakes will land in the queue and the next
+	 * scheduler tick continues normally. */
+	if (async_channel_resolve_deadlocks()) {
+		return false;
+	}
+
 	zval *value;
 
 	const zend_long active_coroutines = ZEND_ASYNC_ACTIVE_COROUTINE_COUNT;
@@ -991,6 +1000,8 @@ static void async_scheduler_dtor(void)
 	zend_hash_clean(&ASYNC_G(coroutines));
 	zend_hash_destroy(&ASYNC_G(coroutines));
 	zend_hash_init(&ASYNC_G(coroutines), 0, NULL, NULL, 0);
+
+	zend_hash_clean(&ASYNC_G(deadlock_channels));
 
 	ZEND_ASYNC_SCHEDULER_CONTEXT = false;
 }
@@ -1418,7 +1429,13 @@ static zend_always_inline bool scheduler_next_tick(void)
 		ASYNC_G(last_reactor_tick) = current_time;
 		const circular_buffer_t *queue = &ASYNC_G(coroutine_queue);
 
-		has_handles = ZEND_ASYNC_REACTOR_EXECUTE(circular_buffer_is_not_empty(queue));
+		/* Skip blocking when only hidden events are alive AND a soft-timer
+		 * channel is awaiting global deadlock resolution. */
+		const bool no_wait = circular_buffer_is_not_empty(queue)
+			|| (zend_hash_num_elements(&ASYNC_G(deadlock_channels)) > 0
+				&& ZEND_ASYNC_ACTIVE_EVENT_COUNT == 0);
+
+		has_handles = ZEND_ASYNC_REACTOR_EXECUTE(no_wait);
 
 		TRY_HANDLE_SUSPEND_EXCEPTION_BOOL();
 	}
@@ -1699,6 +1716,8 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 
 		const circular_buffer_t *coroutine_queue = &ASYNC_G(coroutine_queue);
 		circular_buffer_t *resumed_coroutines = &ASYNC_G(resumed_coroutines);
+		HashTable *const deadlock_channels = &ASYNC_G(deadlock_channels);
+		const unsigned int *const active_event_count = &ZEND_ASYNC_G(active_event_count);
 		zend_coroutine_t **acting_coroutine = &ZEND_ASYNC_ACTING_COROUTINE;
 		bool *is_graceful_shutdown = &ZEND_ASYNC_GRACEFUL_SHUTDOWN;
 
@@ -1757,7 +1776,14 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 #endif
 
 			if (need_reactor) {
-				has_handles = ZEND_ASYNC_REACTOR_EXECUTE(has_next_coroutine);
+				/* Skip blocking when only hidden events are alive AND a
+				 * soft-timer channel is awaiting global deadlock resolution.
+				 * deadlock_channels is empty in the common case → short-circuits
+				 * before the TSRM-resolved active_event_count read. */
+				const bool no_wait = has_next_coroutine
+					|| (zend_hash_num_elements(deadlock_channels) > 0
+						&& *active_event_count == 0);
+				has_handles = ZEND_ASYNC_REACTOR_EXECUTE(no_wait);
 			}
 
 			if (circular_buffer_is_not_empty(resumed_coroutines)) {
