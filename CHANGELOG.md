@@ -207,6 +207,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Async\ThreadChannel`** (new class): thread-safe channel for transferring zvals between threads via deep-copy snapshot. `send()` / `receive()` suspend the calling coroutine instead of blocking the OS thread. Closures, including those with bound variables, transfer correctly through the snapshot machinery.
 - **`Async\ThreadChannelException`** (new class).
 - **Coverage phase 2** — targeted tests for `future.c`, `async.c`, `task_group.c`, `channel.c`, `thread.c`, `thread_pool.c`, `context.c`, `pool.c`. Aggregate ext/async coverage went from 77.45% to 78.34% lines (+104 lines) and from 88% to 89.1% functions (+10 functions). New tests cover Future status/cancel/getAwaitingInfo methods, FutureState double-resolve errors, finally() exception-chain propagation, non-callable argument rejection on map/catch/finally, TaskGroup synchronous-settled paths for `all()`/`race()`/`any()`, Channel unbuffered-iterator and foreach-by-ref branches, `Async\timeout(0)` ValueError, `Async\delay(0)` fast path, `Async\current_coroutine()` out-of-coroutine error, and `Context::get()` missing-key fallback. See `COVERAGE_PROGRESS.md` for the per-target breakdown.
+- **Async file → socket zero-copy transfer** — new `zend_async_io_sendfile_t`
+  hook plus the `ZEND_ASYNC_IO_SENDFILE(out_io, in_io, offset, length)`
+  convenience macro. The libuv backend implements it via `uv_fs_sendfile`
+  (sendfile(2) on Linux/BSD, TransmitFile on Windows) with an internal
+  partial-send loop, so a single submitted request completes only when
+  the full byte count has landed on the wire. Pure zero-copy: bytes go
+  straight from the source fd into the destination socket buffer in the
+  kernel and never touch user space — callers MUST therefore use a
+  different write path (e.g. read + send through their TLS layer) on
+  user-space-encrypted transports. There is no in-API fallback because
+  the alternative `read + uv_write` would also bypass the user-space
+  encryption layer the same way sendfile does, defeating the point of
+  having the fallback. The first consumer is the built-in static file
+  handler in `true-async/php-http-server` (issue #13).
+- **Asynchronous open(2)** — new `zend_async_fs_open_t` hook plus the
+  `ZEND_ASYNC_FS_OPEN(path, flags, mode)` macro. Returns a pending
+  `zend_async_io_t *` of `ZEND_ASYNC_IO_TYPE_FILE` immediately; the
+  thread-pool worker fills in the fd when `uv_fs_open` completes and
+  the libuv backend flips `ZEND_ASYNC_IO_READABLE` plus notifies the
+  io's event with NULL exception. Errors set `ZEND_ASYNC_IO_CLOSED`
+  and notify with an `IOException`. Symmetric with
+  `zend_async_socket_listen` and `zend_async_io_create` (both also
+  return `io_t` directly). Closes the last sync syscall on the
+  file-IO hot path — previously every static-asset GET blocked the
+  loop on a synchronous `open()` while the kernel pulled an inode
+  off cold cache.
+- **`zend_async_io_register` extended signature** — picks up the two
+  new function-pointer slots (`sendfile_fn`, `fs_open_fn`) between
+  `seek_fn` and `udp_sendto_fn`. Single in-tree caller (libuv reactor)
+  is updated; out-of-tree reactors must mirror the change.
+
+### Changed
+- **API version bumped to v0.11.0** (was v0.10.0) — reflects the
+  breaking change in `zend_async_io_register`'s signature. The macros
+  `ZEND_ASYNC_API_VERSION_MAJOR` / `_MINOR` / `_PATCH` and the string
+  `ZEND_ASYNC_API "TrueAsync ABI v0.11.0"` are updated accordingly.
 
 ### Performance
 - **Static TSRMLS cache for ext/async sources**: the extension was being built without `-DZEND_ENABLE_STATIC_TSRMLS_CACHE=1`, so every `EG()` / `ASYNC_G()` / `ZEND_ASYNC_G()` macro expansion in scheduler.c, coroutine.c, libuv_reactor.c and the rest of `ext/async/` routed through `pthread_getspecific` (the slow TSRM fallback). The PHP CLI sapi already passes this flag for its own files — `ext/async/` did not. On the bench profile this category was the largest single TLS overhead: `pthread_getspecific` at 4.03% of total CPU and `tsrm_get_ls_cache` at 1.19%, mostly under `async_scheduler_coroutine_suspend`, `fiber_entry`, `async_coroutine_execute` and `async_coroutine_finalize`. Fixed by adding `-DZEND_ENABLE_STATIC_TSRMLS_CACHE=1` as the per-extension `extra-cflags` argument to `PHP_NEW_EXTENSION` in `config.m4`. After the change the same macros compile to a single `__thread` load (`%fs:offset` on x86_64) instead of a libpthread call. The `_tsrm_ls_cache` symbol is already provided by the PHP binary's `TSRMLS_MAIN_CACHE_DEFINE()` so the change is link-clean. Measured on a single-thread minimal HTTP handler (median of 5 wrk -t4 -c64 -d6s runs): throughput rose from ~44k to ~58k req/s (+32%); `pthread_getspecific` dropped to 0.64% and `tsrm_get_ls_cache` to 0.50% in perf top-N; 102/102 phpt regression tests still pass.
