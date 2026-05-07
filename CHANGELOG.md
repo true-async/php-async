@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.0] -
 
 ### Added
+- **Channel deadlock protection** — three layers of defence against blocked
+  coroutines, exposed through a typed `Async\ChannelCloseReason` enum on
+  `ChannelException::$reason`:
+  1. **Per-channel timer** — new constructor parameters
+     `noProducerTimeout` / `noConsumerTimeout` (ms, default 5000, `0`
+     disables) close the channel after the configured wait. `hardTimeouts`
+     (default `false`) controls whether the timer is hidden from the loop
+     (soft) or keeps the loop alive (hard, contractual).
+  2. **Global resolver** — soft-timer channels register in a per-request
+     table and are bulk-closed by `async_channel_resolve_deadlocks()`
+     before the scheduler raises a generic `DeadlockError`. The scheduler
+     skips the blocking `uv_run(UV_RUN_ONCE)` when only hidden events are
+     alive AND a soft channel is registered, so resolution is immediate.
+  3. **Owner-scope binding** — every channel subscribes to its owner
+     scope's event via an extended callback (`channel_scope_callback_t`
+     embedding the scope back-pointer). When the scope dies for any
+     reason (dispose / cancel / parent-cascade) the channel auto-closes
+     with reason `SCOPE_DISPOSED`. The channel never pins the scope and
+     never holds the scope's refcount; lifecycle is symmetric in both
+     directions and verified under ASAN across 18 stress tests covering
+     cross-scope producers/consumers, TaskGroup-managed scopes, blocked
+     senders/receivers, channels that outlive their scope, channels that
+     die before their scope, parent/child cascades, idempotent closes,
+     and OOM bailout.
 - **`ThreadPool::submit_internal` (C-only)** — new public C-level method
   on `zend_async_thread_pool_t` for submitting a C-handler task to an
   existing pool without going through the closure-snapshot pipeline.
