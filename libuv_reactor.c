@@ -4499,6 +4499,24 @@ static void io_fs_open_cb(uv_fs_t *fs_request)
 	IF_EXCEPTION_STOP_REACTOR;
 }
 
+static bool fs_open_event_add_callback(zend_async_event_t *event,
+                                       zend_async_event_callback_t *callback)
+{
+	return zend_async_callbacks_push(event, callback);
+}
+
+static bool fs_open_event_del_callback(zend_async_event_t *event,
+                                       zend_async_event_callback_t *callback)
+{
+	return zend_async_callbacks_remove(event, callback);
+}
+
+static bool fs_open_event_dispose(zend_async_event_t *event)
+{
+	zend_async_callbacks_free(event);
+	return true;
+}
+
 static zend_async_io_req_t *
 libuv_fs_open(const char *path, const int flags, const int mode)
 {
@@ -4506,13 +4524,18 @@ libuv_fs_open(const char *path, const int flags, const int mode)
 
 	async_fs_open_req_t *req = pecalloc(1, sizeof(*req), 0);
 	req->base.dispose = libuv_fs_open_req_dispose;
+	req->base.event   = &req->event;
 	req->fs_req.data  = req;
 
-	/* Minimal stand-alone event so callers can hang an
-	 * add_callback on this req's completion the same way they would
-	 * on an io's event. */
-	req->event.start = fs_open_event_start;
-	req->event.stop  = fs_open_event_stop;
+	/* Stand-alone event — callers add_callback here to receive the
+	 * completion notification once the thread-pool worker runs the
+	 * uv_fs_open and io_fs_open_cb fires. */
+	req->event.ref_count    = 1;
+	req->event.start        = fs_open_event_start;
+	req->event.stop         = fs_open_event_stop;
+	req->event.add_callback = fs_open_event_add_callback;
+	req->event.del_callback = fs_open_event_del_callback;
+	req->event.dispose      = fs_open_event_dispose;
 
 	const int err = uv_fs_open(UVLOOP, &req->fs_req, path, flags, mode,
 			io_fs_open_cb);
