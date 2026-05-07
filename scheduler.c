@@ -862,8 +862,7 @@ void bailout_all_coroutines(void)
 
 		/* Coroutine is no longer in the queue — clear the QUEUED status
 		 * before we hand it off to bailout. */
-		if (EXPECTED(async_coroutine->coroutine.waker != NULL
-			&& async_coroutine->coroutine.waker->status == ZEND_ASYNC_WAKER_QUEUED)) {
+		if (EXPECTED(ZEND_ASYNC_WAKER_IN_QUEUE(async_coroutine->coroutine.waker))) {
 			async_coroutine->coroutine.waker->status = ZEND_ASYNC_WAKER_RESULT;
 		}
 
