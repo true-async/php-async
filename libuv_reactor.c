@@ -4215,45 +4215,25 @@ static void io_file_stat_cb(uv_fs_t *fs_request)
 /* {{{ Sendfile + fs_open backends (zend_async_API v0.11) */
 
 /* Per-request state for zend_async_io_sendfile. Wraps async_io_req_t
- * (the base req exposed to the public API) with sendfile-specific
- * bookkeeping: the destination io, current offset / remaining length,
- * and the fallback path's separate uv_write_t plus chunk buffer.
- *
- * The fallback path alternates uv_fs_read into fb_buf and uv_write
- * onto the destination stream. fb_write is a stand-alone handle
- * because the union in async_io_req_t can hold only one in-flight uv
- * request at a time and the read/write handoff would otherwise race
- * with itself. */
-#define ASYNC_SENDFILE_FB_CHUNK_SIZE (64u * 1024u)
-
+ * with the destination io plus the offset / remaining bookkeeping
+ * needed to loop uv_fs_sendfile on partial sends. */
 typedef struct {
 	async_io_req_t base;
-	uv_write_t     fb_write;
 	async_io_t    *dst_io;
 	zend_off_t     offset;        /* -1 = read from current position */
 	size_t         remaining;
 	size_t         transferred;
-	size_t         last_chunk;    /* bytes carried by the in-flight fb_write */
-	char          *fb_buf;
-	size_t         fb_buf_cap;
 } async_sendfile_req_t;
 
 static void libuv_sendfile_req_dispose(zend_async_io_req_t *base_req)
 {
-	async_sendfile_req_t *req = (async_sendfile_req_t *) base_req;
-	if (req->fb_buf != NULL) {
-		pefree(req->fb_buf, 0);
-		req->fb_buf = NULL;
-	}
 	if (base_req->exception != NULL) {
 		zend_object_release(base_req->exception);
 		base_req->exception = NULL;
 	}
-	pefree(req, 0);
+	pefree(base_req, 0);
 }
 
-/* Single completion path for both zero-copy and fallback flows. Counts
- * the event off the source io and notifies any caller waiting on it. */
 static void sendfile_complete(async_sendfile_req_t *req,
                               const int error_code, const char *err_kind)
 {
@@ -4278,9 +4258,9 @@ static void sendfile_complete(async_sendfile_req_t *req,
 	IF_EXCEPTION_STOP_REACTOR;
 }
 
-/* Zero-copy path completion. uv_fs_sendfile may return early if the
- * kernel only flushes part of `length` in one go — resubmit until the
- * full byte count is sent or the kernel returns an error. */
+/* uv_fs_sendfile may flush only part of `length` in one shot; resubmit
+ * until the full count lands on the wire or the kernel returns an
+ * error. */
 static void io_sendfile_zc_cb(uv_fs_t *fs_request)
 {
 	async_sendfile_req_t *req = (async_sendfile_req_t *) fs_request->data;
@@ -4313,78 +4293,15 @@ static void io_sendfile_zc_cb(uv_fs_t *fs_request)
 	}
 }
 
-static void io_sendfile_fb_write_cb(uv_write_t *write_request, int status);
-
-/* Fallback path: read a chunk from the file descriptor, then write it
- * onto the destination stream. Repeats until req->remaining hits zero
- * (or premature EOF). */
-static void io_sendfile_fb_read_cb(uv_fs_t *fs_request)
-{
-	async_sendfile_req_t *req = (async_sendfile_req_t *) fs_request->data;
-	const ssize_t n = (ssize_t) fs_request->result;
-	uv_fs_req_cleanup(fs_request);
-
-	if (n < 0) {
-		sendfile_complete(req, (int) n, "Sendfile fallback read");
-		return;
-	}
-	if (n == 0) {
-		/* Premature EOF — file shorter than requested length. Complete
-		 * with whatever we already transferred. */
-		sendfile_complete(req, 0, NULL);
-		return;
-	}
-
-	req->last_chunk = (size_t) n;
-	if (req->offset >= 0) {
-		req->offset += n;
-	}
-
-	const uv_buf_t buf = uv_buf_init(req->fb_buf, (unsigned int) n);
-	req->fb_write.data = req;
-
-	const int err = uv_write(&req->fb_write, &req->dst_io->handle.stream,
-			&buf, 1, io_sendfile_fb_write_cb);
-	if (UNEXPECTED(err < 0)) {
-		sendfile_complete(req, err, "Sendfile fallback write submit");
-	}
-}
-
-static void io_sendfile_fb_write_cb(uv_write_t *write_request, const int status)
-{
-	async_sendfile_req_t *req = (async_sendfile_req_t *) write_request->data;
-
-	if (status < 0) {
-		sendfile_complete(req, status, "Sendfile fallback write");
-		return;
-	}
-
-	/* uv_write is all-or-error: status == 0 means every byte of
-	 * last_chunk landed on the wire. */
-	req->transferred += req->last_chunk;
-	req->remaining   -= req->last_chunk;
-	req->last_chunk   = 0;
-
-	if (req->remaining == 0) {
-		sendfile_complete(req, 0, NULL);
-		return;
-	}
-
-	/* Read the next chunk. */
-	const size_t want = req->remaining < req->fb_buf_cap
-			? req->remaining : req->fb_buf_cap;
-	const uv_buf_t rbuf = uv_buf_init(req->fb_buf, (unsigned int) want);
-	req->base.fs_req.data = req;
-
-	const int err = uv_fs_read(UVLOOP, &req->base.fs_req,
-			req->base.io->crt_fd, &rbuf, 1, req->offset,
-			io_sendfile_fb_read_cb);
-	if (UNEXPECTED(err < 0)) {
-		sendfile_complete(req, err, "Sendfile fallback read submit");
-	}
-}
-
-/* {{{ libuv_io_sendfile */
+/* {{{ libuv_io_sendfile
+ *
+ * Pure zero-copy: bytes never enter user space. Caller is responsible
+ * for not invoking this on a transport that needs user-space
+ * encryption (e.g. OpenSSL without kTLS) — the API does NOT and
+ * cannot mediate that, because the alternative path (read + write)
+ * would also bypass user-space encryption when going through the
+ * generic uv_write. Such callers must use a transport-aware
+ * read+write loop themselves. */
 static zend_async_io_req_t *
 libuv_io_sendfile(zend_async_io_t *out_io_base, zend_async_io_t *in_io_base,
                   const zend_off_t offset, const size_t length)
@@ -4418,37 +4335,15 @@ libuv_io_sendfile(zend_async_io_t *out_io_base, zend_async_io_t *in_io_base,
 		return &req->base.base;
 	}
 
-	const bool zero_copy = (out_io_base->state & ZEND_ASYNC_IO_ZERO_COPY_OK) != 0
-			&& ZEND_ASYNC_IO_IS_STREAM(out_io_base->type);
-
 	req->base.fs_req.data = req;
 
-	if (zero_copy) {
-		const int err = uv_fs_sendfile(UVLOOP, &req->base.fs_req,
-				out_io->crt_fd, in_io->crt_fd,
-				offset, length, io_sendfile_zc_cb);
-		if (UNEXPECTED(err < 0)) {
-			async_throw_error("Failed to start sendfile: %s", uv_strerror(err));
-			libuv_sendfile_req_dispose(&req->base.base);
-			return NULL;
-		}
-	} else {
-		/* Fallback: read into a chunk buffer, write onto out_io stream.
-		 * Buffer is owned by the request and freed in dispose. */
-		req->fb_buf_cap = length < ASYNC_SENDFILE_FB_CHUNK_SIZE
-				? length : ASYNC_SENDFILE_FB_CHUNK_SIZE;
-		req->fb_buf = pemalloc(req->fb_buf_cap, 0);
-
-		const uv_buf_t rbuf = uv_buf_init(req->fb_buf,
-				(unsigned int) req->fb_buf_cap);
-		const int err = uv_fs_read(UVLOOP, &req->base.fs_req,
-				in_io->crt_fd, &rbuf, 1, offset, io_sendfile_fb_read_cb);
-		if (UNEXPECTED(err < 0)) {
-			async_throw_error("Failed to start sendfile fallback: %s",
-					uv_strerror(err));
-			libuv_sendfile_req_dispose(&req->base.base);
-			return NULL;
-		}
+	const int err = uv_fs_sendfile(UVLOOP, &req->base.fs_req,
+			out_io->crt_fd, in_io->crt_fd,
+			offset, length, io_sendfile_zc_cb);
+	if (UNEXPECTED(err < 0)) {
+		async_throw_error("Failed to start sendfile: %s", uv_strerror(err));
+		libuv_sendfile_req_dispose(&req->base.base);
+		return NULL;
 	}
 
 	ZEND_ASYNC_INCREASE_EVENT_COUNT(&in_io->base.event);
