@@ -40,6 +40,16 @@ typedef enum
 	CHANNEL_CLOSE_REASON_COUNT
 } channel_close_reason_t;
 
+/* Extended callback used to subscribe a channel to its owner scope's event.
+ * The scope_event back-pointer lets the channel del_callback itself when it
+ * dies first; the dispose handler clears it when the scope dies first, so
+ * neither side ever dereferences freed memory. */
+typedef struct
+{
+	zend_async_event_callback_t base;
+	zend_async_event_t *scope_event;
+} channel_scope_callback_t;
+
 typedef struct _async_channel_s async_channel_t;
 
 struct _async_channel_s
@@ -73,9 +83,9 @@ struct _async_channel_s
 	channel_close_reason_t close_reason;
 
 	/* Owner-scope binding: channel auto-closes when the scope it was created
-	 * in is disposed/cancelled. NULL when not bound. */
-	zend_async_event_t *owner_scope_event;
-	zend_async_event_callback_t scope_close_callback;
+	 * in is disposed/cancelled. scope_close_callback.scope_event == NULL when
+	 * not bound (or when the scope already fired the callback and died). */
+	channel_scope_callback_t scope_close_callback;
 
 	/* PHP object handle (must be last for final class) */
 	zend_object std;

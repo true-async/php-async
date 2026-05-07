@@ -414,12 +414,12 @@ static void channel_scope_close_fire(zend_async_event_t *scope_event,
 }
 
 /* Called by the scope's callbacks_free during scope teardown. After this point
- * the scope event is gone — drop our pointer so the channel doesn't try to
- * del_callback on freed memory in free_obj. */
+ * the scope event is gone — clear the back-pointer so free_obj doesn't try to
+ * del_callback on freed memory. */
 static void channel_scope_close_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event)
 {
-	async_channel_t *channel = (async_channel_t *) ((char *) callback - XtOffsetOf(async_channel_t, scope_close_callback));
-	channel->owner_scope_event = NULL;
+	channel_scope_callback_t *cb = (channel_scope_callback_t *) callback;
+	cb->scope_event = NULL;
 }
 
 static void channel_bind_to_owner_scope(async_channel_t *channel)
@@ -432,23 +432,23 @@ static void channel_bind_to_owner_scope(async_channel_t *channel)
 		return;
 	}
 
-	channel->scope_close_callback.ref_count = 1;
-	channel->scope_close_callback.callback = channel_scope_close_fire;
-	channel->scope_close_callback.dispose = channel_scope_close_dispose;
-	channel->owner_scope_event = &scope->event;
+	channel->scope_close_callback.base.ref_count = 1;
+	channel->scope_close_callback.base.callback  = channel_scope_close_fire;
+	channel->scope_close_callback.base.dispose   = channel_scope_close_dispose;
+	channel->scope_close_callback.scope_event    = &scope->event;
 
-	scope->event.add_callback(&scope->event, &channel->scope_close_callback);
+	scope->event.add_callback(&scope->event, &channel->scope_close_callback.base);
 }
 
 static void channel_unbind_from_owner_scope(async_channel_t *channel)
 {
-	if (channel->owner_scope_event == NULL) {
+	zend_async_event_t *scope_event = channel->scope_close_callback.scope_event;
+	if (scope_event == NULL) {
 		return;
 	}
 
-	zend_async_event_t *scope_event = channel->owner_scope_event;
-	channel->owner_scope_event = NULL;
-	scope_event->del_callback(scope_event, &channel->scope_close_callback);
+	channel->scope_close_callback.scope_event = NULL;
+	scope_event->del_callback(scope_event, &channel->scope_close_callback.base);
 }
 
 bool async_channel_resolve_deadlocks(void)
@@ -637,7 +637,6 @@ static zend_object *async_channel_create_object(zend_class_entry *ce)
 	channel->close_reason = CHANNEL_CLOSE_EXPLICIT;
 	memset(&channel->deadlock_callback, 0, sizeof(channel->deadlock_callback));
 
-	channel->owner_scope_event = NULL;
 	memset(&channel->scope_close_callback, 0, sizeof(channel->scope_close_callback));
 
 	return &channel->std;
