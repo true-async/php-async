@@ -1066,6 +1066,63 @@ PHP_FUNCTION(Async_exec)
 /// Signal API
 ///////////////////////////////////////////////////////////////
 
+#ifndef PHP_WIN32
+# include <signal.h>
+#endif
+
+/*
+ * Async\Signal enum portability shims.
+ *
+ * The Async\Signal enum (async.stub.php) backs each case with the Linux
+ * signal number — those literals are baked into async_arginfo.h at compile
+ * time and PHP backed-enum values cannot be platform-conditional.
+ *
+ * Most signal numbers (HUP, INT, QUIT, ILL, ABRT, FPE, KILL, SEGV, TERM,
+ * WINCH) match across Linux, Darwin and the BSDs. SIGUSR1 and SIGUSR2 do
+ * NOT — Linux uses 10/12, Darwin/FreeBSD/NetBSD/OpenBSD/DragonFly use
+ * 30/31. Without translation, Async\signal(Signal::SIGUSR1) on macOS
+ * would arm the libuv watcher on signum 10 (== SIGBUS on Darwin), and a
+ * real SIGUSR1 (30) would slip past to PHP's zend_signal_handler_defer,
+ * which terminates the process when no userland handler is registered.
+ *
+ * These two helpers translate between the enum's Linux numbering (used
+ * as PHP-visible values) and the OS-native numbers used by libuv /
+ * sigaction. Identity on Linux. Compile-time-skipped on Windows (the
+ * Async\signal API is Unix-only at the PHP level — its tests carry a
+ * SKIPIF for PHP_OS_FAMILY === 'Windows' — and Windows headers do not
+ * define SIGUSR1/SIGUSR2 at all, so the translation is unreachable
+ * there). The BSD/Darwin family is detected with the same set of
+ * preprocessor symbols PHP itself uses elsewhere (Zend/zend_call_stack.c).
+ */
+static zend_always_inline int async_signum_enum_to_native(int linux_signum)
+{
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) \
+		|| defined(__OpenBSD__) || defined(__DragonFly__)
+	switch (linux_signum) {
+		case 10: return SIGUSR1;   /* Linux 10 → BSD/Darwin 30 */
+		case 12: return SIGUSR2;   /* Linux 12 → BSD/Darwin 31 */
+		default: return linux_signum;
+	}
+#else
+	/* Linux: native already matches enum. Windows: never reached
+	 * (signal API is Unix-only) but compiles fine because we don't
+	 * reference SIGUSR1/SIGUSR2 macros here. */
+	return linux_signum;
+#endif
+}
+
+static zend_always_inline int async_signum_native_to_enum(int native_signum)
+{
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) \
+		|| defined(__OpenBSD__) || defined(__DragonFly__)
+	if (native_signum == SIGUSR1) return 10;
+	if (native_signum == SIGUSR2) return 12;
+	return native_signum;
+#else
+	return native_signum;
+#endif
+}
+
 typedef struct
 {
 	zend_async_event_callback_t base;
