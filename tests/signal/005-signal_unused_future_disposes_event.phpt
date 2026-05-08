@@ -3,6 +3,7 @@ Async\signal(): unused signal Future disposes its underlying signal_event so the
 --SKIPIF--
 <?php
 if (PHP_OS_FAMILY === 'Windows') echo "skip Unix-only test";
+if (PHP_OS_FAMILY === 'Darwin') echo "skip libuv signal handling on macOS/kqueue mishandles multiple uv_signal_t for different signums (pre-existing, unrelated to this fix)";
 if (!function_exists('posix_kill')) echo "skip posix extension required";
 ?>
 --FILE--
