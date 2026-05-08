@@ -1720,6 +1720,13 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 		zend_coroutine_t **acting_coroutine = &ZEND_ASYNC_ACTING_COROUTINE;
 		bool *is_graceful_shutdown = &ZEND_ASYNC_GRACEFUL_SHUTDOWN;
 
+#ifdef PHP_DEBUG
+		/* If the escape-valve conditions hold but the reactor is still alive,
+		 * give it one extra NOWAIT tick to drain pending close-callbacks before
+		 * breaking out — only the second consecutive hit actually breaks. */
+		bool escape_drain_attempted = false;
+#endif
+
 		do {
 
 			TRY_HANDLE_EXCEPTION();
@@ -1851,9 +1858,12 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 
 #ifdef PHP_DEBUG
 			/**
-			 * This code is intended to stop the EventLoop in case of a bailout situation or when shutdown has started.
-			 * In the case of a bailout, a situation is possible
-			 * where descriptors remain in the reactor that were not properly removed.
+			 * Escape valve for shutdown / post-bailout: if there is nothing left
+			 * to execute (no coroutines, no microtasks, no queued work) and we
+			 * are in graceful shutdown, the do-while would block forever on a
+			 * stuck reactor handle. Give the reactor one extra NOWAIT tick to
+			 * drain pending close-callbacks before breaking — a real leak still
+			 * trips the assert below.
 			 */
 			if (UNEXPECTED(*is_graceful_shutdown &&
 				*heartbeat_handler == NULL &&
@@ -1862,7 +1872,17 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 				circular_buffer_is_empty(coroutine_queue)
 				))
 			{
-				break;
+				if (ZEND_ASYNC_REACTOR_LOOP_ALIVE()) {
+					if (escape_drain_attempted) {
+						break;
+					}
+					escape_drain_attempted = true;
+					ZEND_ASYNC_REACTOR_EXECUTE(true);
+					continue;
+				}
+				/* !alive: fall through — do-while exits naturally. */
+			} else {
+				escape_drain_attempted = false;
 			}
 #endif
 		} while (zend_hash_num_elements(&ASYNC_G(coroutines)) > 0 ||
