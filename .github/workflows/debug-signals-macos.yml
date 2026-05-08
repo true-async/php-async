@@ -150,8 +150,18 @@ jobs:
             php-src/Zend/zend_config.h
           key: php-debug-zts-${{ steps.cache_key.outputs.php_src_sha }}-v4
 
+      - name: Regenerate config-derived headers (cache hit only)
+        if: steps.cache_restore.outputs.cache-hit == 'true'
+        run: |
+          cd php-src
+          # Cache stores object files but not all generated headers (e.g.
+          # ext/date/lib/timelib_config.h). Re-run config.status to regenerate
+          # them without recompiling everything.
+          ./config.status
+
       - name: Force-rebuild ext/async (pick up diagnostic instrumentation)
         run: |
+          export PATH="$(brew --prefix)/opt/bison/bin:$PATH"
           cd php-src
           rm -f ext/async/*.lo ext/async/*.o ext/async/*.dep
           make -j$(sysctl -n hw.logicalcpu) ext/async/libuv_reactor.lo ext/async/async.lo
