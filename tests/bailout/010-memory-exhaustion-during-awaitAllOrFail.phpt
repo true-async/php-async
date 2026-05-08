@@ -50,6 +50,4 @@ Coroutine 1 started
 Coroutine 2 started
 
 Fatal error: Allowed memory size of %d bytes exhausted%s(tried to allocate %d bytes) in %s on line %d
-
-Warning: Attempt to finalize a coroutine that is still in the queue in Unknown on line 0
 Shutdown function called
