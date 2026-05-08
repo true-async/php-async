@@ -19,6 +19,11 @@
 #include "php_async_api.h"
 #include <Zend/zend_async_API.h>
 
+/* Set on op_array->fn_flags2 once async_thread_check_op_array() has cleared it
+ * for snapshot transfer. Repeated transfers (ThreadPool, channel resends) skip
+ * the rescan; invalid closures stay unflagged and re-throw with full detail. */
+#define ASYNC_FN_FLAG_THREAD_TRANSFER_OK (1u << 0)
+
 ///////////////////////////////////////////////////////////
 /// Snapshot — package transferred from parent to child
 ///////////////////////////////////////////////////////////

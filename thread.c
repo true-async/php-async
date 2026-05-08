@@ -1338,6 +1338,54 @@ void async_thread_defer_release_ctx(
 /// 1. Snapshot — transfer callable between threads
 ///////////////////////////////////////////////////////////
 
+/* Reject opcodes whose snapshot replay would assert in the worker:
+ * class/function declarations need compile-time class_table state we don't
+ * reproduce. Recurses into dynamic_func_defs. Throws on first illegal
+ * opcode; sets ASYNC_FN_FLAG_THREAD_TRANSFER_OK on success so subsequent
+ * transfers (ThreadPool resubmits, channel resends) skip the scan. */
+static bool async_thread_check_op_array(zend_op_array *op_array)
+{
+	if (op_array->type != ZEND_USER_FUNCTION
+		|| (op_array->fn_flags2 & ASYNC_FN_FLAG_THREAD_TRANSFER_OK)) {
+		return true;
+	}
+
+	const zend_op *it = op_array->opcodes;
+	const zend_op *const end = it + op_array->last;
+	for (; it < end; it++) {
+		const char *kind;
+		switch (it->opcode) {
+			case ZEND_DECLARE_CLASS:
+			case ZEND_DECLARE_CLASS_DELAYED:
+				kind = "class";
+				break;
+			case ZEND_DECLARE_ANON_CLASS:
+				kind = "new class";
+				break;
+			case ZEND_DECLARE_FUNCTION:
+				kind = "function";
+				break;
+			default:
+				continue;
+		}
+		zend_throw_error(NULL,
+			"Cannot transfer closure to another thread: illegal %s declaration at %s:%u",
+			kind,
+			op_array->filename ? ZSTR_VAL(op_array->filename) : "(closure)",
+			it->lineno);
+		return false;
+	}
+
+	for (uint32_t i = 0; i < op_array->num_dynamic_func_defs; i++) {
+		if (!async_thread_check_op_array(op_array->dynamic_func_defs[i])) {
+			return false;
+		}
+	}
+
+	op_array->fn_flags2 |= ASYNC_FN_FLAG_THREAD_TRANSFER_OK;
+	return true;
+}
+
 /**
  * Deep-copy a callable into persistent memory.
  * Copies op_array via thread_copy_op_array and transfers
@@ -1346,7 +1394,14 @@ void async_thread_defer_release_ctx(
 static void thread_copy_callable(
 	thread_copy_ctx_t *ctx, const zend_fcall_t *fcall, async_thread_closure_copy_t *dst)
 {
-	const zend_op_array *src_op = &fcall->fci_cache.function_handler->op_array;
+	zend_op_array *src_op = &fcall->fci_cache.function_handler->op_array;
+
+	/* Validate before allocating anything in the arena. On failure
+	 * EG(exception) is set and async_thread_snapshot_create() will tear
+	 * down the half-built snapshot. */
+	if (!async_thread_check_op_array(src_op)) {
+		return;
+	}
 
 	/* Deep copy the op_array into arena */
 	zval tmp;
