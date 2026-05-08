@@ -241,6 +241,18 @@ jobs:
                   { (const void *) trace_sigaction, (const void *) sigaction },
               };
 
+          #include <dlfcn.h>
+          static void resolve_addr(const char *tag, void *addr) {
+              Dl_info info;
+              if (dladdr(addr, &info) && info.dli_sname) {
+                  fprintf(stderr, "  %s = %p (%s + 0x%lx in %s)\n", tag, addr,
+                      info.dli_sname,
+                      (unsigned long)((char*)addr - (char*)info.dli_saddr),
+                      info.dli_fname ? info.dli_fname : "?");
+              } else {
+                  fprintf(stderr, "  %s = %p (?)\n", tag, addr);
+              }
+          }
           static int trace_sigaction(int signum, const struct sigaction *act, struct sigaction *oldact) {
               if (signum == SIGUSR1 || signum == SIGUSR2) {
                   void *ra0 = __builtin_return_address(0);
@@ -252,7 +264,13 @@ jobs:
                   } else {
                       fprintf(stderr, " (read-only)");
                   }
-                  fprintf(stderr, " caller=%p caller_caller=%p caller_x2=%p\n", ra0, ra1, ra2);
+                  fprintf(stderr, "\n");
+                  resolve_addr("ra0", ra0);
+                  resolve_addr("ra1", ra1);
+                  resolve_addr("ra2", ra2);
+                  if (act && act->sa_handler) {
+                      resolve_addr("new_handler", (void*)act->sa_handler);
+                  }
                   /* Try backtrace() too — some contexts have working frame pointers */
                   void *bt[16];
                   int n = backtrace(bt, 16);
