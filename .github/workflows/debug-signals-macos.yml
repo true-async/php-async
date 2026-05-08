@@ -1,0 +1,246 @@
+name: Debug — macOS multi-signum
+
+on:
+  workflow_dispatch:
+    inputs:
+      reset_cache:
+        description: 'Reset build cache (rebuild from scratch)'
+        required: false
+        default: 'false'
+
+jobs:
+  debug-signals:
+    name: "DEBUG_MACOS_ARM64_ZTS_SIGNAL"
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout php-async repo
+        uses: actions/checkout@v4
+        with:
+          path: async
+
+      - name: Clone php-src (true-async-stable)
+        run: |
+          git clone --depth=1 --branch=true-async-stable https://github.com/true-async/php-src php-src
+
+      - name: Copy php-async extension into php-src
+        run: |
+          mkdir -p php-src/ext/async
+          cp -r async/* php-src/ext/async/
+
+      - name: Compute cache key
+        id: cache_key
+        run: |
+          # Cache PHP build separately from ext/async — only invalidate when
+          # the configure inputs or PHP core sources change. ext/async is
+          # rebuilt every run.
+          cd php-src
+          KEY=$(git rev-parse HEAD)
+          echo "php_src_sha=$KEY" >> $GITHUB_OUTPUT
+
+      - name: Restore cached PHP build
+        id: cache_restore
+        if: github.event.inputs.reset_cache != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            php-src/sapi/cli/php
+            php-src/main/internal_functions_cli.o
+            php-src/Zend/*.o
+            php-src/Zend/Optimizer/*.o
+            php-src/main/*.o
+            php-src/main/streams/*.o
+            php-src/TSRM/*.o
+            php-src/ext/**/*.o
+            php-src/ext/**/*.lo
+            php-src/ext/**/*.la
+            php-src/Makefile
+            php-src/configure
+            php-src/config.status
+            php-src/main/php_config.h
+            php-src/main/build-defs.h
+            php-src/Zend/zend_config.h
+          key: php-debug-zts-${{ steps.cache_key.outputs.php_src_sha }}-v3
+
+      - name: Install build dependencies via Homebrew
+        run: |
+          set -x
+          formula_installer="$(brew --repo)"/Library/Homebrew/formula_installer.rb
+          code=" keg.link\(verbose: verbose\?"
+          sudo sed -Ei '' "s/$code.*/$code, overwrite: true\)/" "$formula_installer"
+          brew uninstall --ignore-dependencies cmake || true
+          brew reinstall autoconf webp tidy-html5 libzip libsodium icu4c curl
+          brew install bison re2c bzip2 enchant libffi intltool libiconv t1lib libxml2 libjpeg libxslt libuv
+
+      - name: Print libuv info
+        run: |
+          brew info libuv | head -20
+          ls -la $(brew --prefix)/opt/libuv/lib/
+
+      - name: Configure PHP (only if cache miss)
+        if: steps.cache_restore.outputs.cache-hit != 'true'
+        working-directory: php-src
+        run: |
+          set -x
+          BREW_OPT="$(brew --prefix)"/opt
+          export PATH="$BREW_OPT/bison/bin:$PATH"
+          export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$BREW_OPT/openssl@1.1/lib/pkgconfig"
+          export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$BREW_OPT/curl/lib/pkgconfig"
+          export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$BREW_OPT/libffi/lib/pkgconfig"
+          export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$BREW_OPT/libxml2/lib/pkgconfig"
+          export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$BREW_OPT/libxslt/lib/pkgconfig"
+          export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$BREW_OPT/zlib/lib/pkgconfig"
+          export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$BREW_OPT/icu4c/lib/pkgconfig"
+          sed -i -e 's/Requires.private:.*//g' "$BREW_OPT/curl/lib/pkgconfig/libcurl.pc"
+
+          ./buildconf --force
+          ./configure \
+            --enable-option-checking=fatal \
+            --prefix=/usr/local \
+            --without-pear \
+            --disable-cgi \
+            --disable-fpm \
+            --disable-phpdbg \
+            --enable-pcntl \
+            --enable-posix \
+            --enable-sockets \
+            --enable-debug \
+            --enable-zts \
+            --enable-async \
+            --with-config-file-path=/etc \
+            --with-config-file-scan-dir=/etc/php.d
+
+      - name: Build PHP (only if cache miss)
+        if: steps.cache_restore.outputs.cache-hit != 'true'
+        run: |
+          export PATH="$(brew --prefix)/opt/bison/bin:$PATH"
+          cd php-src
+          make -j$(sysctl -n hw.logicalcpu)
+
+      - name: Save PHP build to cache
+        if: steps.cache_restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            php-src/sapi/cli/php
+            php-src/main/internal_functions_cli.o
+            php-src/Zend/*.o
+            php-src/Zend/Optimizer/*.o
+            php-src/main/*.o
+            php-src/main/streams/*.o
+            php-src/TSRM/*.o
+            php-src/ext/**/*.o
+            php-src/ext/**/*.lo
+            php-src/ext/**/*.la
+            php-src/Makefile
+            php-src/configure
+            php-src/config.status
+            php-src/main/php_config.h
+            php-src/main/build-defs.h
+            php-src/Zend/zend_config.h
+          key: php-debug-zts-${{ steps.cache_key.outputs.php_src_sha }}-v3
+
+      - name: Force-rebuild ext/async (pick up diagnostic instrumentation)
+        run: |
+          cd php-src
+          rm -f ext/async/*.lo ext/async/*.o ext/async/*.dep
+          make -j$(sysctl -n hw.logicalcpu) ext/async/libuv_reactor.lo ext/async/async.lo
+          make sapi/cli/php
+
+      - name: PHP version sanity
+        run: |
+          ./php-src/sapi/cli/php -v
+          ./php-src/sapi/cli/php -r 'echo extension_loaded("async") ? "async OK\n" : "async MISSING\n";'
+
+      # ===== Diagnostic step 1: pure libuv repro (no PHP) =====
+      - name: Build & run libuv-only multi-signum test
+        run: |
+          cat > /tmp/libuv_signal_repro.c <<'EOF'
+          #include <stdio.h>
+          #include <signal.h>
+          #include <unistd.h>
+          #include <string.h>
+          #include <uv.h>
+
+          static void on_signal(uv_signal_t *h, int signum) {
+              fprintf(stderr, "[uv] caught signum=%d\n", signum);
+              uv_signal_stop(h);
+          }
+
+          static void dump_sigaction(int sig, const char *tag) {
+              struct sigaction sa;
+              sigaction(sig, NULL, &sa);
+              fprintf(stderr, "[sa-%s] sig=%d handler=%p flags=0x%x\n",
+                      tag, sig, (void*)sa.sa_handler, sa.sa_flags);
+          }
+
+          static void after_kill(uv_timer_t *t) {
+              fprintf(stderr, "[timer] sending SIGUSR1\n");
+              dump_sigaction(SIGUSR1, "before-kill");
+              kill(getpid(), SIGUSR1);
+              uv_timer_stop(t);
+          }
+
+          int main(void) {
+              uv_loop_t *loop = uv_default_loop();
+              uv_signal_t s1, s2;
+
+              fprintf(stderr, "[main] init s1 SIGUSR1\n");
+              uv_signal_init(loop, &s1);
+              dump_sigaction(SIGUSR1, "after-init1");
+              uv_signal_start(&s1, on_signal, SIGUSR1);
+              dump_sigaction(SIGUSR1, "after-start1");
+
+              fprintf(stderr, "[main] init s2 SIGUSR2\n");
+              uv_signal_init(loop, &s2);
+              uv_signal_start(&s2, on_signal, SIGUSR2);
+              dump_sigaction(SIGUSR1, "after-start2");
+              dump_sigaction(SIGUSR2, "after-start2-u2");
+
+              uv_timer_t t;
+              uv_timer_init(loop, &t);
+              uv_timer_start(&t, after_kill, 100, 0);
+
+              fprintf(stderr, "[main] uv_run\n");
+              int r = uv_run(loop, UV_RUN_DEFAULT);
+              fprintf(stderr, "[main] uv_run returned %d\n", r);
+              return 0;
+          }
+          EOF
+          BREW_OPT="$(brew --prefix)/opt"
+          cc -g -O0 -I$BREW_OPT/libuv/include -L$BREW_OPT/libuv/lib -luv -o /tmp/libuv_repro /tmp/libuv_signal_repro.c
+          echo "===== running pure-libuv repro ====="
+          /tmp/libuv_repro || echo "[exit-code: $?]"
+          echo "===== end pure-libuv repro ====="
+
+      # ===== Diagnostic step 2: run failing PHP test with sigaction tracing =====
+      - name: Run failing test with diagnostics
+        working-directory: php-src
+        run: |
+          export ASYNC_DEBUG_SIGNALS=1
+          # The .phpt SKIPIF skips on Darwin — run the .php directly to bypass
+          PHP_FILE=$(mktemp /tmp/sig_test.XXXXXX.php)
+          cat > "$PHP_FILE" <<'EOF'
+          <?php
+          use Async\Signal;
+          use function Async\signal;
+          use function Async\spawn;
+          use function Async\delay;
+          use function Async\await_any_or_fail;
+
+          spawn(function () {
+              delay(50);
+              fprintf(STDERR, "[php] sending SIGUSR1\n");
+              posix_kill(getmypid(), SIGUSR1);
+          });
+
+          fprintf(STDERR, "[php] before await_any_or_fail\n");
+          $signal = await_any_or_fail([
+              signal(Signal::SIGUSR1),
+              signal(Signal::SIGUSR2),
+          ]);
+          fprintf(STDERR, "[php] got: " . $signal->name . "\n");
+          EOF
+          echo "===== running failing PHP scenario ====="
+          ./sapi/cli/php "$PHP_FILE" 2>&1 || echo "[exit-code: $?]"
+          echo "===== end failing PHP scenario ====="

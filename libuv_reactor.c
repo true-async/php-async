@@ -50,13 +50,52 @@
 static struct sigaction async_saved_sigactions[NSIG];
 static bool async_signal_active[NSIG] = { false };
 
+/* Diagnostic tracing for multi-signum debugging. Enable via env ASYNC_DEBUG_SIGNALS=1.
+ * Compile-time zero overhead in the common path: getenv() call once per request. */
+static int async_signal_debug_enabled(void)
+{
+	static int cached = -1;
+	if (cached == -1) {
+		const char *v = getenv("ASYNC_DEBUG_SIGNALS");
+		cached = (v != NULL && *v != '\0' && *v != '0') ? 1 : 0;
+	}
+	return cached;
+}
+
+static void async_signal_debug_dump_sigaction(int signum, const char *tag)
+{
+	if (!async_signal_debug_enabled()) return;
+	struct sigaction sa;
+	memset(&sa, 0, sizeof(sa));
+	sigaction(signum, NULL, &sa);
+	fprintf(stderr, "[ASYNC-SIG][%s] sig=%d handler=%p flags=0x%x\n",
+			tag, signum, (void *) sa.sa_handler, sa.sa_flags);
+	fflush(stderr);
+}
+
+#define ASYNC_SIG_TRACE(fmt, ...) do { \
+		if (async_signal_debug_enabled()) { \
+			fprintf(stderr, "[ASYNC-SIG] " fmt "\n", ##__VA_ARGS__); fflush(stderr); \
+		} \
+	} while (0)
+
 static void libuv_restore_signal_handler(int signum)
 {
 	if (signum > 0 && signum < NSIG && async_signal_active[signum]) {
+		ASYNC_SIG_TRACE("restore_signal_handler signum=%d (active=true)", signum);
+		async_signal_debug_dump_sigaction(signum, "restore-before");
 		sigaction(signum, &async_saved_sigactions[signum], NULL);
+		async_signal_debug_dump_sigaction(signum, "restore-after");
 		async_signal_active[signum] = false;
+	} else {
+		ASYNC_SIG_TRACE("restore_signal_handler signum=%d skipped (active=%d)", signum,
+				signum > 0 && signum < NSIG ? (int) async_signal_active[signum] : -1);
 	}
 }
+#else
+#define ASYNC_SIG_TRACE(fmt, ...) ((void)0)
+static int async_signal_debug_enabled(void) { return 0; }
+static void async_signal_debug_dump_sigaction(int signum, const char *tag) { (void) signum; (void) tag; }
 #endif
 
 static void libuv_reactor_stop_with_exception(void);
@@ -1293,6 +1332,7 @@ static void libuv_signal_close_cb(uv_handle_t *handle)
 /* {{{ libuv_global_signal_callback */
 static void libuv_global_signal_callback(uv_signal_t *handle, int signum)
 {
+	ASYNC_SIG_TRACE("global_signal_callback signum=%d handle=%p", signum, (void *) handle);
 #ifdef ZEND_SIGNALS
 	/* Forward signal to the Zend handler chain (pcntl, timeout handler, etc.).
 	 * libuv replaced zend_signal_handler_defer with its own sigaction, so Zend
@@ -1326,35 +1366,48 @@ static void libuv_global_signal_callback(uv_signal_t *handle, int signum)
 /* {{{ libuv_get_or_create_signal_handler */
 static uv_signal_t *libuv_get_or_create_signal_handler(int signum)
 {
+	ASYNC_SIG_TRACE("get_or_create signum=%d enter", signum);
+	async_signal_debug_dump_sigaction(signum, "get-enter");
+
 	if (ASYNC_G(signal_handlers) == NULL) {
 		ASYNC_G(signal_handlers) = zend_new_array(0);
 	}
 
 	uv_signal_t *handler = zend_hash_index_find_ptr(ASYNC_G(signal_handlers), signum);
 	if (handler != NULL) {
+		ASYNC_SIG_TRACE("get_or_create signum=%d found existing handler=%p", signum, (void *) handler);
 		return handler;
 	}
 
 	// Create new signal handler
 	handler = pecalloc(1, sizeof(uv_signal_t), 0);
 
+	ASYNC_SIG_TRACE("get_or_create signum=%d allocated handler=%p, calling uv_signal_init",
+			signum, (void *) handler);
 	int error = uv_signal_init(UVLOOP, handler);
 	if (UNEXPECTED(error < 0)) {
 		async_throw_error("Failed to initialize signal handle: %s", uv_strerror(error));
 		pefree(handler, 0);
 		return NULL;
 	}
+	async_signal_debug_dump_sigaction(signum, "after-uv_signal_init");
 
 #ifdef ZEND_SIGNALS
 	/* Save the current sigaction (zend_signal_handler_defer) before libuv
 	 * overwrites it via uv_signal_start() → sigaction(). */
 	if (signum > 0 && signum < NSIG && !async_signal_active[signum]) {
+		ASYNC_SIG_TRACE("get_or_create signum=%d saving sigaction (active=false → true)", signum);
 		sigaction(signum, NULL, &async_saved_sigactions[signum]);
 		async_signal_active[signum] = true;
+	} else {
+		ASYNC_SIG_TRACE("get_or_create signum=%d skipped sigaction-save (active=%d)", signum,
+				signum > 0 && signum < NSIG ? (int) async_signal_active[signum] : -1);
 	}
 #endif
 
+	ASYNC_SIG_TRACE("get_or_create signum=%d calling uv_signal_start", signum);
 	error = uv_signal_start(handler, libuv_global_signal_callback, signum);
+	async_signal_debug_dump_sigaction(signum, "after-uv_signal_start");
 	if (UNEXPECTED(error < 0)) {
 		async_throw_error("Failed to start signal handle: %s", uv_strerror(error));
 		uv_close((uv_handle_t *) handler, libuv_signal_close_cb);
@@ -1411,6 +1464,8 @@ static void libuv_add_signal_event(int signum, zend_async_event_t *event)
 /* {{{ libuv_remove_signal_event */
 static void libuv_remove_signal_event(int signum, zend_async_event_t *event)
 {
+	ASYNC_SIG_TRACE("remove_signal_event signum=%d event=%p", signum, (void *) event);
+
 	if (ASYNC_G(signal_events) == NULL) {
 		return;
 	}
@@ -1421,6 +1476,9 @@ static void libuv_remove_signal_event(int signum, zend_async_event_t *event)
 	}
 
 	zend_hash_index_del(events_list, async_ptr_to_index(event));
+	ASYNC_SIG_TRACE("remove_signal_event signum=%d events_list now has %u entries",
+			signum, zend_hash_num_elements(events_list));
+	async_signal_debug_dump_sigaction(signum, "remove-after-del");
 
 	// If no more events for this signal, remove the handler (but check for process events if SIGCHLD)
 	if (zend_hash_num_elements(events_list) == 0) {
