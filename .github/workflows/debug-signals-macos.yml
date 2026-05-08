@@ -55,12 +55,17 @@ jobs:
             php-src/ext/**/*.lo
             php-src/ext/**/*.la
             php-src/Makefile
+            php-src/Makefile.objects
+            php-src/Makefile.fragments
+            php-src/Makefile.global
+            php-src/libtool
+            php-src/config.nice
             php-src/configure
             php-src/config.status
             php-src/main/php_config.h
             php-src/main/build-defs.h
             php-src/Zend/zend_config.h
-          key: php-debug-zts-${{ steps.cache_key.outputs.php_src_sha }}-v3
+          key: php-debug-zts-${{ steps.cache_key.outputs.php_src_sha }}-v4
 
       - name: Install build dependencies via Homebrew
         run: |
@@ -133,12 +138,17 @@ jobs:
             php-src/ext/**/*.lo
             php-src/ext/**/*.la
             php-src/Makefile
+            php-src/Makefile.objects
+            php-src/Makefile.fragments
+            php-src/Makefile.global
+            php-src/libtool
+            php-src/config.nice
             php-src/configure
             php-src/config.status
             php-src/main/php_config.h
             php-src/main/build-defs.h
             php-src/Zend/zend_config.h
-          key: php-debug-zts-${{ steps.cache_key.outputs.php_src_sha }}-v3
+          key: php-debug-zts-${{ steps.cache_key.outputs.php_src_sha }}-v4
 
       - name: Force-rebuild ext/async (pick up diagnostic instrumentation)
         run: |
