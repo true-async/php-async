@@ -44,7 +44,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: php-build-snapshot.tar
-          key: php-debug-zts-${{ steps.cache_key.outputs.php_src_sha }}-v6
+          key: php-debug-zts-${{ steps.cache_key.outputs.php_src_sha }}-v5
 
       - name: Unpack cached PHP build
         if: steps.cache_restore.outputs.cache-hit == 'true'
@@ -97,7 +97,6 @@ jobs:
             --enable-pcntl \
             --enable-posix \
             --enable-sockets \
-            --with-ffi \
             --enable-debug \
             --enable-zts \
             --enable-async \
@@ -124,7 +123,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: php-build-snapshot.tar
-          key: php-debug-zts-${{ steps.cache_key.outputs.php_src_sha }}-v6
+          key: php-debug-zts-${{ steps.cache_key.outputs.php_src_sha }}-v5
 
       - name: Force-rebuild ext/async (pick up diagnostic instrumentation)
         run: |
@@ -219,27 +218,49 @@ jobs:
                           || echo "RESULT: libuv DID NOT catch SIGUSR1 (exit=$?) — bug is in libuv on macOS"
           echo "===== end pure-libuv repro ====="
 
-      - name: Build sigaction-dump helper
+      - name: Build sigaction interposer (DYLD_INSERT_LIBRARIES)
         run: |
-          cat > /tmp/dump_sig.c <<'EOF'
+          # Use Darwin's dyld interpose mechanism — when DYLD_INSERT_LIBRARIES
+          # points at this dylib, our trace_sigaction() runs in place of libc's
+          # sigaction() for every call in the host process. We then forward to
+          # the real sigaction. This lets us see every sigaction() call with
+          # full PHP backtrace, without any changes to php-src.
+          cat > /tmp/trace_sigaction.c <<'EOF'
           #include <stdio.h>
           #include <signal.h>
-          #include <stdlib.h>
-          int main(int argc, char **argv) {
-              if (argc < 3) { fprintf(stderr, "usage: dump_sig <pid> <signum>\n"); return 2; }
-              int pid = atoi(argv[1]); (void)pid;
-              int signum = atoi(argv[2]);
-              struct sigaction sa;
-              if (sigaction(signum, NULL, &sa) < 0) { perror("sigaction"); return 1; }
-              fprintf(stderr, "[sig-dump] sig=%d handler=%p flags=0x%x\n",
-                      signum, (void*)sa.sa_handler, sa.sa_flags);
-              return 0;
+          #include <execinfo.h>
+          #include <unistd.h>
+          #include <stdint.h>
+
+          static int trace_sigaction(int signum, const struct sigaction *act, struct sigaction *oldact);
+
+          /* Mach-O dyld interpose */
+          struct interpose_t { const void *replacement; const void *original; };
+          __attribute__((used)) static const struct interpose_t interposers[] \
+              __attribute__((section("__DATA,__interpose"))) = {
+                  { (const void *) trace_sigaction, (const void *) sigaction },
+              };
+
+          static int trace_sigaction(int signum, const struct sigaction *act, struct sigaction *oldact) {
+              if (signum == SIGUSR1 || signum == SIGUSR2) {
+                  fprintf(stderr, "[INTERPOSE-SIGACTION] signum=%d", signum);
+                  if (act) {
+                      fprintf(stderr, " new_handler=%p new_flags=0x%x", (void*)act->sa_handler, act->sa_flags);
+                  } else {
+                      fprintf(stderr, " (read-only)");
+                  }
+                  fprintf(stderr, "\n");
+                  void *bt[16];
+                  int n = backtrace(bt, 16);
+                  backtrace_symbols_fd(bt, n, STDERR_FILENO);
+                  fprintf(stderr, "[/INTERPOSE-SIGACTION]\n");
+                  fflush(stderr);
+              }
+              return sigaction(signum, act, oldact);
           }
           EOF
-          cc -O0 -g -o /tmp/dump_sig /tmp/dump_sig.c
-          # Note: sigaction is per-process, so calling it from a CHILD process
-          # gives different state. We need to dump sigaction *inside* the PHP
-          # process. The helper above is only useful for sanity checks.
+          cc -O0 -g -dynamiclib -o /tmp/trace_sigaction.dylib /tmp/trace_sigaction.c
+          file /tmp/trace_sigaction.dylib
 
       # ===== Diagnostic step 2: run failing PHP test with sigaction tracing =====
       - name: Run failing test with diagnostics
@@ -247,6 +268,11 @@ jobs:
         working-directory: php-src
         run: |
           export ASYNC_DEBUG_SIGNALS=1
+          export DYLD_INSERT_LIBRARIES=/tmp/trace_sigaction.dylib
+          # Disable SIP-related env stripping — only matters for system bins;
+          # /usr/local/... should be unaffected, but DYLD_INSERT_LIBRARIES isn't
+          # passed across exec(). We set it just before invoking PHP, no exec
+          # chain in our script.
           # The .phpt SKIPIF skips on Darwin — run the .php directly to bypass
           PHP_FILE=$(mktemp /tmp/sig_test.XXXXXX.php)
           cat > "$PHP_FILE" <<'EOF'
@@ -257,40 +283,17 @@ jobs:
           use function Async\delay;
           use function Async\await_any_or_fail;
 
-          // FFI direct sigaction dump — runs from PHP space, lets us inspect
-          // signal disposition at exactly the moment we choose.
-          $ffi = FFI::cdef("int sigaction(int signum, const void *act, void *oldact);", null);
-
-          function dump_sigaction(FFI $ffi, int $sig, string $tag): void {
-              // Darwin struct sigaction: { union { void* h; void(*sa)() }; uint32_t mask; int flags; }
-              // First 8 bytes are the handler pointer.
-              $buf = FFI::new("uint8_t[32]");
-              $ffi->sigaction($sig, null, FFI::addr($buf));
-              $handler = FFI::cast("uint64_t*", FFI::addr($buf))[0];
-              $flags = FFI::cast("int32_t*", FFI::addr($buf) + 16)[0];
-              fprintf(STDERR, "[php-dump %s] sig=%d handler=0x%x flags=0x%x\n",
-                  $tag, $sig, $handler, $flags);
-          }
-
-          dump_sigaction($ffi, SIGUSR1, "early-main");
-          dump_sigaction($ffi, SIGUSR2, "early-main");
-
-          spawn(function () use ($ffi) {
+          spawn(function () {
               delay(50);
-              dump_sigaction($ffi, SIGUSR1, "child-pre-kill");
-              dump_sigaction($ffi, SIGUSR2, "child-pre-kill");
               fprintf(STDERR, "[php] sending SIGUSR1\n");
               posix_kill(getmypid(), SIGUSR1);
           });
 
           fprintf(STDERR, "[php] before await_any_or_fail\n");
-          $f1 = signal(Signal::SIGUSR1);
-          dump_sigaction($ffi, SIGUSR1, "after-signal1");
-          $f2 = signal(Signal::SIGUSR2);
-          dump_sigaction($ffi, SIGUSR1, "after-signal2");
-          dump_sigaction($ffi, SIGUSR2, "after-signal2");
-
-          $signal = await_any_or_fail([$f1, $f2]);
+          $signal = await_any_or_fail([
+              signal(Signal::SIGUSR1),
+              signal(Signal::SIGUSR2),
+          ]);
           fprintf(STDERR, "[php] got: " . $signal->name . "\n");
           EOF
           echo "===== running failing PHP scenario ====="
