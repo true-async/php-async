@@ -1076,6 +1076,36 @@ typedef struct
 	zend_object *cancellation_obj;
 } async_signal_callback_t;
 
+/* Extra payload appended to zend_future_t for futures returned by Async\signal().
+ * Lets the future's own dispose path (called when the PHP Future object is freed,
+ * e.g. after await_any_or_fail() picks a different signal) tear down the still-armed
+ * signal_event so the libuv reactor can exit. */
+typedef struct
+{
+	zend_async_signal_event_t *signal_event;     /* NULL once signal_event is disposed elsewhere */
+	zend_async_event_dispose_t prev_dispose;     /* original zend_future_dispose */
+} async_signal_future_extra_t;
+
+#define ASYNC_SIGNAL_FUTURE_EXTRA(future) \
+	((async_signal_future_extra_t *) ((char *) (future) + sizeof(zend_future_t)))
+
+static bool async_signal_future_dispose(zend_async_event_t *event)
+{
+	zend_future_t *future = (zend_future_t *) event;
+	async_signal_future_extra_t *extra = ASYNC_SIGNAL_FUTURE_EXTRA(future);
+
+	if (extra->signal_event != NULL) {
+		zend_async_event_t *se = &extra->signal_event->base;
+		extra->signal_event = NULL;
+		if (!ZEND_ASYNC_EVENT_IS_CLOSED(se)) {
+			se->stop(se);
+		}
+		se->dispose(se);
+	}
+
+	return extra->prev_dispose != NULL ? extra->prev_dispose(event) : true;
+}
+
 static void async_signal_callback_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event)
 {
 	async_signal_callback_t *const signal_cb = (async_signal_callback_t *) callback;
@@ -1101,6 +1131,9 @@ static void async_signal_cancellation_callback_fn(zend_async_event_t *event,
 
 	/* Stop and dispose signal event */
 	zend_async_event_t *signal_event = &signal_cb->signal_event->base;
+	/* Clear future-side back-reference first so async_signal_future_dispose()
+	 * doesn't try to dispose an already-freed signal_event. */
+	ASYNC_SIGNAL_FUTURE_EXTRA(signal_cb->future)->signal_event = NULL;
 	signal_cb->signal_event = NULL;
 	signal_event->stop(signal_event);
 	signal_event->dispose(signal_event);
@@ -1163,6 +1196,9 @@ static void async_signal_event_callback_fn(zend_async_event_t *event,
 			OBJ_RELEASE(err);
 		}
 	}
+
+	/* Clear future-side back-reference before disposing signal_event. */
+	ASYNC_SIGNAL_FUTURE_EXTRA(signal_cb->future)->signal_event = NULL;
 
 	/* Dispose signal event */
 	signal_event->dispose(signal_event);
@@ -1230,14 +1266,24 @@ PHP_FUNCTION(Async_signal)
 	signal_cb->base.dispose = async_signal_callback_dispose;
 	signal_cb->signal_event = signal_event;
 
-	/* 3. Create future — if fails, clean up signal event and callback */
-	zend_future_t *const future = async_new_future(false, 0);
+	/* 3. Create future — if fails, clean up signal event and callback.
+	 * Reserve extra space for async_signal_future_extra_t so the future can
+	 * tear down signal_event from its own dispose path (covers the case where
+	 * the Future PHP object is freed before signal/cancellation fired — e.g.
+	 * after await_any_or_fail() picks a different future). */
+	zend_future_t *const future = async_new_future(false, sizeof(async_signal_future_extra_t));
 	if (UNEXPECTED(future == NULL)) {
 		efree(signal_cb);
 		signal_event->base.dispose(&signal_event->base);
 		async_throw_error("Failed to create future for signal");
 		RETURN_THROWS();
 	}
+
+	/* Wire the future-side guard: hold the signal_event and chain dispose. */
+	async_signal_future_extra_t *const future_extra = ASYNC_SIGNAL_FUTURE_EXTRA(future);
+	future_extra->signal_event = signal_event;
+	future_extra->prev_dispose = future->event.dispose;
+	future->event.dispose = async_signal_future_dispose;
 
 	signal_cb->future = future;
 

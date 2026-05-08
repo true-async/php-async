@@ -114,6 +114,29 @@ typedef struct
 	zend_future_t *future;                    /* NULL for coroutine waiter */
 } channel_waiter_t;
 
+/* Extra payload appended to the Future returned by recvAsync().
+ * If the user drops the Future before the channel completes it (e.g. unset(),
+ * await_any_or_fail() picked another Future), zend_future_dispose() runs and
+ * frees the future. The channel's queued waiter still holds a raw pointer to
+ * that future — letting the channel later write to freed memory.
+ *
+ * We override the future's dispose handler so it first removes the waiter
+ * from the channel's queue and releases the waiter's callback ref.
+ *
+ * Channel lifetime is guaranteed: channel_close() rejects every future waiter,
+ * setting ZEND_ASYNC_EVENT_F_CLOSED on the future. Once a future is CLOSED the
+ * waiter has already been popped and the override skips queue cleanup, so we
+ * never deref a freed channel pointer. */
+typedef struct
+{
+	async_channel_t *channel;
+	channel_waiter_t *waiter;
+	zend_async_event_dispose_t prev_dispose;
+} channel_recv_future_extra_t;
+
+#define ASYNC_CHANNEL_RECV_FUTURE_EXTRA(future) \
+	((channel_recv_future_extra_t *) ((char *) (future) + sizeof(zend_future_t)))
+
 ///////////////////////////////////////////////////////////////////////////////
 // Helpers
 ///////////////////////////////////////////////////////////////////////////////
@@ -205,6 +228,31 @@ static bool channel_queue_remove(zend_async_callbacks_vector_t *queue, channel_w
 		}
 	}
 	return false;
+}
+
+static bool channel_recv_future_dispose(zend_async_event_t *event)
+{
+	zend_future_t *future = (zend_future_t *) event;
+	channel_recv_future_extra_t *extra = ASYNC_CHANNEL_RECV_FUTURE_EXTRA(future);
+
+	/* Only act if the channel hasn't already drained this waiter. The CLOSED
+	 * flag is set by zend_future_resolve(), which is called from
+	 * channel_wake_receiver() / channel_wake_all() right after the waiter is
+	 * popped from the queue — so !IS_CLOSED reliably means the waiter is still
+	 * queued and the channel is still alive. */
+	if (!ZEND_ASYNC_EVENT_IS_CLOSED(event) && extra->waiter != NULL && extra->channel != NULL) {
+		channel_waiter_t *waiter = extra->waiter;
+		async_channel_t *channel = extra->channel;
+		extra->waiter = NULL;
+
+		if (channel_queue_remove(&channel->waiting_receivers, waiter)) {
+			channel->channel.event.del_callback(&channel->channel.event, &waiter->callback.base);
+			/* Drop the queue's ref on the waiter; this frees it when ref_count hits 0. */
+			ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
+		}
+	}
+
+	return extra->prev_dispose != NULL ? extra->prev_dispose(event) : true;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -954,10 +1002,18 @@ METHOD(recvAsync)
 
 	async_channel_t *channel = THIS_CHANNEL;
 
-	zend_future_t *future = ZEND_ASYNC_NEW_FUTURE(false);
+	/* Reserve extra space so the future can clean up its queued waiter from
+	 * its own dispose path — see channel_recv_future_dispose() above. */
+	zend_future_t *future = ZEND_ASYNC_NEW_FUTURE_EX(false, sizeof(channel_recv_future_extra_t));
 	if (future == NULL) {
 		RETURN_THROWS();
 	}
+
+	channel_recv_future_extra_t *future_extra = ASYNC_CHANNEL_RECV_FUTURE_EXTRA(future);
+	future_extra->channel = channel;
+	future_extra->waiter = NULL;
+	future_extra->prev_dispose = future->event.dispose;
+	future->event.dispose = channel_recv_future_dispose;
 
 	if (!channel_is_empty(channel)) {
 		zval result;
@@ -986,6 +1042,7 @@ METHOD(recvAsync)
 		waiter->future = future;
 
 		channel_queue_push(&channel->waiting_receivers, waiter);
+		future_extra->waiter = waiter; /* arm future-side cleanup */
 		ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base); /* Release our ref, queue holds one */
 	}
 
