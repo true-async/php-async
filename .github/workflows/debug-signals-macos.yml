@@ -259,7 +259,9 @@ jobs:
               return sigaction(signum, act, oldact);
           }
           EOF
-          cc -O0 -g -dynamiclib -o /tmp/trace_sigaction.dylib /tmp/trace_sigaction.c
+          # PHP binary on macos-14 runner is built arm64e — match it.
+          cc -O0 -g -arch arm64e -dynamiclib -o /tmp/trace_sigaction.dylib /tmp/trace_sigaction.c \
+              || cc -O0 -g -dynamiclib -o /tmp/trace_sigaction.dylib /tmp/trace_sigaction.c
           file /tmp/trace_sigaction.dylib
 
       # ===== Diagnostic step 2: run failing PHP test with sigaction tracing =====
