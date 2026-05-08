@@ -1266,8 +1266,21 @@ final class Channel implements Awaitable, \IteratorAggregate, \Countable
      * Create a new Channel.
      *
      * @param int $capacity 0 = unbuffered; >0 = bounded buffer size.
+     * @param int $noProducerTimeout Deadlock timeout (ms) while a receiver is
+     *     blocked and no senders are queued. 0 = disabled (default).
+     * @param int $noConsumerTimeout Deadlock timeout (ms) while a sender is
+     *     blocked and no receivers are queued. 0 = disabled (default).
+     * @param bool $hardTimeouts If false (default), the timer is hidden from
+     *     the event loop (does not keep it alive); a global resolver may close
+     *     the channel sooner. If true, the timer is a real event keeping the
+     *     loop alive until it fires.
      */
-    public function __construct(int $capacity = 0) {}
+    public function __construct(
+        int $capacity = 0,
+        int $noProducerTimeout = 0,
+        int $noConsumerTimeout = 0,
+        bool $hardTimeouts = false,
+    ) {}
 
     /**
      * Send a value into the channel (blocking).
