@@ -17,8 +17,10 @@ echo "start\n";
 
 $future = signal(Signal::SIGUSR1);
 
+// Use the PHP-level SIGUSR1 constant (native value, platform-correct) rather
+// than Signal::SIGUSR1->value, which is hardcoded to the Linux number.
 spawn(function() {
-    posix_kill(getmypid(), Signal::SIGUSR1->value);
+    posix_kill(getmypid(), SIGUSR1);
 });
 
 $result = await($future);

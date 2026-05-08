@@ -319,4 +319,49 @@ static zend_always_inline zend_ulong async_ptr_to_index(void *ptr)
 	return (key >> 3) | (key << ((sizeof(key) * 8) - 3));
 }
 
+/**
+ * Async\Signal enum portability shims.
+ *
+ * The Async\Signal enum (async.stub.php) backs each case with the Linux
+ * signal number — those literals are baked into async_arginfo.h at compile
+ * time and PHP backed-enum values cannot be platform-conditional.
+ *
+ * Most signal numbers (HUP, INT, QUIT, ILL, ABRT, FPE, KILL, SEGV, TERM,
+ * WINCH) match across Linux, Darwin and FreeBSD. SIGUSR1 and SIGUSR2 do
+ * NOT — Linux uses 10/12, Darwin/FreeBSD use 30/31. Without translation,
+ * Async\signal(Signal::SIGUSR1) on macOS would arm the libuv watcher on
+ * signum 10 (== SIGBUS on Darwin), and a real SIGUSR1 (30) would slip past
+ * to PHP's zend_signal_handler_defer, which terminates the process when
+ * no userland handler is registered.
+ *
+ * These two inline helpers translate between the enum's Linux numbering
+ * (used as PHP-visible values) and the OS-native numbers used by libuv /
+ * sigaction. On Linux both are identity.
+ */
+#include <signal.h>
+
+static zend_always_inline int async_signum_enum_to_native(int linux_signum)
+{
+#if defined(__linux__)
+	return linux_signum;
+#else
+	switch (linux_signum) {
+		case 10: return SIGUSR1;   /* Linux 10 → Darwin/BSD 30 */
+		case 12: return SIGUSR2;   /* Linux 12 → Darwin/BSD 31 */
+		default: return linux_signum;
+	}
+#endif
+}
+
+static zend_always_inline int async_signum_native_to_enum(int native_signum)
+{
+#if defined(__linux__)
+	return native_signum;
+#else
+	if (native_signum == SIGUSR1) return 10;
+	if (native_signum == SIGUSR2) return 12;
+	return native_signum;
+#endif
+}
+
 #endif // ASYNC_ZEND_COMMON_H

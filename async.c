@@ -1181,17 +1181,19 @@ static void async_signal_event_callback_fn(zend_async_event_t *event,
 	if (UNEXPECTED(exception != NULL)) {
 		ZEND_FUTURE_REJECT(signal_cb->future, exception);
 	} else {
-		/* Resolve with Signal enum case */
-		const int signum = signal_cb->signal_event->signal;
+		/* Resolve with Signal enum case — translate native signum back to the
+		 * Linux numbering the enum is keyed on. */
+		const int native_signum = signal_cb->signal_event->signal;
+		const int enum_signum = async_signum_native_to_enum(native_signum);
 		zend_object *enum_case = NULL;
 
-		if (EXPECTED(zend_enum_get_case_by_value(&enum_case, async_ce_signal, (zend_long) signum, NULL, false) ==
+		if (EXPECTED(zend_enum_get_case_by_value(&enum_case, async_ce_signal, (zend_long) enum_signum, NULL, false) ==
 					 SUCCESS)) {
 			zval result_zval;
 			ZVAL_OBJ(&result_zval, enum_case);
 			ZEND_FUTURE_COMPLETE(signal_cb->future, &result_zval);
 		} else {
-			zend_object *err = async_new_exception(NULL, "Unknown signal number: %d", signum);
+			zend_object *err = async_new_exception(NULL, "Unknown signal number: %d", native_signum);
 			ZEND_FUTURE_REJECT(signal_cb->future, err);
 			OBJ_RELEASE(err);
 		}
@@ -1218,9 +1220,11 @@ PHP_FUNCTION(Async_signal)
 
 	SCHEDULER_LAUNCH;
 
-	/* Extract backing int value from Signal enum */
+	/* Extract backing int value from Signal enum and translate to the OS-native
+	 * signal number — the enum bakes Linux numbers; SIGUSR1/SIGUSR2 differ on
+	 * Darwin/FreeBSD. See async_signum_enum_to_native() in zend_common.h. */
 	const zval *backing_value = zend_enum_fetch_case_value(signal_enum);
-	const int signum = (int) Z_LVAL_P(backing_value);
+	const int signum = async_signum_enum_to_native((int) Z_LVAL_P(backing_value));
 
 	/* If cancellation is already completed, return a rejected Future */
 	if (cancellation != NULL) {
