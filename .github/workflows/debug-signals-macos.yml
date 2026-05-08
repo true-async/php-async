@@ -243,16 +243,20 @@ jobs:
 
           static int trace_sigaction(int signum, const struct sigaction *act, struct sigaction *oldact) {
               if (signum == SIGUSR1 || signum == SIGUSR2) {
+                  void *ra0 = __builtin_return_address(0);
+                  void *ra1 = __builtin_extract_return_addr(__builtin_return_address(1));
+                  void *ra2 = __builtin_extract_return_addr(__builtin_return_address(2));
                   fprintf(stderr, "[INTERPOSE-SIGACTION] signum=%d", signum);
                   if (act) {
                       fprintf(stderr, " new_handler=%p new_flags=0x%x", (void*)act->sa_handler, act->sa_flags);
                   } else {
                       fprintf(stderr, " (read-only)");
                   }
-                  fprintf(stderr, "\n");
+                  fprintf(stderr, " caller=%p caller_caller=%p caller_x2=%p\n", ra0, ra1, ra2);
+                  /* Try backtrace() too — some contexts have working frame pointers */
                   void *bt[16];
                   int n = backtrace(bt, 16);
-                  backtrace_symbols_fd(bt, n, STDERR_FILENO);
+                  if (n > 0) backtrace_symbols_fd(bt, n, STDERR_FILENO);
                   fprintf(stderr, "[/INTERPOSE-SIGACTION]\n");
                   fflush(stderr);
               }
