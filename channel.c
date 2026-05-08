@@ -838,8 +838,8 @@ static zend_object_iterator *channel_get_iterator(zend_class_entry *ce, zval *ob
 METHOD(__construct)
 {
 	zend_long capacity = 0;
-	zend_long no_producer_timeout = 5000;
-	zend_long no_consumer_timeout = 5000;
+	zend_long no_producer_timeout = 0;
+	zend_long no_consumer_timeout = 0;
 	bool hard_timeouts = false;
 
 	ZEND_PARSE_PARAMETERS_START(0, 4)

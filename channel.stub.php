@@ -45,10 +45,10 @@ final class Channel implements Awaitable, \IteratorAggregate, \Countable
      *  >0  = bounded buffer
      * @param int $noProducerTimeout
      *   Deadlock timeout (ms) while at least one receiver is blocked waiting
-     *   for data. 0 = disabled. Default 5000.
+     *   for data. 0 = disabled (default).
      * @param int $noConsumerTimeout
      *   Deadlock timeout (ms) while at least one sender is blocked waiting
-     *   for space. 0 = disabled. Default 5000.
+     *   for space. 0 = disabled (default).
      * @param bool $hardTimeouts
      *   false (default): timers are hidden from the event loop — they do not
      *   keep the loop alive on their own; the global deadlock resolver is
@@ -57,8 +57,8 @@ final class Channel implements Awaitable, \IteratorAggregate, \Countable
      */
     public function __construct(
         int $capacity = 0,
-        int $noProducerTimeout = 5000,
-        int $noConsumerTimeout = 5000,
+        int $noProducerTimeout = 0,
+        int $noConsumerTimeout = 0,
         bool $hardTimeouts = false,
     ) {}
 

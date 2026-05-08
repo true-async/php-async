@@ -1,10 +1,10 @@
 /* This is a generated file, edit channel.stub.php instead.
- * Stub hash: 4a9b8d21c826adbfa5ee050d0b9a65a49781f29b */
+ * Stub hash: ae7f8892c84ce03165caca0a9bdfdfe230cfb548 */
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Async_Channel___construct, 0, 0, 0)
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, capacity, IS_LONG, 0, "0")
-	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, noProducerTimeout, IS_LONG, 0, "5000")
-	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, noConsumerTimeout, IS_LONG, 0, "5000")
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, noProducerTimeout, IS_LONG, 0, "0")
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, noConsumerTimeout, IS_LONG, 0, "0")
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, hardTimeouts, _IS_BOOL, 0, "false")
 ZEND_END_ARG_INFO()
 
