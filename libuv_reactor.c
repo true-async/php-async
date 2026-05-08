@@ -1414,6 +1414,20 @@ static uv_signal_t *libuv_get_or_create_signal_handler(int signum)
 		return NULL;
 	}
 
+	/* Cross-check: dump sigaction for ALL previously registered signums.
+	 * If registering this signum somehow reverted another's handler, the
+	 * dump will show it. */
+	if (async_signal_debug_enabled()) {
+		uv_signal_t *other;
+		ZEND_HASH_FOREACH_PTR(ASYNC_G(signal_handlers), other) {
+			if (other != NULL && other->signum != signum) {
+				char tag[48];
+				snprintf(tag, sizeof(tag), "cross-after-start%d", signum);
+				async_signal_debug_dump_sigaction(other->signum, tag);
+			}
+		} ZEND_HASH_FOREACH_END();
+	}
+
 	if (UNEXPECTED(zend_hash_index_add_ptr(ASYNC_G(signal_handlers), signum, handler) == NULL)) {
 		async_throw_error("Failed to store signal handler");
 		uv_signal_stop(handler);
