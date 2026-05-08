@@ -1382,7 +1382,12 @@ static bool async_thread_check_op_array(zend_op_array *op_array)
 		}
 	}
 
-	op_array->fn_flags2 |= ASYNC_FN_FLAG_THREAD_TRANSFER_OK;
+	/* OPcache puts immutable op_arrays into read-only shared memory; mutating
+	 * fn_flags2 there SEGVs. Re-scanning them is cheap (linear opcode walk,
+	 * no allocations), so we just skip the cache write. */
+	if (!(op_array->fn_flags & ZEND_ACC_IMMUTABLE)) {
+		op_array->fn_flags2 |= ASYNC_FN_FLAG_THREAD_TRANSFER_OK;
+	}
 	return true;
 }
 
