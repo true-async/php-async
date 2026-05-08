@@ -154,6 +154,7 @@ jobs:
 
       # ===== Diagnostic step 1: pure libuv repro (no PHP) =====
       - name: Build & run libuv-only multi-signum test
+        timeout-minutes: 1
         run: |
           cat > /tmp/libuv_signal_repro.c <<'EOF'
           #include <stdio.h>
@@ -162,9 +163,18 @@ jobs:
           #include <string.h>
           #include <uv.h>
 
+          static uv_signal_t s1, s2;
+          static uv_timer_t kill_timer, exit_timer;
+          static int caught_signum = 0;
+
           static void on_signal(uv_signal_t *h, int signum) {
               fprintf(stderr, "[uv] caught signum=%d\n", signum);
-              uv_signal_stop(h);
+              caught_signum = signum;
+              /* Stop BOTH watchers so the loop can exit */
+              uv_signal_stop(&s1);
+              uv_signal_stop(&s2);
+              uv_timer_stop(&kill_timer);
+              uv_timer_stop(&exit_timer);
           }
 
           static void dump_sigaction(int sig, const char *tag) {
@@ -178,12 +188,18 @@ jobs:
               fprintf(stderr, "[timer] sending SIGUSR1\n");
               dump_sigaction(SIGUSR1, "before-kill");
               kill(getpid(), SIGUSR1);
+          }
+
+          static void exit_guard(uv_timer_t *t) {
+              fprintf(stderr, "[exit-guard] timeout — signal never delivered to libuv (caught_signum=%d)\n", caught_signum);
+              uv_signal_stop(&s1);
+              uv_signal_stop(&s2);
+              uv_timer_stop(&kill_timer);
               uv_timer_stop(t);
           }
 
           int main(void) {
               uv_loop_t *loop = uv_default_loop();
-              uv_signal_t s1, s2;
 
               fprintf(stderr, "[main] init s1 SIGUSR1\n");
               uv_signal_init(loop, &s1);
@@ -194,27 +210,31 @@ jobs:
               fprintf(stderr, "[main] init s2 SIGUSR2\n");
               uv_signal_init(loop, &s2);
               uv_signal_start(&s2, on_signal, SIGUSR2);
-              dump_sigaction(SIGUSR1, "after-start2");
+              dump_sigaction(SIGUSR1, "after-start2-u1");
               dump_sigaction(SIGUSR2, "after-start2-u2");
 
-              uv_timer_t t;
-              uv_timer_init(loop, &t);
-              uv_timer_start(&t, after_kill, 100, 0);
+              uv_timer_init(loop, &kill_timer);
+              uv_timer_start(&kill_timer, after_kill, 100, 0);
+
+              uv_timer_init(loop, &exit_timer);
+              uv_timer_start(&exit_timer, exit_guard, 3000, 0);
 
               fprintf(stderr, "[main] uv_run\n");
               int r = uv_run(loop, UV_RUN_DEFAULT);
-              fprintf(stderr, "[main] uv_run returned %d\n", r);
-              return 0;
+              fprintf(stderr, "[main] uv_run returned %d, caught_signum=%d\n", r, caught_signum);
+              return caught_signum == SIGUSR1 ? 0 : 1;
           }
           EOF
           BREW_OPT="$(brew --prefix)/opt"
           cc -g -O0 -I$BREW_OPT/libuv/include -L$BREW_OPT/libuv/lib -luv -o /tmp/libuv_repro /tmp/libuv_signal_repro.c
           echo "===== running pure-libuv repro ====="
-          /tmp/libuv_repro || echo "[exit-code: $?]"
+          /tmp/libuv_repro && echo "RESULT: libuv caught SIGUSR1 — pure libuv path works" \
+                          || echo "RESULT: libuv DID NOT catch SIGUSR1 (exit=$?) — bug is in libuv on macOS"
           echo "===== end pure-libuv repro ====="
 
       # ===== Diagnostic step 2: run failing PHP test with sigaction tracing =====
       - name: Run failing test with diagnostics
+        timeout-minutes: 1
         working-directory: php-src
         run: |
           export ASYNC_DEBUG_SIGNALS=1
@@ -242,5 +262,20 @@ jobs:
           fprintf(STDERR, "[php] got: " . $signal->name . "\n");
           EOF
           echo "===== running failing PHP scenario ====="
-          ./sapi/cli/php "$PHP_FILE" 2>&1 || echo "[exit-code: $?]"
+          # Wrap in `timeout` so we never block the workflow if the script hangs.
+          # macOS doesn't ship `timeout`; use a bash kill-after-N pattern.
+          ( ./sapi/cli/php "$PHP_FILE" 2>&1 ) &
+          pid=$!
+          ( sleep 10; kill -TERM $pid 2>/dev/null ) &
+          watchdog=$!
+          wait $pid
+          ec=$?
+          kill $watchdog 2>/dev/null || true
+          echo "[exit-code: $ec]"
+          case $ec in
+            0)   echo "RESULT: PHP path works on this machine" ;;
+            138) echo "RESULT: PHP killed by SIGUSR1 default handler — libuv handler not in effect at delivery time" ;;
+            124) echo "RESULT: PHP hung — signal never delivered or libuv loop stalled" ;;
+            *)   echo "RESULT: unexpected exit ($ec)" ;;
+          esac
           echo "===== end failing PHP scenario ====="
