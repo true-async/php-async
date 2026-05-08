@@ -44,7 +44,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: php-build-snapshot.tar
-          key: php-debug-zts-${{ steps.cache_key.outputs.php_src_sha }}-v5
+          key: php-debug-zts-${{ steps.cache_key.outputs.php_src_sha }}-v6
 
       - name: Unpack cached PHP build
         if: steps.cache_restore.outputs.cache-hit == 'true'
@@ -97,6 +97,7 @@ jobs:
             --enable-pcntl \
             --enable-posix \
             --enable-sockets \
+            --with-ffi \
             --enable-debug \
             --enable-zts \
             --enable-async \
@@ -123,7 +124,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: php-build-snapshot.tar
-          key: php-debug-zts-${{ steps.cache_key.outputs.php_src_sha }}-v5
+          key: php-debug-zts-${{ steps.cache_key.outputs.php_src_sha }}-v6
 
       - name: Force-rebuild ext/async (pick up diagnostic instrumentation)
         run: |
@@ -217,6 +218,28 @@ jobs:
           /tmp/libuv_repro && echo "RESULT: libuv caught SIGUSR1 — pure libuv path works" \
                           || echo "RESULT: libuv DID NOT catch SIGUSR1 (exit=$?) — bug is in libuv on macOS"
           echo "===== end pure-libuv repro ====="
+
+      - name: Build sigaction-dump helper
+        run: |
+          cat > /tmp/dump_sig.c <<'EOF'
+          #include <stdio.h>
+          #include <signal.h>
+          #include <stdlib.h>
+          int main(int argc, char **argv) {
+              if (argc < 3) { fprintf(stderr, "usage: dump_sig <pid> <signum>\n"); return 2; }
+              int pid = atoi(argv[1]); (void)pid;
+              int signum = atoi(argv[2]);
+              struct sigaction sa;
+              if (sigaction(signum, NULL, &sa) < 0) { perror("sigaction"); return 1; }
+              fprintf(stderr, "[sig-dump] sig=%d handler=%p flags=0x%x\n",
+                      signum, (void*)sa.sa_handler, sa.sa_flags);
+              return 0;
+          }
+          EOF
+          cc -O0 -g -o /tmp/dump_sig /tmp/dump_sig.c
+          # Note: sigaction is per-process, so calling it from a CHILD process
+          # gives different state. We need to dump sigaction *inside* the PHP
+          # process. The helper above is only useful for sanity checks.
 
       # ===== Diagnostic step 2: run failing PHP test with sigaction tracing =====
       - name: Run failing test with diagnostics
