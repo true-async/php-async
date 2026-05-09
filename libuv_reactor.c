@@ -4911,8 +4911,25 @@ static bool libuv_io_close(zend_async_io_t *io_base)
 		io->handle.udp.data = io;
 		ZEND_ASYNC_EVENT_ADD_REF(&io->base.event);
 		uv_close((uv_handle_t *) &io->handle.udp, io_close_cb);
+	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_FILE && io->crt_fd >= 0) {
+		/* FILE type has no uv_handle_t to uv_close. The crt_fd was opened
+		 * by libuv_fs_open (or assigned externally) and must be released
+		 * here, otherwise every fs_open leaks one fd until EMFILE.
+		 *
+		 * close(2) on a regular file is a no-I/O syscall (just an
+		 * inode-refcount decrement and an fd-table slot release). On NFS
+		 * the inode refcount drop can stat-and-flush — that is the same
+		 * cost the user would pay anyway in a uv_fs_close, except now
+		 * there is no async machinery and no pending callback to keep
+		 * the io struct alive past pefree. uv_fs_close with sync mode
+		 * (NULL cb) goes through the same code path on POSIX. Pre-empt
+		 * Windows weirdness by using uv_fs_close synchronously, which
+		 * also lets libuv translate any HANDLE-vs-fd quirk. */
+		uv_fs_t close_req;
+		uv_fs_close(NULL, &close_req, io->crt_fd, NULL);
+		uv_fs_req_cleanup(&close_req);
+		io->crt_fd = -1;
 	}
-	/* FILE type: no uv handle to close. */
 
 close_orig_fd:
 	/* Close the original stdio fd that was dup'd in libuv_io_create,
