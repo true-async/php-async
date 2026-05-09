@@ -770,7 +770,8 @@ bool async_coroutine_resume(zend_coroutine_t *coroutine, zend_object *error, con
 {
 	zend_async_waker_t *waker = coroutine->waker;
 
-	if (UNEXPECTED(waker == NULL || waker->status == ZEND_ASYNC_WAKER_NO_STATUS)) {
+	if (UNEXPECTED(waker == NULL ||
+				(waker->status == ZEND_ASYNC_WAKER_NO_STATUS && !ZEND_ASYNC_SCHEDULER_CONTEXT))) {
 		async_throw_error("Cannot resume a coroutine that has not been suspended");
 		return false;
 	}
@@ -811,8 +812,11 @@ bool async_coroutine_resume(zend_coroutine_t *coroutine, zend_object *error, con
 	// There is no point in returning it to the queue,
 	// we will execute it immediately!
 	if (UNEXPECTED(in_scheduler_context && coroutine == ZEND_ASYNC_CURRENT_COROUTINE)) {
+		const bool was_waiting = waker->status != ZEND_ASYNC_WAKER_NO_STATUS;
 		waker->status = ZEND_ASYNC_WAKER_RESULT;
-		ZEND_ASYNC_WAKER_CLEAN_EVENTS(coroutine->waker);
+		if (was_waiting) {
+			ZEND_ASYNC_WAKER_CLEAN_EVENTS(coroutine->waker);
+		}
 		return true;
 	}
 

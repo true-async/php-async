@@ -2064,6 +2064,33 @@ static void op_array_to_emalloc(zend_op_array *op_array)
 			ZSTR_VAL(op_array->doc_comment), ZSTR_LEN(op_array->doc_comment), 0);
 	}
 
+	/* dynamic_func_defs — outer closures with nested function/closure
+	 * definitions point into the snapshot's arena via dynamic_func_defs[i].
+	 * Without an emalloc-side copy, async_thread_snapshot_destroy frees those
+	 * nested op_arrays and the next destroy_op_array() (e.g. when the holder
+	 * closure is freed at request shutdown) walks dangling pointers and
+	 * triggers heap corruption. Recursively rebuild each nested op_array on
+	 * the worker's heap so the loaded closure is fully self-contained. */
+	if (op_array->num_dynamic_func_defs) {
+		/* Lay out the pointer table and the op_array structs in a single
+		 * allocation so destroy_op_array's `efree(dynamic_func_defs)`
+		 * releases everything. destroy_op_array calls destroy_op_array on
+		 * each dynamic_func_defs[i] (frees its internals) but never frees
+		 * the function struct itself — we cannot rely on it doing so. */
+		const uint32_t n = op_array->num_dynamic_func_defs;
+		const size_t ptrs_size = n * sizeof(zend_op_array *);
+		zend_op_array **new_defs = (zend_op_array **) emalloc(ptrs_size + n * sizeof(zend_op_array));
+		zend_op_array *bodies = (zend_op_array *)((char *) new_defs + ptrs_size);
+		for (uint32_t i = 0; i < n; i++) {
+			zend_op_array *src = op_array->dynamic_func_defs[i];
+			memcpy(&bodies[i], src, sizeof(zend_op_array));
+			bodies[i].fn_flags &= ~ZEND_ACC_IMMUTABLE;
+			op_array_to_emalloc(&bodies[i]);
+			new_defs[i] = &bodies[i];
+		}
+		op_array->dynamic_func_defs = new_defs;
+	}
+
 	/* Keep ZEND_ACC_DONE_PASS_TWO set: destroy_op_array() uses it to know
 	 * that literals are embedded in the opcodes allocation and skips the
 	 * separate efree(literals) call. */

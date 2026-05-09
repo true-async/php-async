@@ -547,6 +547,14 @@ static zend_result await_iterator_handler(async_iterator_t *iterator, zval *curr
 		return FAILURE;
 	}
 
+	/* Intentionally raw ecalloc here, NOT zend_async_coroutine_callback_new:
+	 * this handler runs inside iterator_coroutine while the awaiter is
+	 * waiting_coroutine. With coroutine pre-bound, a synchronous REPLAY of
+	 * an already-closed event would call RESUME(waiting_coroutine) from
+	 * iterator_coroutine — current != target → short path skipped, full
+	 * enqueue runs and the awaiter may wake before the iterator finishes
+	 * the rest of the elements. Leaving callback->coroutine == NULL keeps
+	 * the existing "no resume on closed in iterator path" behaviour. */
 	async_await_callback_t *callback = ecalloc(1, sizeof(async_await_callback_t));
 	callback->callback.base.callback = async_waiting_callback;
 	async_await_context_t *await_context = await_iterator->await_context;
@@ -826,8 +834,9 @@ static void async_cancel_awaited_futures(async_await_context_t *await_context, H
 			continue;
 		}
 
-		async_await_callback_t *callback = ecalloc(1, sizeof(async_await_callback_t));
-		callback->callback.base.callback = async_waiting_cancellation_callback;
+		async_await_callback_t *callback = (async_await_callback_t *)
+			zend_async_coroutine_callback_new(this_coroutine,
+				async_waiting_cancellation_callback, sizeof(async_await_callback_t));
 		callback->await_context = await_context;
 
 		ZEND_ASYNC_EVENT_SET_RESULT_USED(awaitable);
@@ -990,8 +999,9 @@ void async_await_futures(zval *iterable,
 				continue;
 			}
 
-			async_await_callback_t *callback = ecalloc(1, sizeof(async_await_callback_t));
-			callback->callback.base.callback = async_waiting_callback;
+			async_await_callback_t *callback = (async_await_callback_t *)
+				zend_async_coroutine_callback_new(coroutine, async_waiting_callback,
+					sizeof(async_await_callback_t));
 			callback->await_context = await_context;
 
 			ZEND_ASYNC_EVENT_SET_RESULT_USED(awaitable);
@@ -1023,7 +1033,12 @@ void async_await_futures(zval *iterable,
 			if (ZEND_ASYNC_EVENT_IS_CLOSED(awaitable)) {
 				callback->callback.base.dispose = async_waiting_callback_dispose;
 				await_context->ref_count++;
+
+				bool *in_scheduler_context = &ZEND_ASYNC_SCHEDULER_CONTEXT;
+				const bool prev_in_scheduler_context = *in_scheduler_context;
+				*in_scheduler_context = true;
 				ZEND_ASYNC_EVENT_REPLAY(awaitable, &callback->callback.base);
+				*in_scheduler_context = prev_in_scheduler_context;
 
 				if (AWAIT_ITERATOR_IS_FINISHED(await_context)) {
 					break;
@@ -1092,6 +1107,16 @@ void async_await_futures(zval *iterable,
 			// because it now belongs to the coroutine and must be destroyed there.
 			return;
 		}
+	}
+
+	/* Drain any error queued by a synchronous-REPLAY short-path resume
+	 * (in_scheduler_context branch in async_coroutine_resume) so the
+	 * exception is not silently dropped by zend_async_waker_clean. Mirrors
+	 * the scheduler's "resuming:" rethrow at scheduler.c. */
+	if (coroutine->waker->error != NULL) {
+		zend_object *error = coroutine->waker->error;
+		coroutine->waker->error = NULL;
+		async_rethrow_exception(error);
 	}
 
 	if (coroutine->waker->events.nNumOfElements > 0) {
