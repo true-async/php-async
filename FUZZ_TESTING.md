@@ -69,7 +69,7 @@ code and a real server. Configurable "toxics" applied per test:
 
 For scenarios Toxiproxy cannot model (malformed payloads, accept-then-RST,
 garbage responses, never-reads-sockets peer), a 30-line in-process PHP
-EvilPeer under `tests/chaos/_peers/evil-peer.php` serves the same role with a
+EvilPeer under `fuzzy_tests/_peers/evil-peer.php` serves the same role with a
 seeded fault table.
 
 ### Layer 3 — Runtime-internal I/O hooks
@@ -134,25 +134,28 @@ specific bug class starts recurring.
 
 ## Directory layout
 
-A **separate directory** `ext/async/tests/chaos/` is recommended, not a
-separate top-level folder:
+Chaos tests live in a **dedicated `fuzzy_tests/` directory next to `tests/`**,
+not under it — they have a different runtime contract (see Rationale below):
 
 ```
-ext/async/tests/
-├── await/                     # existing functional phpt
-├── channel/
-├── ...                        # (existing)
-└── chaos/                     # new
+ext/async/
+├── tests/                     # existing deterministic phpt (run per-PR)
+│   ├── await/
+│   ├── channel/
+│   └── ...
+└── fuzzy_tests/               # chaos / fuzz / property tests
     ├── README.md              # how to run, seed conventions
-    ├── _peers/
-    │   └── evil-peer.php      # in-process malformed-peer server
-    ├── _harness/
-    │   ├── toxiproxy.inc      # start/stop helper
-    │   └── seed_matrix.inc    # iterate test × seed
-    ├── scheduler/             # tests that ONLY make sense with ASYNC_SCHED≠fifo
-    ├── io/                    # tests targeting Toxiproxy + EvilPeer
-    ├── cancellation/          # cancel-during-X races
-    └── fault_injection/       # allocator faults, signal injection
+    ├── _harness/              # Scenario model, generator, helpers
+    │   └── Scenario.php
+    ├── _peers/                # (future) in-process malformed peers
+    │   └── evil-peer.php
+    ├── 001-*.phpt             # static chaos tests
+    ├── 002-*.phpt             # auto-generated through Scenario harness
+    ├── scheduler/             # (future) tests that ONLY make sense with
+    │                          #         TRUE_ASYNC_SCHED≠fifo
+    ├── io/                    # (future) Toxiproxy + EvilPeer driven
+    ├── cancellation/          # (future) cancel-during-X races
+    └── fault_injection/       # (future) allocator faults, signal injection
 ```
 
 Rationale:
@@ -168,7 +171,7 @@ Rationale:
    nightly with aggregated reporting (`N seeds passed / M failed / which`).
 5. **Reuse, not duplication.** The most important chaos coverage comes from
    running **existing** phpt tests under chaos modes, not from writing new
-   tests. `ext/async/tests/chaos/` is for tests that specifically assert
+   tests. `ext/async/fuzzy_tests/` is for tests that specifically assert
    chaos-mode behaviour (e.g. "refcount is zero after forced cancellation").
 
 ## Build flag
@@ -225,7 +228,7 @@ ASYNC_FUZZ_SEED=0x3f9a2b17cd88e401   test=ext/async/tests/channel/drain.phpt
 ```
 
 Re-running with the same seed and the same binary reproduces the failure.
-Failing seeds are appended to `ext/async/tests/chaos/_failed_seeds.txt` (not
+Failing seeds are appended to `ext/async/fuzzy_tests/_failed_seeds.txt` (not
 checked into git) for local triage, and uploaded as a CI artifact.
 
 ## CI tiers
@@ -363,7 +366,7 @@ We build it ourselves. Scope is small:
    `Chaos::refcount($obj)`, `Chaos::noLeak()`. Checked after every permutation.
 
 This is a few hundred lines of PHP plus a thin C hook. Lives under
-`tests/chaos/_harness/` alongside the seed-matrix runner.
+`fuzzy_tests/_harness/` alongside the seed-matrix runner.
 
 ### What this gives us
 
