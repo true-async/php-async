@@ -398,6 +398,56 @@ final class StandardSteps {
                 });
             });
 
+        // Given scope "S" has an exception handler
+        $r->on('/^scope "([^"]+)" has an exception handler$/',
+            function(Context $ctx, string $scope) {
+                $ctx->defineScope($scope);
+                $ctx->scopeExceptionHandler[$scope] = true;
+            });
+
+        // Given scope "S" has a finally handler
+        $r->on('/^scope "([^"]+)" has a finally handler$/',
+            function(Context $ctx, string $scope) {
+                $ctx->defineScope($scope);
+                $ctx->scopeFinally[$scope] = true;
+            });
+
+        // When coroutine "X" disposes scope "S"
+        $r->on('/^coroutine "([^"]+)" disposes scope "([^"]+)"$/',
+            function(Context $ctx, string $caller, string $scope) {
+                $ctx->planAction($caller, function(Context $ctx) use ($scope) {
+                    $ctx->inc('scope_dispose_attempts');
+                    if (!isset($ctx->scopes[$scope])) {
+                        $ctx->inc('scope_dispose_target_missing');
+                        return;
+                    }
+                    try {
+                        $ctx->scopes[$scope]->dispose();
+                        $ctx->inc("scope_disposed_$scope");
+                    } catch (\Throwable $e) {
+                        $ctx->inc('scope_dispose_threw');
+                    }
+                });
+            });
+
+        // When coroutine "X" disposes safely scope "S"
+        $r->on('/^coroutine "([^"]+)" disposes safely scope "([^"]+)"$/',
+            function(Context $ctx, string $caller, string $scope) {
+                $ctx->planAction($caller, function(Context $ctx) use ($scope) {
+                    $ctx->inc('scope_dispose_safely_attempts');
+                    if (!isset($ctx->scopes[$scope])) {
+                        $ctx->inc('scope_dispose_safely_target_missing');
+                        return;
+                    }
+                    try {
+                        $ctx->scopes[$scope]->disposeSafely();
+                        $ctx->inc("scope_disposed_safely_$scope");
+                    } catch (\Throwable $e) {
+                        $ctx->inc('scope_dispose_safely_threw');
+                    }
+                });
+            });
+
         // When coroutine "X" cancels coroutine "Y"
         $r->on('/^coroutine "([^"]+)" cancels coroutine "([^"]+)"$/',
             function(Context $ctx, string $caller, string $target) {

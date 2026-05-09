@@ -25,6 +25,7 @@ use Async\ThreadChannel;
 use Async\ThreadPool;
 use function Async\spawn;
 use function Async\await_all;
+use function Async\suspend;
 
 final class Context {
     public Rng $rng;
@@ -50,6 +51,12 @@ final class Context {
 
     /** @var array<string, Scope> populated by run() */
     public array $scopes = [];
+
+    /** @var array<string, bool> scope name => has exception handler installed */
+    public array $scopeExceptionHandler = [];
+
+    /** @var array<string, bool> scope name => has finally callback installed */
+    public array $scopeFinally = [];
 
     /** @var string[] future names declared in Given */
     public array $futureDefs = [];
@@ -168,7 +175,20 @@ final class Context {
             $this->channels[$name] = new Channel($cap);
         }
         foreach ($this->scopeDefs as $name) {
-            $this->scopes[$name] = new Scope();
+            $scope = new Scope();
+            $this->scopes[$name] = $scope;
+            if (!empty($this->scopeExceptionHandler[$name])) {
+                $self2 = $this;
+                $scope->setExceptionHandler(function($scope, $coroutine, \Throwable $e) use ($self2, $name) {
+                    $self2->inc("scope_exception_handled_$name");
+                });
+            }
+            if (!empty($this->scopeFinally[$name])) {
+                $self2 = $this;
+                $scope->finally(function() use ($self2, $name) {
+                    $self2->inc("scope_finally_$name");
+                });
+            }
         }
         foreach ($this->threadChannelDefs as $name => $cap) {
             $this->threadChannels[$name] = new ThreadChannel($cap);
@@ -199,6 +219,12 @@ final class Context {
         // First pass: spawn every coroutine, populate handles. Coroutine bodies
         // do NOT run yet (spawn just queues), so by the time the first body
         // begins all $coroutineHandles entries are visible to it.
+        //
+        // Scope-bound coroutines are tracked for cancel-target lookup but are
+        // NOT placed in the master await_all list — the scope owns their
+        // lifecycle. This lets the scope's exception handler fire on uncaught
+        // child exceptions instead of having await_all silently absorb them.
+        $awaitable = [];
         foreach ($this->plannedActions as $coroName => $actions) {
             $body = function() use ($actions, $self, $coroName) {
                 foreach ($actions as $action) {
@@ -207,13 +233,64 @@ final class Context {
             };
             $scopeName = $this->coroutineScopes[$coroName] ?? null;
             if ($scopeName !== null && isset($this->scopes[$scopeName])) {
-                $self->coroutineHandles[$coroName] = $this->scopes[$scopeName]->spawn($body);
+                $h = $this->scopes[$scopeName]->spawn($body);
+                $self->coroutineHandles[$coroName] = $h;
+                // If the scope has an exception handler installed, child
+                // exceptions must reach the scope handler — and an outer
+                // awaiter would consume them first. Skip the external await
+                // for those scopes only.
+                if (empty($this->scopeExceptionHandler[$scopeName])) {
+                    $awaitable[] = $h;
+                }
             } else {
                 $self->coroutineHandles[$coroName] = spawn($body);
+                $awaitable[] = $self->coroutineHandles[$coroName];
             }
         }
-        if ($this->coroutineHandles) {
-            await_all(array_values($this->coroutineHandles));
+        if ($awaitable) {
+            await_all($awaitable);
+        }
+
+        // Drain each scope: wait for its child coroutines to finish (or for the
+        // scope to enter cancelled/closed state), then explicitly dispose so
+        // finally handlers fire and resources are released before assertions
+        // execute. awaitCompletion needs a cancellation Awaitable that we
+        // never resolve.
+        foreach ($this->scopes as $scope) {
+            if (!$scope->isClosed() && !$scope->isCancelled()) {
+                $cancelState  = new FutureState();
+                $cancelFuture = new Future($cancelState);
+                try {
+                    $scope->awaitCompletion($cancelFuture);
+                } catch (\Throwable $e) {
+                    // Scope cancellation surfaces here; counters already
+                    // reflect the cancel via the explicit cancel step.
+                }
+                $cancelFuture->ignore();
+            }
+            if (!$scope->isClosed()) {
+                try {
+                    $scope->dispose();
+                } catch (\Throwable $e) {
+                    // dispose() may throw if scope already in flight; harmless.
+                }
+            }
+        }
+        // Let finally handlers and post-dispose cancellations drain. Without
+        // these suspends the scheduler hasn't run the post-dispose microtasks
+        // by the time Then-step assertions execute. Bound the loop so a stuck
+        // coroutine surfaces as an orphan-coroutines failure rather than a
+        // hang.
+        if ($this->scopes) {
+            // First a couple of suspends drain micro-tasks (post-dispose
+            // finally callbacks fire here). Then short delays advance the
+            // reactor so any timer-blocked child receives its cancellation.
+            for ($i = 0; $i < 4 && count(\Async\get_coroutines()) > 1; $i++) {
+                suspend();
+            }
+            for ($i = 0; $i < 8 && count(\Async\get_coroutines()) > 1; $i++) {
+                \Async\delay(1);
+            }
         }
 
         // Belt-and-braces: every channel ends closed so leftover senders/receivers wake up.
