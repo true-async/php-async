@@ -6,13 +6,28 @@ injection layers (see `../FUZZ_TESTING.md` for the full strategy).
 
 ## Layout
 
+Tests are grouped by topic, mirroring `ext/async/tests/`. Each topic
+directory holds Gherkin `.feature` sources; the generator produces one
+`.phpt` per `Scenario` / `Examples` row in `_generated/<topic>/`.
+
 ```
 fuzzy_tests/
-├── _harness/             # parser, executor, step definitions (PHP)
-├── _generated/           # auto-generated .phpt files (gitignored)
-├── *.feature             # Gherkin scenario sources (committed)
-└── *.phpt                # hand-written static chaos tests (committed)
+├── _harness/                # parser, executor, step definitions (PHP)
+├── _generated/              # auto-generated .phpt files (gitignored)
+├── channel/                 # Channel send/recv/close/cap chaos
+│   ├── send_recv_pair.feature
+│   └── close.feature
+├── coroutine/               # spawn/await/cancel chaos
+│   └── many_complete.feature
+├── scope/                   # (TODO) scope cancel/dispose ordering
+├── future/                  # (TODO) Future complete vs await race
+├── await/                   # (TODO) await_all / await_any cancellation
+├── task_group/              # (TODO) join semantics under cancel
+├── thread_channel/          # (TODO) cross-thread channel ordering
+└── thread_pool/             # (TODO) real-parallel worker chaos
 ```
+
+Topics with `_TODO.md` are placeholders awaiting features.
 
 ## Workflow
 

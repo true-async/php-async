@@ -32,15 +32,55 @@ function rowSlug(array $row): string {
     return implode('_', $parts);
 }
 
-function ensureCleanOutDir(string $dir): void {
-    if (is_dir($dir)) {
-        foreach (glob($dir . '/*.phpt') as $f) { @unlink($f); }
-    } else {
-        mkdir($dir, 0755, true);
+function rrmdir(string $dir): void {
+    if (!is_dir($dir)) return;
+    foreach (scandir($dir) as $entry) {
+        if ($entry === '.' || $entry === '..') continue;
+        $path = $dir . '/' . $entry;
+        if (is_dir($path)) {
+            rrmdir($path);
+        } else {
+            @unlink($path);
+        }
     }
+    @rmdir($dir);
 }
 
-function emitPhpt(string $path, string $featureRel, string $featureName, string $scenarioName, ?array $row, string $featureAbs): void {
+function ensureCleanOutDir(string $dir): void {
+    rrmdir($dir);
+    mkdir($dir, 0755, true);
+}
+
+function findFeatures(string $root): array {
+    $found = [];
+    $stack = [$root];
+    while ($stack) {
+        $dir = array_pop($stack);
+        $base = basename($dir);
+        if ($base === '_harness' || $base === '_generated') continue;
+        foreach (scandir($dir) as $entry) {
+            if ($entry === '.' || $entry === '..') continue;
+            $path = $dir . '/' . $entry;
+            if (is_dir($path)) {
+                $stack[] = $path;
+            } elseif (str_ends_with($entry, '.feature')) {
+                $found[] = $path;
+            }
+        }
+    }
+    sort($found);
+    return $found;
+}
+
+function emitPhpt(
+    string  $path,
+    string  $featureRel,
+    string  $featureName,
+    string  $scenarioName,
+    ?array  $row,
+    string  $featureAbs,
+    string  $relativeHarness
+): void {
     $rowComment = '';
     $rowArg = 'null';
     if ($row !== null) {
@@ -60,7 +100,7 @@ Auto-generated from {$featureRel}.
 DO NOT EDIT — regenerate via fuzzy_tests/regen.sh.
 --FILE--
 <?php
-require_once __DIR__ . '/../_harness/Runner.php';
+require_once __DIR__ . '/{$relativeHarness}/Runner.php';
 \\Async\\Chaos\\Runner::runScenario(
     {$featureExport},
     {$scenarioExport},
@@ -72,22 +112,33 @@ PASS
 
 PHPT;
 
+    @mkdir(dirname($path), 0755, true);
     file_put_contents($path, $content);
 }
 
 function main(): int {
     ensureCleanOutDir(OUT_DIR);
 
-    $features = glob(FUZZY_DIR . '/*.feature');
+    $features = findFeatures(FUZZY_DIR);
     if (!$features) {
-        fwrite(STDERR, "[generate] no .feature files found in " . FUZZY_DIR . "\n");
+        fwrite(STDERR, "[generate] no .feature files found under " . FUZZY_DIR . "\n");
         return 0;
     }
 
+    $fuzzyDirReal = realpath(FUZZY_DIR);
     $written = 0;
     foreach ($features as $featureAbs) {
         $featureBase = basename($featureAbs, '.feature');
-        $featureRel  = 'fuzzy_tests/' . basename($featureAbs);
+        $relFromFuzzy = ltrim(substr(realpath($featureAbs), strlen($fuzzyDirReal)), '/');
+        $featureRel = 'fuzzy_tests/' . $relFromFuzzy;
+        $subdir     = dirname($relFromFuzzy);   // "channel" or "." for root features
+        // From _generated/<subdir>/foo.phpt to fuzzy_tests/_harness/.
+        // root (subdir='.'):  _generated/foo.phpt → ../_harness
+        // one level (channel): _generated/channel/foo.phpt → ../../_harness
+        $relativeHarness = $subdir === '.'
+            ? '../_harness'
+            : str_repeat('../', substr_count($subdir, '/') + 2) . '_harness';
+
         $source = file_get_contents($featureAbs);
         try {
             $feature = Gherkin::parse($source);
@@ -96,18 +147,28 @@ function main(): int {
             continue;
         }
 
+        $outSubdir = OUT_DIR . ($subdir === '.' ? '' : '/' . $subdir);
+
         foreach ($feature->scenarios as $idx => $scenario) {
             $scenarioSlug = slug($scenario->name);
             if ($scenario->isOutline) {
                 foreach ($scenario->examples as $rowIdx => $row) {
                     $rs = rowSlug($row);
                     $name = sprintf('%s__%02d_%s__%s.phpt', $featureBase, $idx, $scenarioSlug, $rs);
-                    emitPhpt(OUT_DIR . '/' . $name, $featureRel, $feature->name, $scenario->name, $row, $featureAbs);
+                    emitPhpt(
+                        $outSubdir . '/' . $name,
+                        $featureRel, $feature->name, $scenario->name, $row, $featureAbs,
+                        $relativeHarness
+                    );
                     $written++;
                 }
             } else {
                 $name = sprintf('%s__%02d_%s.phpt', $featureBase, $idx, $scenarioSlug);
-                emitPhpt(OUT_DIR . '/' . $name, $featureRel, $feature->name, $scenario->name, null, $featureAbs);
+                emitPhpt(
+                    $outSubdir . '/' . $name,
+                    $featureRel, $feature->name, $scenario->name, null, $featureAbs,
+                    $relativeHarness
+                );
                 $written++;
             }
         }

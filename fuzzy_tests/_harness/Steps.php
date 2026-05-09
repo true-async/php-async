@@ -41,14 +41,21 @@ final class StandardSteps {
         // ---- When: actions inside a coroutine ----
 
         // When coroutine "A" sends N messages to "ch"
+        // Increments three counters: send_attempts_$ch (always), then either
+        // sent_$ch (on success) or send_failed_$ch (when channel was closed).
         $r->on('/^coroutine "([^"]+)" sends (\S+) messages to "([^"]+)"$/',
             function(Context $ctx, string $coro, string $countExpr, string $ch) {
                 $n = (int)$ctx->resolver->resolve($countExpr);
                 for ($i = 0; $i < $n; $i++) {
                     $value = $i;
                     $ctx->planAction($coro, function(Context $ctx) use ($ch, $value) {
-                        $ctx->channels[$ch]->send($value);
-                        $ctx->inc("sent_$ch");
+                        $ctx->inc("send_attempts_$ch");
+                        try {
+                            $ctx->channels[$ch]->send($value);
+                            $ctx->inc("sent_$ch");
+                        } catch (\Throwable $e) {
+                            $ctx->inc("send_failed_$ch");
+                        }
                     });
                 }
             });
@@ -58,17 +65,24 @@ final class StandardSteps {
             function(Context $ctx, string $coro, string $valExpr, string $ch) {
                 $val = $ctx->resolver->resolve($valExpr);
                 $ctx->planAction($coro, function(Context $ctx) use ($ch, $val) {
-                    $ctx->channels[$ch]->send($val);
-                    $ctx->inc("sent_$ch");
+                    $ctx->inc("send_attempts_$ch");
+                    try {
+                        $ctx->channels[$ch]->send($val);
+                        $ctx->inc("sent_$ch");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("send_failed_$ch");
+                    }
                 });
             });
 
         // When coroutine "B" receives N messages from "ch"
+        // Mirror: recv_attempts_$ch / received_$ch / recv_failed_$ch.
         $r->on('/^coroutine "([^"]+)" receives (\S+) messages from "([^"]+)"$/',
             function(Context $ctx, string $coro, string $countExpr, string $ch) {
                 $n = (int)$ctx->resolver->resolve($countExpr);
                 for ($i = 0; $i < $n; $i++) {
                     $ctx->planAction($coro, function(Context $ctx) use ($ch) {
+                        $ctx->inc("recv_attempts_$ch");
                         try {
                             $ctx->channels[$ch]->recv();
                             $ctx->inc("received_$ch");
@@ -110,6 +124,7 @@ final class StandardSteps {
             function(Context $ctx, string $coro, string $msg) {
                 $ctx->planAction($coro, function(Context $ctx) use ($msg) {
                     $ctx->events[] = $msg;
+                    $ctx->inc('printed_total');
                 });
             });
 
@@ -122,6 +137,31 @@ final class StandardSteps {
                 $vb = $ctx->counter($b);
                 if ($va !== $vb) {
                     throw new \RuntimeException("counter $a ($va) != counter $b ($vb)");
+                }
+            });
+
+        // Then counter "X" plus counter "Y" equals N  (sum invariant)
+        $r->on('/^counter "([^"]+)" plus counter "([^"]+)" equals (\d+)$/',
+            function(Context $ctx, string $a, string $b, string $expected) {
+                $sum = $ctx->counter($a) + $ctx->counter($b);
+                if ($sum !== (int)$expected) {
+                    throw new \RuntimeException(
+                        "counter $a + counter $b = " .
+                        $ctx->counter($a) . ' + ' . $ctx->counter($b) .
+                        " = $sum, expected $expected"
+                    );
+                }
+            });
+
+        // Then counter "X" plus counter "Y" equals counter "Z"
+        $r->on('/^counter "([^"]+)" plus counter "([^"]+)" equals counter "([^"]+)"$/',
+            function(Context $ctx, string $a, string $b, string $c) {
+                $sum = $ctx->counter($a) + $ctx->counter($b);
+                $cv = $ctx->counter($c);
+                if ($sum !== $cv) {
+                    throw new \RuntimeException(
+                        "counter $a + counter $b = $sum, but counter $c = $cv"
+                    );
                 }
             });
 
@@ -139,6 +179,25 @@ final class StandardSteps {
             function(Context $ctx, string $name) {
                 if (!isset($ctx->channels[$name]) || !$ctx->channels[$name]->isClosed()) {
                     throw new \RuntimeException("channel $name expected to be closed");
+                }
+            });
+
+        // Then no orphan coroutines  (await_all completed for every planned coroutine)
+        $r->on('/^no orphan coroutines$/',
+            function(Context $ctx) {
+                // If any coroutine had not finished, await_all() would have either
+                // hung or thrown — reaching this step means all completed.
+                // We verify the structural fact via Async\get_coroutines()
+                // (excluding the main coroutine which is always present).
+                $live = \Async\get_coroutines();
+                if (count($live) > 1) {
+                    $names = [];
+                    foreach ($live as $c) {
+                        $names[] = $c->getId();
+                    }
+                    throw new \RuntimeException(
+                        'expected only the main coroutine to remain, got: ' . implode(',', $names)
+                    );
                 }
             });
 

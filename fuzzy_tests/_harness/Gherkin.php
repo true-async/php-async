@@ -133,6 +133,13 @@ final class Gherkin {
                 continue;
             }
 
+            // Free-text Feature description: anything that lives between
+            // "Feature:" and the first "Scenario:" and isn't a recognised
+            // keyword. Silently ignore.
+            if ($scenario === null && $feature !== null) {
+                continue;
+            }
+
             throw new \RuntimeException("Unrecognized line $lineNo: $line");
         }
 
