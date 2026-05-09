@@ -51,6 +51,14 @@ final class StandardSteps {
                 $ctx->defineScope($name);
             });
 
+        // Given a child scope "C" of "P"   (Scope::inherit)
+        $r->on('/^a child scope "([^"]+)" of "([^"]+)"$/',
+            function(Context $ctx, string $child, string $parent) {
+                $ctx->defineScope($parent);
+                $ctx->defineScope($child);
+                $ctx->scopeParent[$child] = $parent;
+            });
+
         // Given a future "F"
         $r->on('/^a future "([^"]+)"$/',
             function(Context $ctx, string $name) {
@@ -747,6 +755,76 @@ final class StandardSteps {
                         $ctx->inc("tg_disposed_$g");
                     } catch (\Throwable $e) {
                         $ctx->inc("tg_dispose_failed_$g");
+                    }
+                });
+            });
+
+        // When coroutine "X" recursively spawns to depth N
+        // Each level spawns a child that recurses one fewer; counter
+        // "rec_depth" increments once per coroutine, so for depth N the
+        // counter ends at N+1 (initial coroutine + N descendants).
+        $r->on('/^coroutine "([^"]+)" recursively spawns to depth (\S+)$/',
+            function(Context $ctx, string $coro, string $nExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($n) {
+                    $rec = null;
+                    $rec = function(int $depth) use (&$rec, $ctx) {
+                        $ctx->inc('rec_depth');
+                        if ($depth > 0) {
+                            $h = \Async\spawn($rec, $depth - 1);
+                            \Async\await($h);
+                        }
+                    };
+                    $rec($n);
+                });
+            });
+
+        // When coroutine "X" maps future "F" to counter "K"
+        $r->on('/^coroutine "([^"]+)" maps future "([^"]+)" to counter "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $f, string $key) {
+                $ctx->planAction($coro, function(Context $ctx) use ($f, $key) {
+                    $mapped = $ctx->futures[$f]->map(function($v) use ($ctx, $key) {
+                        $ctx->inc("map_$key");
+                        return $v;
+                    });
+                    try {
+                        $mapped->await();
+                        $ctx->inc("map_awaited_$key");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("map_failed_$key");
+                    }
+                });
+            });
+
+        // When coroutine "X" catches future "F" to counter "K"
+        $r->on('/^coroutine "([^"]+)" catches future "([^"]+)" to counter "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $f, string $key) {
+                $ctx->planAction($coro, function(Context $ctx) use ($f, $key) {
+                    $chained = $ctx->futures[$f]->catch(function(\Throwable $e) use ($ctx, $key) {
+                        $ctx->inc("catch_$key");
+                        return null;
+                    });
+                    try {
+                        $chained->await();
+                        $ctx->inc("catch_awaited_$key");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("catch_failed_$key");
+                    }
+                });
+            });
+
+        // When coroutine "X" finallies future "F" to counter "K"
+        $r->on('/^coroutine "([^"]+)" finallies future "([^"]+)" to counter "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $f, string $key) {
+                $ctx->planAction($coro, function(Context $ctx) use ($f, $key) {
+                    $chained = $ctx->futures[$f]->finally(function() use ($ctx, $key) {
+                        $ctx->inc("finally_$key");
+                    });
+                    try {
+                        $chained->await();
+                        $ctx->inc("finally_awaited_$key");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("finally_failed_$key");
                     }
                 });
             });

@@ -58,6 +58,9 @@ final class Context {
     /** @var array<string, bool> scope name => has finally callback installed */
     public array $scopeFinally = [];
 
+    /** @var array<string, string> scope name => parent scope name (Scope::inherit) */
+    public array $scopeParent = [];
+
     /** @var string[] future names declared in Given */
     public array $futureDefs = [];
 
@@ -174,20 +177,37 @@ final class Context {
         foreach ($this->channelDefs as $name => $cap) {
             $this->channels[$name] = new Channel($cap);
         }
-        foreach ($this->scopeDefs as $name) {
-            $scope = new Scope();
-            $this->scopes[$name] = $scope;
-            if (!empty($this->scopeExceptionHandler[$name])) {
-                $self2 = $this;
-                $scope->setExceptionHandler(function($scope, $coroutine, \Throwable $e) use ($self2, $name) {
-                    $self2->inc("scope_exception_handled_$name");
-                });
+        // Instantiate scopes in dependency order so a child can reference its
+        // already-constructed parent. Fixpoint loop handles arbitrary depth.
+        $remaining = $this->scopeDefs;
+        while ($remaining) {
+            $progress = false;
+            foreach ($remaining as $i => $name) {
+                $parent = $this->scopeParent[$name] ?? null;
+                if ($parent !== null && !isset($this->scopes[$parent])) {
+                    continue;
+                }
+                $scope = $parent !== null
+                    ? Scope::inherit($this->scopes[$parent])
+                    : new Scope();
+                $this->scopes[$name] = $scope;
+                if (!empty($this->scopeExceptionHandler[$name])) {
+                    $self2 = $this;
+                    $scope->setExceptionHandler(function($scope, $coroutine, \Throwable $e) use ($self2, $name) {
+                        $self2->inc("scope_exception_handled_$name");
+                    });
+                }
+                if (!empty($this->scopeFinally[$name])) {
+                    $self2 = $this;
+                    $scope->finally(function() use ($self2, $name) {
+                        $self2->inc("scope_finally_$name");
+                    });
+                }
+                unset($remaining[$i]);
+                $progress = true;
             }
-            if (!empty($this->scopeFinally[$name])) {
-                $self2 = $this;
-                $scope->finally(function() use ($self2, $name) {
-                    $self2->inc("scope_finally_$name");
-                });
+            if (!$progress) {
+                throw new \RuntimeException('scope parent cycle or unknown parent in: ' . implode(',', $remaining));
             }
         }
         foreach ($this->threadChannelDefs as $name => $cap) {
@@ -251,20 +271,21 @@ final class Context {
             await_all($awaitable);
         }
 
-        // Drain each scope: wait for its child coroutines to finish (or for the
-        // scope to enter cancelled/closed state), then explicitly dispose so
-        // finally handlers fire and resources are released before assertions
-        // execute. awaitCompletion needs a cancellation Awaitable that we
-        // never resolve.
-        foreach ($this->scopes as $scope) {
-            if (!$scope->isClosed() && !$scope->isCancelled()) {
+        // Dispose every scope in reverse-of-insertion order so that nested
+        // child scopes are released before their parents. For scopes with
+        // an exception handler the children were not in await_all, so we
+        // must first wait for them via awaitCompletion (otherwise dispose()
+        // would cancel children before their throw paths execute and the
+        // handler would never see them).
+        foreach (array_reverse($this->scopes, true) as $name => $scope) {
+            if (!empty($this->scopeExceptionHandler[$name])
+                && !$scope->isClosed() && !$scope->isCancelled()) {
                 $cancelState  = new FutureState();
                 $cancelFuture = new Future($cancelState);
                 try {
                     $scope->awaitCompletion($cancelFuture);
                 } catch (\Throwable $e) {
-                    // Scope cancellation surfaces here; counters already
-                    // reflect the cancel via the explicit cancel step.
+                    // Scope cancellation surfaces here; counters reflect it.
                 }
                 $cancelFuture->ignore();
             }
