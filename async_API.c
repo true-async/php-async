@@ -1095,7 +1095,16 @@ void async_await_futures(zval *iterable,
 	}
 
 	if (coroutine->waker->events.nNumOfElements > 0) {
-		ZEND_ASYNC_SUSPEND();
+		/* Fix #103: when REPLAY synchronously fired a callback for an already
+		 * closed event during iteration (e.g. Future #2 of [F1, F2] is already
+		 * completed), the await condition can be satisfied before we get here.
+		 * Suspending in that case would block forever — there is no listener
+		 * left that would wake us up, only stale callbacks on the unresolved
+		 * triggers. Skip SUSPEND but still clean the waker so those stale
+		 * callbacks are removed and reference counts decremented. */
+		if (!AWAIT_ITERATOR_IS_FINISHED(await_context)) {
+			ZEND_ASYNC_SUSPEND();
+		}
 		zend_async_waker_clean(ZEND_ASYNC_CURRENT_COROUTINE);
 	}
 

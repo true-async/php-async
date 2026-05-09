@@ -1029,6 +1029,30 @@ static zend_always_inline void start_waker_events(zend_async_waker_t *waker)
 	zend_async_waker_trigger_t *trigger;
 	ZEND_HASH_FOREACH_PTR(&waker->events, trigger)
 	{
+		/* Fix #103: an event may have closed between callback registration
+		 * and our entry into SUSPEND (most commonly: Future closed by another
+		 * coroutine in the same scheduler tick). In that case the producer
+		 * has already drained its callbacks vector via NOTIFY before our
+		 * callback was added, so the registered callback would never fire
+		 * and we'd suspend forever.
+		 *
+		 * Replay each registered callback for closed events here, in
+		 * scheduler context. RESUME from inside the callback hits the
+		 * short path (in_scheduler_context && coroutine == current) and
+		 * sets waker->status = WAKER_RESULT, which the SUSPEND fast path
+		 * checks immediately after this loop. */
+		if (UNEXPECTED(ZEND_ASYNC_EVENT_IS_CLOSED(trigger->event))) {
+			if (trigger->event->replay != NULL) {
+				for (uint32_t i = 0; i < trigger->length; i++) {
+					trigger->event->replay(trigger->event, trigger->data[i], NULL, NULL);
+					if (waker->status == ZEND_ASYNC_WAKER_RESULT) {
+						return;
+					}
+				}
+			}
+			continue;
+		}
+
 		trigger->event->start(trigger->event);
 	}
 	ZEND_HASH_FOREACH_END();

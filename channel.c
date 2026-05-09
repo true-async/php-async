@@ -67,18 +67,17 @@ static zend_object_handlers async_channel_handlers;
 
 static zend_object *channel_close_reason_case(channel_close_reason_t reason)
 {
-	/* Enum cases live in a request-scoped constants table, so we can't pre-fetch
-	 * them at MINIT — resolve lazily on first use. */
-	static zend_object *cases[CHANNEL_CLOSE_REASON_COUNT];
-	if (UNEXPECTED(cases[CHANNEL_CLOSE_EXPLICIT] == NULL)) {
-		cases[CHANNEL_CLOSE_EXPLICIT]       = zend_enum_get_case_cstr(async_ce_channel_close_reason, "EXPLICIT");
-		cases[CHANNEL_CLOSE_DISPOSED]       = zend_enum_get_case_cstr(async_ce_channel_close_reason, "DISPOSED");
-		cases[CHANNEL_CLOSE_NO_PRODUCERS]   = zend_enum_get_case_cstr(async_ce_channel_close_reason, "NO_PRODUCERS");
-		cases[CHANNEL_CLOSE_NO_CONSUMERS]   = zend_enum_get_case_cstr(async_ce_channel_close_reason, "NO_CONSUMERS");
-		cases[CHANNEL_CLOSE_DEADLOCK]       = zend_enum_get_case_cstr(async_ce_channel_close_reason, "DEADLOCK");
-		cases[CHANNEL_CLOSE_SCOPE_DISPOSED] = zend_enum_get_case_cstr(async_ce_channel_close_reason, "SCOPE_DISPOSED");
+	const char *name;
+	switch (reason) {
+		case CHANNEL_CLOSE_EXPLICIT:       name = "EXPLICIT"; break;
+		case CHANNEL_CLOSE_DISPOSED:       name = "DISPOSED"; break;
+		case CHANNEL_CLOSE_NO_PRODUCERS:   name = "NO_PRODUCERS"; break;
+		case CHANNEL_CLOSE_NO_CONSUMERS:   name = "NO_CONSUMERS"; break;
+		case CHANNEL_CLOSE_DEADLOCK:       name = "DEADLOCK"; break;
+		case CHANNEL_CLOSE_SCOPE_DISPOSED: name = "SCOPE_DISPOSED"; break;
+		default:                           name = "EXPLICIT"; break;
 	}
-	return cases[reason];
+	return zend_enum_get_case_cstr(async_ce_channel_close_reason, name);
 }
 
 static zend_object *make_channel_exception(channel_close_reason_t reason)
