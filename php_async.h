@@ -75,6 +75,10 @@ typedef struct
 #define ASYNC_TIMEOUT_FROM_EVENT(ev) ((async_timeout_ext_t *) ((char *) (ev) + (ev)->extra_offset))
 #define ASYNC_TIMEOUT_FROM_OBJ(obj) ((async_timeout_object_t *) ((char *) (obj) - (obj)->handlers->offset))
 
+#ifdef ZEND_ASYNC_FUZZ
+#include "internal/fuzz.h"
+#endif
+
 ZEND_BEGIN_MODULE_GLOBALS(async)
 // Microtask queue
 circular_buffer_t microtasks;
@@ -129,6 +133,10 @@ bool debug_deadlock;
 HashTable deadlock_channels;
 
 #ifdef PHP_WIN32
+#endif
+
+#ifdef ZEND_ASYNC_FUZZ
+async_fuzz_state_t fuzz;
 #endif
 ZEND_END_MODULE_GLOBALS(async)
 

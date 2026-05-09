@@ -3,10 +3,21 @@ PHP_ARG_ENABLE([async],
   [AS_HELP_STRING([--enable-async],
     [Enable True Async])])
 
+PHP_ARG_ENABLE([async-fuzz],
+  [whether to enable True Async fuzz/chaos hooks],
+  [AS_HELP_STRING([--enable-async-fuzz],
+    [Enable scheduler/I-O/allocator chaos hooks for fuzz testing (debug only)])],
+  [no],
+  [no])
+
 
 if test "$PHP_ASYNC" = "yes"; then
   dnl Define a symbol for C code.
   AC_DEFINE([PHP_ASYNC], 1, [Enable True Async API])
+
+  if test "$PHP_ASYNC_FUZZ" = "yes"; then
+    AC_DEFINE([ZEND_ASYNC_FUZZ], 1, [Enable async chaos/fuzz hooks])
+  fi
 
   dnl Register extension source files.
   dnl -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 routes EG()/ASYNC_G()/ZEND_ASYNC_G()
@@ -16,7 +27,7 @@ if test "$PHP_ASYNC" = "yes"; then
     [async.c coroutine.c scope.c scheduler.c exceptions.c iterator.c async_API.c \
      context.c libuv_reactor.c future.c channel.c pool.c task_group.c fs_watcher.c \
      thread.c thread_channel.c thread_pool.c cpu_info.c \
-     internal/allocator.c internal/circular_buffer.c \
+     internal/allocator.c internal/circular_buffer.c internal/fuzz.c \
      zend_common.c],
     $ext_shared,,[-DZEND_ENABLE_STATIC_TSRMLS_CACHE=1])
 

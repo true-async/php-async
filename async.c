@@ -1715,6 +1715,10 @@ PHP_RINIT_FUNCTION(async) /* {{{ */
 
 	ASYNC_G(reactor_started) = false;
 
+#ifdef ZEND_ASYNC_FUZZ
+	async_fuzz_init(&ASYNC_G(fuzz));
+#endif
+
 	return SUCCESS;
 } /* }}} */
 

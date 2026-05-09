@@ -119,6 +119,22 @@ static zend_always_inline zend_result circular_buffer_pop_ptr(circular_buffer_t 
 	return FAILURE;
 }
 
+/* Swap two pointer-sized slots, addressed as offsets from the tail.
+ * i and j must be in [0, count). i==j is a no-op.
+ * Used by the scheduler fuzz hook to permute the ready queue. */
+static zend_always_inline void circular_buffer_swap_ptr_at(circular_buffer_t *buffer, size_t i, size_t j)
+{
+	if (i == j) {
+		return;
+	}
+	const size_t mask = buffer->capacity - 1;
+	void **slot_i = (void **) ((char *) buffer->data + ((buffer->tail + i) & mask) * sizeof(void *));
+	void **slot_j = (void **) ((char *) buffer->data + ((buffer->tail + j) & mask) * sizeof(void *));
+	void *tmp = *slot_i;
+	*slot_i = *slot_j;
+	*slot_j = tmp;
+}
+
 /* Smart wrapper for pointer push with resize fallback */
 static zend_always_inline zend_result circular_buffer_push_ptr_with_resize(circular_buffer_t *buffer, void *ptr)
 {

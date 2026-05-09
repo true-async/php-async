@@ -256,6 +256,141 @@ a very low false-positive rate (hence fewer seeds and only layer 1 + 2).
   goal is to define a **realistic-but-adversarial profile** that we commit to
   pass, and to reproduce any failure under it.
 
+## Constrained scenario fuzzing (annotation-driven)
+
+Pure scheduler swapping (Layer 1) explores interleavings of a **fixed** test
+program. It does not explore *variations of the program itself*: what if
+coroutine A is spawned **before** B instead of after? What if `close()` runs
+**before**, **between**, or **after** two `send()` calls? These are
+program-structure mutations, and most race bugs hide in exactly such
+permutations.
+
+Brute-forcing all program orderings is intractable and almost always produces
+illegal programs (use-after-free of a not-yet-created channel, double-close,
+etc.). What we need is a way to **declare which parts of a scenario are
+allowed to move** and let a mutation engine permute only those.
+
+### Concept
+
+The author writes a scenario in PHP and annotates the points the engine may
+vary. Everything not annotated is fixed.
+
+```php
+#[ChaosScenario(seeds: 1000)]
+function close_during_recv(): void {
+    $ch = new Channel(1);
+
+    #[ChaosOrder(group: "spawns")]
+    $consumer = spawn(fn() => $ch->recv());
+
+    #[ChaosOrder(group: "spawns")]
+    $producer = spawn(fn() => $ch->send(42));
+
+    #[ChaosPlacement(relativeTo: ["spawns", "send", "recv"])]
+    $ch->close();
+
+    awaitAll($consumer, $producer);
+
+    // Invariants checked on every permutation
+    Chaos::assert($ch->refcount() === 0);
+    Chaos::assert(!$consumer->isPending());
+}
+```
+
+The chaos runner enumerates legal permutations:
+
+- `ChaosOrder(group)` — statements in the same group may be reordered.
+- `ChaosPlacement(relativeTo)` — statement may be inserted before/after each
+  named anchor (other annotated points or named ops).
+- `ChaosOptional` — statement may or may not execute.
+- `ChaosRepeat(min, max)` — block executes N times.
+- `ChaosCancel(target)` — engine may inject a `cancel($target)` at any point.
+
+Each generated permutation runs under Layer 1 scheduler fuzzing → cartesian
+product of "program variation × scheduler interleaving", but bounded by the
+annotations to legal programs only.
+
+### Why annotations, not pure grammars
+
+A pure grammar fuzzer (libprotobuf-mutator over an "async ops" proto) generates
+millions of programs but ~100% are illegal: `recv` before `Channel` exists,
+`cancel` on a finished coroutine, refcount underflow on a freed scope. Even
+with rejection sampling the legal subspace is too sparse.
+
+Annotations invert this: the author writes one **legal** seed program, and the
+engine only permutes within the author-declared degrees of freedom. The legal
+subspace is dense by construction.
+
+### Existing systems we could draw on
+
+| System | Language | Approach | Reusable? |
+|---|---|---|---|
+| **Coyote** (Microsoft) | C#/.NET | Attribute-driven scheduler; explores all interleavings of declared async tests | Concept only — .NET-specific |
+| **Shuttle** (AWS) | Rust | Randomized scheduler for tokio-style code; tests written normally, `shuttle::check` permutes | Concept only — Rust-specific |
+| **Loom** (tokio) | Rust | Exhaustive search over atomic/Mutex orderings | Concept; algorithm (DPOR) reusable |
+| **MadSim / Turmoil** | Rust | Deterministic simulation runtime replacing tokio; replay-based testing | Concept — runtime-replacement model |
+| **ConFuzz** (Padhi et al. 2020) | OCaml/Lwt | Coverage-guided property fuzzer for async OCaml; finds input + schedule violating in-source assertions | **Closest academic prior art**; algorithm reusable |
+| **CONZZER** / **TSAFL** | C/C++ | Context-sensitive directional fuzzing for data-race detection | Different goal (races, not scenarios) |
+| **Concuerror** | Erlang | Systematic concurrency testing on BEAM | Erlang-only |
+| **Jepsen / elle** | Clojure | Scenario DSL + linearizability check | Distributed-systems focus, not in-process |
+| **Hypothesis stateful** | Python | Property-based state-machine testing | Sync-only, but the rule-based DSL is portable |
+| **PCT** | algorithm | Probabilistic interleaving with depth guarantee | Already planned for Layer 1 |
+
+**No off-the-shelf system targets PHP async**, and even across all ecosystems
+the specific model "author writes a legal seed program + declares mutation
+points" does not exist as a product. Every existing system either mutates
+**only the schedule** (Coyote, Shuttle, Loom, MadSim) leaving the program
+fixed, or generates programs from a grammar without author-supplied
+constraints (ConFuzz, CONZZER). The closest academic prior art is **ConFuzz**
+(coverage-guided fuzzing of OCaml/Lwt programs against in-source assertions);
+the closest engineering reference for the scheduler/repro layer is **Coyote**
+and **Shuttle**.
+
+### Build vs. adapt
+
+We build it ourselves. Scope is small:
+
+1. **Annotation layer** — PHP attributes (`#[ChaosOrder]`, `#[ChaosPlacement]`,
+   etc.) with a parser that extracts mutation points from the scenario AST
+   (we already have access to `zend_ast`).
+2. **Permutation engine** — given annotated AST, generate the next legal
+   variant. Start with random sampling within constraints; later add DPOR-style
+   reduction to prune equivalent permutations.
+3. **Runner** — for each permutation, run under one of the Layer-1 schedulers
+   (fifo/random/pct) with a derived seed. Collect failures with the full
+   `(program_seed, scheduler_seed)` pair as reproducer.
+4. **Invariant API** — `Chaos::assert(...)`, `Chaos::eventually(...)`,
+   `Chaos::refcount($obj)`, `Chaos::noLeak()`. Checked after every permutation.
+
+This is a few hundred lines of PHP plus a thin C hook. Lives under
+`tests/chaos/_harness/` alongside the seed-matrix runner.
+
+### What this gives us
+
+- **Targeted search** — author declares the dimensions they want explored, so
+  the search space is small enough to enumerate exhaustively for short
+  scenarios and randomly for long ones.
+- **Readable scenarios** — the test still reads as a normal async program,
+  not a list of opcodes.
+- **Composable with Layer 1** — scenario fuzzing varies the *program*,
+  scheduler fuzzing varies the *interleaving*, both driven by one seed.
+- **Reusable for regression** — every found bug becomes a fixed scenario by
+  removing its annotations.
+
+### Open questions
+
+- AST rewriting vs. runtime interception: parse the attributes once and emit
+  N variant op_arrays, or keep one op_array and have the runner skip/reorder
+  statements at execution time? AST rewriting is cleaner but slower per
+  permutation; runtime interception is faster but harder to debug.
+- How to handle data dependencies the engine cannot see (e.g., variable
+  assigned in statement A used in statement B). First version: refuse to
+  reorder across a write→read of the same variable. Later: explicit
+  `#[ChaosIndependent]` to override.
+- Coverage feedback: should the engine prefer permutations that hit new
+  branches in C code (like libFuzzer)? Possibly later — for v1 random
+  sampling within the annotated space is enough.
+
 ## References
 
 - PCT algorithm: Burckhardt et al., "A Randomized Scheduler with

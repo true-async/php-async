@@ -362,6 +362,19 @@ static zend_always_inline async_coroutine_t *next_coroutine(void)
 {
 	async_coroutine_t *coroutine;
 
+#ifdef ZEND_ASYNC_FUZZ
+	{
+		circular_buffer_t *q = &ASYNC_G(coroutine_queue);
+		size_t q_count = circular_buffer_count(q);
+		if (q_count > 1) {
+			uint32_t j = async_fuzz_scheduler_pick(&ASYNC_G(fuzz), (uint32_t) q_count);
+			if (j != 0) {
+				circular_buffer_swap_ptr_at(q, 0, j);
+			}
+		}
+	}
+#endif
+
 	if (UNEXPECTED(circular_buffer_pop_ptr(&ASYNC_G(coroutine_queue), (void **) &coroutine) == FAILURE)) {
 		ZEND_ASSERT("Failed to pop the coroutine from the pending queue.");
 		return NULL;
