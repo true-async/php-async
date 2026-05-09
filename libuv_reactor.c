@@ -2147,24 +2147,29 @@ static bool libuv_thread_event_start(zend_async_event_t *event)
 		ZEND_ASYNC_THREAD_CONTEXT_ADDREF(thread->event.context);
 	}
 
-	/* Ensure registry exists before uv_thread_create — once the child is
-	 * running, it may race us to the first self-remove call. */
+	/* Initialise registry and assign+register the context's key BEFORE
+	 * uv_thread_create. Doing it after creates a race: a fast-exiting
+	 * runner reads context->key == 0, skips self-removal, then we add
+	 * the key and the entry leaks — quiesce hangs forever. */
 	libuv_thread_registry_init();
+
+	if (thread->event.context) {
+		thread->event.context->key =
+			(zend_async_thread_handle_t) async_ptr_to_index(thread->event.context);
+		libuv_thread_registry_add(thread->event.context->key);
+	}
 
 	const int ret = uv_thread_create(&thread->uv_handle, zend_async_thread_run_fn, thread->event.context);
 
 	if (UNEXPECTED(ret != 0)) {
 		if (thread->event.context) {
+			libuv_thread_registry_remove(thread->event.context->key);
+			thread->event.context->key = 0;
 			zend_atomic_int_dec(&thread->event.context->ref_count);
 		}
 
 		async_throw_error("Failed to create thread: %s", uv_strerror(ret));
 		return false;
-	}
-
-	if (thread->event.context) {
-		thread->event.context->handle = (zend_async_thread_handle_t) thread->uv_handle;
-		libuv_thread_registry_add(thread->event.context->handle);
 	}
 
 	event->loop_ref_count++;
@@ -2394,24 +2399,25 @@ static zend_async_thread_handle_t libuv_start_thread(
 	/* Add ref on context for the runner */
 	ZEND_ASYNC_THREAD_CONTEXT_ADDREF(context);
 
-	/* Ensure registry exists before uv_thread_create — once the child is
-	 * running, it may race us to the first self-remove call. */
+	/* Initialise registry and assign+register the key BEFORE uv_thread_create.
+	 * See start_thread comment above for why post-create assignment races. */
 	libuv_thread_registry_init();
+	context->key = (zend_async_thread_handle_t) async_ptr_to_index(context);
+	libuv_thread_registry_add(context->key);
 
 	uv_thread_t uv_handle;
 	const int ret = uv_thread_create(&uv_handle, zend_async_thread_run_fn, context);
 
 	if (UNEXPECTED(ret != 0)) {
+		libuv_thread_registry_remove(context->key);
+		context->key = 0;
 		zend_atomic_int_dec(&context->ref_count);
 		context->internal_entry = NULL;
 		async_throw_error("Failed to create thread: %s", uv_strerror(ret));
 		return 0;
 	}
 
-	context->handle = (zend_async_thread_handle_t) uv_handle;
-	libuv_thread_registry_add(context->handle);
-
-	return (zend_async_thread_handle_t) uv_handle;
+	return context->key;
 }
 
 /* }}} */

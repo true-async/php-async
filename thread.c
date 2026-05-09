@@ -2240,7 +2240,11 @@ void async_thread_run(void *arg)
 	zend_async_thread_event_t *event = context->event; /* may be NULL */
 	const async_thread_snapshot_t *snapshot = context->snapshot;
 	bool request_started = false;
+	bool tsrm_initialized = false;
 	char *fallback_message = pestrdup("Unknown fatal error in child thread", 1);
+	/* Capture registry key now — context may be released later in cleanup
+	 * and we still need the key to self-remove on every exit path. */
+	const zend_async_thread_handle_t my_key = context->key;
 
 	/* Record OS thread ID */
 #ifdef _WIN32
@@ -2291,6 +2295,7 @@ void async_thread_run(void *arg)
 	zend_rc_debug = false;
 #endif
 	async_thread_tsrm_init();
+	tsrm_initialized = true;
 
 	/* 1b. Start PHP request (can bailout).
 	 * zend_first_try initializes EG(bailout) for this thread. */
@@ -2373,34 +2378,32 @@ cleanup:
 		context->snapshot = NULL;
 	}
 
-	/* Snapshot handle before releasing the context — for a lightweight
-	 * pool worker the context is freed by the release below, so we must
-	 * read the handle now if we want to self-remove from the registry. */
-	const zend_async_thread_handle_t my_handle = context->handle;
-
 	ZEND_ASYNC_THREAD_CONTEXT_RELEASE(context);
+	context = NULL;
 
+notify:
 	/* Free TSRM storage after all zend_end_try blocks.
-	 * Must be separate because zend_end_try accesses EG(bailout). */
+	 * Must be separate because zend_end_try accesses EG(bailout).
+	 * Skipped on early-exit paths where TSRM was never initialized. */
 #ifdef ZTS
+	if (tsrm_initialized) {
 # if ZEND_RC_DEBUG
-	/* See rationale at the startup site. ts_free_thread() runs the same
-	 * GINIT-mirror destructors for every loaded module, so the same
-	 * unmarked-persistent assert fires here without this. */
-	zend_rc_debug = false;
+		/* See rationale at the startup site. ts_free_thread() runs the same
+		 * GINIT-mirror destructors for every loaded module, so the same
+		 * unmarked-persistent assert fires here without this. */
+		zend_rc_debug = false;
 # endif
-	ts_free_thread();
+		ts_free_thread();
+	}
 #endif
 
 	/* Self-remove from the reactor's child thread registry.
 	 * Must happen after ts_free_thread so the main thread, once it wakes
 	 * in libuv_reactor_quiesce, can safely proceed into php_module_shutdown
-	 * without racing this child against ts_free_id(). */
-	if (my_handle != 0) {
-		async_libuv_thread_registry_remove(my_handle);
-	}
+	 * without racing this child against ts_free_id(). The key is captured
+	 * at entry and stable, so this fires on every exit path. */
+	async_libuv_thread_registry_remove(my_key);
 
-notify:
 	if (fallback_message != NULL) {
 		pefree(fallback_message, 1);
 	}
