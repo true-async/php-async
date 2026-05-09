@@ -57,6 +57,49 @@ final class StandardSteps {
                 $ctx->defineFuture($name);
             });
 
+        // Given a thread pool "P" with N workers
+        $r->on('/^a thread pool "([^"]+)" with (\S+) workers$/',
+            function(Context $ctx, string $name, string $wExpr) {
+                $w = (int)$ctx->resolver->resolve($wExpr);
+                $ctx->defineThreadPool($name, $w);
+            });
+
+        // Given a thread pool "P" with N workers and queue size Q
+        $r->on('/^a thread pool "([^"]+)" with (\S+) workers and queue size (\S+)$/',
+            function(Context $ctx, string $name, string $wExpr, string $qExpr) {
+                $w = (int)$ctx->resolver->resolve($wExpr);
+                $q = (int)$ctx->resolver->resolve($qExpr);
+                $ctx->defineThreadPool($name, $w, $q);
+            });
+
+        // Given a thread channel "X" with capacity N
+        $r->on('/^a thread channel "([^"]+)" with capacity (\S+)$/',
+            function(Context $ctx, string $name, string $capExpr) {
+                $cap = (int)$ctx->resolver->resolve($capExpr);
+                $ctx->defineThreadChannel($name, $cap);
+            });
+
+        // Given a task group "G"
+        $r->on('/^a task group "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                $ctx->defineTaskGroup($name);
+            });
+
+        // Given a task group "G" with concurrency N
+        $r->on('/^a task group "([^"]+)" with concurrency (\S+)$/',
+            function(Context $ctx, string $name, string $cExpr) {
+                $c = (int)$ctx->resolver->resolve($cExpr);
+                $ctx->defineTaskGroup($name, $c);
+            });
+
+        // Given a task group "G" with concurrency N and queue limit M
+        $r->on('/^a task group "([^"]+)" with concurrency (\S+) and queue limit (\S+)$/',
+            function(Context $ctx, string $name, string $cExpr, string $qExpr) {
+                $c = (int)$ctx->resolver->resolve($cExpr);
+                $q = (int)$ctx->resolver->resolve($qExpr);
+                $ctx->defineTaskGroup($name, $c, $q);
+            });
+
         // ---- When: actions inside a coroutine ----
 
         // When coroutine "A" sends N messages to "ch"
@@ -205,6 +248,138 @@ final class StandardSteps {
                 });
             });
 
+        // When coroutine "X" fails future "F" with "msg"
+        $r->on('/^coroutine "([^"]+)" fails future "([^"]+)" with "([^"]*)"$/',
+            function(Context $ctx, string $coro, string $f, string $msg) {
+                $ctx->planAction($coro, function(Context $ctx) use ($f, $msg) {
+                    $ctx->inc("error_attempts_$f");
+                    try {
+                        $ctx->futureStates[$f]->error(new \RuntimeException($msg));
+                        $ctx->inc("errored_$f");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("error_failed_$f");
+                    }
+                });
+            });
+
+        // When coroutine "X" awaits all of futures "F1,F2,F3"   (await_all_or_fail)
+        $r->on('/^coroutine "([^"]+)" awaits all of futures "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $list) {
+                $names = array_map('trim', explode(',', $list));
+                $ctx->planAction($coro, function(Context $ctx) use ($names) {
+                    $ctx->inc('await_all_attempts');
+                    $futures = [];
+                    foreach ($names as $n) {
+                        if (isset($ctx->futures[$n])) {
+                            $futures[] = $ctx->futures[$n];
+                        }
+                    }
+                    try {
+                        $res = \Async\await_all_or_fail($futures);
+                        $ctx->inc('await_all_succeeded');
+                        $ctx->inc('await_all_received', count($res));
+                    } catch (\Throwable $e) {
+                        $ctx->inc('await_all_failed');
+                    }
+                });
+            });
+
+        // When coroutine "X" awaits first success of futures "F1,F2,F3"
+        $r->on('/^coroutine "([^"]+)" awaits first success of futures "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $list) {
+                $names = array_map('trim', explode(',', $list));
+                $ctx->planAction($coro, function(Context $ctx) use ($names) {
+                    $ctx->inc('await_first_attempts');
+                    $futures = [];
+                    foreach ($names as $n) {
+                        if (isset($ctx->futures[$n])) {
+                            $futures[] = $ctx->futures[$n];
+                        }
+                    }
+                    try {
+                        \Async\await_first_success($futures);
+                        $ctx->inc('await_first_succeeded');
+                    } catch (\Throwable $e) {
+                        $ctx->inc('await_first_failed');
+                    }
+                });
+            });
+
+        // When coroutine "X" awaits K out of futures "F1,F2,F3"   (await_any_of_or_fail)
+        $r->on('/^coroutine "([^"]+)" awaits (\S+) out of futures "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $kExpr, string $list) {
+                $k = (int)$ctx->resolver->resolve($kExpr);
+                $names = array_map('trim', explode(',', $list));
+                $ctx->planAction($coro, function(Context $ctx) use ($k, $names) {
+                    $ctx->inc('await_anyof_attempts');
+                    $futures = [];
+                    foreach ($names as $n) {
+                        if (isset($ctx->futures[$n])) {
+                            $futures[] = $ctx->futures[$n];
+                        }
+                    }
+                    try {
+                        $res = \Async\await_any_of_or_fail($k, $futures);
+                        $ctx->inc('await_anyof_succeeded');
+                        $ctx->inc('await_anyof_received', count($res));
+                    } catch (\Throwable $e) {
+                        $ctx->inc('await_anyof_failed');
+                    }
+                });
+            });
+
+        // When coroutine "X" awaits all mixed triggers "F1,C1,ch1"
+        // Names are looked up in futures, then coroutineHandles, then channels.
+        $r->on('/^coroutine "([^"]+)" awaits all mixed triggers "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $list) {
+                $names = array_map('trim', explode(',', $list));
+                $ctx->planAction($coro, function(Context $ctx) use ($names) {
+                    $ctx->inc('await_mixed_attempts');
+                    $triggers = [];
+                    foreach ($names as $n) {
+                        if (isset($ctx->futures[$n])) {
+                            $triggers[] = $ctx->futures[$n];
+                        } elseif (isset($ctx->coroutineHandles[$n])) {
+                            $triggers[] = $ctx->coroutineHandles[$n];
+                        } elseif (isset($ctx->channels[$n])) {
+                            $triggers[] = $ctx->channels[$n];
+                        }
+                    }
+                    try {
+                        // await_all returns [results, errors]; with fillNull
+                        // results contains every slot, including null returns.
+                        [$results, $errors] = \Async\await_all($triggers, null, true, true);
+                        $ctx->inc('await_mixed_succeeded');
+                        $ctx->inc('await_mixed_received', count($results));
+                        $ctx->inc('await_mixed_errors', count($errors));
+                    } catch (\Throwable $e) {
+                        $ctx->inc('await_mixed_failed');
+                    }
+                });
+            });
+
+        // When coroutine "X" awaits any of futures "F1,F2" with cancellation future "FC"
+        $r->on('/^coroutine "([^"]+)" awaits any of futures "([^"]+)" with cancellation future "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $list, string $cancelName) {
+                $names = array_map('trim', explode(',', $list));
+                $ctx->planAction($coro, function(Context $ctx) use ($names, $cancelName) {
+                    $ctx->inc('await_any_attempts');
+                    $futures = [];
+                    foreach ($names as $n) {
+                        if (isset($ctx->futures[$n])) {
+                            $futures[] = $ctx->futures[$n];
+                        }
+                    }
+                    $cancellation = $ctx->futures[$cancelName] ?? null;
+                    try {
+                        \Async\await_any_or_fail($futures, $cancellation);
+                        $ctx->inc('await_any_succeeded');
+                    } catch (\Throwable $e) {
+                        $ctx->inc('await_any_failed');
+                    }
+                });
+            });
+
         // When coroutine "X" cancels scope "S"
         $r->on('/^coroutine "([^"]+)" cancels scope "([^"]+)"$/',
             function(Context $ctx, string $caller, string $scope) {
@@ -248,6 +423,281 @@ final class StandardSteps {
                     $ctx->inc('throw_attempts');
                     $ctx->inc("threw_$coro");
                     throw new \RuntimeException("planned error from $coro");
+                });
+            });
+
+        // ---- ThreadPool actions ----
+
+        // When coroutine "X" submits N tasks to pool "P"
+        // Each task returns its index. Futures are stored in
+        // $ctx->threadPoolFutures[$pool] for a later "awaits all" step.
+        $r->on('/^coroutine "([^"]+)" submits (\S+) tasks to pool "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $nExpr, string $pool) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($n, $pool) {
+                    if (!isset($ctx->threadPools[$pool])) {
+                        $ctx->inc("tp_submit_target_missing_$pool");
+                        return;
+                    }
+                    $p = $ctx->threadPools[$pool];
+                    for ($i = 0; $i < $n; $i++) {
+                        $ctx->inc("tp_submit_attempts_$pool");
+                        try {
+                            $f = $p->submit(static fn(int $idx): int => $idx, $i);
+                            $ctx->threadPoolFutures[$pool][] = $f;
+                            $ctx->inc("tp_submitted_$pool");
+                        } catch (\Throwable $e) {
+                            $ctx->inc("tp_submit_failed_$pool");
+                        }
+                    }
+                });
+            });
+
+        // When coroutine "X" awaits all submissions to pool "P"
+        $r->on('/^coroutine "([^"]+)" awaits all submissions to pool "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $pool) {
+                $ctx->planAction($coro, function(Context $ctx) use ($pool) {
+                    $futures = $ctx->threadPoolFutures[$pool] ?? [];
+                    if (!$futures) return;
+                    $ctx->inc("tp_await_attempts_$pool");
+                    try {
+                        // fillNull=false: results contains only successful
+                        // entries; errors contains the failed ones. Their
+                        // sum equals the number of futures we actually
+                        // awaited.
+                        [$results, $errors] = \Async\await_all($futures, null, true, false);
+                        $ctx->inc("tp_completed_$pool", count($results));
+                        $ctx->inc("tp_failed_$pool", count($errors));
+                        $ctx->inc("tp_await_succeeded_$pool");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("tp_await_failed_$pool");
+                    }
+                });
+            });
+
+        // When coroutine "X" closes pool "P"
+        $r->on('/^coroutine "([^"]+)" closes pool "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $pool) {
+                $ctx->planAction($coro, function(Context $ctx) use ($pool) {
+                    $ctx->inc("tp_close_attempts_$pool");
+                    try {
+                        $ctx->threadPools[$pool]->close();
+                        $ctx->inc("tp_closed_$pool");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("tp_close_failed_$pool");
+                    }
+                });
+            });
+
+        // When coroutine "X" cancels pool "P"
+        $r->on('/^coroutine "([^"]+)" cancels pool "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $pool) {
+                $ctx->planAction($coro, function(Context $ctx) use ($pool) {
+                    $ctx->inc("tp_cancel_attempts_$pool");
+                    try {
+                        $ctx->threadPools[$pool]->cancel();
+                        $ctx->inc("tp_cancelled_$pool");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("tp_cancel_failed_$pool");
+                    }
+                });
+            });
+
+        // When coroutine "X" maps N items via pool "P"
+        $r->on('/^coroutine "([^"]+)" maps (\S+) items via pool "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $nExpr, string $pool) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($n, $pool) {
+                    $items = range(0, $n - 1);
+                    $ctx->inc("tp_map_attempts_$pool");
+                    try {
+                        $res = $ctx->threadPools[$pool]->map($items, static fn(int $i): int => $i * $i);
+                        $ctx->inc("tp_map_succeeded_$pool");
+                        $ctx->inc("tp_map_results_$pool", count($res));
+                    } catch (\Throwable $e) {
+                        $ctx->inc("tp_map_failed_$pool");
+                    }
+                });
+            });
+
+        // ---- ThreadChannel actions ----
+
+        // When coroutine "A" sends N messages to thread channel "X"
+        $r->on('/^coroutine "([^"]+)" sends (\S+) messages to thread channel "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $countExpr, string $ch) {
+                $n = (int)$ctx->resolver->resolve($countExpr);
+                for ($i = 0; $i < $n; $i++) {
+                    $value = $i;
+                    $ctx->planAction($coro, function(Context $ctx) use ($ch, $value) {
+                        $ctx->inc("tch_send_attempts_$ch");
+                        try {
+                            $ctx->threadChannels[$ch]->send($value);
+                            $ctx->inc("tch_sent_$ch");
+                        } catch (\Throwable $e) {
+                            $ctx->inc("tch_send_failed_$ch");
+                        }
+                    });
+                }
+            });
+
+        // When coroutine "B" receives N messages from thread channel "X"
+        $r->on('/^coroutine "([^"]+)" receives (\S+) messages from thread channel "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $countExpr, string $ch) {
+                $n = (int)$ctx->resolver->resolve($countExpr);
+                for ($i = 0; $i < $n; $i++) {
+                    $ctx->planAction($coro, function(Context $ctx) use ($ch) {
+                        $ctx->inc("tch_recv_attempts_$ch");
+                        try {
+                            $ctx->threadChannels[$ch]->recv();
+                            $ctx->inc("tch_received_$ch");
+                        } catch (\Throwable $e) {
+                            $ctx->inc("tch_recv_failed_$ch");
+                        }
+                    });
+                }
+            });
+
+        // When coroutine "X" closes thread channel "X"
+        $r->on('/^coroutine "([^"]+)" closes thread channel "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $ch) {
+                $ctx->planAction($coro, function(Context $ctx) use ($ch) {
+                    $ctx->threadChannels[$ch]->close();
+                    $ctx->inc("tch_closed_$ch");
+                });
+            });
+
+        // ---- TaskGroup actions ----
+
+        // When coroutine "X" spawns N tasks into "G" that print "msg"
+        // Each task increments tg_active_G on entry / -1 on exit, bumps
+        // tg_max_active_G to track concurrency, and increments tg_done_G.
+        $r->on('/^coroutine "([^"]+)" spawns (\S+) tasks into "([^"]+)" that print "([^"]*)"$/',
+            function(Context $ctx, string $coro, string $nExpr, string $g, string $msg) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($n, $g, $msg) {
+                    if (!isset($ctx->taskGroups[$g])) {
+                        $ctx->inc("tg_spawn_target_missing_$g");
+                        return;
+                    }
+                    $tg = $ctx->taskGroups[$g];
+                    for ($i = 0; $i < $n; $i++) {
+                        $ctx->inc("tg_spawn_attempts_$g");
+                        try {
+                            $tg->spawn(function() use ($ctx, $g, $msg) {
+                                $ctx->inc("tg_active_$g");
+                                $ctx->bumpMax("tg_max_active_$g", $ctx->counter("tg_active_$g"));
+                                try {
+                                    \Async\suspend();
+                                    $ctx->events[] = $msg;
+                                    $ctx->inc("tg_done_$g");
+                                } finally {
+                                    $ctx->inc("tg_active_$g", -1);
+                                }
+                            });
+                            $ctx->inc("tg_spawned_$g");
+                        } catch (\Throwable $e) {
+                            $ctx->inc("tg_spawn_failed_$g");
+                        }
+                    }
+                });
+            });
+
+        // When coroutine "X" awaits all of "G"
+        $r->on('/^coroutine "([^"]+)" awaits all of "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $g) {
+                $ctx->planAction($coro, function(Context $ctx) use ($g) {
+                    $ctx->inc("tg_await_all_attempts_$g");
+                    try {
+                        $res = $ctx->taskGroups[$g]->all(true)->await();
+                        $ctx->inc("tg_await_all_succeeded_$g");
+                        $ctx->inc("tg_await_all_results_$g", count($res));
+                    } catch (\Throwable $e) {
+                        $ctx->inc("tg_await_all_failed_$g");
+                    }
+                });
+            });
+
+        // When coroutine "X" awaits race of "G"
+        $r->on('/^coroutine "([^"]+)" awaits race of "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $g) {
+                $ctx->planAction($coro, function(Context $ctx) use ($g) {
+                    $ctx->inc("tg_race_attempts_$g");
+                    try {
+                        $ctx->taskGroups[$g]->race()->await();
+                        $ctx->inc("tg_race_succeeded_$g");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("tg_race_failed_$g");
+                    }
+                });
+            });
+
+        // When coroutine "X" awaits any of "G"
+        $r->on('/^coroutine "([^"]+)" awaits any of "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $g) {
+                $ctx->planAction($coro, function(Context $ctx) use ($g) {
+                    $ctx->inc("tg_any_attempts_$g");
+                    try {
+                        $ctx->taskGroups[$g]->any()->await();
+                        $ctx->inc("tg_any_succeeded_$g");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("tg_any_failed_$g");
+                    }
+                });
+            });
+
+        // When coroutine "X" cancels group "G"
+        $r->on('/^coroutine "([^"]+)" cancels group "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $g) {
+                $ctx->planAction($coro, function(Context $ctx) use ($g) {
+                    $ctx->inc("tg_cancel_attempts_$g");
+                    try {
+                        $ctx->taskGroups[$g]->cancel();
+                        $ctx->inc("tg_cancelled_$g");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("tg_cancel_failed_$g");
+                    }
+                });
+            });
+
+        // When coroutine "X" seals group "G"
+        $r->on('/^coroutine "([^"]+)" seals group "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $g) {
+                $ctx->planAction($coro, function(Context $ctx) use ($g) {
+                    $ctx->inc("tg_seal_attempts_$g");
+                    try {
+                        $ctx->taskGroups[$g]->seal();
+                        $ctx->inc("tg_sealed_$g");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("tg_seal_failed_$g");
+                    }
+                });
+            });
+
+        // When coroutine "X" awaits completion of "G"
+        $r->on('/^coroutine "([^"]+)" awaits completion of "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $g) {
+                $ctx->planAction($coro, function(Context $ctx) use ($g) {
+                    $ctx->inc("tg_completion_attempts_$g");
+                    try {
+                        $ctx->taskGroups[$g]->awaitCompletion();
+                        $ctx->inc("tg_completion_succeeded_$g");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("tg_completion_failed_$g");
+                    }
+                });
+            });
+
+        // When coroutine "X" disposes group "G"
+        $r->on('/^coroutine "([^"]+)" disposes group "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $g) {
+                $ctx->planAction($coro, function(Context $ctx) use ($g) {
+                    $ctx->inc("tg_dispose_attempts_$g");
+                    try {
+                        $ctx->taskGroups[$g]->dispose();
+                        $ctx->inc("tg_disposed_$g");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("tg_dispose_failed_$g");
+                    }
                 });
             });
 
@@ -355,6 +805,31 @@ final class StandardSteps {
             function(Context $ctx, string $name) {
                 if (!isset($ctx->scopes[$name]) || !$ctx->scopes[$name]->isCancelled()) {
                     throw new \RuntimeException("scope $name expected to be cancelled");
+                }
+            });
+
+        // Then group "G" is finished
+        $r->on('/^group "([^"]+)" is finished$/',
+            function(Context $ctx, string $name) {
+                if (!isset($ctx->taskGroups[$name]) || !$ctx->taskGroups[$name]->isFinished()) {
+                    throw new \RuntimeException("group $name expected to be finished");
+                }
+            });
+
+        // Then group "G" is sealed
+        $r->on('/^group "([^"]+)" is sealed$/',
+            function(Context $ctx, string $name) {
+                if (!isset($ctx->taskGroups[$name]) || !$ctx->taskGroups[$name]->isSealed()) {
+                    throw new \RuntimeException("group $name expected to be sealed");
+                }
+            });
+
+        // Then group "G" count equals N
+        $r->on('/^group "([^"]+)" count equals (\d+)$/',
+            function(Context $ctx, string $name, string $expected) {
+                $c = $ctx->taskGroups[$name]->count();
+                if ($c !== (int)$expected) {
+                    throw new \RuntimeException("group $name count = $c, expected $expected");
                 }
             });
 

@@ -20,6 +20,9 @@ use Async\Channel;
 use Async\Future;
 use Async\FutureState;
 use Async\Scope;
+use Async\TaskGroup;
+use Async\ThreadChannel;
+use Async\ThreadPool;
 use function Async\spawn;
 use function Async\await_all;
 
@@ -57,6 +60,27 @@ final class Context {
     /** @var array<string, Future> populated by run() */
     public array $futures = [];
 
+    /** @var array<string, array{concurrency:?int,queueLimit:?int}> */
+    public array $taskGroupDefs = [];
+
+    /** @var array<string, TaskGroup> populated by run() */
+    public array $taskGroups = [];
+
+    /** @var array<string, int> name => capacity */
+    public array $threadChannelDefs = [];
+
+    /** @var array<string, ThreadChannel> populated by run() */
+    public array $threadChannels = [];
+
+    /** @var array<string, array{workers:int,queueSize:int}> */
+    public array $threadPoolDefs = [];
+
+    /** @var array<string, ThreadPool> populated by run() */
+    public array $threadPools = [];
+
+    /** @var array<string, Future[]> futures returned by ThreadPool::submit, keyed by pool name */
+    public array $threadPoolFutures = [];
+
     /** @var array<string, int> arbitrary named counters */
     public array $counters = [];
 
@@ -90,6 +114,25 @@ final class Context {
     public function defineScope(string $name): void {
         if (!in_array($name, $this->scopeDefs, true)) {
             $this->scopeDefs[] = $name;
+        }
+    }
+
+    public function defineTaskGroup(string $name, ?int $concurrency = null, ?int $queueLimit = null): void {
+        $this->taskGroupDefs[$name] = ['concurrency' => $concurrency, 'queueLimit' => $queueLimit];
+    }
+
+    public function defineThreadChannel(string $name, int $capacity): void {
+        $this->threadChannelDefs[$name] = $capacity;
+    }
+
+    public function defineThreadPool(string $name, int $workers, int $queueSize = 0): void {
+        $this->threadPoolDefs[$name] = ['workers' => $workers, 'queueSize' => $queueSize];
+        $this->threadPoolFutures[$name] = [];
+    }
+
+    public function bumpMax(string $key, int $value): void {
+        if ($value > ($this->counters[$key] ?? 0)) {
+            $this->counters[$key] = $value;
         }
     }
 
@@ -127,6 +170,25 @@ final class Context {
         foreach ($this->scopeDefs as $name) {
             $this->scopes[$name] = new Scope();
         }
+        foreach ($this->threadChannelDefs as $name => $cap) {
+            $this->threadChannels[$name] = new ThreadChannel($cap);
+        }
+        foreach ($this->threadPoolDefs as $name => $spec) {
+            if ($spec['queueSize'] === 0) {
+                $this->threadPools[$name] = new ThreadPool($spec['workers']);
+            } else {
+                $this->threadPools[$name] = new ThreadPool($spec['workers'], $spec['queueSize']);
+            }
+        }
+        foreach ($this->taskGroupDefs as $name => $spec) {
+            if ($spec['concurrency'] === null && $spec['queueLimit'] === null) {
+                $this->taskGroups[$name] = new TaskGroup();
+            } elseif ($spec['queueLimit'] === null) {
+                $this->taskGroups[$name] = new TaskGroup($spec['concurrency']);
+            } else {
+                $this->taskGroups[$name] = new TaskGroup($spec['concurrency'], $spec['queueLimit']);
+            }
+        }
         foreach ($this->futureDefs as $name) {
             $state = new FutureState();
             $this->futureStates[$name] = $state;
@@ -158,6 +220,16 @@ final class Context {
         foreach ($this->channels as $ch) {
             if (!$ch->isClosed()) {
                 $ch->close();
+            }
+        }
+        foreach ($this->threadChannels as $tch) {
+            if (!$tch->isClosed()) {
+                $tch->close();
+            }
+        }
+        foreach ($this->threadPools as $pool) {
+            if (!$pool->isClosed()) {
+                $pool->close();
             }
         }
 
