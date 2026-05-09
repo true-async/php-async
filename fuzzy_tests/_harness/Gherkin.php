@@ -119,15 +119,17 @@ final class Gherkin {
                 continue;
             }
 
-            if (preg_match('/^(Given|When|Then|And|But)\s+(.+)$/i', $line, $m)) {
+            // Step keywords matter only inside a Scenario. Before the first
+            // Scenario:, the same words may appear as English prose in the
+            // Feature description ("And the scope itself..."), so we skip
+            // keyword matching there.
+            if ($scenario !== null
+                && preg_match('/^(Given|When|Then|And|But)\s+(.+)$/i', $line, $m)) {
                 $kw = strtolower($m[1]);
                 if ($kw === 'and' || $kw === 'but') {
                     $kw = $lastKeyword;
                 } else {
                     $lastKeyword = $kw;
-                }
-                if ($scenario === null) {
-                    throw new \RuntimeException("Step before any Scenario at line $lineNo: $line");
                 }
                 $scenario->steps[] = new GherkinStep($kw, trim($m[2]), $lineNo);
                 continue;

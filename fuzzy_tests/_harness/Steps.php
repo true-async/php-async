@@ -38,6 +38,25 @@ final class StandardSteps {
                 $ctx->defineCoroutine($name);
             });
 
+        // Given a coroutine "A" in scope "S"
+        $r->on('/^a coroutine "([^"]+)" in scope "([^"]+)"$/',
+            function(Context $ctx, string $name, string $scope) {
+                $ctx->defineScope($scope);
+                $ctx->defineCoroutine($name, $scope);
+            });
+
+        // Given a scope "S"
+        $r->on('/^a scope "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                $ctx->defineScope($name);
+            });
+
+        // Given a future "F"
+        $r->on('/^a future "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                $ctx->defineFuture($name);
+            });
+
         // ---- When: actions inside a coroutine ----
 
         // When coroutine "A" sends N messages to "ch"
@@ -116,6 +135,71 @@ final class StandardSteps {
                 $ms = (int)$ctx->resolver->resolve($msExpr);
                 $ctx->planAction($coro, function(Context $ctx) use ($ms) {
                     \Async\delay($ms);
+                });
+            });
+
+        // When coroutine "X" completes future "F" with VAL
+        $r->on('/^coroutine "([^"]+)" completes future "([^"]+)" with (\S+)$/',
+            function(Context $ctx, string $coro, string $f, string $valExpr) {
+                $val = $ctx->resolver->resolve($valExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($f, $val) {
+                    $ctx->inc("complete_attempts_$f");
+                    try {
+                        $ctx->futureStates[$f]->complete($val);
+                        $ctx->inc("completed_$f");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("complete_failed_$f");
+                    }
+                });
+            });
+
+        // When coroutine "X" awaits future "F"
+        $r->on('/^coroutine "([^"]+)" awaits future "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $f) {
+                $ctx->planAction($coro, function(Context $ctx) use ($f) {
+                    $ctx->inc("await_attempts_$f");
+                    try {
+                        $ctx->futures[$f]->await();
+                        $ctx->inc("awaited_$f");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("await_failed_$f");
+                    }
+                });
+            });
+
+        // When coroutine "X" cancels scope "S"
+        $r->on('/^coroutine "([^"]+)" cancels scope "([^"]+)"$/',
+            function(Context $ctx, string $caller, string $scope) {
+                $ctx->planAction($caller, function(Context $ctx) use ($scope) {
+                    $ctx->inc('scope_cancel_attempts');
+                    if (!isset($ctx->scopes[$scope])) {
+                        $ctx->inc('scope_cancel_target_missing');
+                        return;
+                    }
+                    try {
+                        $ctx->scopes[$scope]->cancel();
+                        $ctx->inc("scope_cancelled_$scope");
+                    } catch (\Throwable $e) {
+                        $ctx->inc('scope_cancel_threw');
+                    }
+                });
+            });
+
+        // When coroutine "X" cancels coroutine "Y"
+        $r->on('/^coroutine "([^"]+)" cancels coroutine "([^"]+)"$/',
+            function(Context $ctx, string $caller, string $target) {
+                $ctx->planAction($caller, function(Context $ctx) use ($target) {
+                    $ctx->inc('cancel_attempts');
+                    if (!isset($ctx->coroutineHandles[$target])) {
+                        $ctx->inc('cancel_target_missing');
+                        return;
+                    }
+                    try {
+                        $ctx->coroutineHandles[$target]->cancel();
+                        $ctx->inc("cancelled_$target");
+                    } catch (\Throwable $e) {
+                        $ctx->inc('cancel_threw');
+                    }
                 });
             });
 
@@ -198,6 +282,22 @@ final class StandardSteps {
                     throw new \RuntimeException(
                         'expected only the main coroutine to remain, got: ' . implode(',', $names)
                     );
+                }
+            });
+
+        // Then scope "S" is finished
+        $r->on('/^scope "([^"]+)" is finished$/',
+            function(Context $ctx, string $name) {
+                if (!isset($ctx->scopes[$name]) || !$ctx->scopes[$name]->isFinished()) {
+                    throw new \RuntimeException("scope $name expected to be finished");
+                }
+            });
+
+        // Then scope "S" is cancelled
+        $r->on('/^scope "([^"]+)" is cancelled$/',
+            function(Context $ctx, string $name) {
+                if (!isset($ctx->scopes[$name]) || !$ctx->scopes[$name]->isCancelled()) {
+                    throw new \RuntimeException("scope $name expected to be cancelled");
                 }
             });
 

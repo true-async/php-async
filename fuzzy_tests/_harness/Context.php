@@ -17,6 +17,9 @@
 namespace Async\Chaos;
 
 use Async\Channel;
+use Async\Future;
+use Async\FutureState;
+use Async\Scope;
 use function Async\spawn;
 use function Async\await_all;
 
@@ -30,8 +33,29 @@ final class Context {
     /** @var array<string, Channel> populated by run() */
     public array $channels = [];
 
+    /** @var array<string, \Async\Coroutine> populated by run() before any body executes */
+    public array $coroutineHandles = [];
+
     /** @var array<string, \Closure[]> coroutine_name => list of action closures */
     public array $plannedActions = [];
+
+    /** @var array<string, string|null> coroutine_name => scope_name|null (where to spawn) */
+    public array $coroutineScopes = [];
+
+    /** @var string[] scope names declared in Given */
+    public array $scopeDefs = [];
+
+    /** @var array<string, Scope> populated by run() */
+    public array $scopes = [];
+
+    /** @var string[] future names declared in Given */
+    public array $futureDefs = [];
+
+    /** @var array<string, FutureState> populated by run() */
+    public array $futureStates = [];
+
+    /** @var array<string, Future> populated by run() */
+    public array $futures = [];
 
     /** @var array<string, int> arbitrary named counters */
     public array $counters = [];
@@ -51,10 +75,27 @@ final class Context {
         $this->channelDefs[$name] = $capacity;
     }
 
-    /** Plan a coroutine; idempotent. */
-    public function defineCoroutine(string $name): void {
+    /** Plan a coroutine; idempotent. Optionally bound to a scope. */
+    public function defineCoroutine(string $name, ?string $scopeName = null): void {
         if (!isset($this->plannedActions[$name])) {
             $this->plannedActions[$name] = [];
+        }
+        if ($scopeName !== null) {
+            $this->coroutineScopes[$name] = $scopeName;
+        } elseif (!array_key_exists($name, $this->coroutineScopes)) {
+            $this->coroutineScopes[$name] = null;
+        }
+    }
+
+    public function defineScope(string $name): void {
+        if (!in_array($name, $this->scopeDefs, true)) {
+            $this->scopeDefs[] = $name;
+        }
+    }
+
+    public function defineFuture(string $name): void {
+        if (!in_array($name, $this->futureDefs, true)) {
+            $this->futureDefs[] = $name;
         }
     }
 
@@ -83,18 +124,34 @@ final class Context {
         foreach ($this->channelDefs as $name => $cap) {
             $this->channels[$name] = new Channel($cap);
         }
+        foreach ($this->scopeDefs as $name) {
+            $this->scopes[$name] = new Scope();
+        }
+        foreach ($this->futureDefs as $name) {
+            $state = new FutureState();
+            $this->futureStates[$name] = $state;
+            $this->futures[$name]      = new Future($state);
+        }
 
         $self = $this;
-        $handles = [];
+        // First pass: spawn every coroutine, populate handles. Coroutine bodies
+        // do NOT run yet (spawn just queues), so by the time the first body
+        // begins all $coroutineHandles entries are visible to it.
         foreach ($this->plannedActions as $coroName => $actions) {
-            $handles[] = spawn(function() use ($actions, $self) {
+            $body = function() use ($actions, $self, $coroName) {
                 foreach ($actions as $action) {
                     $action($self);
                 }
-            });
+            };
+            $scopeName = $this->coroutineScopes[$coroName] ?? null;
+            if ($scopeName !== null && isset($this->scopes[$scopeName])) {
+                $self->coroutineHandles[$coroName] = $this->scopes[$scopeName]->spawn($body);
+            } else {
+                $self->coroutineHandles[$coroName] = spawn($body);
+            }
         }
-        if ($handles) {
-            await_all($handles);
+        if ($this->coroutineHandles) {
+            await_all(array_values($this->coroutineHandles));
         }
 
         // Belt-and-braces: every channel ends closed so leftover senders/receivers wake up.
