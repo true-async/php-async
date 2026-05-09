@@ -2231,7 +2231,9 @@ void async_thread_run(void *arg)
 	zend_async_thread_event_t *event = context->event; /* may be NULL */
 	const async_thread_snapshot_t *snapshot = context->snapshot;
 	bool request_started = false;
+#ifdef ZTS
 	bool tsrm_initialized = false;
+#endif
 	char *fallback_message = pestrdup("Unknown fatal error in child thread", 1);
 	/* Capture registry key now — context may be released later in cleanup
 	 * and we still need the key to self-remove on every exit path. */
@@ -2286,7 +2288,9 @@ void async_thread_run(void *arg)
 	zend_rc_debug = false;
 #endif
 	async_thread_tsrm_init();
+#ifdef ZTS
 	tsrm_initialized = true;
+#endif
 
 	/* 1b. Start PHP request (can bailout).
 	 * zend_first_try initializes EG(bailout) for this thread. */
