@@ -112,6 +112,23 @@ final class StandardSteps {
                 }
             });
 
+        // When coroutine "X" iterates "ch" and counts
+        // foreach over the Channel until it closes; each delivered item
+        // increments iterated_$ch.
+        $r->on('/^coroutine "([^"]+)" iterates "([^"]+)" and counts$/',
+            function(Context $ctx, string $coro, string $ch) {
+                $ctx->planAction($coro, function(Context $ctx) use ($ch) {
+                    $ctx->inc("iterate_attempts_$ch");
+                    try {
+                        foreach ($ctx->channels[$ch] as $value) {
+                            $ctx->inc("iterated_$ch");
+                        }
+                    } catch (\Throwable $e) {
+                        $ctx->inc("iterate_failed_$ch");
+                    }
+                });
+            });
+
         // When coroutine "X" closes "ch"
         $r->on('/^coroutine "([^"]+)" closes "([^"]+)"$/',
             function(Context $ctx, string $coro, string $ch) {
@@ -149,6 +166,27 @@ final class StandardSteps {
                         $ctx->inc("completed_$f");
                     } catch (\Throwable $e) {
                         $ctx->inc("complete_failed_$f");
+                    }
+                });
+            });
+
+        // When coroutine "X" awaits any of futures "F1,F2,F3"
+        $r->on('/^coroutine "([^"]+)" awaits any of futures "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $list) {
+                $names = array_map('trim', explode(',', $list));
+                $ctx->planAction($coro, function(Context $ctx) use ($names) {
+                    $ctx->inc('await_any_attempts');
+                    $futures = [];
+                    foreach ($names as $n) {
+                        if (isset($ctx->futures[$n])) {
+                            $futures[] = $ctx->futures[$n];
+                        }
+                    }
+                    try {
+                        \Async\await_any_or_fail($futures);
+                        $ctx->inc('await_any_succeeded');
+                    } catch (\Throwable $e) {
+                        $ctx->inc('await_any_failed');
                     }
                 });
             });
@@ -200,6 +238,16 @@ final class StandardSteps {
                     } catch (\Throwable $e) {
                         $ctx->inc('cancel_threw');
                     }
+                });
+            });
+
+        // When coroutine "X" throws
+        $r->on('/^coroutine "([^"]+)" throws$/',
+            function(Context $ctx, string $coro) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro) {
+                    $ctx->inc('throw_attempts');
+                    $ctx->inc("threw_$coro");
+                    throw new \RuntimeException("planned error from $coro");
                 });
             });
 
@@ -255,6 +303,15 @@ final class StandardSteps {
                 $v = $ctx->counter($name);
                 if ($v !== (int)$expected) {
                     throw new \RuntimeException("counter $name = $v, expected $expected");
+                }
+            });
+
+        // Then counter "X" is at most N
+        $r->on('/^counter "([^"]+)" is at most (\d+)$/',
+            function(Context $ctx, string $name, string $bound) {
+                $v = $ctx->counter($name);
+                if ($v > (int)$bound) {
+                    throw new \RuntimeException("counter $name = $v exceeds bound $bound");
                 }
             });
 

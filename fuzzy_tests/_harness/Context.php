@@ -160,5 +160,11 @@ final class Context {
                 $ch->close();
             }
         }
+
+        // Suppress "Future was never used" warnings for futures that no
+        // coroutine got around to awaiting (await_any only consumes one).
+        foreach ($this->futures as $f) {
+            $f->ignore();
+        }
     }
 }
