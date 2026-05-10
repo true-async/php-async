@@ -207,7 +207,7 @@ jobs:
       - name: Generate chaos tests
         working-directory: php-src/ext/async
         run: |
-          PHP_BIN=/usr/local/bin/php sh fuzzy_tests/regen.sh
+          PHP_BIN=/usr/local/bin/php sh fuzzy-tests/regen.sh
 
       - name: Run basic tests
         working-directory: php-src/ext/async

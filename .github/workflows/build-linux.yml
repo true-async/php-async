@@ -262,10 +262,10 @@ jobs:
       - name: Generate chaos tests
         working-directory: php-src/ext/async
         run: |
-          # fuzzy_tests/_generated/ is in .gitignore — regenerate from
+          # fuzzy-tests/_generated/ is in .gitignore — regenerate from
           # .feature sources so run-tests below picks them up alongside
           # the regular ext/async/tests/ tree.
-          PHP_BIN=/usr/local/bin/php bash fuzzy_tests/regen.sh
+          PHP_BIN=/usr/local/bin/php bash fuzzy-tests/regen.sh
 
       - name: Run basic tests
         working-directory: php-src/ext/async

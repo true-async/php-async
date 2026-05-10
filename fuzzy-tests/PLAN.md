@@ -1,6 +1,6 @@
 # Chaos / Fuzz Test Plan for ext/async
 
-This is the working plan for expanding `fuzzy_tests/`. Future contributors
+This is the working plan for expanding `fuzzy-tests/`. Future contributors
 (or future-me with no memory of the previous session) should be able to pick
 up from here without re-deriving context.
 
@@ -208,7 +208,7 @@ real OS threads + cross-thread Future completion.
    `_harness/Context.php`, instantiate it in `Context::run()`.
 4. Run `./regen.sh` from this directory; check that
    `_generated/topic/...phpt` files were produced.
-5. `make TEST_PHP_ARGS="-q --no-progress" TESTS=ext/async/fuzzy_tests/_generated/topic test`
+5. `make TEST_PHP_ARGS="-q --no-progress" TESTS=ext/async/fuzzy-tests/_generated/topic test`
 6. Repeat with `TRUE_ASYNC_SCHED=random:N` for several N.
 7. If a row reproducibly fails — file an issue; either remove the row
    from Examples (with a `# blocked on #NNN` comment) or fix the runtime.
@@ -251,7 +251,7 @@ in the repo). Local matrix:
 ```sh
 for sched in fifo random:1 random:7 random:42 random:1337; do
   TRUE_ASYNC_SCHED=$sched make TEST_PHP_ARGS="-q --no-progress" \
-    TESTS=ext/async/fuzzy_tests test || echo "FAIL on $sched"
+    TESTS=ext/async/fuzzy-tests test || echo "FAIL on $sched"
 done
 ```
 
@@ -260,7 +260,7 @@ For value fuzzing add `CHAOS_GEN_SEED` to the same matrix.
 ## Stretch goals (not in scope until everything above is done)
 
 - **Layer 2 (I/O chaos)** — Toxiproxy / in-process EvilPeer for streams,
-  sockets, curl. Separate directory `fuzzy_tests/io_chaos/`, separate
+  sockets, curl. Separate directory `fuzzy-tests/io_chaos/`, separate
   harness.
 - **Layer 5 (allocator faults)** — fault-inject `emalloc` to expose
   missing error paths in the runtime. Needs `--enable-async-fuzz`-time
@@ -293,4 +293,4 @@ For value fuzzing add `CHAOS_GEN_SEED` to the same matrix.
   `ext/async/thread.c` (`op_array_to_emalloc` now copies `dynamic_func_defs`
   contiguously); regression test
   `tests/thread_pool/036-cancel_with_pending_outer_closure.phpt`.
-  `fuzzy_tests/thread_pool/cancel.feature` reinstated.
+  `fuzzy-tests/thread_pool/cancel.feature` reinstated.

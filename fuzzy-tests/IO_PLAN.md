@@ -23,7 +23,7 @@ phpt tests cannot express.
 ## Existing baselines worth referencing
 
 - `tests/stream/045-accept_cancel_uaf.phpt` — accept blocked, cancel
-  during graceful shutdown. Cited from `fuzzy_tests/cross_topic/
+  during graceful shutdown. Cited from `fuzzy-tests/cross_topic/
   cancel_during_io.feature`.
 - `tests/io/007-pipe_close_during_io.phpt` — proc_open + pipes pattern.
 - `tests/stream/004-stream_socket_client_server.phpt` — TCP client/
@@ -31,7 +31,7 @@ phpt tests cannot express.
 
 ## Already done (this branch)
 
-- `fuzzy_tests/cross_topic/cancel_during_io.feature` — TCP accept and
+- `fuzzy-tests/cross_topic/cancel_during_io.feature` — TCP accept and
   pipe read under direct `$coro->cancel()`. Layer 1 starter.
 
 ## Layer 1 — in-process chaos, no external peers
@@ -77,8 +77,8 @@ cancel/close racing the wait.
 ## Layer 2 — protocol-level fault injection
 
 Per `FUZZ_TESTING.md` this is future work. Lives in the same
-`fuzzy_tests/` tree under a topic subfolder (e.g. `fuzzy_tests/io/` or
-`fuzzy_tests/net/`) — no separate harness, reuse the existing one.
+`fuzzy-tests/` tree under a topic subfolder (e.g. `fuzzy-tests/io/` or
+`fuzzy-tests/net/`) — no separate harness, reuse the existing one.
 
 Helper scripts (Toxiproxy controller, EvilPeer) live next to the
 existing `_harness/` and `_peers/` (the latter to be created when
@@ -87,7 +87,7 @@ definitions for fault injection.
 
 - **Toxiproxy** between client and server — toxin types: `slicer`
   (chunked TCP), `latency`, `bandwidth`, `timeout`, `reset_peer`.
-- **EvilPeer** — in-process PHP script (`fuzzy_tests/_peers/evil-peer.php`)
+- **EvilPeer** — in-process PHP script (`fuzzy-tests/_peers/evil-peer.php`)
   that accepts and behaves badly: RST on accept, garbage payloads,
   never-reads-then-EOF, lengths-don't-match. ~30 lines.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regenerate fuzzy_tests/_generated/*.phpt from every .feature file.
+# Regenerate fuzzy-tests/_generated/*.phpt from every .feature file.
 set -euo pipefail
 cd "$(dirname "$0")"
 PHP_BIN="${PHP_BIN:-../../sapi/cli/php}"

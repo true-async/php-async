@@ -43,14 +43,14 @@ spawn(function() use ($ch) {
 
 echo "Main: done\n";
 ?>
---EXPECTF--
+--EXPECT--
 Main: done
 Sender: sending 1
+Receiver A: got 1
 Sender: sending 2
-Receiver %s: got 1
 Sender: sending 3
-Receiver %s: got 2
+Receiver A: got 2
 Sender: closed
-Receiver %s: got 3
-Receiver %s: channel closed
-Receiver %s: channel closed
+Receiver B: got 3
+Receiver B: channel closed
+Receiver A: channel closed

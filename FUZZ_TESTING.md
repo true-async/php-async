@@ -69,7 +69,7 @@ code and a real server. Configurable "toxics" applied per test:
 
 For scenarios Toxiproxy cannot model (malformed payloads, accept-then-RST,
 garbage responses, never-reads-sockets peer), a 30-line in-process PHP
-EvilPeer under `fuzzy_tests/_peers/evil-peer.php` serves the same role with a
+EvilPeer under `fuzzy-tests/_peers/evil-peer.php` serves the same role with a
 seeded fault table.
 
 ### Layer 3 — Runtime-internal I/O hooks
@@ -134,7 +134,7 @@ specific bug class starts recurring.
 
 ## Directory layout
 
-Chaos tests live in a **dedicated `fuzzy_tests/` directory next to `tests/`**,
+Chaos tests live in a **dedicated `fuzzy-tests/` directory next to `tests/`**,
 not under it — they have a different runtime contract (see Rationale below):
 
 ```
@@ -143,7 +143,7 @@ ext/async/
 │   ├── await/
 │   ├── channel/
 │   └── ...
-└── fuzzy_tests/               # chaos / fuzz / property tests
+└── fuzzy-tests/               # chaos / fuzz / property tests
     ├── README.md              # how to run, seed conventions
     ├── _harness/              # Scenario model, generator, helpers
     │   └── Scenario.php
@@ -171,7 +171,7 @@ Rationale:
    nightly with aggregated reporting (`N seeds passed / M failed / which`).
 5. **Reuse, not duplication.** The most important chaos coverage comes from
    running **existing** phpt tests under chaos modes, not from writing new
-   tests. `ext/async/fuzzy_tests/` is for tests that specifically assert
+   tests. `ext/async/fuzzy-tests/` is for tests that specifically assert
    chaos-mode behaviour (e.g. "refcount is zero after forced cancellation").
 
 ## Build flag
@@ -228,7 +228,7 @@ ASYNC_FUZZ_SEED=0x3f9a2b17cd88e401   test=ext/async/tests/channel/drain.phpt
 ```
 
 Re-running with the same seed and the same binary reproduces the failure.
-Failing seeds are appended to `ext/async/fuzzy_tests/_failed_seeds.txt` (not
+Failing seeds are appended to `ext/async/fuzzy-tests/_failed_seeds.txt` (not
 checked into git) for local triage, and uploaded as a CI artifact.
 
 ## CI tiers
@@ -366,7 +366,7 @@ We build it ourselves. Scope is small:
    `Chaos::refcount($obj)`, `Chaos::noLeak()`. Checked after every permutation.
 
 This is a few hundred lines of PHP plus a thin C hook. Lives under
-`fuzzy_tests/_harness/` alongside the seed-matrix runner.
+`fuzzy-tests/_harness/` alongside the seed-matrix runner.
 
 ### What this gives us
 
