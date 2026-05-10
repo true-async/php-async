@@ -256,6 +256,27 @@ final class StandardSteps {
                 });
             });
 
+        // When coroutine "X" awaits future "F" with cancellation future "FC"
+        // Either F completes first (await returns / throws based on F) or FC
+        // fires first and the await aborts. Counters: await_attempts_F always
+        // increments; exactly one of awaited_F / await_cancelled_F /
+        // await_failed_F increments per attempt.
+        $r->on('/^coroutine "([^"]+)" awaits future "([^"]+)" with cancellation future "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $f, string $cancelName) {
+                $ctx->planAction($coro, function(Context $ctx) use ($f, $cancelName) {
+                    $ctx->inc("await_attempts_$f");
+                    $cancellation = $ctx->futures[$cancelName] ?? null;
+                    try {
+                        $ctx->futures[$f]->await($cancellation);
+                        $ctx->inc("awaited_$f");
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("await_cancelled_$f");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("await_failed_$f");
+                    }
+                });
+            });
+
         // When coroutine "X" fails future "F" with "msg"
         $r->on('/^coroutine "([^"]+)" fails future "([^"]+)" with "([^"]*)"$/',
             function(Context $ctx, string $coro, string $f, string $msg) {
@@ -944,6 +965,18 @@ final class StandardSteps {
                 if ($sum !== $cv) {
                     throw new \RuntimeException(
                         "counter $a + counter $b = $sum, but counter $c = $cv"
+                    );
+                }
+            });
+
+        // Then counter "X" plus counter "Y" plus counter "Z" equals counter "W"
+        $r->on('/^counter "([^"]+)" plus counter "([^"]+)" plus counter "([^"]+)" equals counter "([^"]+)"$/',
+            function(Context $ctx, string $a, string $b, string $c, string $d) {
+                $sum = $ctx->counter($a) + $ctx->counter($b) + $ctx->counter($c);
+                $dv = $ctx->counter($d);
+                if ($sum !== $dv) {
+                    throw new \RuntimeException(
+                        "counter $a + $b + $c = $sum, but counter $d = $dv"
                     );
                 }
             });
