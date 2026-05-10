@@ -183,20 +183,6 @@ final class Context {
     }
 
     /**
-     * Resolve a channel by name, polling until it appears. Scope-owned
-     * channels are constructed lazily inside their owner-scope's creator
-     * coroutine; under random scheduling that creator may run after the
-     * user coroutine that consumes the channel. Eager channels (no owner)
-     * are already in the map, so the poll exits immediately.
-     */
-    public function awaitChannel(string $name): Channel {
-        while (!isset($this->channels[$name])) {
-            suspend();
-        }
-        return $this->channels[$name];
-    }
-
-    /**
      * Realise the plan: instantiate channels, spawn one coroutine per planned
      * group, await all, close any leftover channels.
      */
@@ -278,20 +264,21 @@ final class Context {
 
         $self = $this;
 
-        // Spawn channel-creator coroutines for scope-owned channels. The
-        // channel is constructed inside the owner scope so the runtime tags
-        // ownership; the creator exits immediately — the Channel object is
-        // kept alive by $self->channels[$name]. When the owner scope is
-        // disposed, the runtime fires the owner-scope-end callback and the
-        // channel closes with SCOPE_DISPOSED. Steps using this channel poll
-        // via awaitChannel() because the creator may run after the consumer
-        // under random scheduling.
+        // Synchronous prep-phase: construct scope-owned channels by spawning
+        // a tiny creator coroutine in each owner scope and awaiting them all.
+        // The Channel is constructed inside the owner scope so the runtime
+        // tags ownership; the creator exits immediately. After this phase
+        // every $this->channels[$name] entry is populated, so user-coroutine
+        // steps can use them directly without any polling. The lifecycle
+        // chaos (dispose closes channel, receivers unblock, etc.) plays out
+        // later when user coroutines and the killer race.
+        $creators = [];
         foreach ($this->channelDefs as $name => $spec) {
             if ($spec['ownerScope'] === null) {
                 continue;
             }
             $scope = $this->scopes[$spec['ownerScope']];
-            $scope->spawn(function() use ($self, $name, $spec) {
+            $creators[] = $scope->spawn(function() use ($self, $name, $spec) {
                 $self->channels[$name] = new Channel(
                     $spec['capacity'],
                     $spec['noProducerTimeout'],
@@ -299,6 +286,9 @@ final class Context {
                     $spec['hardTimeouts']
                 );
             });
+        }
+        if ($creators) {
+            await_all($creators);
         }
         // First pass: spawn every coroutine, populate handles. Coroutine bodies
         // do NOT run yet (spawn just queues), so by the time the first body

@@ -142,7 +142,7 @@ final class StandardSteps {
                     $ctx->planAction($coro, function(Context $ctx) use ($ch, $value) {
                         $ctx->inc("send_attempts_$ch");
                         try {
-                            $ctx->awaitChannel($ch)->send($value);
+                            $ctx->channels[$ch]->send($value);
                             $ctx->inc("sent_$ch");
                         } catch (\Throwable $e) {
                             $ctx->inc("send_failed_$ch");
@@ -158,7 +158,7 @@ final class StandardSteps {
                 $ctx->planAction($coro, function(Context $ctx) use ($ch, $val) {
                     $ctx->inc("send_attempts_$ch");
                     try {
-                        $ctx->awaitChannel($ch)->send($val);
+                        $ctx->channels[$ch]->send($val);
                         $ctx->inc("sent_$ch");
                     } catch (\Throwable $e) {
                         $ctx->inc("send_failed_$ch");
@@ -175,7 +175,7 @@ final class StandardSteps {
                     $ctx->planAction($coro, function(Context $ctx) use ($ch) {
                         $ctx->inc("recv_attempts_$ch");
                         try {
-                            $ctx->awaitChannel($ch)->recv();
+                            $ctx->channels[$ch]->recv();
                             $ctx->inc("received_$ch");
                         } catch (\Throwable $e) {
                             $ctx->inc("recv_failed_$ch");
@@ -194,7 +194,7 @@ final class StandardSteps {
                     $value = $i;
                     $ctx->planAction($coro, function(Context $ctx) use ($ch, $value) {
                         $ctx->inc("try_send_attempts_$ch");
-                        if ($ctx->awaitChannel($ch)->sendAsync($value)) {
+                        if ($ctx->channels[$ch]->sendAsync($value)) {
                             $ctx->inc("try_send_ok_$ch");
                         } else {
                             $ctx->inc("try_send_full_$ch");
@@ -213,7 +213,7 @@ final class StandardSteps {
                     $ctx->planAction($coro, function(Context $ctx) use ($ch) {
                         $ctx->inc("async_recv_attempts_$ch");
                         try {
-                            $ctx->awaitChannel($ch)->recvAsync()->await();
+                            $ctx->channels[$ch]->recvAsync()->await();
                             $ctx->inc("async_received_$ch");
                         } catch (\Throwable $e) {
                             $ctx->inc("async_recv_failed_$ch");
@@ -230,7 +230,7 @@ final class StandardSteps {
                 $ctx->planAction($coro, function(Context $ctx) use ($ch) {
                     $ctx->inc("iterate_attempts_$ch");
                     try {
-                        foreach ($ctx->awaitChannel($ch) as $value) {
+                        foreach ($ctx->channels[$ch] as $value) {
                             $ctx->inc("iterated_$ch");
                         }
                     } catch (\Throwable $e) {
@@ -243,7 +243,7 @@ final class StandardSteps {
         $r->on('/^coroutine "([^"]+)" closes "([^"]+)"$/',
             function(Context $ctx, string $coro, string $ch) {
                 $ctx->planAction($coro, function(Context $ctx) use ($ch) {
-                    $ctx->awaitChannel($ch)->close();
+                    $ctx->channels[$ch]->close();
                     $ctx->inc("closed_$ch");
                 });
             });
