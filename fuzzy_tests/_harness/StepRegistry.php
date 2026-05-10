@@ -65,6 +65,9 @@ final class Rng {
 }
 
 final class StepDefinition {
+    /** @var string[] platform requirement tags ('unix-sockets', 'posix', etc.) */
+    public array $requires = [];
+
     public function __construct(
         public readonly string  $regex,
         public readonly \Closure $handler,
@@ -77,6 +80,24 @@ final class StepRegistry {
 
     public function on(string $regex, \Closure $handler): self {
         $this->defs[] = new StepDefinition($regex, $handler);
+        return $this;
+    }
+
+    /**
+     * Tag the most recently registered step with a platform requirement.
+     * Used by the .phpt generator to emit per-scenario --SKIPIF-- blocks.
+     * Known tags: 'unix-sockets', 'tcp', 'pipe', 'fork', 'tty'.
+     */
+    public function requires(string ...$tags): self {
+        if (empty($this->defs)) {
+            throw new \RuntimeException("requires() must follow on()");
+        }
+        $last = $this->defs[count($this->defs) - 1];
+        foreach ($tags as $t) {
+            if (!in_array($t, $last->requires, true)) {
+                $last->requires[] = $t;
+            }
+        }
         return $this;
     }
 

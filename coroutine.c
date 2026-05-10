@@ -1579,7 +1579,13 @@ METHOD(isSuspended)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
-	RETURN_BOOL(ZEND_COROUTINE_SUSPENDED(&THIS_COROUTINE->coroutine));
+	async_coroutine_t *coroutine = THIS_COROUTINE;
+
+	// A finished coroutine is not "suspended" even if its waker is still
+	// in WAITING — finished is terminal and mutually exclusive with the
+	// transient {running, suspended} states (mirrors the isRunning guard).
+	RETURN_BOOL(ZEND_COROUTINE_SUSPENDED(&coroutine->coroutine) &&
+				false == ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine));
 }
 
 METHOD(isCancelled)

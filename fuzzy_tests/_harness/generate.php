@@ -13,6 +13,9 @@
 namespace Async\Chaos;
 
 require_once __DIR__ . '/Gherkin.php';
+require_once __DIR__ . '/Context.php';
+require_once __DIR__ . '/StepRegistry.php';
+require_once __DIR__ . '/Steps.php';
 
 const FUZZY_DIR = __DIR__ . '/..';
 const OUT_DIR   = __DIR__ . '/../_generated';
@@ -72,6 +75,38 @@ function findFeatures(string $root): array {
     return $found;
 }
 
+/**
+ * Map of requirement tags → PHP snippets that decide whether to skip.
+ * Each snippet runs in --SKIPIF--; if any prints "skip ...", the test
+ * is skipped on that platform.
+ */
+const SKIP_RULES = [
+    'unix-sockets' => 'if (PHP_OS_FAMILY === "Windows") { echo "skip unix-domain sockets not supported"; exit; }',
+    'tcp'          => '/* TCP loopback is portable; no skip */',
+    'fork'         => 'if (!function_exists("pcntl_fork")) { echo "skip fork() not available"; exit; }',
+    'tty'          => 'if (PHP_OS_FAMILY === "Windows") { echo "skip TTY semantics differ on Windows"; exit; }',
+    'zts'          => 'if (!ZEND_THREAD_SAFE) { echo "skip requires Thread-Safe (ZTS) PHP build"; exit; }',
+];
+
+function buildSkipIfBlock(array $requires): string {
+    if (!$requires) {
+        return '';
+    }
+    $lines = ['<?php'];
+    foreach ($requires as $tag) {
+        $rule = SKIP_RULES[$tag] ?? null;
+        if ($rule === null || str_starts_with($rule, '/*')) {
+            continue;
+        }
+        $lines[] = $rule;
+    }
+    if (count($lines) === 1) {
+        return ''; // only no-op rules collected
+    }
+    $lines[] = '?>';
+    return "--SKIPIF--\n" . implode("\n", $lines) . "\n";
+}
+
 function emitPhpt(
     string  $path,
     string  $featureRel,
@@ -79,7 +114,8 @@ function emitPhpt(
     string  $scenarioName,
     ?array  $row,
     string  $featureAbs,
-    string  $relativeHarness
+    string  $relativeHarness,
+    array   $requires = []
 ): void {
     $rowComment = '';
     $rowArg = 'null';
@@ -92,13 +128,15 @@ function emitPhpt(
     $featureExport  = var_export($featureAbs, true);
     $scenarioExport = var_export($scenarioName, true);
 
+    $skipIf = buildSkipIfBlock($requires);
+
     $content = <<<PHPT
 --TEST--
 {$titleEscaped}
 --DESCRIPTION--
 Auto-generated from {$featureRel}.
 DO NOT EDIT — regenerate via fuzzy_tests/regen.sh.
---FILE--
+{$skipIf}--FILE--
 <?php
 require_once __DIR__ . '/{$relativeHarness}/Runner.php';
 \\Async\\Chaos\\Runner::runScenario(
@@ -116,8 +154,32 @@ PHPT;
     file_put_contents($path, $content);
 }
 
+/** Walk a scenario's steps, match each against the registry, union the
+ * requires tags. Steps that don't match are reported as warnings. */
+function collectScenarioRequires(\Async\Chaos\StepRegistry $registry, \Async\Chaos\GherkinScenario $scenario): array {
+    $tags = [];
+    foreach ($scenario->steps as $step) {
+        $hit = $registry->match($step->text);
+        if ($hit === null) {
+            continue; // Runner reports unmatched steps at run time
+        }
+        [$def, ] = $hit;
+        foreach ($def->requires as $t) {
+            if (!in_array($t, $tags, true)) {
+                $tags[] = $t;
+            }
+        }
+    }
+    return $tags;
+}
+
 function main(): int {
     ensureCleanOutDir(OUT_DIR);
+
+    /* Build the step registry once so we can inspect per-scenario
+     * platform requirements and emit --SKIPIF-- blocks accordingly. */
+    $registry = new StepRegistry();
+    StandardSteps::register($registry);
 
     $features = findFeatures(FUZZY_DIR);
     if (!$features) {
@@ -151,6 +213,7 @@ function main(): int {
 
         foreach ($feature->scenarios as $idx => $scenario) {
             $scenarioSlug = slug($scenario->name);
+            $requires = collectScenarioRequires($registry, $scenario);
             if ($scenario->isOutline) {
                 foreach ($scenario->examples as $rowIdx => $row) {
                     $rs = rowSlug($row);
@@ -158,7 +221,7 @@ function main(): int {
                     emitPhpt(
                         $outSubdir . '/' . $name,
                         $featureRel, $feature->name, $scenario->name, $row, $featureAbs,
-                        $relativeHarness
+                        $relativeHarness, $requires
                     );
                     $written++;
                 }
@@ -167,7 +230,7 @@ function main(): int {
                 emitPhpt(
                     $outSubdir . '/' . $name,
                     $featureRel, $feature->name, $scenario->name, null, $featureAbs,
-                    $relativeHarness
+                    $relativeHarness, $requires
                 );
                 $written++;
             }

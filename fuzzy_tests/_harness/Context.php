@@ -31,7 +31,7 @@ final class Context {
     public Rng $rng;
     public ValueResolver $resolver;
 
-    /** @var array<string, int> name => capacity */
+    /** @var array<string, array{capacity:int,noProducerTimeout:int,noConsumerTimeout:int,hardTimeouts:bool,ownerScope:?string}> */
     public array $channelDefs = [];
 
     /** @var array<string, Channel> populated by run() */
@@ -46,6 +46,10 @@ final class Context {
     /** @var array<string, string|null> coroutine_name => scope_name|null (where to spawn) */
     public array $coroutineScopes = [];
 
+    /** @var array<string, true> coroutines NOT placed in await_all — used to
+     * test runtime cleanup of pending coroutines at request end. */
+    public array $nonAwaited = [];
+
     /** @var string[] scope names declared in Given */
     public array $scopeDefs = [];
 
@@ -57,6 +61,9 @@ final class Context {
 
     /** @var array<string, bool> scope name => has finally callback installed */
     public array $scopeFinally = [];
+
+    /** @var array<string, string> scope name => parent scope name (Scope::inherit) */
+    public array $scopeParent = [];
 
     /** @var string[] future names declared in Given */
     public array $futureDefs = [];
@@ -102,8 +109,24 @@ final class Context {
     }
 
     /** Define a channel by name; idempotent (last wins). */
-    public function defineChannel(string $name, int $capacity): void {
-        $this->channelDefs[$name] = $capacity;
+    public function defineChannel(
+        string $name,
+        int $capacity,
+        int $noProducerTimeout = 0,
+        int $noConsumerTimeout = 0,
+        bool $hardTimeouts = false,
+        ?string $ownerScope = null
+    ): void {
+        $this->channelDefs[$name] = [
+            'capacity' => $capacity,
+            'noProducerTimeout' => $noProducerTimeout,
+            'noConsumerTimeout' => $noConsumerTimeout,
+            'hardTimeouts' => $hardTimeouts,
+            'ownerScope' => $ownerScope,
+        ];
+        if ($ownerScope !== null) {
+            $this->defineScope($ownerScope);
+        }
     }
 
     /** Plan a coroutine; idempotent. Optionally bound to a scope. */
@@ -171,23 +194,51 @@ final class Context {
         if ($this->hasRun) return;
         $this->hasRun = true;
 
-        foreach ($this->channelDefs as $name => $cap) {
-            $this->channels[$name] = new Channel($cap);
-        }
-        foreach ($this->scopeDefs as $name) {
-            $scope = new Scope();
-            $this->scopes[$name] = $scope;
-            if (!empty($this->scopeExceptionHandler[$name])) {
-                $self2 = $this;
-                $scope->setExceptionHandler(function($scope, $coroutine, \Throwable $e) use ($self2, $name) {
-                    $self2->inc("scope_exception_handled_$name");
-                });
+        foreach ($this->channelDefs as $name => $spec) {
+            // Scope-owned channels are constructed lazily inside their owner
+            // scope so the runtime tags ownership correctly. Eagerly constructed
+            // channels are owned by main_scope.
+            if ($spec['ownerScope'] !== null) {
+                continue;
             }
-            if (!empty($this->scopeFinally[$name])) {
-                $self2 = $this;
-                $scope->finally(function() use ($self2, $name) {
-                    $self2->inc("scope_finally_$name");
-                });
+            $this->channels[$name] = new Channel(
+                $spec['capacity'],
+                $spec['noProducerTimeout'],
+                $spec['noConsumerTimeout'],
+                $spec['hardTimeouts']
+            );
+        }
+        // Instantiate scopes in dependency order so a child can reference its
+        // already-constructed parent. Fixpoint loop handles arbitrary depth.
+        $remaining = $this->scopeDefs;
+        while ($remaining) {
+            $progress = false;
+            foreach ($remaining as $i => $name) {
+                $parent = $this->scopeParent[$name] ?? null;
+                if ($parent !== null && !isset($this->scopes[$parent])) {
+                    continue;
+                }
+                $scope = $parent !== null
+                    ? Scope::inherit($this->scopes[$parent])
+                    : new Scope();
+                $this->scopes[$name] = $scope;
+                if (!empty($this->scopeExceptionHandler[$name])) {
+                    $self2 = $this;
+                    $scope->setExceptionHandler(function($scope, $coroutine, \Throwable $e) use ($self2, $name) {
+                        $self2->inc("scope_exception_handled_$name");
+                    });
+                }
+                if (!empty($this->scopeFinally[$name])) {
+                    $self2 = $this;
+                    $scope->finally(function() use ($self2, $name) {
+                        $self2->inc("scope_finally_$name");
+                    });
+                }
+                unset($remaining[$i]);
+                $progress = true;
+            }
+            if (!$progress) {
+                throw new \RuntimeException('scope parent cycle or unknown parent in: ' . implode(',', $remaining));
             }
         }
         foreach ($this->threadChannelDefs as $name => $cap) {
@@ -216,6 +267,33 @@ final class Context {
         }
 
         $self = $this;
+
+        // Synchronous prep-phase: construct scope-owned channels by spawning
+        // a tiny creator coroutine in each owner scope and awaiting them all.
+        // The Channel is constructed inside the owner scope so the runtime
+        // tags ownership; the creator exits immediately. After this phase
+        // every $this->channels[$name] entry is populated, so user-coroutine
+        // steps can use them directly without any polling. The lifecycle
+        // chaos (dispose closes channel, receivers unblock, etc.) plays out
+        // later when user coroutines and the killer race.
+        $creators = [];
+        foreach ($this->channelDefs as $name => $spec) {
+            if ($spec['ownerScope'] === null) {
+                continue;
+            }
+            $scope = $this->scopes[$spec['ownerScope']];
+            $creators[] = $scope->spawn(function() use ($self, $name, $spec) {
+                $self->channels[$name] = new Channel(
+                    $spec['capacity'],
+                    $spec['noProducerTimeout'],
+                    $spec['noConsumerTimeout'],
+                    $spec['hardTimeouts']
+                );
+            });
+        }
+        if ($creators) {
+            await_all($creators);
+        }
         // First pass: spawn every coroutine, populate handles. Coroutine bodies
         // do NOT run yet (spawn just queues), so by the time the first body
         // begins all $coroutineHandles entries are visible to it.
@@ -232,39 +310,60 @@ final class Context {
                 }
             };
             $scopeName = $this->coroutineScopes[$coroName] ?? null;
+            $isPending = !empty($this->nonAwaited[$coroName]);
             if ($scopeName !== null && isset($this->scopes[$scopeName])) {
                 $h = $this->scopes[$scopeName]->spawn($body);
                 $self->coroutineHandles[$coroName] = $h;
                 // If the scope has an exception handler installed, child
                 // exceptions must reach the scope handler — and an outer
                 // awaiter would consume them first. Skip the external await
-                // for those scopes only.
-                if (empty($this->scopeExceptionHandler[$scopeName])) {
+                // for those scopes only. Non-awaited coroutines are also
+                // skipped (testing pending-shutdown cleanup).
+                if (empty($this->scopeExceptionHandler[$scopeName]) && !$isPending) {
                     $awaitable[] = $h;
                 }
             } else {
                 $self->coroutineHandles[$coroName] = spawn($body);
-                $awaitable[] = $self->coroutineHandles[$coroName];
+                if (!$isPending) {
+                    $awaitable[] = $self->coroutineHandles[$coroName];
+                }
             }
         }
         if ($awaitable) {
             await_all($awaitable);
         }
 
-        // Drain each scope: wait for its child coroutines to finish (or for the
-        // scope to enter cancelled/closed state), then explicitly dispose so
-        // finally handlers fire and resources are released before assertions
-        // execute. awaitCompletion needs a cancellation Awaitable that we
-        // never resolve.
-        foreach ($this->scopes as $scope) {
-            if (!$scope->isClosed() && !$scope->isCancelled()) {
+        // Shutdown sweep: cancel any non-awaited coroutine still alive so the
+        // harness exits cleanly. Real PHP-async runtime will run the same
+        // cleanup path on request shutdown; here we fire it explicitly so the
+        // test exercises the cancellation-on-shutdown route. Coroutines that
+        // were already unblocked by the channel cleanup below (or by the
+        // scope dispose loop further down) are no-ops here.
+        foreach ($this->nonAwaited as $coroName => $_) {
+            if (!isset($self->coroutineHandles[$coroName])) {
+                continue;
+            }
+            $h = $self->coroutineHandles[$coroName];
+            if (!$h->isCompleted()) {
+                $h->cancel();
+            }
+        }
+
+        // Dispose every scope in reverse-of-insertion order so that nested
+        // child scopes are released before their parents. For scopes with
+        // an exception handler the children were not in await_all, so we
+        // must first wait for them via awaitCompletion (otherwise dispose()
+        // would cancel children before their throw paths execute and the
+        // handler would never see them).
+        foreach (array_reverse($this->scopes, true) as $name => $scope) {
+            if (!empty($this->scopeExceptionHandler[$name])
+                && !$scope->isClosed() && !$scope->isCancelled()) {
                 $cancelState  = new FutureState();
                 $cancelFuture = new Future($cancelState);
                 try {
                     $scope->awaitCompletion($cancelFuture);
                 } catch (\Throwable $e) {
-                    // Scope cancellation surfaces here; counters already
-                    // reflect the cancel via the explicit cancel step.
+                    // Scope cancellation surfaces here; counters reflect it.
                 }
                 $cancelFuture->ignore();
             }
@@ -281,7 +380,7 @@ final class Context {
         // by the time Then-step assertions execute. Bound the loop so a stuck
         // coroutine surfaces as an orphan-coroutines failure rather than a
         // hang.
-        if ($this->scopes) {
+        if ($this->scopes || $this->nonAwaited) {
             // First a couple of suspends drain micro-tasks (post-dispose
             // finally callbacks fire here). Then short delays advance the
             // reactor so any timer-blocked child receives its cancellation.

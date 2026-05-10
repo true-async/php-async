@@ -3,6 +3,8 @@ name: True Async Linux x64 Build
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 
 jobs:
   build-linux-x64:
@@ -256,6 +258,14 @@ jobs:
           ulimit -c unlimited
           # Tell ASAN to abort (so glibc dumps core) instead of just exit
           echo "ASAN_OPTIONS=abort_on_error=1:disable_coredump=0:unmap_shadow_on_exit=1" >> $GITHUB_ENV
+
+      - name: Generate chaos tests
+        working-directory: php-src/ext/async
+        run: |
+          # fuzzy_tests/_generated/ is in .gitignore — regenerate from
+          # .feature sources so run-tests below picks them up alongside
+          # the regular ext/async/tests/ tree.
+          PHP_BIN=/usr/local/bin/php bash fuzzy_tests/regen.sh
 
       - name: Run basic tests
         working-directory: php-src/ext/async

@@ -1269,27 +1269,24 @@ static void thread_release_transferred_hash_table(HashTable *ht)
 	pefree(ht, 1);
 }
 
-/* Custom release for persistent shells produced by transfer_obj handlers
- * whose layout differs from the default (e.g. closure_transfer_obj stores
- * a snapshot pointer that needs explicit destroy). The handler stashes a
- * function pointer in obj->properties — NULL means default cleanup. */
-typedef void (*async_thread_persistent_release_fn)(zend_object *obj);
-
 static void thread_release_transferred_object(zend_object *obj)
 {
 	if (GC_DELREF(obj) > 0) {
 		return;
 	}
 
-	/* Custom release path: handler-specific cleanup of persistent shell. */
-	if (obj->properties != NULL) {
-		((async_thread_persistent_release_fn) obj->properties)(obj);
-		return;
-	}
-
 	/* Read transit fields */
 	const uint32_t prop_count = (uint32_t)(uintptr_t) obj->handlers;
 	zend_string *class_name = (zend_string *) obj->ce;
+
+	/* Closure shell stashes the snapshot pointer in `properties` (which is
+	 * always NULL for non-closure shells). LOAD normally consumes it and
+	 * resets the field; if LOAD never ran (future rejected without an
+	 * awaiter) we still own the snapshot and must free it here. */
+	if (obj->properties != NULL && zend_string_equals_literal(class_name, "Closure")) {
+		async_thread_snapshot_destroy((async_thread_snapshot_t *) obj->properties);
+		obj->properties = NULL;
+	}
 
 	for (uint32_t i = 0; i < prop_count; i++) {
 		thread_release_transferred_zval(&obj->properties_table[i]);
@@ -2756,26 +2753,11 @@ void async_thread_snapshot_destroy_api(void *snapshot)
 /// Closure transfer_obj handler
 ///////////////////////////////////////////////////////////
 
-/* Release the persistent shell produced for a transferred closure.
- * Called from thread_release_transferred_object when the persistent
- * exception/result is destroyed without ever being loaded back into
- * an emalloc heap (e.g. ThreadPool::cancel rejecting pending tasks
- * whose target future has no awaiting consumer). */
-static void closure_persistent_release(zend_object *obj)
-{
-	async_thread_snapshot_t *snapshot =
-		(async_thread_snapshot_t *)(uintptr_t) Z_LVAL(obj->properties_table[0]);
-	if (snapshot != NULL) {
-		async_thread_snapshot_destroy(snapshot);
-	}
-	zend_string_release((zend_string *) obj->ce);
-	pefree((char *) obj - obj->extra_flags, 1);
-}
-
 /**
  * Persistent wrapper for a transferred closure.
- * Layout: [class_name_ptr | snapshot_ptr | zend_object shell]
- * class_name stored in ce field (same convention as default transfer).
+ * Layout: zend_object header only — snapshot pointer stashed in `properties`
+ * (always NULL for non-closure shells, so its non-NULL value uniquely
+ * identifies a closure shell for thread_release_transferred_object).
  */
 static zend_object *closure_transfer_obj(
 	zend_object *object, zend_async_thread_transfer_ctx_t *ctx,
@@ -2794,9 +2776,10 @@ static zend_object *closure_transfer_obj(
 			return NULL;
 		}
 
-		/* Minimal persistent shell: zend_object + 1 property slot for snapshot ptr */
-		size_t alloc_size = sizeof(zend_object) + sizeof(zval);
-		zend_object *dst = pecalloc(1, alloc_size, 1);
+		/* Minimal persistent shell: just a zend_object header. The snapshot
+		 * pointer lives in `properties` (NULL for any other shell, so its
+		 * non-NULL value uniquely identifies a closure shell). */
+		zend_object *dst = pecalloc(1, sizeof(zend_object), 1);
 		GC_SET_REFCOUNT(dst, 1);
 		GC_MAKE_PERSISTENT_LOCAL(dst);
 		dst->extra_flags = 0; /* offset = 0 */
@@ -2804,19 +2787,12 @@ static zend_object *closure_transfer_obj(
 		/* Store class name for LOAD phase lookup */
 		dst->ce = (zend_class_entry *) thread_transfer_string(ctx, object->ce->name);
 		dst->handlers = (const zend_object_handlers *)(uintptr_t) 0; /* prop_count = 0 */
-		/* Stash custom release fn — fires from thread_release_transferred_object
-		 * when this shell is freed without going through LOAD (which would
-		 * destroy the snapshot itself). */
-		dst->properties = (HashTable *)(void *) closure_persistent_release;
-
-		/* Store snapshot pointer in first property slot */
-		ZVAL_LONG(&dst->properties_table[0], (zend_long)(uintptr_t) snapshot);
+		dst->properties = (HashTable *) snapshot; /* repurposed as snapshot ptr */
 
 		return dst;
 	} else {
 		/* Destination thread → emalloc: recreate closure from snapshot */
-		async_thread_snapshot_t *snapshot =
-			(async_thread_snapshot_t *)(uintptr_t) Z_LVAL(object->properties_table[0]);
+		async_thread_snapshot_t *snapshot = (async_thread_snapshot_t *) object->properties;
 
 		zval closure_zv;
 		async_thread_create_closure(&snapshot->entry, &closure_zv);
@@ -2827,9 +2803,9 @@ static zend_object *closure_transfer_obj(
 		op_array_to_emalloc(&closure->func.op_array);
 
 		async_thread_snapshot_destroy(snapshot);
-		/* Clear so the matching release_transferred_object call (which fires
-		 * for the same persistent shell after load) doesn't double-destroy. */
-		ZVAL_LONG(&object->properties_table[0], 0);
+		/* Clear the slot so the persistent shell's later release path
+		 * doesn't double-free the snapshot. */
+		object->properties = NULL;
 
 		return Z_OBJ(closure_zv);
 	}

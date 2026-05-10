@@ -32,10 +32,43 @@ final class StandardSteps {
                 $ctx->defineChannel($name, $cap);
             });
 
+        // Given a channel "ch" with capacity N owned by scope "S"
+        // The channel is constructed inside scope S's creator coroutine, so the
+        // runtime tags S as the owner. When S is disposed, the channel closes
+        // with reason SCOPE_DISPOSED — every blocked send/recv unblocks with
+        // ChannelException.
+        $r->on('/^a channel "([^"]+)" with capacity (\S+) owned by scope "([^"]+)"$/',
+            function(Context $ctx, string $name, string $capExpr, string $scope) {
+                $cap = (int)$ctx->resolver->resolve($capExpr);
+                $ctx->defineChannel($name, $cap, 0, 0, false, $scope);
+            });
+
+        // Given a channel "ch" with capacity N and deadlock timeout T ms
+        // Sets both producer and consumer timeouts to T (channel closes with
+        // reason DEADLOCK if no progress within T ms while a side is blocked).
+        $r->on('/^a channel "([^"]+)" with capacity (\S+) and deadlock timeout (\S+) ms$/',
+            function(Context $ctx, string $name, string $capExpr, string $tExpr) {
+                $cap = (int)$ctx->resolver->resolve($capExpr);
+                $t   = (int)$ctx->resolver->resolve($tExpr);
+                $ctx->defineChannel($name, $cap, $t, $t);
+            });
+
         // Given a coroutine "A"
         $r->on('/^a coroutine "([^"]+)"$/',
             function(Context $ctx, string $name) {
                 $ctx->defineCoroutine($name);
+            });
+
+        // Given a non-awaited coroutine "A"
+        // Spawned like a regular coroutine but NOT placed in run()'s
+        // await_all list. Used to test runtime cleanup of coroutines still
+        // pending at request end — the harness fires a cancel sweep over
+        // every nonAwaited coroutine right after await_all, simulating the
+        // shutdown phase.
+        $r->on('/^a non-awaited coroutine "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                $ctx->defineCoroutine($name);
+                $ctx->nonAwaited[$name] = true;
             });
 
         // Given a coroutine "A" in scope "S"
@@ -51,6 +84,14 @@ final class StandardSteps {
                 $ctx->defineScope($name);
             });
 
+        // Given a child scope "C" of "P"   (Scope::inherit)
+        $r->on('/^a child scope "([^"]+)" of "([^"]+)"$/',
+            function(Context $ctx, string $child, string $parent) {
+                $ctx->defineScope($parent);
+                $ctx->defineScope($child);
+                $ctx->scopeParent[$child] = $parent;
+            });
+
         // Given a future "F"
         $r->on('/^a future "([^"]+)"$/',
             function(Context $ctx, string $name) {
@@ -62,7 +103,8 @@ final class StandardSteps {
             function(Context $ctx, string $name, string $wExpr) {
                 $w = (int)$ctx->resolver->resolve($wExpr);
                 $ctx->defineThreadPool($name, $w);
-            });
+            })
+            ->requires('zts');
 
         // Given a thread pool "P" with N workers and queue size Q
         $r->on('/^a thread pool "([^"]+)" with (\S+) workers and queue size (\S+)$/',
@@ -70,14 +112,16 @@ final class StandardSteps {
                 $w = (int)$ctx->resolver->resolve($wExpr);
                 $q = (int)$ctx->resolver->resolve($qExpr);
                 $ctx->defineThreadPool($name, $w, $q);
-            });
+            })
+            ->requires('zts');
 
         // Given a thread channel "X" with capacity N
         $r->on('/^a thread channel "([^"]+)" with capacity (\S+)$/',
             function(Context $ctx, string $name, string $capExpr) {
                 $cap = (int)$ctx->resolver->resolve($capExpr);
                 $ctx->defineThreadChannel($name, $cap);
-            });
+            })
+            ->requires('zts');
 
         // Given a task group "G"
         $r->on('/^a task group "([^"]+)"$/',
@@ -150,6 +194,44 @@ final class StandardSteps {
                             $ctx->inc("received_$ch");
                         } catch (\Throwable $e) {
                             $ctx->inc("recv_failed_$ch");
+                        }
+                    });
+                }
+            });
+
+        // When coroutine "X" tries to send N messages to "ch" without blocking
+        // Uses Channel::sendAsync(): true on success, false on full-or-closed.
+        // Counters: try_send_attempts_$ch / try_send_ok_$ch / try_send_full_$ch.
+        $r->on('/^coroutine "([^"]+)" tries to send (\S+) messages to "([^"]+)" without blocking$/',
+            function(Context $ctx, string $coro, string $countExpr, string $ch) {
+                $n = (int)$ctx->resolver->resolve($countExpr);
+                for ($i = 0; $i < $n; $i++) {
+                    $value = $i;
+                    $ctx->planAction($coro, function(Context $ctx) use ($ch, $value) {
+                        $ctx->inc("try_send_attempts_$ch");
+                        if ($ctx->channels[$ch]->sendAsync($value)) {
+                            $ctx->inc("try_send_ok_$ch");
+                        } else {
+                            $ctx->inc("try_send_full_$ch");
+                        }
+                    });
+                }
+            });
+
+        // When coroutine "X" awaits recvAsync N times from "ch"
+        // Each call returns a Future; we await it and bump async_received or
+        // async_recv_failed depending on whether the await throws.
+        $r->on('/^coroutine "([^"]+)" awaits recvAsync (\S+) times from "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $countExpr, string $ch) {
+                $n = (int)$ctx->resolver->resolve($countExpr);
+                for ($i = 0; $i < $n; $i++) {
+                    $ctx->planAction($coro, function(Context $ctx) use ($ch) {
+                        $ctx->inc("async_recv_attempts_$ch");
+                        try {
+                            $ctx->channels[$ch]->recvAsync()->await();
+                            $ctx->inc("async_received_$ch");
+                        } catch (\Throwable $e) {
+                            $ctx->inc("async_recv_failed_$ch");
                         }
                     });
                 }
@@ -242,6 +324,27 @@ final class StandardSteps {
                     try {
                         $ctx->futures[$f]->await();
                         $ctx->inc("awaited_$f");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("await_failed_$f");
+                    }
+                });
+            });
+
+        // When coroutine "X" awaits future "F" with cancellation future "FC"
+        // Either F completes first (await returns / throws based on F) or FC
+        // fires first and the await aborts. Counters: await_attempts_F always
+        // increments; exactly one of awaited_F / await_cancelled_F /
+        // await_failed_F increments per attempt.
+        $r->on('/^coroutine "([^"]+)" awaits future "([^"]+)" with cancellation future "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $f, string $cancelName) {
+                $ctx->planAction($coro, function(Context $ctx) use ($f, $cancelName) {
+                    $ctx->inc("await_attempts_$f");
+                    $cancellation = $ctx->futures[$cancelName] ?? null;
+                    try {
+                        $ctx->futures[$f]->await($cancellation);
+                        $ctx->inc("awaited_$f");
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("await_cancelled_$f");
                     } catch (\Throwable $e) {
                         $ctx->inc("await_failed_$f");
                     }
@@ -473,6 +576,174 @@ final class StandardSteps {
                     $ctx->inc('throw_attempts');
                     $ctx->inc("threw_$coro");
                     throw new \RuntimeException("planned error from $coro");
+                });
+            });
+
+        // ---- I/O actions (network / pipes) ----
+
+        // When coroutine "X" listens for one connection on a fresh TCP socket
+        // Spawns its own loopback server with an ephemeral port, blocks in
+        // stream_socket_accept(). Counters: io_accept_attempts_$coro /
+        // io_accept_ok_$coro / io_accept_cancelled_$coro / io_accept_failed_$coro.
+        $r->on('/^coroutine "([^"]+)" listens for one connection on a fresh socket$/',
+            function(Context $ctx, string $coro) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro) {
+                    $server = @stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
+                    if (!$server) {
+                        $ctx->inc("io_accept_setup_failed_$coro");
+                        return;
+                    }
+                    stream_set_blocking($server, false);
+                    /* Bump attempts inside the try so any post-bump outcome
+                     * lands in exactly one bucket (cancelled / failed / ok /
+                     * timeout). Pre-try cancellation skips both. */
+                    try {
+                        $ctx->inc("io_accept_attempts_$coro");
+                        $client = @stream_socket_accept($server, 30);
+                        if ($client) {
+                            $ctx->inc("io_accept_ok_$coro");
+                            fclose($client);
+                        } else {
+                            $ctx->inc("io_accept_timeout_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("io_accept_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("io_accept_failed_$coro");
+                    } finally {
+                        @fclose($server);
+                    }
+                });
+            })
+            ->requires('tcp');
+
+        // When coroutine "X" reads from a fresh pipe
+        // Creates a stream_socket_pair (kept alive locally), blocks on fread()
+        // for the read end. Counters mirror accept: io_read_attempts_$coro /
+        // io_read_ok_$coro / io_read_cancelled_$coro / io_read_failed_$coro.
+        $r->on('/^coroutine "([^"]+)" reads from a fresh pipe$/',
+            function(Context $ctx, string $coro) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro) {
+                    $pair = @stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+                    if ($pair === false) {
+                        $ctx->inc("io_read_setup_failed_$coro");
+                        return;
+                    }
+                    [$reader, $writer] = $pair;
+                    try {
+                        $ctx->inc("io_read_attempts_$coro");
+                        $data = @fread($reader, 4096); /* blocks */
+                        if ($data === false || $data === '') {
+                            $ctx->inc("io_read_eof_$coro");
+                        } else {
+                            $ctx->inc("io_read_ok_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("io_read_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("io_read_failed_$coro");
+                    } finally {
+                        @fclose($reader);
+                        @fclose($writer);
+                    }
+                });
+            })
+            ->requires('unix-sockets');
+
+        // When coroutine "X" inspects state of coroutine "Y"
+        // Calls every is*() predicate on Y at the moment of the call. Each call
+        // bumps a per-state counter; the union covers all observable states.
+        // Under random scheduling each call lands on exactly one of the
+        // mutually-exclusive states {running, suspended, completed, cancelled,
+        // not-yet-started}.
+        $r->on('/^coroutine "([^"]+)" inspects state of coroutine "([^"]+)"$/',
+            function(Context $ctx, string $caller, string $target) {
+                $ctx->planAction($caller, function(Context $ctx) use ($target) {
+                    $ctx->inc("state_inspect_attempts_$target");
+                    if (!isset($ctx->coroutineHandles[$target])) {
+                        $ctx->inc("state_inspect_target_missing_$target");
+                        return;
+                    }
+                    $h = $ctx->coroutineHandles[$target];
+                    if ($h->isStarted())                 $ctx->inc("state_started_$target");
+                    if ($h->isRunning())                 $ctx->inc("state_running_$target");
+                    if ($h->isSuspended())               $ctx->inc("state_suspended_$target");
+                    if ($h->isCompleted())               $ctx->inc("state_completed_$target");
+                    if ($h->isCancelled())               $ctx->inc("state_cancelled_$target");
+                    if ($h->isCancellationRequested())   $ctx->inc("state_cancel_requested_$target");
+                });
+            });
+
+        // When coroutine "X" inspects trace of coroutine "Y"
+        // Records whether Y was suspended (trace is array) or done/not-yet-running
+        // (trace is null) at the moment of the call. Under random scheduling
+        // both outcomes can occur; the sum invariant lets tests assert without
+        // depending on one specific interleaving.
+        $r->on('/^coroutine "([^"]+)" inspects trace of coroutine "([^"]+)"$/',
+            function(Context $ctx, string $caller, string $target) {
+                $ctx->planAction($caller, function(Context $ctx) use ($target) {
+                    $ctx->inc("trace_inspect_attempts_$target");
+                    if (!isset($ctx->coroutineHandles[$target])) {
+                        $ctx->inc("trace_inspect_target_missing_$target");
+                        return;
+                    }
+                    $t = $ctx->coroutineHandles[$target]->getTrace();
+                    if (is_array($t)) {
+                        $ctx->inc("trace_was_array_$target");
+                    } elseif ($t === null) {
+                        $ctx->inc("trace_was_null_$target");
+                    } else {
+                        $ctx->inc("trace_was_other_$target");
+                    }
+                });
+            });
+
+        // When coroutine "X" registers finally on coroutine "Y"
+        // Increments counter "finally_called_Y" when finally fires —
+        // must hold for every termination path: return / throw / cancel.
+        $r->on('/^coroutine "([^"]+)" registers finally on coroutine "([^"]+)"$/',
+            function(Context $ctx, string $caller, string $target) {
+                $ctx->planAction($caller, function(Context $ctx) use ($target) {
+                    $ctx->inc("finally_register_attempts_$target");
+                    if (!isset($ctx->coroutineHandles[$target])) {
+                        $ctx->inc("finally_register_target_missing_$target");
+                        return;
+                    }
+                    /* Increment "registered" first: if the target has already
+                     * finished, finally() may fire the callback inline and any
+                     * throw from the callback would propagate out of finally()
+                     * itself — we still want this to count as registered. */
+                    $ctx->inc("finally_registered_$target");
+                    try {
+                        $ctx->coroutineHandles[$target]->finally(function() use ($ctx, $target) {
+                            $ctx->inc("finally_called_$target");
+                        });
+                    } catch (\Throwable $e) {
+                        $ctx->inc("finally_register_threw_$target");
+                    }
+                });
+            });
+
+        // When coroutine "X" registers throwing finally on coroutine "Y"
+        // Finally handler that throws — original termination path is preserved
+        // but the thrown exception surfaces via scope exception handler.
+        $r->on('/^coroutine "([^"]+)" registers throwing finally on coroutine "([^"]+)"$/',
+            function(Context $ctx, string $caller, string $target) {
+                $ctx->planAction($caller, function(Context $ctx) use ($target) {
+                    $ctx->inc("finally_register_attempts_$target");
+                    if (!isset($ctx->coroutineHandles[$target])) {
+                        $ctx->inc("finally_register_target_missing_$target");
+                        return;
+                    }
+                    $ctx->inc("finally_registered_$target");
+                    try {
+                        $ctx->coroutineHandles[$target]->finally(function() use ($ctx, $target) {
+                            $ctx->inc("finally_called_$target");
+                            throw new \RuntimeException("throw from finally on $target");
+                        });
+                    } catch (\Throwable $e) {
+                        $ctx->inc("finally_register_threw_$target");
+                    }
                 });
             });
 
@@ -751,6 +1022,76 @@ final class StandardSteps {
                 });
             });
 
+        // When coroutine "X" recursively spawns to depth N
+        // Each level spawns a child that recurses one fewer; counter
+        // "rec_depth" increments once per coroutine, so for depth N the
+        // counter ends at N+1 (initial coroutine + N descendants).
+        $r->on('/^coroutine "([^"]+)" recursively spawns to depth (\S+)$/',
+            function(Context $ctx, string $coro, string $nExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($n) {
+                    $rec = null;
+                    $rec = function(int $depth) use (&$rec, $ctx) {
+                        $ctx->inc('rec_depth');
+                        if ($depth > 0) {
+                            $h = \Async\spawn($rec, $depth - 1);
+                            \Async\await($h);
+                        }
+                    };
+                    $rec($n);
+                });
+            });
+
+        // When coroutine "X" maps future "F" to counter "K"
+        $r->on('/^coroutine "([^"]+)" maps future "([^"]+)" to counter "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $f, string $key) {
+                $ctx->planAction($coro, function(Context $ctx) use ($f, $key) {
+                    $mapped = $ctx->futures[$f]->map(function($v) use ($ctx, $key) {
+                        $ctx->inc("map_$key");
+                        return $v;
+                    });
+                    try {
+                        $mapped->await();
+                        $ctx->inc("map_awaited_$key");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("map_failed_$key");
+                    }
+                });
+            });
+
+        // When coroutine "X" catches future "F" to counter "K"
+        $r->on('/^coroutine "([^"]+)" catches future "([^"]+)" to counter "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $f, string $key) {
+                $ctx->planAction($coro, function(Context $ctx) use ($f, $key) {
+                    $chained = $ctx->futures[$f]->catch(function(\Throwable $e) use ($ctx, $key) {
+                        $ctx->inc("catch_$key");
+                        return null;
+                    });
+                    try {
+                        $chained->await();
+                        $ctx->inc("catch_awaited_$key");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("catch_failed_$key");
+                    }
+                });
+            });
+
+        // When coroutine "X" finallies future "F" to counter "K"
+        $r->on('/^coroutine "([^"]+)" finallies future "([^"]+)" to counter "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $f, string $key) {
+                $ctx->planAction($coro, function(Context $ctx) use ($f, $key) {
+                    $chained = $ctx->futures[$f]->finally(function() use ($ctx, $key) {
+                        $ctx->inc("finally_$key");
+                    });
+                    try {
+                        $chained->await();
+                        $ctx->inc("finally_awaited_$key");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("finally_failed_$key");
+                    }
+                });
+            });
+
         // When coroutine "X" prints "msg"
         $r->on('/^coroutine "([^"]+)" prints "([^"]*)"$/',
             function(Context $ctx, string $coro, string $msg) {
@@ -797,6 +1138,52 @@ final class StandardSteps {
                 }
             });
 
+        // Then counter "X" plus counter "Y" plus counter "Z" equals counter "W"
+        $r->on('/^counter "([^"]+)" plus counter "([^"]+)" plus counter "([^"]+)" equals counter "([^"]+)"$/',
+            function(Context $ctx, string $a, string $b, string $c, string $d) {
+                $sum = $ctx->counter($a) + $ctx->counter($b) + $ctx->counter($c);
+                $dv = $ctx->counter($d);
+                if ($sum !== $dv) {
+                    throw new \RuntimeException(
+                        "counter $a + $b + $c = $sum, but counter $d = $dv"
+                    );
+                }
+            });
+
+        // Then counter "X" plus counter "Y" plus counter "Z" equals N
+        $r->on('/^counter "([^"]+)" plus counter "([^"]+)" plus counter "([^"]+)" equals (\d+)$/',
+            function(Context $ctx, string $a, string $b, string $c, string $expected) {
+                $sum = $ctx->counter($a) + $ctx->counter($b) + $ctx->counter($c);
+                if ($sum !== (int)$expected) {
+                    throw new \RuntimeException(
+                        "counter $a + $b + $c = $sum, expected $expected"
+                    );
+                }
+            });
+
+        // Then counter "X" plus counter "Y" plus counter "Z" plus counter "W" equals N
+        $r->on('/^counter "([^"]+)" plus counter "([^"]+)" plus counter "([^"]+)" plus counter "([^"]+)" equals (\d+)$/',
+            function(Context $ctx, string $a, string $b, string $c, string $d, string $expected) {
+                $sum = $ctx->counter($a) + $ctx->counter($b) + $ctx->counter($c) + $ctx->counter($d);
+                if ($sum !== (int)$expected) {
+                    throw new \RuntimeException(
+                        "counter $a + $b + $c + $d = $sum, expected $expected"
+                    );
+                }
+            });
+
+        // Then counter "X" plus counter "Y" plus counter "Z" plus counter "W" equals counter "V"
+        $r->on('/^counter "([^"]+)" plus counter "([^"]+)" plus counter "([^"]+)" plus counter "([^"]+)" equals counter "([^"]+)"$/',
+            function(Context $ctx, string $a, string $b, string $c, string $d, string $e) {
+                $sum = $ctx->counter($a) + $ctx->counter($b) + $ctx->counter($c) + $ctx->counter($d);
+                $ev = $ctx->counter($e);
+                if ($sum !== $ev) {
+                    throw new \RuntimeException(
+                        "counter $a + $b + $c + $d = $sum, but counter $e = $ev"
+                    );
+                }
+            });
+
         // Then counter "X" equals N
         $r->on('/^counter "([^"]+)" equals (\d+)$/',
             function(Context $ctx, string $name, string $expected) {
@@ -820,6 +1207,123 @@ final class StandardSteps {
             function(Context $ctx, string $name) {
                 if (!isset($ctx->channels[$name]) || !$ctx->channels[$name]->isClosed()) {
                     throw new \RuntimeException("channel $name expected to be closed");
+                }
+            });
+
+        // Then channel "ch" is full
+        $r->on('/^channel "([^"]+)" is full$/',
+            function(Context $ctx, string $name) {
+                if (!isset($ctx->channels[$name]) || !$ctx->channels[$name]->isFull()) {
+                    throw new \RuntimeException("channel $name expected to be full");
+                }
+            });
+
+        // Then channel "ch" is not full
+        $r->on('/^channel "([^"]+)" is not full$/',
+            function(Context $ctx, string $name) {
+                if (!isset($ctx->channels[$name])) {
+                    throw new \RuntimeException("channel $name not defined");
+                }
+                if ($ctx->channels[$name]->isFull()) {
+                    throw new \RuntimeException("channel $name expected NOT to be full");
+                }
+            });
+
+        // Then coroutine "X" has no exception
+        $r->on('/^coroutine "([^"]+)" has no exception$/',
+            function(Context $ctx, string $name) {
+                if (!isset($ctx->coroutineHandles[$name])) {
+                    throw new \RuntimeException("coroutine $name not defined");
+                }
+                $e = $ctx->coroutineHandles[$name]->getException();
+                if ($e !== null) {
+                    throw new \RuntimeException(
+                        "coroutine $name expected no exception, got " . get_class($e)
+                            . ": " . $e->getMessage()
+                    );
+                }
+            });
+
+        // Then coroutine "X" exception is "ClassName"
+        // Asserts getException() returns an instance of the named class.
+        $r->on('/^coroutine "([^"]+)" exception is "([^"]+)"$/',
+            function(Context $ctx, string $name, string $class) {
+                if (!isset($ctx->coroutineHandles[$name])) {
+                    throw new \RuntimeException("coroutine $name not defined");
+                }
+                $e = $ctx->coroutineHandles[$name]->getException();
+                if ($e === null) {
+                    throw new \RuntimeException("coroutine $name expected $class, got null");
+                }
+                if (!($e instanceof $class)) {
+                    throw new \RuntimeException(
+                        "coroutine $name expected $class, got " . get_class($e)
+                    );
+                }
+            });
+
+        // Then coroutine "X" is completed
+        // After Context::run() every planned coroutine has terminated.
+        // isCompleted must be true; isRunning/isSuspended must be false.
+        // isStarted is NOT required — a coroutine that was cancelled before
+        // the scheduler ever picked it up reports isStarted=false but is
+        // still terminal.
+        $r->on('/^coroutine "([^"]+)" is completed$/',
+            function(Context $ctx, string $name) {
+                if (!isset($ctx->coroutineHandles[$name])) {
+                    throw new \RuntimeException("coroutine $name not defined");
+                }
+                $h = $ctx->coroutineHandles[$name];
+                if (!$h->isCompleted()) {
+                    throw new \RuntimeException("coroutine $name expected isCompleted=true");
+                }
+                if ($h->isRunning()) {
+                    throw new \RuntimeException("coroutine $name expected isRunning=false");
+                }
+                if ($h->isSuspended()) {
+                    throw new \RuntimeException("coroutine $name expected isSuspended=false");
+                }
+            });
+
+        // Then coroutine "X" is cancelled
+        $r->on('/^coroutine "([^"]+)" is cancelled$/',
+            function(Context $ctx, string $name) {
+                if (!isset($ctx->coroutineHandles[$name])) {
+                    throw new \RuntimeException("coroutine $name not defined");
+                }
+                if (!$ctx->coroutineHandles[$name]->isCancelled()) {
+                    throw new \RuntimeException("coroutine $name expected isCancelled=true");
+                }
+            });
+
+        // Then coroutine "X" final trace is null
+        // After run() has returned, every planned coroutine is terminated, so
+        // getTrace() must report null regardless of how it terminated.
+        $r->on('/^coroutine "([^"]+)" final trace is null$/',
+            function(Context $ctx, string $name) {
+                if (!isset($ctx->coroutineHandles[$name])) {
+                    throw new \RuntimeException("coroutine $name not defined");
+                }
+                $t = $ctx->coroutineHandles[$name]->getTrace();
+                if ($t !== null) {
+                    throw new \RuntimeException(
+                        "coroutine $name expected null trace post-termination, got "
+                            . (is_array($t) ? 'array(' . count($t) . ')' : gettype($t))
+                    );
+                }
+            });
+
+        // Then coroutine "X" result is null
+        $r->on('/^coroutine "([^"]+)" result is null$/',
+            function(Context $ctx, string $name) {
+                if (!isset($ctx->coroutineHandles[$name])) {
+                    throw new \RuntimeException("coroutine $name not defined");
+                }
+                $r = $ctx->coroutineHandles[$name]->getResult();
+                if ($r !== null) {
+                    throw new \RuntimeException(
+                        "coroutine $name expected null result, got " . var_export($r, true)
+                    );
                 }
             });
 
