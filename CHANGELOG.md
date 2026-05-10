@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.0] -
 
 ### Fixed
+- **PDO PgSQL pool no longer leaks a killed-but-idle connection** (#114).
+  When `pg_terminate_backend` (or any other server-side close) hits a
+  connection while it is sitting idle in the pool, the slot stayed in the
+  pool until somebody reused it — `tests/pdo_pgsql/029-pdo_pgsql_pool_killed_concurrent.phpt`
+  saw `pool->count()` stuck at 2 instead of dropping to 1. Two driver-level
+  fixes: (a) `_pdo_pgsql_error` now treats `sqlstate==NULL && errcode==PGRES_FATAL_ERROR`
+  as a connection-level failure and marks the slot broken (covers the
+  case where libpq returned NULL with no result, e.g. EOF mid-flush);
+  (b) new `pdo_pgsql_pool_before_acquire` runs a non-blocking
+  `PQconsumeInput` + `PQstatus` probe each time the pool hands out an
+  idle slot — a slot whose backend died is destroyed instead of returned.
+  Test 029 polling loop now also drives a probing `SELECT 1` so the scrub
+  fires before the test samples `pool->count()`.
 - **Channel(0) `send()` no longer returns without a waiting receiver** (#108).
   Previously the unbuffered slot acted as a 1-message buffer: the first `send`
   deposited into `rendezvous_value` and returned immediately, breaking the

@@ -56,11 +56,14 @@ foreach ($results as $r) {
     echo $r . "\n";
 }
 
-// Pool cleanup after a terminated connection is asynchronous. Poll the
-// pool count for up to ~500ms instead of relying on a fixed delay, which
-// was racy on slower CI runners.
+// A terminated backend whose connection sat idle in the pool is reaped on
+// next acquire (pool_before_acquire detects EOF via PQconsumeInput). When
+// coroA's exec happened to pick the *other* slot, the killed slot is still
+// idle here — drive a probing query in the polling loop to force the pool
+// to scrub it.
 for ($i = 0; $i < 50 && $pool->count() > 1; $i++) {
     delay(10);
+    try { $pdo->query("SELECT 1")->fetch(); } catch (\Throwable $e) {}
 }
 echo "Pool count: " . $pool->count() . "\n";
 echo "Done\n";
