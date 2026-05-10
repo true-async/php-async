@@ -57,10 +57,9 @@ foreach ($results as $r) {
 }
 
 // Pool cleanup after a terminated connection is asynchronous. Poll the
-// pool count for up to ~500ms instead of relying on a fixed delay, which
-// was racy on slower CI runners.
-for ($i = 0; $i < 50 && $pool->count() > 1; $i++) {
-    delay(10);
+// pool count for up to ~5s; 500ms was still racy on RELEASE_ZTS CI.
+for ($i = 0; $i < 200 && $pool->count() > 1; $i++) {
+    delay(25);
 }
 echo "Pool count: " . $pool->count() . "\n";
 echo "Done\n";
