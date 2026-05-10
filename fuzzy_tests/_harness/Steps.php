@@ -564,6 +564,75 @@ final class StandardSteps {
                 });
             });
 
+        // ---- I/O actions (network / pipes) ----
+
+        // When coroutine "X" listens for one connection on a fresh TCP socket
+        // Spawns its own loopback server with an ephemeral port, blocks in
+        // stream_socket_accept(). Counters: io_accept_attempts_$coro /
+        // io_accept_ok_$coro / io_accept_cancelled_$coro / io_accept_failed_$coro.
+        $r->on('/^coroutine "([^"]+)" listens for one connection on a fresh socket$/',
+            function(Context $ctx, string $coro) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro) {
+                    $server = @stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
+                    if (!$server) {
+                        $ctx->inc("io_accept_setup_failed_$coro");
+                        return;
+                    }
+                    stream_set_blocking($server, false);
+                    /* Bump attempts inside the try so any post-bump outcome
+                     * lands in exactly one bucket (cancelled / failed / ok /
+                     * timeout). Pre-try cancellation skips both. */
+                    try {
+                        $ctx->inc("io_accept_attempts_$coro");
+                        $client = @stream_socket_accept($server, 30);
+                        if ($client) {
+                            $ctx->inc("io_accept_ok_$coro");
+                            fclose($client);
+                        } else {
+                            $ctx->inc("io_accept_timeout_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("io_accept_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("io_accept_failed_$coro");
+                    } finally {
+                        @fclose($server);
+                    }
+                });
+            });
+
+        // When coroutine "X" reads from a fresh pipe
+        // Creates a stream_socket_pair (kept alive locally), blocks on fread()
+        // for the read end. Counters mirror accept: io_read_attempts_$coro /
+        // io_read_ok_$coro / io_read_cancelled_$coro / io_read_failed_$coro.
+        $r->on('/^coroutine "([^"]+)" reads from a fresh pipe$/',
+            function(Context $ctx, string $coro) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro) {
+                    $pair = @stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+                    if ($pair === false) {
+                        $ctx->inc("io_read_setup_failed_$coro");
+                        return;
+                    }
+                    [$reader, $writer] = $pair;
+                    try {
+                        $ctx->inc("io_read_attempts_$coro");
+                        $data = @fread($reader, 4096); /* blocks */
+                        if ($data === false || $data === '') {
+                            $ctx->inc("io_read_eof_$coro");
+                        } else {
+                            $ctx->inc("io_read_ok_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("io_read_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("io_read_failed_$coro");
+                    } finally {
+                        @fclose($reader);
+                        @fclose($writer);
+                    }
+                });
+            });
+
         // When coroutine "X" inspects state of coroutine "Y"
         // Calls every is*() predicate on Y at the moment of the call. Each call
         // bumps a per-state counter; the union covers all observable states.
@@ -1060,6 +1129,40 @@ final class StandardSteps {
                 if ($sum !== $dv) {
                     throw new \RuntimeException(
                         "counter $a + $b + $c = $sum, but counter $d = $dv"
+                    );
+                }
+            });
+
+        // Then counter "X" plus counter "Y" plus counter "Z" equals N
+        $r->on('/^counter "([^"]+)" plus counter "([^"]+)" plus counter "([^"]+)" equals (\d+)$/',
+            function(Context $ctx, string $a, string $b, string $c, string $expected) {
+                $sum = $ctx->counter($a) + $ctx->counter($b) + $ctx->counter($c);
+                if ($sum !== (int)$expected) {
+                    throw new \RuntimeException(
+                        "counter $a + $b + $c = $sum, expected $expected"
+                    );
+                }
+            });
+
+        // Then counter "X" plus counter "Y" plus counter "Z" plus counter "W" equals N
+        $r->on('/^counter "([^"]+)" plus counter "([^"]+)" plus counter "([^"]+)" plus counter "([^"]+)" equals (\d+)$/',
+            function(Context $ctx, string $a, string $b, string $c, string $d, string $expected) {
+                $sum = $ctx->counter($a) + $ctx->counter($b) + $ctx->counter($c) + $ctx->counter($d);
+                if ($sum !== (int)$expected) {
+                    throw new \RuntimeException(
+                        "counter $a + $b + $c + $d = $sum, expected $expected"
+                    );
+                }
+            });
+
+        // Then counter "X" plus counter "Y" plus counter "Z" plus counter "W" equals counter "V"
+        $r->on('/^counter "([^"]+)" plus counter "([^"]+)" plus counter "([^"]+)" plus counter "([^"]+)" equals counter "([^"]+)"$/',
+            function(Context $ctx, string $a, string $b, string $c, string $d, string $e) {
+                $sum = $ctx->counter($a) + $ctx->counter($b) + $ctx->counter($c) + $ctx->counter($d);
+                $ev = $ctx->counter($e);
+                if ($sum !== $ev) {
+                    throw new \RuntimeException(
+                        "counter $a + $b + $c + $d = $sum, but counter $e = $ev"
                     );
                 }
             });
