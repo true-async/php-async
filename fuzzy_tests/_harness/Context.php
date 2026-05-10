@@ -31,7 +31,7 @@ final class Context {
     public Rng $rng;
     public ValueResolver $resolver;
 
-    /** @var array<string, array{capacity:int,noProducerTimeout:int,noConsumerTimeout:int,hardTimeouts:bool}> */
+    /** @var array<string, array{capacity:int,noProducerTimeout:int,noConsumerTimeout:int,hardTimeouts:bool,ownerScope:?string}> */
     public array $channelDefs = [];
 
     /** @var array<string, Channel> populated by run() */
@@ -110,14 +110,19 @@ final class Context {
         int $capacity,
         int $noProducerTimeout = 0,
         int $noConsumerTimeout = 0,
-        bool $hardTimeouts = false
+        bool $hardTimeouts = false,
+        ?string $ownerScope = null
     ): void {
         $this->channelDefs[$name] = [
             'capacity' => $capacity,
             'noProducerTimeout' => $noProducerTimeout,
             'noConsumerTimeout' => $noConsumerTimeout,
             'hardTimeouts' => $hardTimeouts,
+            'ownerScope' => $ownerScope,
         ];
+        if ($ownerScope !== null) {
+            $this->defineScope($ownerScope);
+        }
     }
 
     /** Plan a coroutine; idempotent. Optionally bound to a scope. */
@@ -178,6 +183,20 @@ final class Context {
     }
 
     /**
+     * Resolve a channel by name, polling until it appears. Scope-owned
+     * channels are constructed lazily inside their owner-scope's creator
+     * coroutine; under random scheduling that creator may run after the
+     * user coroutine that consumes the channel. Eager channels (no owner)
+     * are already in the map, so the poll exits immediately.
+     */
+    public function awaitChannel(string $name): Channel {
+        while (!isset($this->channels[$name])) {
+            suspend();
+        }
+        return $this->channels[$name];
+    }
+
+    /**
      * Realise the plan: instantiate channels, spawn one coroutine per planned
      * group, await all, close any leftover channels.
      */
@@ -186,6 +205,12 @@ final class Context {
         $this->hasRun = true;
 
         foreach ($this->channelDefs as $name => $spec) {
+            // Scope-owned channels are constructed lazily inside their owner
+            // scope so the runtime tags ownership correctly. Eagerly constructed
+            // channels are owned by main_scope.
+            if ($spec['ownerScope'] !== null) {
+                continue;
+            }
             $this->channels[$name] = new Channel(
                 $spec['capacity'],
                 $spec['noProducerTimeout'],
@@ -252,6 +277,29 @@ final class Context {
         }
 
         $self = $this;
+
+        // Spawn channel-creator coroutines for scope-owned channels. The
+        // channel is constructed inside the owner scope so the runtime tags
+        // ownership; the creator exits immediately — the Channel object is
+        // kept alive by $self->channels[$name]. When the owner scope is
+        // disposed, the runtime fires the owner-scope-end callback and the
+        // channel closes with SCOPE_DISPOSED. Steps using this channel poll
+        // via awaitChannel() because the creator may run after the consumer
+        // under random scheduling.
+        foreach ($this->channelDefs as $name => $spec) {
+            if ($spec['ownerScope'] === null) {
+                continue;
+            }
+            $scope = $this->scopes[$spec['ownerScope']];
+            $scope->spawn(function() use ($self, $name, $spec) {
+                $self->channels[$name] = new Channel(
+                    $spec['capacity'],
+                    $spec['noProducerTimeout'],
+                    $spec['noConsumerTimeout'],
+                    $spec['hardTimeouts']
+                );
+            });
+        }
         // First pass: spawn every coroutine, populate handles. Coroutine bodies
         // do NOT run yet (spawn just queues), so by the time the first body
         // begins all $coroutineHandles entries are visible to it.

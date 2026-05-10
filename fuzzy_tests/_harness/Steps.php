@@ -32,6 +32,17 @@ final class StandardSteps {
                 $ctx->defineChannel($name, $cap);
             });
 
+        // Given a channel "ch" with capacity N owned by scope "S"
+        // The channel is constructed inside scope S's creator coroutine, so the
+        // runtime tags S as the owner. When S is disposed, the channel closes
+        // with reason SCOPE_DISPOSED — every blocked send/recv unblocks with
+        // ChannelException.
+        $r->on('/^a channel "([^"]+)" with capacity (\S+) owned by scope "([^"]+)"$/',
+            function(Context $ctx, string $name, string $capExpr, string $scope) {
+                $cap = (int)$ctx->resolver->resolve($capExpr);
+                $ctx->defineChannel($name, $cap, 0, 0, false, $scope);
+            });
+
         // Given a channel "ch" with capacity N and deadlock timeout T ms
         // Sets both producer and consumer timeouts to T (channel closes with
         // reason DEADLOCK if no progress within T ms while a side is blocked).
@@ -131,7 +142,7 @@ final class StandardSteps {
                     $ctx->planAction($coro, function(Context $ctx) use ($ch, $value) {
                         $ctx->inc("send_attempts_$ch");
                         try {
-                            $ctx->channels[$ch]->send($value);
+                            $ctx->awaitChannel($ch)->send($value);
                             $ctx->inc("sent_$ch");
                         } catch (\Throwable $e) {
                             $ctx->inc("send_failed_$ch");
@@ -147,7 +158,7 @@ final class StandardSteps {
                 $ctx->planAction($coro, function(Context $ctx) use ($ch, $val) {
                     $ctx->inc("send_attempts_$ch");
                     try {
-                        $ctx->channels[$ch]->send($val);
+                        $ctx->awaitChannel($ch)->send($val);
                         $ctx->inc("sent_$ch");
                     } catch (\Throwable $e) {
                         $ctx->inc("send_failed_$ch");
@@ -164,7 +175,7 @@ final class StandardSteps {
                     $ctx->planAction($coro, function(Context $ctx) use ($ch) {
                         $ctx->inc("recv_attempts_$ch");
                         try {
-                            $ctx->channels[$ch]->recv();
+                            $ctx->awaitChannel($ch)->recv();
                             $ctx->inc("received_$ch");
                         } catch (\Throwable $e) {
                             $ctx->inc("recv_failed_$ch");
@@ -183,7 +194,7 @@ final class StandardSteps {
                     $value = $i;
                     $ctx->planAction($coro, function(Context $ctx) use ($ch, $value) {
                         $ctx->inc("try_send_attempts_$ch");
-                        if ($ctx->channels[$ch]->sendAsync($value)) {
+                        if ($ctx->awaitChannel($ch)->sendAsync($value)) {
                             $ctx->inc("try_send_ok_$ch");
                         } else {
                             $ctx->inc("try_send_full_$ch");
@@ -202,7 +213,7 @@ final class StandardSteps {
                     $ctx->planAction($coro, function(Context $ctx) use ($ch) {
                         $ctx->inc("async_recv_attempts_$ch");
                         try {
-                            $ctx->channels[$ch]->recvAsync()->await();
+                            $ctx->awaitChannel($ch)->recvAsync()->await();
                             $ctx->inc("async_received_$ch");
                         } catch (\Throwable $e) {
                             $ctx->inc("async_recv_failed_$ch");
@@ -219,7 +230,7 @@ final class StandardSteps {
                 $ctx->planAction($coro, function(Context $ctx) use ($ch) {
                     $ctx->inc("iterate_attempts_$ch");
                     try {
-                        foreach ($ctx->channels[$ch] as $value) {
+                        foreach ($ctx->awaitChannel($ch) as $value) {
                             $ctx->inc("iterated_$ch");
                         }
                     } catch (\Throwable $e) {
@@ -232,7 +243,7 @@ final class StandardSteps {
         $r->on('/^coroutine "([^"]+)" closes "([^"]+)"$/',
             function(Context $ctx, string $coro, string $ch) {
                 $ctx->planAction($coro, function(Context $ctx) use ($ch) {
-                    $ctx->channels[$ch]->close();
+                    $ctx->awaitChannel($ch)->close();
                     $ctx->inc("closed_$ch");
                 });
             });
