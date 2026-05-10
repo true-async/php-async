@@ -168,6 +168,14 @@ function current_coroutine(): Coroutine {}
 function root_context(): Context {}
 
 /**
+ * Returns the Context of the request-level Scope inherited from the spawning
+ * coroutine, or null if none is set. The request scope is assigned by the
+ * embedding C code (e.g. an HTTP server) and propagates to all child
+ * coroutines automatically.
+ */
+function request_context(): ?Context {}
+
+/**
  * Returns the list of all coroutines
  *
  * @return Coroutine[]

@@ -1,5 +1,5 @@
 /* This is a generated file, edit async.stub.php instead.
- * Stub hash: 3118a82e83d554a5d7d11bbd9c78a7962faceaa6 */
+ * Stub hash: decb7fe5dcca00f67cf7cc84e54163c722fa44d5 */
 
 ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_Async_spawn, 0, 1, Async\\Coroutine, 0)
 	ZEND_ARG_TYPE_INFO(0, task, IS_CALLABLE, 0)
@@ -10,12 +10,6 @@ ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_Async_spawn_with, 0, 2, Async\\Co
 	ZEND_ARG_OBJ_INFO(0, provider, Async\\ScopeProvider, 0)
 	ZEND_ARG_TYPE_INFO(0, task, IS_CALLABLE, 0)
 	ZEND_ARG_VARIADIC_TYPE_INFO(0, args, IS_MIXED, 0)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_Async_spawn_thread, 0, 1, Async\\Thread, 0)
-	ZEND_ARG_OBJ_INFO(0, task, Closure, 0)
-	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, inherit, _IS_BOOL, 0, "true")
-	ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, bootloader, Closure, 1, "null")
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_suspend, 0, 0, IS_VOID, 0)
@@ -78,12 +72,6 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_loadavg, 0, 0, IS_ARRAY, 1)
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Async_CpuSnapshot___construct, 0, 0, 0)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_class_Async_CpuSnapshot_now, 0, 0, Async\\CpuSnapshot, 0)
-ZEND_END_ARG_INFO()
-
 ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_Async_timeout, 0, 1, Async\\Awaitable, 0)
 	ZEND_ARG_TYPE_INFO(0, ms, IS_LONG, 0)
 ZEND_END_ARG_INFO()
@@ -98,14 +86,22 @@ ZEND_END_ARG_INFO()
 
 #define arginfo_Async_root_context arginfo_Async_current_context
 
-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_get_coroutines, 0, 0, IS_ARRAY, 0)
+ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_Async_request_context, 0, 0, Async\\Context, 1)
 ZEND_END_ARG_INFO()
+
+#define arginfo_Async_get_coroutines arginfo_Async_cpu_usage
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_iterate, 0, 2, IS_VOID, 0)
 	ZEND_ARG_OBJ_TYPE_MASK(0, iterable, Traversable, MAY_BE_ARRAY, NULL)
 	ZEND_ARG_TYPE_INFO(0, callback, IS_CALLABLE, 0)
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, concurrency, IS_LONG, 0, "0")
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, cancelPending, _IS_BOOL, 0, "true")
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_Async_spawn_thread, 0, 1, Async\\Thread, 0)
+	ZEND_ARG_OBJ_INFO(0, task, Closure, 0)
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, inherit, _IS_BOOL, 0, "true")
+	ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, bootloader, Closure, 1, "null")
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_graceful_shutdown, 0, 0, IS_VOID, 0)
@@ -135,6 +131,11 @@ ZEND_END_ARG_INFO()
 
 #define arginfo_class_Async_Timeout_isCancelled arginfo_class_Async_Completable_isCompleted
 
+#define arginfo_class_Async_CpuSnapshot___construct arginfo_class_Async_Timeout___construct
+
+ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_class_Async_CpuSnapshot_now, 0, 0, Async\\CpuSnapshot, 0)
+ZEND_END_ARG_INFO()
+
 ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_class_Async_CircuitBreaker_getState, 0, 0, Async\\CircuitBreakerState, 0)
 ZEND_END_ARG_INFO()
 
@@ -157,7 +158,6 @@ ZEND_END_ARG_INFO()
 
 ZEND_FUNCTION(Async_spawn);
 ZEND_FUNCTION(Async_spawn_with);
-ZEND_FUNCTION(Async_spawn_thread);
 ZEND_FUNCTION(Async_suspend);
 ZEND_FUNCTION(Async_protect);
 ZEND_FUNCTION(Async_await);
@@ -171,26 +171,27 @@ ZEND_FUNCTION(Async_delay);
 ZEND_FUNCTION(Async_available_parallelism);
 ZEND_FUNCTION(Async_cpu_usage);
 ZEND_FUNCTION(Async_loadavg);
-ZEND_METHOD(Async_CpuSnapshot, __construct);
-ZEND_METHOD(Async_CpuSnapshot, now);
 ZEND_FUNCTION(Async_timeout);
 ZEND_FUNCTION(Async_current_context);
 ZEND_FUNCTION(Async_coroutine_context);
 ZEND_FUNCTION(Async_current_coroutine);
 ZEND_FUNCTION(Async_root_context);
+ZEND_FUNCTION(Async_request_context);
 ZEND_FUNCTION(Async_get_coroutines);
 ZEND_FUNCTION(Async_iterate);
+ZEND_FUNCTION(Async_spawn_thread);
 ZEND_FUNCTION(Async_graceful_shutdown);
 ZEND_FUNCTION(Async_signal);
 ZEND_METHOD(Async_Timeout, __construct);
 ZEND_METHOD(Async_Timeout, cancel);
 ZEND_METHOD(Async_Timeout, isCompleted);
 ZEND_METHOD(Async_Timeout, isCancelled);
+ZEND_METHOD(Async_CpuSnapshot, __construct);
+ZEND_METHOD(Async_CpuSnapshot, now);
 
 static const zend_function_entry ext_functions[] = {
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "spawn"), zif_Async_spawn, arginfo_Async_spawn, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "spawn_with"), zif_Async_spawn_with, arginfo_Async_spawn_with, 0, NULL, NULL)
-	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "spawn_thread"), zif_Async_spawn_thread, arginfo_Async_spawn_thread, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "suspend"), zif_Async_suspend, arginfo_Async_suspend, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "protect"), zif_Async_protect, arginfo_Async_protect, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "await"), zif_Async_await, arginfo_Async_await, 0, NULL, NULL)
@@ -209,8 +210,10 @@ static const zend_function_entry ext_functions[] = {
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "coroutine_context"), zif_Async_coroutine_context, arginfo_Async_coroutine_context, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "current_coroutine"), zif_Async_current_coroutine, arginfo_Async_current_coroutine, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "root_context"), zif_Async_root_context, arginfo_Async_root_context, 0, NULL, NULL)
+	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "request_context"), zif_Async_request_context, arginfo_Async_request_context, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "get_coroutines"), zif_Async_get_coroutines, arginfo_Async_get_coroutines, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "iterate"), zif_Async_iterate, arginfo_Async_iterate, 0, NULL, NULL)
+	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "spawn_thread"), zif_Async_spawn_thread, arginfo_Async_spawn_thread, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "graceful_shutdown"), zif_Async_graceful_shutdown, arginfo_Async_graceful_shutdown, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "signal"), zif_Async_signal, arginfo_Async_signal, 0, NULL, NULL)
 	ZEND_FE_END
@@ -289,33 +292,42 @@ static zend_class_entry *register_class_Async_CpuSnapshot(void)
 	zend_class_entry ce, *class_entry;
 
 	INIT_NS_CLASS_ENTRY(ce, "Async", "CpuSnapshot", class_Async_CpuSnapshot_methods);
-	class_entry = zend_register_internal_class_with_flags(&ce, NULL, ZEND_ACC_FINAL|ZEND_ACC_NO_DYNAMIC_PROPERTIES);
+	class_entry = zend_register_internal_class_with_flags(&ce, NULL, ZEND_ACC_FINAL);
 
-	zval property_default_value;
-	ZVAL_UNDEF(&property_default_value);
-
+	zval property_wallNs_default_value;
+	ZVAL_UNDEF(&property_wallNs_default_value);
 	zend_string *property_wallNs_name = zend_string_init("wallNs", sizeof("wallNs") - 1, true);
-	zend_declare_typed_property(class_entry, property_wallNs_name, &property_default_value, ZEND_ACC_PUBLIC|ZEND_ACC_READONLY, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
+	zend_declare_typed_property(class_entry, property_wallNs_name, &property_wallNs_default_value, ZEND_ACC_PUBLIC|ZEND_ACC_READONLY, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
 	zend_string_release_ex(property_wallNs_name, true);
 
+	zval property_processUserNs_default_value;
+	ZVAL_UNDEF(&property_processUserNs_default_value);
 	zend_string *property_processUserNs_name = zend_string_init("processUserNs", sizeof("processUserNs") - 1, true);
-	zend_declare_typed_property(class_entry, property_processUserNs_name, &property_default_value, ZEND_ACC_PUBLIC|ZEND_ACC_READONLY, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
+	zend_declare_typed_property(class_entry, property_processUserNs_name, &property_processUserNs_default_value, ZEND_ACC_PUBLIC|ZEND_ACC_READONLY, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
 	zend_string_release_ex(property_processUserNs_name, true);
 
+	zval property_processSystemNs_default_value;
+	ZVAL_UNDEF(&property_processSystemNs_default_value);
 	zend_string *property_processSystemNs_name = zend_string_init("processSystemNs", sizeof("processSystemNs") - 1, true);
-	zend_declare_typed_property(class_entry, property_processSystemNs_name, &property_default_value, ZEND_ACC_PUBLIC|ZEND_ACC_READONLY, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
+	zend_declare_typed_property(class_entry, property_processSystemNs_name, &property_processSystemNs_default_value, ZEND_ACC_PUBLIC|ZEND_ACC_READONLY, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
 	zend_string_release_ex(property_processSystemNs_name, true);
 
+	zval property_systemIdleNs_default_value;
+	ZVAL_UNDEF(&property_systemIdleNs_default_value);
 	zend_string *property_systemIdleNs_name = zend_string_init("systemIdleNs", sizeof("systemIdleNs") - 1, true);
-	zend_declare_typed_property(class_entry, property_systemIdleNs_name, &property_default_value, ZEND_ACC_PUBLIC|ZEND_ACC_READONLY, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
+	zend_declare_typed_property(class_entry, property_systemIdleNs_name, &property_systemIdleNs_default_value, ZEND_ACC_PUBLIC|ZEND_ACC_READONLY, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
 	zend_string_release_ex(property_systemIdleNs_name, true);
 
+	zval property_systemBusyNs_default_value;
+	ZVAL_UNDEF(&property_systemBusyNs_default_value);
 	zend_string *property_systemBusyNs_name = zend_string_init("systemBusyNs", sizeof("systemBusyNs") - 1, true);
-	zend_declare_typed_property(class_entry, property_systemBusyNs_name, &property_default_value, ZEND_ACC_PUBLIC|ZEND_ACC_READONLY, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
+	zend_declare_typed_property(class_entry, property_systemBusyNs_name, &property_systemBusyNs_default_value, ZEND_ACC_PUBLIC|ZEND_ACC_READONLY, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
 	zend_string_release_ex(property_systemBusyNs_name, true);
 
+	zval property_cpuCount_default_value;
+	ZVAL_UNDEF(&property_cpuCount_default_value);
 	zend_string *property_cpuCount_name = zend_string_init("cpuCount", sizeof("cpuCount") - 1, true);
-	zend_declare_typed_property(class_entry, property_cpuCount_name, &property_default_value, ZEND_ACC_PUBLIC|ZEND_ACC_READONLY, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
+	zend_declare_typed_property(class_entry, property_cpuCount_name, &property_cpuCount_default_value, ZEND_ACC_PUBLIC|ZEND_ACC_READONLY, NULL, (zend_type) ZEND_TYPE_INIT_MASK(MAY_BE_LONG));
 	zend_string_release_ex(property_cpuCount_name, true);
 
 	return class_entry;
