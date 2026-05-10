@@ -173,6 +173,44 @@ final class StandardSteps {
                 }
             });
 
+        // When coroutine "X" tries to send N messages to "ch" without blocking
+        // Uses Channel::sendAsync(): true on success, false on full-or-closed.
+        // Counters: try_send_attempts_$ch / try_send_ok_$ch / try_send_full_$ch.
+        $r->on('/^coroutine "([^"]+)" tries to send (\S+) messages to "([^"]+)" without blocking$/',
+            function(Context $ctx, string $coro, string $countExpr, string $ch) {
+                $n = (int)$ctx->resolver->resolve($countExpr);
+                for ($i = 0; $i < $n; $i++) {
+                    $value = $i;
+                    $ctx->planAction($coro, function(Context $ctx) use ($ch, $value) {
+                        $ctx->inc("try_send_attempts_$ch");
+                        if ($ctx->channels[$ch]->sendAsync($value)) {
+                            $ctx->inc("try_send_ok_$ch");
+                        } else {
+                            $ctx->inc("try_send_full_$ch");
+                        }
+                    });
+                }
+            });
+
+        // When coroutine "X" awaits recvAsync N times from "ch"
+        // Each call returns a Future; we await it and bump async_received or
+        // async_recv_failed depending on whether the await throws.
+        $r->on('/^coroutine "([^"]+)" awaits recvAsync (\S+) times from "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $countExpr, string $ch) {
+                $n = (int)$ctx->resolver->resolve($countExpr);
+                for ($i = 0; $i < $n; $i++) {
+                    $ctx->planAction($coro, function(Context $ctx) use ($ch) {
+                        $ctx->inc("async_recv_attempts_$ch");
+                        try {
+                            $ctx->channels[$ch]->recvAsync()->await();
+                            $ctx->inc("async_received_$ch");
+                        } catch (\Throwable $e) {
+                            $ctx->inc("async_recv_failed_$ch");
+                        }
+                    });
+                }
+            });
+
         // When coroutine "X" iterates "ch" and counts
         // foreach over the Channel until it closes; each delivered item
         // increments iterated_$ch.
@@ -1038,6 +1076,25 @@ final class StandardSteps {
             function(Context $ctx, string $name) {
                 if (!isset($ctx->channels[$name]) || !$ctx->channels[$name]->isClosed()) {
                     throw new \RuntimeException("channel $name expected to be closed");
+                }
+            });
+
+        // Then channel "ch" is full
+        $r->on('/^channel "([^"]+)" is full$/',
+            function(Context $ctx, string $name) {
+                if (!isset($ctx->channels[$name]) || !$ctx->channels[$name]->isFull()) {
+                    throw new \RuntimeException("channel $name expected to be full");
+                }
+            });
+
+        // Then channel "ch" is not full
+        $r->on('/^channel "([^"]+)" is not full$/',
+            function(Context $ctx, string $name) {
+                if (!isset($ctx->channels[$name])) {
+                    throw new \RuntimeException("channel $name not defined");
+                }
+                if ($ctx->channels[$name]->isFull()) {
+                    throw new \RuntimeException("channel $name expected NOT to be full");
                 }
             });
 
