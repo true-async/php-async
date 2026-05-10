@@ -484,6 +484,30 @@ final class StandardSteps {
                 });
             });
 
+        // When coroutine "X" inspects trace of coroutine "Y"
+        // Records whether Y was suspended (trace is array) or done/not-yet-running
+        // (trace is null) at the moment of the call. Under random scheduling
+        // both outcomes can occur; the sum invariant lets tests assert without
+        // depending on one specific interleaving.
+        $r->on('/^coroutine "([^"]+)" inspects trace of coroutine "([^"]+)"$/',
+            function(Context $ctx, string $caller, string $target) {
+                $ctx->planAction($caller, function(Context $ctx) use ($target) {
+                    $ctx->inc("trace_inspect_attempts_$target");
+                    if (!isset($ctx->coroutineHandles[$target])) {
+                        $ctx->inc("trace_inspect_target_missing_$target");
+                        return;
+                    }
+                    $t = $ctx->coroutineHandles[$target]->getTrace();
+                    if (is_array($t)) {
+                        $ctx->inc("trace_was_array_$target");
+                    } elseif ($t === null) {
+                        $ctx->inc("trace_was_null_$target");
+                    } else {
+                        $ctx->inc("trace_was_other_$target");
+                    }
+                });
+            });
+
         // When coroutine "X" registers finally on coroutine "Y"
         // Increments counter "finally_called_Y" when finally fires —
         // must hold for every termination path: return / throw / cancel.
@@ -979,6 +1003,23 @@ final class StandardSteps {
                 if (!($e instanceof $class)) {
                     throw new \RuntimeException(
                         "coroutine $name expected $class, got " . get_class($e)
+                    );
+                }
+            });
+
+        // Then coroutine "X" final trace is null
+        // After run() has returned, every planned coroutine is terminated, so
+        // getTrace() must report null regardless of how it terminated.
+        $r->on('/^coroutine "([^"]+)" final trace is null$/',
+            function(Context $ctx, string $name) {
+                if (!isset($ctx->coroutineHandles[$name])) {
+                    throw new \RuntimeException("coroutine $name not defined");
+                }
+                $t = $ctx->coroutineHandles[$name]->getTrace();
+                if ($t !== null) {
+                    throw new \RuntimeException(
+                        "coroutine $name expected null trace post-termination, got "
+                            . (is_array($t) ? 'array(' . count($t) . ')' : gettype($t))
                     );
                 }
             });
