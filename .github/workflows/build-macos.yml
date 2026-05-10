@@ -146,6 +146,11 @@ jobs:
           cd php-src
           sudo make install
 
+      - name: Generate chaos tests
+        working-directory: php-src/ext/async
+        run: |
+          PHP_BIN=/usr/local/bin/php bash fuzzy_tests/regen.sh
+
       - name: Run basic tests
         working-directory: php-src/ext/async
         run: |

@@ -204,6 +204,11 @@ jobs:
             echo "opcache.protect_memory=1"
           } > /etc/php.d/opcache.ini
 
+      - name: Generate chaos tests
+        working-directory: php-src/ext/async
+        run: |
+          PHP_BIN=/usr/local/bin/php sh fuzzy_tests/regen.sh
+
       - name: Run basic tests
         working-directory: php-src/ext/async
         run: |
