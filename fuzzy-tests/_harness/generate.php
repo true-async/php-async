@@ -1,13 +1,13 @@
 <?php
 /**
  * Generate one .phpt per Scenario / Examples-row from every .feature file in
- * fuzzy_tests/.
+ * fuzzy-tests/.
  *
- * Output goes to fuzzy_tests/_generated/. The directory is wiped on every run
+ * Output goes to fuzzy-tests/_generated/. The directory is wiped on every run
  * so stale files from removed scenarios don't linger.
  *
  * Usage:
- *   php fuzzy_tests/_harness/generate.php
+ *   php fuzzy-tests/_harness/generate.php
  */
 
 namespace Async\Chaos;
@@ -135,7 +135,7 @@ function emitPhpt(
 {$titleEscaped}
 --DESCRIPTION--
 Auto-generated from {$featureRel}.
-DO NOT EDIT — regenerate via fuzzy_tests/regen.sh.
+DO NOT EDIT — regenerate via fuzzy-tests/regen.sh.
 {$skipIf}--FILE--
 <?php
 require_once __DIR__ . '/{$relativeHarness}/Runner.php';
@@ -192,9 +192,9 @@ function main(): int {
     foreach ($features as $featureAbs) {
         $featureBase = basename($featureAbs, '.feature');
         $relFromFuzzy = ltrim(substr(realpath($featureAbs), strlen($fuzzyDirReal)), '/');
-        $featureRel = 'fuzzy_tests/' . $relFromFuzzy;
+        $featureRel = 'fuzzy-tests/' . $relFromFuzzy;
         $subdir     = dirname($relFromFuzzy);   // "channel" or "." for root features
-        // From _generated/<subdir>/foo.phpt to fuzzy_tests/_harness/.
+        // From _generated/<subdir>/foo.phpt to fuzzy-tests/_harness/.
         // root (subdir='.'):  _generated/foo.phpt → ../_harness
         // one level (channel): _generated/channel/foo.phpt → ../../_harness
         $relativeHarness = $subdir === '.'

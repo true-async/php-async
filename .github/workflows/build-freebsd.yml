@@ -148,7 +148,7 @@ jobs:
             /usr/local/bin/php -v
 
             echo "=== Generating chaos tests ==="
-            (cd ext/async && PHP_BIN=/usr/local/bin/php sh fuzzy_tests/regen.sh)
+            (cd ext/async && PHP_BIN=/usr/local/bin/php sh fuzzy-tests/regen.sh)
 
             echo "=== Running Basic Async Tests ==="
             /usr/local/bin/php run-tests.php \
@@ -159,7 +159,7 @@ jobs:
               --show-diff \
               --show-slow 4000 \
               --set-timeout 120 \
-              ext/async/tests ext/async/fuzzy_tests/_generated
+              ext/async/tests ext/async/fuzzy-tests/_generated
 
             echo "=== Running Async Tests with OpCache ==="
             /usr/local/bin/php run-tests.php \

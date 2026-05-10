@@ -11,7 +11,7 @@
  * "delay(") or in another harness file.
  *
  * Usage:
- *   php fuzzy_tests/_harness/coverage.php
+ *   php fuzzy-tests/_harness/coverage.php
  */
 
 namespace Async\Chaos\Coverage;
@@ -55,7 +55,7 @@ function collectApi(string $extDir): array {
     return $api;
 }
 
-/** Read all PHP files under fuzzy_tests/_harness for method/function references. */
+/** Read all PHP files under fuzzy-tests/_harness for method/function references. */
 function harnessText(string $fuzzyDir): string {
     $buf = '';
     foreach (glob($fuzzyDir . '/_harness/*.php') as $f) {

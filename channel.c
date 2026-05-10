@@ -909,7 +909,25 @@ retry:
 		if (!channel->rendezvous_has_value) {
 			ZVAL_COPY(&channel->rendezvous_value, value);
 			channel->rendezvous_has_value = true;
-			channel_wake_receiver(channel);
+
+			if (channel_wake_receiver(channel)) {
+				return;
+			}
+
+			CHANNEL_WAIT_FOR_SPACE(channel, cancellation_token);
+
+			if (UNEXPECTED(EG(exception))) {
+				RETURN_THROWS();
+			}
+
+			if (channel->waiting_receivers.length > 0 && channel->waiting_senders.length > 0) {
+				channel_wake_sender(channel);
+			}
+
+			if (UNEXPECTED(EG(exception))) {
+				RETURN_THROWS();
+			}
+
 			return;
 		}
 	}

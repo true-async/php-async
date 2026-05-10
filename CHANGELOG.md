@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.0] -
 
+### Fixed
+- **Channel(0) `send()` no longer returns without a waiting receiver** (#108).
+  Previously the unbuffered slot acted as a 1-message buffer: the first `send`
+  deposited into `rendezvous_value` and returned immediately, breaking the
+  documented Go-style rendezvous and the happens-before guarantee. Now `send`
+  on cap=0 blocks in `waiting_senders` until a `recv` takes the value.
+  When the slot-owner wakes after consumption, if both queues still have
+  waiters it wakes the next sender to refill the slot — keeping the chain
+  moving for N senders / M receivers without deadlock. `sendAsync` is
+  unchanged (still non-blocking, deposits into the slot). Tests `channel/003`
+  and `channel/011` updated to reflect proper rendezvous ordering.
+
 ### Changed
+- **`fuzzy_tests/` directory renamed to `fuzzy-tests/`** for consistency with
+  other dash-separated paths. All harness, generated tests, feature files,
+  CI workflows, and docs updated.
 - **Closures with class/function declarations are rejected at thread transfer**. `spawn_thread()`, `ThreadPool::submit()` and any path that snapshots a closure now scan the op_array for `ZEND_DECLARE_CLASS{,_DELAYED}`, `ZEND_DECLARE_ANON_CLASS` and `ZEND_DECLARE_FUNCTION`; the first match throws `Cannot transfer closure to another thread: illegal <kind> declaration at <file>:<line>`. The previous behaviour replayed the opcode in the worker, where the compile-time `EG(class_table)` registration under `rtd_key` is missing — `do_bind_class` then tripped `ZEND_ASSERT(ce)` (`Zend/zend_compile.c:1372`). Validation is memoised in a private `fn_flags2` bit (`ASYNC_FN_FLAG_THREAD_TRANSFER_OK`) so repeated transfers (ThreadPool resubmits, channel resends) skip the rescan; invalid closures stay unflagged and re-throw with the exact location every time. Recurses into `dynamic_func_defs` so an invalid nested closure is caught at the outer transfer. Mirrors parallel's `php_parallel_check_function` policy. Tests `tests/thread/047`–`049`.
 
 ### Added

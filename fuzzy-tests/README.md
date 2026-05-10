@@ -11,7 +11,7 @@ directory holds Gherkin `.feature` sources; the generator produces one
 `.phpt` per `Scenario` / `Examples` row in `_generated/<topic>/`.
 
 ```
-fuzzy_tests/
+fuzzy-tests/
 ├── _harness/                # parser, executor, step definitions (PHP)
 ├── _generated/              # auto-generated .phpt files (gitignored)
 ├── channel/                 # Channel send/recv/close/cap chaos
@@ -36,15 +36,15 @@ becomes one auto-generated `.phpt` under `_generated/`. The generated tests
 are not committed — regenerate before running.
 
 ```sh
-./fuzzy_tests/regen.sh                           # regenerate _generated/
-make TESTS=ext/async/fuzzy_tests test            # run all chaos tests
-TRUE_ASYNC_SCHED=random:42 make TESTS=ext/async/fuzzy_tests test
+./fuzzy-tests/regen.sh                           # regenerate _generated/
+make TESTS=ext/async/fuzzy-tests test            # run all chaos tests
+TRUE_ASYNC_SCHED=random:42 make TESTS=ext/async/fuzzy-tests test
 ```
 
 To reproduce a specific failing case:
 
 ```sh
-make TESTS=ext/async/fuzzy_tests/_generated/channel_pair__01_...phpt test
+make TESTS=ext/async/fuzzy-tests/_generated/channel_pair__01_...phpt test
 ```
 
 ## Writing a scenario
