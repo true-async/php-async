@@ -950,6 +950,53 @@ final class StandardSteps {
                 }
             });
 
+        // Then coroutine "X" has no exception
+        $r->on('/^coroutine "([^"]+)" has no exception$/',
+            function(Context $ctx, string $name) {
+                if (!isset($ctx->coroutineHandles[$name])) {
+                    throw new \RuntimeException("coroutine $name not defined");
+                }
+                $e = $ctx->coroutineHandles[$name]->getException();
+                if ($e !== null) {
+                    throw new \RuntimeException(
+                        "coroutine $name expected no exception, got " . get_class($e)
+                            . ": " . $e->getMessage()
+                    );
+                }
+            });
+
+        // Then coroutine "X" exception is "ClassName"
+        // Asserts getException() returns an instance of the named class.
+        $r->on('/^coroutine "([^"]+)" exception is "([^"]+)"$/',
+            function(Context $ctx, string $name, string $class) {
+                if (!isset($ctx->coroutineHandles[$name])) {
+                    throw new \RuntimeException("coroutine $name not defined");
+                }
+                $e = $ctx->coroutineHandles[$name]->getException();
+                if ($e === null) {
+                    throw new \RuntimeException("coroutine $name expected $class, got null");
+                }
+                if (!($e instanceof $class)) {
+                    throw new \RuntimeException(
+                        "coroutine $name expected $class, got " . get_class($e)
+                    );
+                }
+            });
+
+        // Then coroutine "X" result is null
+        $r->on('/^coroutine "([^"]+)" result is null$/',
+            function(Context $ctx, string $name) {
+                if (!isset($ctx->coroutineHandles[$name])) {
+                    throw new \RuntimeException("coroutine $name not defined");
+                }
+                $r = $ctx->coroutineHandles[$name]->getResult();
+                if ($r !== null) {
+                    throw new \RuntimeException(
+                        "coroutine $name expected null result, got " . var_export($r, true)
+                    );
+                }
+            });
+
         // Then no orphan coroutines  (await_all completed for every planned coroutine)
         $r->on('/^no orphan coroutines$/',
             function(Context $ctx) {
