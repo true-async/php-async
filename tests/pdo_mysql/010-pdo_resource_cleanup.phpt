@@ -26,6 +26,18 @@ function getConnectionCount() {
     return (int) $result['Value'];
 }
 
+// Count *our* connections only by checking the IDs we recorded against the
+// server's PROCESSLIST. SHOW STATUS LIKE 'Threads_connected' is global —
+// under run-tests.php -jN it counts other parallel workers and produces
+// false-positive "leaks".
+function ourLiveConnections(array $ids) {
+    if (empty($ids)) return 0;
+    $pdo = AsyncPDOMySQLTest::factory();
+    $list = implode(',', array_map('intval', $ids));
+    $stmt = $pdo->query("SELECT COUNT(*) AS c FROM information_schema.PROCESSLIST WHERE ID IN ($list)");
+    return (int) $stmt->fetch(PDO::FETCH_ASSOC)['c'];
+}
+
 $initial_connections = getConnectionCount();
 echo "initial connections: $initial_connections\n";
 
@@ -135,19 +147,29 @@ foreach ($results as $i => $result) {
 gc_collect_cycles();
 echo "garbage collection forced\n";
 
-// Small delay to allow connection cleanup
-usleep(100000); // 0.1 seconds
+// Collect connection IDs we created (not the no-cleanup coroutine 6 — its
+// $pdo is captured by the closure and freed only when await_all_or_fail's
+// result array goes out of scope; we don't probe it here).
+$ourIds = [];
+foreach ($results as $r) {
+    if ($r['type'] === 'explicit_cleanup' && !empty($r['conn_id'])) {
+        $ourIds[] = $r['conn_id'];
+    }
+}
 
-$final_connections = getConnectionCount();
-echo "final connections: $final_connections\n";
+// Poll PROCESSLIST: explicitly-closed connections must disappear within a
+// reasonable window. Wait up to ~1s.
+$leaked = 0;
+for ($i = 0; $i < 100; $i++) {
+    $leaked = ourLiveConnections($ourIds);
+    if ($leaked === 0) break;
+    usleep(10000); // 10ms
+}
 
-$connection_diff = $final_connections - $initial_connections;
-echo "connection difference: $connection_diff\n";
-
-if ($connection_diff <= 1) { // Allow for our own test connection
+if ($leaked === 0) {
     echo "cleanup: passed\n";
 } else {
-    echo "cleanup: potential leak ($connection_diff extra connections)\n";
+    echo "cleanup: potential leak ($leaked of our connections still live)\n";
 }
 
 echo "end\n";
@@ -181,7 +203,5 @@ result 4: coroutine_4_completed
 result 5: coroutine_5_completed
 result 6: coroutine_6_completed
 garbage collection forced
-final connections: %d
-connection difference: %d
 cleanup: passed
 end
