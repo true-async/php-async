@@ -46,6 +46,10 @@ final class Context {
     /** @var array<string, string|null> coroutine_name => scope_name|null (where to spawn) */
     public array $coroutineScopes = [];
 
+    /** @var array<string, true> coroutines NOT placed in await_all — used to
+     * test runtime cleanup of pending coroutines at request end. */
+    public array $nonAwaited = [];
+
     /** @var string[] scope names declared in Given */
     public array $scopeDefs = [];
 
@@ -306,23 +310,43 @@ final class Context {
                 }
             };
             $scopeName = $this->coroutineScopes[$coroName] ?? null;
+            $isPending = !empty($this->nonAwaited[$coroName]);
             if ($scopeName !== null && isset($this->scopes[$scopeName])) {
                 $h = $this->scopes[$scopeName]->spawn($body);
                 $self->coroutineHandles[$coroName] = $h;
                 // If the scope has an exception handler installed, child
                 // exceptions must reach the scope handler — and an outer
                 // awaiter would consume them first. Skip the external await
-                // for those scopes only.
-                if (empty($this->scopeExceptionHandler[$scopeName])) {
+                // for those scopes only. Non-awaited coroutines are also
+                // skipped (testing pending-shutdown cleanup).
+                if (empty($this->scopeExceptionHandler[$scopeName]) && !$isPending) {
                     $awaitable[] = $h;
                 }
             } else {
                 $self->coroutineHandles[$coroName] = spawn($body);
-                $awaitable[] = $self->coroutineHandles[$coroName];
+                if (!$isPending) {
+                    $awaitable[] = $self->coroutineHandles[$coroName];
+                }
             }
         }
         if ($awaitable) {
             await_all($awaitable);
+        }
+
+        // Shutdown sweep: cancel any non-awaited coroutine still alive so the
+        // harness exits cleanly. Real PHP-async runtime will run the same
+        // cleanup path on request shutdown; here we fire it explicitly so the
+        // test exercises the cancellation-on-shutdown route. Coroutines that
+        // were already unblocked by the channel cleanup below (or by the
+        // scope dispose loop further down) are no-ops here.
+        foreach ($this->nonAwaited as $coroName => $_) {
+            if (!isset($self->coroutineHandles[$coroName])) {
+                continue;
+            }
+            $h = $self->coroutineHandles[$coroName];
+            if (!$h->isCompleted()) {
+                $h->cancel();
+            }
         }
 
         // Dispose every scope in reverse-of-insertion order so that nested
@@ -356,7 +380,7 @@ final class Context {
         // by the time Then-step assertions execute. Bound the loop so a stuck
         // coroutine surfaces as an orphan-coroutines failure rather than a
         // hang.
-        if ($this->scopes) {
+        if ($this->scopes || $this->nonAwaited) {
             // First a couple of suspends drain micro-tasks (post-dispose
             // finally callbacks fire here). Then short delays advance the
             // reactor so any timer-blocked child receives its cancellation.

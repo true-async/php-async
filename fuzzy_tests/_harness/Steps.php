@@ -59,6 +59,18 @@ final class StandardSteps {
                 $ctx->defineCoroutine($name);
             });
 
+        // Given a non-awaited coroutine "A"
+        // Spawned like a regular coroutine but NOT placed in run()'s
+        // await_all list. Used to test runtime cleanup of coroutines still
+        // pending at request end — the harness fires a cancel sweep over
+        // every nonAwaited coroutine right after await_all, simulating the
+        // shutdown phase.
+        $r->on('/^a non-awaited coroutine "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                $ctx->defineCoroutine($name);
+                $ctx->nonAwaited[$name] = true;
+            });
+
         // Given a coroutine "A" in scope "S"
         $r->on('/^a coroutine "([^"]+)" in scope "([^"]+)"$/',
             function(Context $ctx, string $name, string $scope) {
@@ -1246,18 +1258,17 @@ final class StandardSteps {
             });
 
         // Then coroutine "X" is completed
-        // After Context::run() every planned coroutine has terminated; isStarted
-        // and isCompleted must both report true. isRunning and isSuspended must
-        // both report false.
+        // After Context::run() every planned coroutine has terminated.
+        // isCompleted must be true; isRunning/isSuspended must be false.
+        // isStarted is NOT required — a coroutine that was cancelled before
+        // the scheduler ever picked it up reports isStarted=false but is
+        // still terminal.
         $r->on('/^coroutine "([^"]+)" is completed$/',
             function(Context $ctx, string $name) {
                 if (!isset($ctx->coroutineHandles[$name])) {
                     throw new \RuntimeException("coroutine $name not defined");
                 }
                 $h = $ctx->coroutineHandles[$name];
-                if (!$h->isStarted()) {
-                    throw new \RuntimeException("coroutine $name expected isStarted=true");
-                }
                 if (!$h->isCompleted()) {
                     throw new \RuntimeException("coroutine $name expected isCompleted=true");
                 }
