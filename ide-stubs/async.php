@@ -2073,6 +2073,16 @@ function current_coroutine(): Coroutine {}
 function root_context(): Context {}
 
 /**
+ * Return the Context of the request-level Scope inherited from the spawning
+ * coroutine, or null if none is set. The request scope is assigned by the
+ * embedding C code (e.g. an HTTP server) and propagates to all child
+ * coroutines automatically.
+ *
+ * @return Context|null
+ */
+function request_context(): ?Context {}
+
+/**
  * Return a snapshot of all live coroutines managed by the scheduler.
  *
  * @return Coroutine[]
