@@ -11,19 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Closures with class/function declarations are rejected at thread transfer**. `spawn_thread()`, `ThreadPool::submit()` and any path that snapshots a closure now scan the op_array for `ZEND_DECLARE_CLASS{,_DELAYED}`, `ZEND_DECLARE_ANON_CLASS` and `ZEND_DECLARE_FUNCTION`; the first match throws `Cannot transfer closure to another thread: illegal <kind> declaration at <file>:<line>`. The previous behaviour replayed the opcode in the worker, where the compile-time `EG(class_table)` registration under `rtd_key` is missing — `do_bind_class` then tripped `ZEND_ASSERT(ce)` (`Zend/zend_compile.c:1372`). Validation is memoised in a private `fn_flags2` bit (`ASYNC_FN_FLAG_THREAD_TRANSFER_OK`) so repeated transfers (ThreadPool resubmits, channel resends) skip the rescan; invalid closures stay unflagged and re-throw with the exact location every time. Recurses into `dynamic_func_defs` so an invalid nested closure is caught at the outer transfer. Mirrors parallel's `php_parallel_check_function` policy. Tests `tests/thread/047`–`049`.
 
 ### Added
-- **Request-level scope on coroutines** (#105) — new `request_scope` field on
-  `zend_coroutine_t` provides O(1) access to a user-designated request Scope
-  (typically an HTTP request scope) without walking the `parent_scope` chain.
-  The field is inherited from the spawning coroutine in `async_new_coroutine`,
-  so any coroutine spawned after the request scope is set sees it
-  automatically. C-level API: `ZEND_ASYNC_REQUEST_SCOPE` /
-  `ZEND_ASYNC_SET_REQUEST_SCOPE(scope)` macros in `Zend/zend_async_API.h`;
-  the field is a borrowed pointer — no refcount, no free. Embedding C code
-  (e.g. an HTTP server) is responsible for setting and clearing it.
-  PHP-level: new `Async\request_context(): ?Context` returns the Context of
-  the inherited request scope, or `null` if none was set. There is
-  intentionally no PHP-side setter — request-scope assignment is internal
-  machinery owned by the embedding host.
+- **Request-level scope on Scope** (#105) — new `request_scope` field on
+  `zend_async_scope_t`, inherited from `parent_scope` in `async_new_scope`.
+  Gives O(1) access to a user-designated request Scope from any descendant
+  scope via `ZEND_ASYNC_REQUEST_SCOPE` (resolves through `CURRENT_SCOPE`).
+  Borrowed pointer — no refcount, no free; the embedding C host sets it
+  (typically `scope->request_scope = scope` to mark a scope as the request).
+  PHP: new `Async\request_context(): ?Context` returns the inherited
+  request scope's Context, or `null`. No PHP-side setter — assignment is
+  internal machinery owned by the embedding host.
 - **Channel deadlock protection** — three layers of defence against blocked
   coroutines, exposed through a typed `Async\ChannelCloseReason` enum on
   `ChannelException::$reason`:

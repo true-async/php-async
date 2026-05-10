@@ -416,10 +416,6 @@ zend_coroutine_t *async_new_coroutine(zend_async_scope_t *scope)
 
 	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_OBJECT_TO_EVENT(object);
 
-	/* Inherit the request scope from the spawning coroutine, if any. */
-	zend_coroutine_t *parent_co = ZEND_ASYNC_CURRENT_COROUTINE;
-	coroutine->coroutine.request_scope = parent_co != NULL ? parent_co->request_scope : NULL;
-
 	if (scope != NULL) {
 		// Add the coroutine to the scope before calling the enqueue hook
 		zval options;
