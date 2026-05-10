@@ -515,6 +515,30 @@ final class StandardSteps {
                 });
             });
 
+        // When coroutine "X" inspects state of coroutine "Y"
+        // Calls every is*() predicate on Y at the moment of the call. Each call
+        // bumps a per-state counter; the union covers all observable states.
+        // Under random scheduling each call lands on exactly one of the
+        // mutually-exclusive states {running, suspended, completed, cancelled,
+        // not-yet-started}.
+        $r->on('/^coroutine "([^"]+)" inspects state of coroutine "([^"]+)"$/',
+            function(Context $ctx, string $caller, string $target) {
+                $ctx->planAction($caller, function(Context $ctx) use ($target) {
+                    $ctx->inc("state_inspect_attempts_$target");
+                    if (!isset($ctx->coroutineHandles[$target])) {
+                        $ctx->inc("state_inspect_target_missing_$target");
+                        return;
+                    }
+                    $h = $ctx->coroutineHandles[$target];
+                    if ($h->isStarted())                 $ctx->inc("state_started_$target");
+                    if ($h->isRunning())                 $ctx->inc("state_running_$target");
+                    if ($h->isSuspended())               $ctx->inc("state_suspended_$target");
+                    if ($h->isCompleted())               $ctx->inc("state_completed_$target");
+                    if ($h->isCancelled())               $ctx->inc("state_cancelled_$target");
+                    if ($h->isCancellationRequested())   $ctx->inc("state_cancel_requested_$target");
+                });
+            });
+
         // When coroutine "X" inspects trace of coroutine "Y"
         // Records whether Y was suspended (trace is array) or done/not-yet-running
         // (trace is null) at the moment of the call. Under random scheduling
@@ -1047,6 +1071,41 @@ final class StandardSteps {
                     throw new \RuntimeException(
                         "coroutine $name expected $class, got " . get_class($e)
                     );
+                }
+            });
+
+        // Then coroutine "X" is completed
+        // After Context::run() every planned coroutine has terminated; isStarted
+        // and isCompleted must both report true. isRunning and isSuspended must
+        // both report false.
+        $r->on('/^coroutine "([^"]+)" is completed$/',
+            function(Context $ctx, string $name) {
+                if (!isset($ctx->coroutineHandles[$name])) {
+                    throw new \RuntimeException("coroutine $name not defined");
+                }
+                $h = $ctx->coroutineHandles[$name];
+                if (!$h->isStarted()) {
+                    throw new \RuntimeException("coroutine $name expected isStarted=true");
+                }
+                if (!$h->isCompleted()) {
+                    throw new \RuntimeException("coroutine $name expected isCompleted=true");
+                }
+                if ($h->isRunning()) {
+                    throw new \RuntimeException("coroutine $name expected isRunning=false");
+                }
+                if ($h->isSuspended()) {
+                    throw new \RuntimeException("coroutine $name expected isSuspended=false");
+                }
+            });
+
+        // Then coroutine "X" is cancelled
+        $r->on('/^coroutine "([^"]+)" is cancelled$/',
+            function(Context $ctx, string $name) {
+                if (!isset($ctx->coroutineHandles[$name])) {
+                    throw new \RuntimeException("coroutine $name not defined");
+                }
+                if (!$ctx->coroutineHandles[$name]->isCancelled()) {
+                    throw new \RuntimeException("coroutine $name expected isCancelled=true");
                 }
             });
 
