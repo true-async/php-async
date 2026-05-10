@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.0] -
 
 ### Fixed
+- **PDO MySQL `010-pdo_resource_cleanup` no longer false-fails under
+  parallel test workers** (#114). The test counted leaks against
+  `SHOW STATUS LIKE 'Threads_connected'` — a *server-global* counter that
+  also sees connections held by other run-tests.php workers under `-jN`.
+  Replaced with a process-local check: collect the connection IDs we
+  created in coroutines, then poll `information_schema.PROCESSLIST` until
+  those specific IDs disappear (or report whichever ones leaked).
 - **PDO PgSQL pool no longer leaks a killed-but-idle connection** (#114).
   When `pg_terminate_backend` (or any other server-side close) hits a
   connection while it is sitting idle in the pool, the slot stayed in the
