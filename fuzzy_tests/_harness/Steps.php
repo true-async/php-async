@@ -611,7 +611,8 @@ final class StandardSteps {
                         @fclose($server);
                     }
                 });
-            });
+            })
+            ->requires('tcp');
 
         // When coroutine "X" reads from a fresh pipe
         // Creates a stream_socket_pair (kept alive locally), blocks on fread()
@@ -643,7 +644,8 @@ final class StandardSteps {
                         @fclose($writer);
                     }
                 });
-            });
+            })
+            ->requires('unix-sockets');
 
         // When coroutine "X" inspects state of coroutine "Y"
         // Calls every is*() predicate on Y at the moment of the call. Each call
