@@ -32,6 +32,16 @@ final class StandardSteps {
                 $ctx->defineChannel($name, $cap);
             });
 
+        // Given a channel "ch" with capacity N and deadlock timeout T ms
+        // Sets both producer and consumer timeouts to T (channel closes with
+        // reason DEADLOCK if no progress within T ms while a side is blocked).
+        $r->on('/^a channel "([^"]+)" with capacity (\S+) and deadlock timeout (\S+) ms$/',
+            function(Context $ctx, string $name, string $capExpr, string $tExpr) {
+                $cap = (int)$ctx->resolver->resolve($capExpr);
+                $t   = (int)$ctx->resolver->resolve($tExpr);
+                $ctx->defineChannel($name, $cap, $t, $t);
+            });
+
         // Given a coroutine "A"
         $r->on('/^a coroutine "([^"]+)"$/',
             function(Context $ctx, string $name) {

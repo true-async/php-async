@@ -31,7 +31,7 @@ final class Context {
     public Rng $rng;
     public ValueResolver $resolver;
 
-    /** @var array<string, int> name => capacity */
+    /** @var array<string, array{capacity:int,noProducerTimeout:int,noConsumerTimeout:int,hardTimeouts:bool}> */
     public array $channelDefs = [];
 
     /** @var array<string, Channel> populated by run() */
@@ -105,8 +105,19 @@ final class Context {
     }
 
     /** Define a channel by name; idempotent (last wins). */
-    public function defineChannel(string $name, int $capacity): void {
-        $this->channelDefs[$name] = $capacity;
+    public function defineChannel(
+        string $name,
+        int $capacity,
+        int $noProducerTimeout = 0,
+        int $noConsumerTimeout = 0,
+        bool $hardTimeouts = false
+    ): void {
+        $this->channelDefs[$name] = [
+            'capacity' => $capacity,
+            'noProducerTimeout' => $noProducerTimeout,
+            'noConsumerTimeout' => $noConsumerTimeout,
+            'hardTimeouts' => $hardTimeouts,
+        ];
     }
 
     /** Plan a coroutine; idempotent. Optionally bound to a scope. */
@@ -174,8 +185,13 @@ final class Context {
         if ($this->hasRun) return;
         $this->hasRun = true;
 
-        foreach ($this->channelDefs as $name => $cap) {
-            $this->channels[$name] = new Channel($cap);
+        foreach ($this->channelDefs as $name => $spec) {
+            $this->channels[$name] = new Channel(
+                $spec['capacity'],
+                $spec['noProducerTimeout'],
+                $spec['noConsumerTimeout'],
+                $spec['hardTimeouts']
+            );
         }
         // Instantiate scopes in dependency order so a child can reference its
         // already-constructed parent. Fixpoint loop handles arbitrary depth.
