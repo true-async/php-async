@@ -1270,6 +1270,7 @@ zend_async_scope_t *async_new_scope(zend_async_scope_t *parent_scope, const bool
 	}
 
 	scope->scope.parent_scope = parent_scope;
+	scope->scope.request_scope = parent_scope != NULL ? parent_scope->request_scope : NULL;
 	zend_async_event_t *event = &scope->scope.event;
 
 	// Inherit safely disposal flag from parent scope or set it to true if parent scope is NULL

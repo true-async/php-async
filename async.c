@@ -820,6 +820,23 @@ PHP_FUNCTION(Async_root_context)
 	RETURN_OBJ_COPY(&context->std);
 }
 
+PHP_FUNCTION(Async_request_context)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	THROW_IF_ASYNC_OFF;
+	THROW_IF_SCHEDULER_CONTEXT;
+
+	zend_async_scope_t *scope = ZEND_ASYNC_REQUEST_SCOPE;
+
+	if (scope == NULL || scope->context == NULL) {
+		RETURN_NULL();
+	}
+
+	async_context_t *context = (async_context_t *) scope->context;
+	RETURN_OBJ_COPY(&context->std);
+}
+
 PHP_FUNCTION(Async_get_coroutines)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
