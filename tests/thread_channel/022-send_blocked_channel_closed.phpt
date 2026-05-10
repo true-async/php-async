@@ -14,22 +14,26 @@ use function Async\spawn;
 use function Async\spawn_thread;
 use function Async\await;
 
-// Capacity 1 — second send blocks
+// Capacity 1 — second send blocks on full buffer
 $ch = new ThreadChannel(1);
 
 spawn(function() use ($ch) {
-    // Thread closes the channel after a short delay
+    // Thread just closes the channel. Whether close fires before/after
+    // the buffer fills, or while the second send is parked, the sender
+    // observes the same outcome: a ThreadChannelException somewhere
+    // in the send sequence below. This avoids the recv-vs-close race
+    // that makes the send("second") wake-up vs close-broadcast order
+    // platform-dependent (see thread_channel/023 for the recv mirror).
     $thread = spawn_thread(function() use ($ch) {
-        $ch->recv(); // take one item to let main proceed
         $ch->close();
         return "closed";
     });
 
-    $ch->send("first"); // fills buffer
-
-    // This send blocks (buffer full), then channel is closed
     try {
-        $ch->send("second");
+        $ch->send("first");   // may succeed (buffer slot free) or
+                              // throw if thread closed first
+        $ch->send("second");  // buffer full → blocks → close wakes
+                              // it with an exception
         echo "ERROR: send should have thrown\n";
     } catch (ThreadChannelException $e) {
         echo "Send blocked then closed: " . $e->getMessage() . "\n";

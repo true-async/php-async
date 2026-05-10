@@ -92,6 +92,9 @@ function available_parallelism(): int {}
  * Note: inside containers `systemIdleNs` / `systemBusyNs` reflect the host, not
  * the cgroup. For per-process backpressure prefer the `process*` fields, which
  * automatically account for affinity and cgroup CPU throttling.
+ *
+ * @strict-properties
+ * @not-serializable
  */
 final class CpuSnapshot
 {
@@ -166,6 +169,14 @@ function current_coroutine(): Coroutine {}
  * Returns the root Scope.
  */
 function root_context(): Context {}
+
+/**
+ * Returns the Context of the request-level Scope inherited from the spawning
+ * coroutine, or null if none is set. The request scope is assigned by the
+ * embedding C code (e.g. an HTTP server) and propagates to all child
+ * coroutines automatically.
+ */
+function request_context(): ?Context {}
 
 /**
  * Returns the list of all coroutines

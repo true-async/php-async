@@ -1269,9 +1269,21 @@ static void thread_release_transferred_hash_table(HashTable *ht)
 	pefree(ht, 1);
 }
 
+/* Custom release for persistent shells produced by transfer_obj handlers
+ * whose layout differs from the default (e.g. closure_transfer_obj stores
+ * a snapshot pointer that needs explicit destroy). The handler stashes a
+ * function pointer in obj->properties — NULL means default cleanup. */
+typedef void (*async_thread_persistent_release_fn)(zend_object *obj);
+
 static void thread_release_transferred_object(zend_object *obj)
 {
 	if (GC_DELREF(obj) > 0) {
+		return;
+	}
+
+	/* Custom release path: handler-specific cleanup of persistent shell. */
+	if (obj->properties != NULL) {
+		((async_thread_persistent_release_fn) obj->properties)(obj);
 		return;
 	}
 
@@ -2240,7 +2252,9 @@ void async_thread_run(void *arg)
 	zend_async_thread_event_t *event = context->event; /* may be NULL */
 	const async_thread_snapshot_t *snapshot = context->snapshot;
 	bool request_started = false;
+#ifdef ZTS
 	bool tsrm_initialized = false;
+#endif
 	char *fallback_message = pestrdup("Unknown fatal error in child thread", 1);
 	/* Capture registry key now — context may be released later in cleanup
 	 * and we still need the key to self-remove on every exit path. */
@@ -2295,7 +2309,9 @@ void async_thread_run(void *arg)
 	zend_rc_debug = false;
 #endif
 	async_thread_tsrm_init();
+#ifdef ZTS
 	tsrm_initialized = true;
+#endif
 
 	/* 1b. Start PHP request (can bailout).
 	 * zend_first_try initializes EG(bailout) for this thread. */
@@ -2749,6 +2765,22 @@ void async_thread_snapshot_destroy_api(void *snapshot)
 /// Closure transfer_obj handler
 ///////////////////////////////////////////////////////////
 
+/* Release the persistent shell produced for a transferred closure.
+ * Called from thread_release_transferred_object when the persistent
+ * exception/result is destroyed without ever being loaded back into
+ * an emalloc heap (e.g. ThreadPool::cancel rejecting pending tasks
+ * whose target future has no awaiting consumer). */
+static void closure_persistent_release(zend_object *obj)
+{
+	async_thread_snapshot_t *snapshot =
+		(async_thread_snapshot_t *)(uintptr_t) Z_LVAL(obj->properties_table[0]);
+	if (snapshot != NULL) {
+		async_thread_snapshot_destroy(snapshot);
+	}
+	zend_string_release((zend_string *) obj->ce);
+	pefree((char *) obj - obj->extra_flags, 1);
+}
+
 /**
  * Persistent wrapper for a transferred closure.
  * Layout: [class_name_ptr | snapshot_ptr | zend_object shell]
@@ -2782,7 +2814,13 @@ static zend_object *closure_transfer_obj(
 		/* Store class name for LOAD phase lookup */
 		dst->ce = (zend_class_entry *) thread_transfer_string(ctx, object->ce->name);
 		dst->handlers = (const zend_object_handlers *)(uintptr_t) 0; /* prop_count = 0 */
-		dst->properties = (HashTable *) snapshot; /* repurposed as snapshot ptr */
+		/* Stash custom release fn — fires from thread_release_transferred_object
+		 * when this shell is freed without going through LOAD (which would
+		 * destroy the snapshot itself). */
+		dst->properties = (HashTable *)(void *) closure_persistent_release;
+
+		/* Store snapshot pointer in first property slot */
+		ZVAL_LONG(&dst->properties_table[0], (zend_long)(uintptr_t) snapshot);
 
 		return dst;
 	} else {
@@ -2798,9 +2836,9 @@ static zend_object *closure_transfer_obj(
 		op_array_to_emalloc(&closure->func.op_array);
 
 		async_thread_snapshot_destroy(snapshot);
-		/* Clear the slot so the persistent shell's later release path
-		 * doesn't double-free the snapshot. */
-		object->properties = NULL;
+		/* Clear so the matching release_transferred_object call (which fires
+		 * for the same persistent shell after load) doesn't double-destroy. */
+		ZVAL_LONG(&object->properties_table[0], 0);
 
 		return Z_OBJ(closure_zv);
 	}

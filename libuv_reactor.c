@@ -4386,7 +4386,8 @@ static void libuv_fs_open_cb(uv_fs_t *fs_request)
 	if (result >= 0) {
 		io->crt_fd = (int) result;
 		io->base.descriptor.fd = (int) result;
-		io->base.state |= ZEND_ASYNC_IO_READABLE;
+		/* fs_open opened the fd itself — close it on dispose. */
+		io->base.state |= ZEND_ASYNC_IO_READABLE | ZEND_ASYNC_IO_OWNS_FD;
 	} else {
 		io->base.state |= ZEND_ASYNC_IO_CLOSED | ZEND_ASYNC_IO_EOF;
 		exception = async_new_exception(
@@ -4911,8 +4912,23 @@ static bool libuv_io_close(zend_async_io_t *io_base)
 		io->handle.udp.data = io;
 		ZEND_ASYNC_EVENT_ADD_REF(&io->base.event);
 		uv_close((uv_handle_t *) &io->handle.udp, io_close_cb);
+	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_FILE && io->crt_fd >= 0
+			&& (io->base.state & ZEND_ASYNC_IO_OWNS_FD)) {
+		/* FILE type has no uv_handle_t to uv_close. Only close crt_fd
+		 * when the reactor owns it (set by libuv_fs_open). For io_create
+		 * the fd belongs to the caller (e.g. plain_wrapper's data->fd),
+		 * which has its own close path — closing here would yank the fd
+		 * out from under it (breaks proc_open's PHP_STREAM_CAST_RELEASE
+		 * extract-and-dup path).
+		 *
+		 * close(2) on a regular file is a no-I/O syscall. uv_fs_close
+		 * with sync mode (NULL cb) goes through the same path on POSIX
+		 * and lets libuv translate any HANDLE-vs-fd quirk on Windows. */
+		uv_fs_t close_req;
+		uv_fs_close(NULL, &close_req, io->crt_fd, NULL);
+		uv_fs_req_cleanup(&close_req);
+		io->crt_fd = -1;
 	}
-	/* FILE type: no uv handle to close. */
 
 close_orig_fd:
 	/* Close the original stdio fd that was dup'd in libuv_io_create,
