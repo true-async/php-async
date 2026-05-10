@@ -103,7 +103,8 @@ final class StandardSteps {
             function(Context $ctx, string $name, string $wExpr) {
                 $w = (int)$ctx->resolver->resolve($wExpr);
                 $ctx->defineThreadPool($name, $w);
-            });
+            })
+            ->requires('zts');
 
         // Given a thread pool "P" with N workers and queue size Q
         $r->on('/^a thread pool "([^"]+)" with (\S+) workers and queue size (\S+)$/',
@@ -111,14 +112,16 @@ final class StandardSteps {
                 $w = (int)$ctx->resolver->resolve($wExpr);
                 $q = (int)$ctx->resolver->resolve($qExpr);
                 $ctx->defineThreadPool($name, $w, $q);
-            });
+            })
+            ->requires('zts');
 
         // Given a thread channel "X" with capacity N
         $r->on('/^a thread channel "([^"]+)" with capacity (\S+)$/',
             function(Context $ctx, string $name, string $capExpr) {
                 $cap = (int)$ctx->resolver->resolve($capExpr);
                 $ctx->defineThreadChannel($name, $cap);
-            });
+            })
+            ->requires('zts');
 
         // Given a task group "G"
         $r->on('/^a task group "([^"]+)"$/',

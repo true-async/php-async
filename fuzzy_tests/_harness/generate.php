@@ -85,6 +85,7 @@ const SKIP_RULES = [
     'tcp'          => '/* TCP loopback is portable; no skip */',
     'fork'         => 'if (!function_exists("pcntl_fork")) { echo "skip fork() not available"; exit; }',
     'tty'          => 'if (PHP_OS_FAMILY === "Windows") { echo "skip TTY semantics differ on Windows"; exit; }',
+    'zts'          => 'if (!ZEND_THREAD_SAFE) { echo "skip requires Thread-Safe (ZTS) PHP build"; exit; }',
 ];
 
 function buildSkipIfBlock(array $requires): string {
