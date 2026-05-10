@@ -484,6 +484,55 @@ final class StandardSteps {
                 });
             });
 
+        // When coroutine "X" registers finally on coroutine "Y"
+        // Increments counter "finally_called_Y" when finally fires —
+        // must hold for every termination path: return / throw / cancel.
+        $r->on('/^coroutine "([^"]+)" registers finally on coroutine "([^"]+)"$/',
+            function(Context $ctx, string $caller, string $target) {
+                $ctx->planAction($caller, function(Context $ctx) use ($target) {
+                    $ctx->inc("finally_register_attempts_$target");
+                    if (!isset($ctx->coroutineHandles[$target])) {
+                        $ctx->inc("finally_register_target_missing_$target");
+                        return;
+                    }
+                    /* Increment "registered" first: if the target has already
+                     * finished, finally() may fire the callback inline and any
+                     * throw from the callback would propagate out of finally()
+                     * itself — we still want this to count as registered. */
+                    $ctx->inc("finally_registered_$target");
+                    try {
+                        $ctx->coroutineHandles[$target]->finally(function() use ($ctx, $target) {
+                            $ctx->inc("finally_called_$target");
+                        });
+                    } catch (\Throwable $e) {
+                        $ctx->inc("finally_register_threw_$target");
+                    }
+                });
+            });
+
+        // When coroutine "X" registers throwing finally on coroutine "Y"
+        // Finally handler that throws — original termination path is preserved
+        // but the thrown exception surfaces via scope exception handler.
+        $r->on('/^coroutine "([^"]+)" registers throwing finally on coroutine "([^"]+)"$/',
+            function(Context $ctx, string $caller, string $target) {
+                $ctx->planAction($caller, function(Context $ctx) use ($target) {
+                    $ctx->inc("finally_register_attempts_$target");
+                    if (!isset($ctx->coroutineHandles[$target])) {
+                        $ctx->inc("finally_register_target_missing_$target");
+                        return;
+                    }
+                    $ctx->inc("finally_registered_$target");
+                    try {
+                        $ctx->coroutineHandles[$target]->finally(function() use ($ctx, $target) {
+                            $ctx->inc("finally_called_$target");
+                            throw new \RuntimeException("throw from finally on $target");
+                        });
+                    } catch (\Throwable $e) {
+                        $ctx->inc("finally_register_threw_$target");
+                    }
+                });
+            });
+
         // ---- ThreadPool actions ----
 
         // When coroutine "X" submits N tasks to pool "P"
