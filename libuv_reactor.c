@@ -2969,7 +2969,17 @@ static bool libuv_dns_getaddrinfo_dispose(zend_async_event_t *event)
 		return true;
 	}
 
-	pefree((async_dns_addrinfo_t *) event, 0);
+	async_dns_addrinfo_t *addr_info = (async_dns_addrinfo_t *) event;
+
+	/* If consumer never picked up the result (e.g. coroutine cancelled between
+	 * on_addrinfo_event and dns_callback_resolve), event->result is still non-NULL
+	 * and owned by the event. Free it here to avoid leaking the libuv addrinfo. */
+	if (addr_info->event.result != NULL) {
+		uv_freeaddrinfo((struct addrinfo *) addr_info->event.result);
+		addr_info->event.result = NULL;
+	}
+
+	pefree(addr_info, 0);
 	return true;
 }
 
