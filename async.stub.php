@@ -92,6 +92,9 @@ function available_parallelism(): int {}
  * Note: inside containers `systemIdleNs` / `systemBusyNs` reflect the host, not
  * the cgroup. For per-process backpressure prefer the `process*` fields, which
  * automatically account for affinity and cgroup CPU throttling.
+ *
+ * @strict-properties
+ * @not-serializable
  */
 final class CpuSnapshot
 {

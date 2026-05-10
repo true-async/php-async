@@ -1,5 +1,5 @@
 /* This is a generated file, edit async.stub.php instead.
- * Stub hash: decb7fe5dcca00f67cf7cc84e54163c722fa44d5 */
+ * Stub hash: 4081c5c85f43cceb118fc39e827c4b8c46e6b3b1 */
 
 ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_Async_spawn, 0, 1, Async\\Coroutine, 0)
 	ZEND_ARG_TYPE_INFO(0, task, IS_CALLABLE, 0)
@@ -292,7 +292,7 @@ static zend_class_entry *register_class_Async_CpuSnapshot(void)
 	zend_class_entry ce, *class_entry;
 
 	INIT_NS_CLASS_ENTRY(ce, "Async", "CpuSnapshot", class_Async_CpuSnapshot_methods);
-	class_entry = zend_register_internal_class_with_flags(&ce, NULL, ZEND_ACC_FINAL);
+	class_entry = zend_register_internal_class_with_flags(&ce, NULL, ZEND_ACC_FINAL|ZEND_ACC_NO_DYNAMIC_PROPERTIES|ZEND_ACC_NOT_SERIALIZABLE);
 
 	zval property_wallNs_default_value;
 	ZVAL_UNDEF(&property_wallNs_default_value);
