@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.0] -
 
 ### Fixed
+- **`Async\signal()` no longer dies in worker threads** (#109). Each call to
+  `php_request_startup()` in a worker thread ran `zend_signal_activate()`,
+  which unconditionally re-installed `zend_signal_handler_defer` via
+  `sigaction()` — clobbering the libuv handler the reactor had installed in
+  the main thread. The next process-directed signal then hit Zend's defer
+  path in a worker whose `SIGG(handlers)` was empty, fell through to
+  `SIG_DFL`, and killed the process. Fixed in `Zend/zend_signal.c`:
+  `zend_signal_activate()` and `zend_signal_deactivate()` now early-return
+  when `zend_async_reactor_is_enabled()` (reactor module registered at
+  MINIT) — the reactor owns the OS-level sigaction process-wide, and the
+  per-thread libuv signal callback already dispatches via TLS `SIGG(handlers)`.
+  `zend_sigaction` is unchanged so pcntl-only flows keep working. Tests
+  `tests/signal/008-009` cover both `ThreadPool` and `spawn_thread` variants.
 - **PDO MySQL `010-pdo_resource_cleanup` no longer false-fails under
   parallel test workers** (#114). The test counted leaks against
   `SHOW STATUS LIKE 'Threads_connected'` — a *server-global* counter that
