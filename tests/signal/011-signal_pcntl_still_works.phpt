@@ -23,9 +23,10 @@ pcntl_signal(SIGUSR1, function (int $signo) use (&$got) {
 posix_kill(posix_getpid(), SIGUSR1);
 pcntl_signal_dispatch();
 
-echo "got=", var_export($got, true), "\n";
-echo $got === SIGUSR1 ? "OK\n" : "FAIL\n";
+// Don't print the raw value — SIGUSR1 differs across platforms
+// (10 on Linux, 30 on Darwin/BSD). Compare against the platform's
+// own SIGUSR1 constant.
+echo $got === SIGUSR1 ? "OK\n" : "FAIL got=" . var_export($got, true) . "\n";
 ?>
 --EXPECT--
-got=10
 OK
