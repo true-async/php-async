@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.0] -
 
+### Added
+- **`pdo_sqlite` honours `PDO::ATTR_POOL_STMT_CACHE_SIZE`**. Pool slots now
+  carry a per-connection LRU cache of compiled `sqlite3_stmt*`. On
+  `$pdo->prepare()` the driver looks up the SQL in the cache and reuses an
+  already-compiled statement when present, skipping `sqlite3_prepare_v2`
+  entirely. On `PDOStatement` destruction the stmt is `sqlite3_reset`'d
+  and inserted back into the cache; LRU eviction calls `sqlite3_finalize`
+  via the entry's `driver_data_dtor`. Statements that errored during
+  execute are marked `do_not_cache` and finalized normally so a poisoned
+  vdbe never re-enters the cache. Driver coverage now: pdo_pgsql,
+  pdo_mysql, pdo_sqlite.
+  Measured on a tight prepare+execute+fetch loop against a 100k-row table:
+  pool-without-cache 111k ops/s → pool-with-cache 270k ops/s (2.4×).
+  In an HTTP handler that prepares every request the gain is ~9% RPS
+  (33.2k → 36.1k on a 16-core box) — the prepare step is no longer the
+  bottleneck, leaving the remaining gap to native `Sqlite3` ext (~16%)
+  squarely in PDO core overhead (PDOStatement object init, fetch wrapping).
+
 ### Fixed
 - **`Async\signal()` no longer dies in worker threads** (#109). Each call to
   `php_request_startup()` in a worker thread ran `zend_signal_activate()`,
