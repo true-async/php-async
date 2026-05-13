@@ -4097,11 +4097,21 @@ static void io_pipe_writev_cb(uv_write_t *write_request, int status)
 	}
 	req->base.completed = true;
 
-	zend_string **slots = (zend_string **)((char *) req + sizeof(*req));
-	for (unsigned i = 0; i < req->writev_nbufs; i++) {
-		zend_string_release(slots[i]);
+	if (req->writev_nbufs > 0) {
+		/* ZSTR mode: release each owned zend_string. */
+		zend_string **slots = (zend_string **)((char *) req + sizeof(*req));
+		for (unsigned i = 0; i < req->writev_nbufs; i++) {
+			zend_string_release(slots[i]);
+		}
+		req->writev_nbufs = 0;
+	} else if (req->base.free_cb != NULL) {
+		/* IOV mode: one free_cb for the whole batch. */
+		zend_async_io_write_free_cb_t free_cb = req->base.free_cb;
+		void *user_data = req->base.buf;
+		req->base.free_cb = NULL;
+		req->base.buf     = NULL;
+		free_cb(user_data, req->io != NULL ? &req->io->base : NULL);
 	}
-	req->writev_nbufs = 0;
 
 	if (req->base.exception != NULL) {
 		zend_object_release(req->base.exception);
@@ -4831,22 +4841,35 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 
 /* }}} */
 
-/* {{{ libuv_io_writev — vectored fire-and-forget write */
+/* {{{ libuv_io_writev — vectored fire-and-forget write (dual-mode) */
 static zend_async_io_req_t *libuv_io_writev(zend_async_io_t *io_base,
-                                            zend_string * const *bufs, unsigned nbufs)
+                                            const void *bufs, unsigned nbufs,
+                                            uint32_t flags,
+                                            zend_async_io_write_free_cb_t free_cb,
+                                            void *user_data)
 {
 	async_io_t *io = (async_io_t *) io_base;
+	const bool iov_mode = (flags == ZEND_ASYNC_IO_WRITEV_IOV);
 
 	if (UNEXPECTED(nbufs == 0)) {
+		if (iov_mode && free_cb != NULL) {
+			free_cb(user_data, io_base);
+		}
 		return NULL;
 	}
 
 	if (UNEXPECTED(io->base.state & ZEND_ASYNC_IO_CLOSED)
 	    || UNEXPECTED(!ZEND_ASYNC_IO_IS_STREAM(io->base.type))) {
-		/* Caller already transferred ownership; release before bailing
-		 * so callers can stay oblivious to NULL-return cleanup. */
-		for (unsigned i = 0; i < nbufs; i++) {
-			zend_string_release(bufs[i]);
+		/* Caller already transferred ownership; release before bailing. */
+		if (iov_mode) {
+			if (free_cb != NULL) {
+				free_cb(user_data, io_base);
+			}
+		} else {
+			zend_string * const *zbufs = (zend_string * const *) bufs;
+			for (unsigned i = 0; i < nbufs; i++) {
+				zend_string_release(zbufs[i]);
+			}
 		}
 		async_throw_error(io->base.state & ZEND_ASYNC_IO_CLOSED
 				? "Cannot write to closed IO handle"
@@ -4854,29 +4877,52 @@ static zend_async_io_req_t *libuv_io_writev(zend_async_io_t *io_base,
 		return NULL;
 	}
 
-	/* Single allocation: req plus a flex array of `nbufs` zend_string slots
-	 * laid out immediately after the req struct. Keeps owned refs together
-	 * with the request so dispose / completion need only the req pointer. */
-	const size_t slots_bytes = (size_t) nbufs * sizeof(zend_string *);
+	/* ZSTR mode keeps trailing zend_string slots co-allocated with the req.
+	 * IOV mode keeps free_cb + user_data on the req base (writev_nbufs == 0). */
+	const size_t slots_bytes =
+			iov_mode ? 0 : (size_t) nbufs * sizeof(zend_string *);
 	async_io_req_t *req = pecalloc(1, sizeof(*req) + slots_bytes, 0);
 	req->base.dispose = libuv_io_req_dispose;
 	req->io = io;
-	req->writev_nbufs = (uint16_t) nbufs;
 
-	zend_string **slots = (zend_string **)((char *) req + sizeof(*req));
+	zend_string **slots = NULL;
+
+	if (iov_mode) {
+		/* Store release state on base.free_cb / base.buf so dispose +
+		 * io_pipe_writev_cb fire it uniformly. */
+		req->base.free_cb = free_cb;
+		req->base.buf     = user_data;
+		req->writev_nbufs = 0;
+	} else {
+		slots = (zend_string **)((char *) req + sizeof(*req));
+		req->writev_nbufs = (uint16_t) nbufs;
+	}
 
 	/* uv_buf_t array lives only for the duration of uv_write — libuv copies
-	 * the pointers/lengths before returning. nbufs is small for HTTP (2-3). */
+	 * the pointers/lengths before returning. nbufs is small for HTTP. */
 	ALLOCA_FLAG(tmp_heap)
 	uv_buf_t *tmp = do_alloca((size_t) nbufs * sizeof(uv_buf_t), tmp_heap);
 	size_t total = 0;
-	for (unsigned i = 0; i < nbufs; i++) {
-		slots[i] = bufs[i];                              /* take ownership */
-		const size_t len = ZSTR_LEN(bufs[i]);
-		tmp[i] = uv_buf_init(ZSTR_VAL(bufs[i]),
-				(unsigned int)(len > UINT_MAX ? UINT_MAX : len));
-		total += len;
+
+	if (iov_mode) {
+		const zend_async_buf_t *iov = (const zend_async_buf_t *) bufs;
+		for (unsigned i = 0; i < nbufs; i++) {
+			const size_t len = iov[i].len;
+			tmp[i] = uv_buf_init(iov[i].base,
+					(unsigned int)(len > UINT_MAX ? UINT_MAX : len));
+			total += len;
+		}
+	} else {
+		zend_string * const *zbufs = (zend_string * const *) bufs;
+		for (unsigned i = 0; i < nbufs; i++) {
+			slots[i] = zbufs[i];                         /* take ownership */
+			const size_t len = ZSTR_LEN(zbufs[i]);
+			tmp[i] = uv_buf_init(ZSTR_VAL(zbufs[i]),
+					(unsigned int)(len > UINT_MAX ? UINT_MAX : len));
+			total += len;
+		}
 	}
+
 	req->max_size = total;
 	req->write_req.data = req;
 
@@ -4886,7 +4932,8 @@ static zend_async_io_req_t *libuv_io_writev(zend_async_io_t *io_base,
 
 	if (UNEXPECTED(error < 0)) {
 		async_throw_error("Failed to start vectored write: %s", uv_strerror(error));
-		/* dispose handles writev_nbufs cleanup uniformly. */
+		/* dispose handles both modes uniformly (writev_nbufs branch for ZSTR,
+		 * free_cb branch for IOV). */
 		libuv_io_req_dispose(&req->base);
 		return NULL;
 	}
