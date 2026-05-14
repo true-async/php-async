@@ -21,12 +21,6 @@ namespace Async\Chaos;
 require_once __DIR__ . '/Context.php';
 require_once __DIR__ . '/StepRegistry.php';
 
-/* #118 experiment: a file-scope closure has op_array->scope == NULL, unlike a
- * closure defined inside StandardSteps::register() (scope == StandardSteps).
- * The thread_pool submit step uses this so we can tell whether the shared
- * cross-thread scope pointer is what triggers the tracing-JIT crash. */
-$GLOBALS['__thrpool_noscope_task'] = static fn(int $idx): int => $idx;
-
 final class StandardSteps {
     public static function register(StepRegistry $r): StepRegistry {
         // ---- Given: setup ----
@@ -770,7 +764,7 @@ final class StandardSteps {
                     for ($i = 0; $i < $n; $i++) {
                         $ctx->inc("tp_submit_attempts_$pool");
                         try {
-                            $f = $p->submit($GLOBALS['__thrpool_noscope_task'], $i);
+                            $f = $p->submit(static fn(int $idx): int => $idx, $i);
                             $ctx->threadPoolFutures[$pool][] = $f;
                             $ctx->inc("tp_submitted_$pool");
                         } catch (\Throwable $e) {
