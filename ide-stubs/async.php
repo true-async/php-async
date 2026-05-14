@@ -12,7 +12,11 @@
 
 declare(strict_types=1);
 
-namespace Async;
+namespace {
+    interface Cancellation extends Throwable {}
+}
+
+namespace Async {
 
 // ---------------------------------------------------------------------------
 // Exceptions & Errors
@@ -2125,3 +2129,5 @@ function graceful_shutdown(?AsyncCancellation $cancellationError = null): void {
  * @throws OperationCanceledException If the cancellation token fires.
  */
 function signal(Signal $signal, ?Completable $cancellation = null): Future {}
+
+}
