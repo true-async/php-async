@@ -65,7 +65,10 @@ jobs:
 
       - name: Install build dependencies (macOS)
         if: runner.os == 'macOS'
-        run: brew install autoconf bison re2c libuv curl oniguruma openssl@3 || true
+        run: |
+          brew install autoconf bison re2c libuv curl oniguruma openssl@3 || true
+          # bison is keg-only on macOS; the system bison (2.3) is too old.
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
 
       - name: Install LibUV >= 1.45.0 (Linux)
         if: runner.os == 'Linux'
@@ -121,9 +124,12 @@ jobs:
           fi
           # Each target test is run repeatedly; tests that need ZTS skip
           # cleanly on the NTS jobs via their own --SKIPIF--.
+          # --repeat is high: #1 (thread_pool/cancel) is a rare race that only
+          # showed once in 5 repeats; #2 (cancel_during_io leak) did not show
+          # in 5 at all. More repeats raise the odds of catching them in CI.
           $PHP run-tests.php -q -p $PHP $JIT_OPTS \
             -g FAIL,BORK,LEAK,XLEAK \
-            --no-progress --offline --show-diff --set-timeout 120 --repeat 5 \
+            --no-progress --offline --show-diff --set-timeout 120 --repeat 30 \
             ext/async/fuzzy-tests/_generated/cross_topic/cancel_during_io__00_cancel_a_coroutine_blocked_on_tcp_accept.phpt \
             ext/async/fuzzy-tests/_generated/thread_pool/cancel__00_submit_then_cancel_every_future_settles_cleanly.phpt \
             ext/async/tests/curl/035-progress_exception.phpt \
