@@ -887,6 +887,102 @@ final class StandardSteps {
                 });
             });
 
+        // ---- spawn_thread actions ----
+        //
+        // These exercise the OS-thread result/exception handoff: a worker
+        // thread transfers its result into the thread event at the end of
+        // async_thread_run. Under the chaos scheduler the awaiting coroutine
+        // and the request teardown race the worker, so handles that are left
+        // un-awaited drive the "parent detached" branch of the handoff.
+
+        // When coroutine "X" spawns N threads returning their index
+        $r->on('/^coroutine "([^"]+)" spawns (\S+) threads returning their index$/',
+            function(Context $ctx, string $coro, string $nExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($n, $coro) {
+                    for ($i = 0; $i < $n; $i++) {
+                        $ctx->inc("thr_spawn_attempts_$coro");
+                        try {
+                            $h = \Async\spawn_thread(static function() use ($i): array {
+                                $x = 0.0;
+                                for ($j = 0; $j < 20000; $j++) { $x += sqrt($j); }
+                                return ['idx' => $i, 'x' => $x];
+                            });
+                            $ctx->threadHandles[$coro][] = $h;
+                            $ctx->inc("thr_spawned_$coro");
+                        } catch (\Throwable $e) {
+                            $ctx->inc("thr_spawn_failed_$coro");
+                        }
+                    }
+                });
+            })
+            ->requires('zts');
+
+        // When coroutine "X" spawns N threads that throw
+        $r->on('/^coroutine "([^"]+)" spawns (\S+) threads that throw$/',
+            function(Context $ctx, string $coro, string $nExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($n, $coro) {
+                    for ($i = 0; $i < $n; $i++) {
+                        $ctx->inc("thr_spawn_attempts_$coro");
+                        try {
+                            $h = \Async\spawn_thread(static function() use ($i): void {
+                                $x = 0.0;
+                                for ($j = 0; $j < 20000; $j++) { $x += sqrt($j); }
+                                throw new \RuntimeException('thread boom ' . $i);
+                            });
+                            $ctx->threadHandles[$coro][] = $h;
+                            $ctx->inc("thr_spawned_$coro");
+                        } catch (\Throwable $e) {
+                            $ctx->inc("thr_spawn_failed_$coro");
+                        }
+                    }
+                });
+            })
+            ->requires('zts');
+
+        // When coroutine "X" spawns N detached threads
+        // Handles are intentionally dropped: the workers are still inside
+        // async_thread_run when the harness tears down -> the worker hits the
+        // "parent detached" handoff branch and must release its own result.
+        $r->on('/^coroutine "([^"]+)" spawns (\S+) detached threads$/',
+            function(Context $ctx, string $coro, string $nExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($n, $coro) {
+                    for ($i = 0; $i < $n; $i++) {
+                        $ctx->inc("thr_spawn_attempts_$coro");
+                        try {
+                            \Async\spawn_thread(static function() use ($i): array {
+                                $x = 0.0;
+                                for ($j = 0; $j < 40000; $j++) { $x += sqrt($j); }
+                                return ['idx' => $i, 'x' => $x, 'buf' => str_repeat('w', 64)];
+                            });
+                            $ctx->inc("thr_spawned_$coro");
+                        } catch (\Throwable $e) {
+                            $ctx->inc("thr_spawn_failed_$coro");
+                        }
+                    }
+                });
+            })
+            ->requires('zts');
+
+        // When coroutine "X" awaits all threads
+        $r->on('/^coroutine "([^"]+)" awaits all threads$/',
+            function(Context $ctx, string $coro) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro) {
+                    $handles = $ctx->threadHandles[$coro] ?? [];
+                    foreach ($handles as $h) {
+                        try {
+                            \Async\await($h);
+                            $ctx->inc("thr_completed_$coro");
+                        } catch (\Throwable $e) {
+                            $ctx->inc("thr_failed_$coro");
+                        }
+                    }
+                });
+            })
+            ->requires('zts');
+
         // ---- TaskGroup actions ----
 
         // When coroutine "X" spawns N tasks into "G" that print "msg"

@@ -95,6 +95,9 @@ final class Context {
     /** @var array<string, Future[]> futures returned by ThreadPool::submit, keyed by pool name */
     public array $threadPoolFutures = [];
 
+    /** @var array<string, mixed[]> thread handles from spawn_thread, keyed by group label */
+    public array $threadHandles = [];
+
     /** @var array<string, int> arbitrary named counters */
     public array $counters = [];
 

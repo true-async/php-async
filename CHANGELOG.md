@@ -26,6 +26,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   squarely in PDO core overhead (PDOStatement object init, fetch wrapping).
 
 ### Fixed
+- **Segfault on shutdown while a spawned thread is still running.** A child
+  OS thread reached `event->notify_parent(event)` in `async_thread_run`
+  after the main thread had already freed the `async_thread_event_t` during
+  request shutdown (the allocator then handed the block to other code, so
+  `notify_parent` jumped into garbage). Reliably reproducible by Ctrl+C'ing
+  a worker that uses `spawn_thread` + `ThreadChannel`. Root cause: the child
+  thread treated `event` as always-valid, but nothing kept it alive past the
+  point where the parent's PHP-side references dropped to zero. Fixed by
+  guarding the child→parent handoff: `zend_async_thread_context_t` gained an
+  atomic `event` back-pointer plus an `event_mutex`. The child now transfers
+  its result/exception into local persistent storage and performs a single
+  locked handoff into the event at the end of `async_thread_run`; the
+  parent's `libuv_thread_event_dispose` stores `NULL` into `context->event`
+  and drains `event_mutex` before freeing the event. A `NULL` load in the
+  child means the parent already detached, so the child releases the
+  transferred values itself instead of touching freed memory. Adds a
+  `zend_atomic_ptr` type to `Zend/zend_atomic.{h,c}`.
 - **`Async\signal()` no longer dies in worker threads** (#109). Each call to
   `php_request_startup()` in a worker thread ran `zend_signal_activate()`,
   which unconditionally re-installed `zend_signal_handler_defer` via

@@ -274,13 +274,15 @@ static bool thread_pool_start_worker(async_thread_pool_t *pool, int32_t index)
 	ZEND_ATOMIC_INT64_INIT(&context->thread_id, 0);
 	context->snapshot = NULL;
 	context->bailout_error_message = NULL;
-	context->event = NULL;
+	zend_atomic_ptr_init(&context->event, NULL); /* pool workers never have an event */
+	context->event_mutex = tsrm_mutex_alloc();
 	context->internal_entry = NULL; /* set by start_thread */
 
 	zend_async_thread_handle_t handle = ZEND_ASYNC_START_THREAD(entry, context);
 
 	if (UNEXPECTED(handle == 0)) {
 		pefree(entry, 1);
+		tsrm_mutex_free(context->event_mutex);
 		pefree(context, 1);
 		return false;
 	}

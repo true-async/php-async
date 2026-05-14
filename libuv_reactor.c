@@ -2143,7 +2143,7 @@ static bool libuv_thread_event_start(zend_async_event_t *event)
 
 	/* Add ref on context for the thread runner */
 	if (thread->event.context) {
-		thread->event.context->event = &thread->event;
+		zend_atomic_ptr_store(&thread->event.context->event, &thread->event);
 		ZEND_ASYNC_THREAD_CONTEXT_ADDREF(thread->event.context);
 	}
 
@@ -2217,8 +2217,20 @@ static bool libuv_thread_event_dispose(zend_async_event_t *event)
 
 	/* Release event's ref on context */
 	if (thread->event.context) {
-		ZEND_ASYNC_THREAD_CONTEXT_RELEASE(thread->event.context);
+		zend_async_thread_context_t *ctx = thread->event.context;
+
+		/* Detach the event from the context before freeing it: store NULL so
+		 * a child that has not yet reached its handoff bails out, then take
+		 * event_mutex as an empty barrier to drain a handoff already in
+		 * progress. After this, the child can no longer touch this event. */
+		zend_atomic_ptr_store(&ctx->event, NULL);
+		if (ctx->event_mutex) {
+			tsrm_mutex_lock(ctx->event_mutex);
+			tsrm_mutex_unlock(ctx->event_mutex);
+		}
+
 		thread->event.context = NULL;
+		ZEND_ASYNC_THREAD_CONTEXT_RELEASE(ctx);
 	}
 
 	if (thread->event.filename) {
@@ -2351,7 +2363,8 @@ zend_async_thread_event_t *libuv_new_thread_event(
 	ZEND_ATOMIC_INT64_INIT(&ctx->thread_id, 0);
 	ctx->snapshot = NULL;
 	ctx->bailout_error_message = NULL;
-	ctx->event = NULL; /* set in start when thread is launched */
+	zend_atomic_ptr_init(&ctx->event, NULL); /* set in start when thread is launched */
+	ctx->event_mutex = NULL; /* allocated below, after all early-failure paths */
 	ctx->internal_entry = NULL;
 
 	/* Create snapshot: deep-copy entry closure + optional bootloader + parent context.
@@ -2383,6 +2396,10 @@ zend_async_thread_event_t *libuv_new_thread_event(
 	}
 
 	thread_event->uv_notify.data = thread_event;
+
+	/* Allocate last: every early-failure path above pefree's ctx directly,
+	 * so keeping the mutex out of those paths avoids a leak. */
+	ctx->event_mutex = tsrm_mutex_alloc();
 
 	return &thread_event->event;
 }

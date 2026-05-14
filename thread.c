@@ -2167,16 +2167,18 @@ void async_thread_create_closure(
  * Call a deep-copied closure in the child thread.
  *
  * Creates a Closure from the copy, executes it, and captures any exception
- * immediately (before dtors that could trigger bailout).
+ * immediately (before dtors that could trigger bailout). The event is
+ * intentionally not touched here — the caller hands the transferred values
+ * to the parent event under a lock once the whole run is finished.
  *
- * @param copy    Deep-copied closure from snapshot
- * @param event   Thread event (receives exception on failure)
- * @param retval  Output: return value (UNDEF on exception or void return)
+ * @param copy           Deep-copied closure from snapshot
+ * @param out_exception  Output: transferred (persistent) exception on failure
+ * @param retval         Output: return value (UNDEF on exception or void return)
  * @return true on success, false if exception was captured
  */
 static bool thread_call_closure(
 	const async_thread_closure_copy_t *copy,
-	zend_async_thread_event_t *event,
+	zend_object **out_exception,
 	zval *retval)
 {
 	zval closure_zv;
@@ -2204,7 +2206,7 @@ static bool thread_call_closure(
 		ZVAL_OBJ_COPY(&exception_zval, EG(exception));
 		zend_clear_exception();
 		async_thread_transfer_zval(&transferred_exception, &exception_zval);
-		event->exception = Z_OBJ(transferred_exception);
+		*out_exception = Z_OBJ(transferred_exception);
 		zval_ptr_dtor(&exception_zval);
 		zval_ptr_dtor(retval);
 		ZVAL_UNDEF(retval);
@@ -2237,9 +2239,17 @@ static zend_always_inline void thread_capture_bailout(zend_async_thread_context_
 void async_thread_run(void *arg)
 {
 	zend_async_thread_context_t *context = (zend_async_thread_context_t *) arg;
-	zend_async_thread_event_t *event = context->event; /* may be NULL */
+	zend_async_thread_event_t *event =
+		(zend_async_thread_event_t *) zend_atomic_ptr_load(&context->event); /* may be NULL */
 	const async_thread_snapshot_t *snapshot = context->snapshot;
 	bool request_started = false;
+
+	/* Result/exception are accumulated locally in persistent memory and only
+	 * handed to the parent event at the very end, under context->event_mutex.
+	 * Declared up here so they are in scope on every `goto notify` path. */
+	zval thread_result;
+	ZVAL_UNDEF(&thread_result);
+	zend_object *thread_exception = NULL;
 #ifdef ZTS
 	bool tsrm_initialized = false;
 #endif
@@ -2331,15 +2341,15 @@ void async_thread_run(void *arg)
 
 		/* Bootloader (optional) */
 		if (snapshot->bootloader.func != NULL) {
-			if (!thread_call_closure(&snapshot->bootloader, event, &retval)) {
+			if (!thread_call_closure(&snapshot->bootloader, &thread_exception, &retval)) {
 				goto cleanup;
 			}
 		}
 
 		/* Entry closure */
-		if (thread_call_closure(&snapshot->entry, event, &retval)) {
+		if (thread_call_closure(&snapshot->entry, &thread_exception, &retval)) {
 			if (!Z_ISUNDEF(retval)) {
-				async_thread_transfer_zval(&event->result, &retval);
+				async_thread_transfer_zval(&thread_result, &retval);
 
 				/* Transfer itself may fail (unsupported types, depth limit) */
 				if (UNEXPECTED(EG(exception))) {
@@ -2347,9 +2357,9 @@ void async_thread_run(void *arg)
 					ZVAL_OBJ_COPY(&exception_zval, EG(exception));
 					zend_clear_exception();
 					async_thread_transfer_zval(&transferred_exception, &exception_zval);
-					event->exception = Z_OBJ(transferred_exception);
+					thread_exception = Z_OBJ(transferred_exception);
 					zval_ptr_dtor(&exception_zval);
-					ZVAL_UNDEF(&event->result);
+					ZVAL_UNDEF(&thread_result);
 				}
 			}
 		}
@@ -2382,10 +2392,45 @@ cleanup:
 		context->snapshot = NULL;
 	}
 
-	ZEND_ASYNC_THREAD_CONTEXT_RELEASE(context);
-	context = NULL;
-
 notify:
+	/* Hand the result/exception to the parent event under context->event_mutex.
+	 * The parent's dispose path stores NULL into context->event and drains
+	 * this mutex before freeing the event, so a non-NULL load here means the
+	 * event stays alive for the whole locked section. A NULL load means the
+	 * parent already gave up — the transferred values are ours to release.
+	 *
+	 * Done before ts_free_thread: the handoff and the persistent-memory
+	 * release below touch only pemalloc'd data and uv_async_send, none of
+	 * which need this thread's TSRM storage. */
+	tsrm_mutex_lock(context->event_mutex);
+	{
+		zend_async_thread_event_t *parent_event =
+			(zend_async_thread_event_t *) zend_atomic_ptr_load(&context->event);
+		if (parent_event != NULL) {
+			if (!Z_ISUNDEF(thread_result)) {
+				parent_event->result = thread_result;
+				ZVAL_UNDEF(&thread_result);
+			}
+			if (thread_exception != NULL) {
+				parent_event->exception = thread_exception;
+				thread_exception = NULL;
+			}
+			parent_event->notify_parent(parent_event);
+		}
+	}
+	tsrm_mutex_unlock(context->event_mutex);
+
+	/* Parent already detached — release whatever was not handed off. */
+	if (!Z_ISUNDEF(thread_result)) {
+		async_thread_release_transferred_zval(&thread_result);
+	}
+	if (thread_exception != NULL) {
+		zval exc_pz;
+		ZVAL_OBJ(&exc_pz, thread_exception);
+		async_thread_release_transferred_zval(&exc_pz);
+		thread_exception = NULL;
+	}
+
 	/* Free TSRM storage after all zend_end_try blocks.
 	 * Must be separate because zend_end_try accesses EG(bailout).
 	 * Skipped on early-exit paths where TSRM was never initialized. */
@@ -2401,6 +2446,10 @@ notify:
 	}
 #endif
 
+	if (fallback_message != NULL) {
+		pefree(fallback_message, 1);
+	}
+
 	/* Self-remove from the reactor's child thread registry.
 	 * Must happen after ts_free_thread so the main thread, once it wakes
 	 * in libuv_reactor_quiesce, can safely proceed into php_module_shutdown
@@ -2408,13 +2457,10 @@ notify:
 	 * at entry and stable, so this fires on every exit path. */
 	async_libuv_thread_registry_remove(my_key);
 
-	if (fallback_message != NULL) {
-		pefree(fallback_message, 1);
-	}
-
-	if (event) {
-		event->notify_parent(event);
-	}
+	/* Release our context ref last — the handoff above needs it alive, and
+	 * whoever drops the last ref also frees context->event_mutex. */
+	ZEND_ASYNC_THREAD_CONTEXT_RELEASE(context);
+	context = NULL;
 }
 
 ///////////////////////////////////////////////////////////
