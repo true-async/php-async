@@ -23,6 +23,7 @@
 #include "scheduler.h"
 #include "thread_channel.h"
 #include "future.h"
+#include "zend_common.h"
 #include "zend_interfaces.h"
 #include "zend_exceptions.h"
 
@@ -416,9 +417,19 @@ static void thread_pool_drain_tasks(async_thread_pool_t *pool, bool reject)
 		return;
 	}
 
-	zval persistent_task;
-	while (circular_buffer_is_not_empty(&ch->buffer) &&
-		   circular_buffer_pop(&ch->buffer, &persistent_task) == SUCCESS) {
+	while (true) {
+		/* Pop under the channel mutex: cancel() drains concurrently with
+		 * worker threads still inside recv(), so a raw buffer access races
+		 * them and corrupts the circular buffer. Process the task after
+		 * unlocking — the body never re-enters the channel. */
+		zval persistent_task;
+		ASYNC_MUTEX_LOCK(ch->mutex);
+		if (circular_buffer_is_not_empty(&ch->buffer) == false
+			|| circular_buffer_pop(&ch->buffer, &persistent_task) != SUCCESS) {
+			ASYNC_MUTEX_UNLOCK(ch->mutex);
+			break;
+		}
+		ASYNC_MUTEX_UNLOCK(ch->mutex);
 
 		/* Load task to extract pointers */
 		zval task;
