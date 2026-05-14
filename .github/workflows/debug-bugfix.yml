@@ -29,13 +29,13 @@ jobs:
             zts: false
             asan: true
             jit: false
-          # #1 — thread_pool/cancel heap corruption under tracing JIT (ZTS).
-          # ASAN on + USE_ZEND_ALLOC=0 so the corruption is reported with
-          # alloc/free stacks instead of just a far-away crash site.
+          # #1 — thread_pool/cancel wild-pointer SEGV, JIT-specific (ZTS).
+          # Non-ASAN debug build: ASAN can't pinpoint a wild deref and it
+          # suppresses core dumps; a plain core gives *execute_data/*coroutine.
           - name: LINUX_ZTS_JIT
             os: ubuntu-latest
             zts: true
-            asan: true
+            asan: false
             jit: true
           # #3 — curl progress-callback exception (macOS NTS).
           - name: MACOS_NTS
