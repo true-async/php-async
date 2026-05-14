@@ -9,6 +9,13 @@ name: Debug Bugfix (manual)
 
 on:
   workflow_dispatch:
+    inputs:
+      php_async_ref:
+        description: "php-async ref to test (branch/tag/sha; blank = this workflow's ref)"
+        default: ""
+      php_src_ref:
+        description: "php-src branch/tag/sha to build against"
+        default: "true-async-stable"
 
 jobs:
   bugfix:
@@ -46,9 +53,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: async
+          ref: ${{ github.event.inputs.php_async_ref || github.ref }}
 
-      - name: Clone php-src (true-async-stable)
-        run: git clone --depth=1 --branch=true-async-stable https://github.com/true-async/php-src php-src
+      - name: Clone php-src
+        run: |
+          git clone https://github.com/true-async/php-src php-src
+          git -C php-src checkout "${{ github.event.inputs.php_src_ref }}"
+          echo "php-src at: $(git -C php-src rev-parse --short HEAD)"
 
       - name: Copy php-async extension into php-src
         run: |
