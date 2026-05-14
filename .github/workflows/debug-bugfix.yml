@@ -165,6 +165,9 @@ jobs:
           run_pass "NO JIT" ""
           if [ "${{ matrix.jit }}" = "true" ]; then
             run_pass "FUNCTION JIT" "-d opcache.enable_cli=1 -d opcache.jit=function -d opcache.jit_buffer_size=64M"
+            # tracing ON but hot thresholds maxed → traces almost never form.
+            # Still crashes → bug is in hot-counting; clean → in trace record/compile.
+            run_pass "TRACING JIT (hot-maxed)" "-d opcache.enable_cli=1 -d opcache.jit=tracing -d opcache.jit_buffer_size=64M -d opcache.jit_hot_loop=255 -d opcache.jit_hot_func=255 -d opcache.jit_hot_return=255 -d opcache.jit_hot_side_exit=255"
             run_pass "TRACING JIT"  "-d opcache.enable_cli=1 -d opcache.jit=tracing -d opcache.jit_buffer_size=64M"
           fi
           exit $rc
@@ -185,9 +188,20 @@ jobs:
               -ex 'set pagination off' \
               -ex 'thread apply all bt 60' \
               -ex 'frame 1' \
-              -ex 'info locals' \
-              -ex 'p *execute_data' \
-              -ex 'p *execute_data->func' \
+              -ex 'p (void*)ex' \
+              -ex 'p *ex' \
+              -ex 'p *ex->func' \
+              -ex 'set $oa = &ex->func->op_array' \
+              -ex 'p $oa->last' \
+              -ex 'p $oa->opcodes' \
+              -ex 'echo --- opcodes[0..last] with handlers ---\n' \
+              -ex 'p *$oa->opcodes@$oa->last' \
+              -ex 'echo --- JIT buffer range (dasm_buf) ---\n' \
+              -ex 'p (void*)dasm_buf' \
+              -ex 'p (void*)((char*)dasm_buf + dasm_size)' \
+              -ex 'echo --- is the op_array in opcache SHM? ---\n' \
+              -ex 'p (void*)$oa' \
+              -ex 'p accel_shared_globals' \
               -ex 'frame 3' \
               -ex 'p *coroutine' \
               sapi/cli/php "$core" 2>&1 || true
