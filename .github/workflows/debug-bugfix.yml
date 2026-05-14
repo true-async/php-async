@@ -30,14 +30,14 @@ jobs:
             asan: true
             jit: false
           # #1 — thread_pool/cancel wild-pointer SEGV, JIT-specific (ZTS).
-          # Recorded under rr; on a captured crash we reverse-execute from the
-          # corrupted execute_data->prev_execute_data to the writing instruction.
+          # Runs the test under no-JIT / function-JIT / tracing-JIT to pin
+          # which JIT mode triggers it (tracing patches opline->handler at
+          # runtime; function patches at compile time).
           - name: LINUX_ZTS_JIT
             os: ubuntu-latest
             zts: true
             asan: false
             jit: true
-            rr: true
           # #3 — curl progress-callback exception (macOS NTS).
           - name: MACOS_NTS
             os: macos-latest
@@ -137,62 +137,7 @@ jobs:
           ulimit -c unlimited
           sudo apt-get install -y --no-install-recommends gdb
 
-      - name: rr record + reverse-debug #1 (thread_pool/cancel)
-        if: matrix.rr == true
-        working-directory: php-src
-        run: |
-          sudo apt-get install -y --no-install-recommends rr gdb
-          echo 1 | sudo tee /proc/sys/kernel/perf_event_paranoid >/dev/null
-          # Sanity-check rr can record on this runner.
-          if ! rr record -- /bin/true >/dev/null 2>&1; then
-            echo "::error::rr cannot record on this runner"
-            rr record -- /bin/true || true
-            exit 1
-          fi
-          PHP="$PWD/sapi/cli/php"
-          JIT="-d opcache.enable_cli=1 -d opcache.jit=tracing -d opcache.jit_buffer_size=64M"
-          T="$PWD/ext/async/fuzzy-tests/_generated/thread_pool/cancel__00_submit_then_cancel_every_future_settles_cleanly.php"
-          export _RR_TRACE_DIR=/tmp/rrtraces
-          captured=""
-          for i in $(seq 1 300); do
-            rm -rf "$_RR_TRACE_DIR"; mkdir -p "$_RR_TRACE_DIR"
-            # --chaos randomises scheduling to surface the rare race during record.
-            rr record --chaos -- "$PHP" $JIT "$T" >/dev/null 2>&1
-            ec=$?
-            if [ $ec -gt 128 ]; then
-              echo "=== crash captured: iter $i, exit $ec (signal $((ec-128))) ==="
-              captured=1
-              break
-            fi
-          done
-          if [ -z "$captured" ]; then
-            echo "no crash captured in 300 rr-record iterations"
-            exit 0
-          fi
-          cat > /tmp/rr.gdb <<'GDB'
-          set pagination off
-          set width 0
-          continue
-          printf "\n========== CRASH REACHED ==========\n"
-          bt
-          frame 1
-          printf "\nexecute_data(ex) = %p\n", ex
-          set $ed = ex
-          print *$ed
-          print *$ed->func
-          printf "\n--- watch prev_execute_data, reverse to its last writer ---\n"
-          watch -l $ed->prev_execute_data
-          reverse-continue
-          printf "\n========== LAST WRITER OF prev_execute_data ==========\n"
-          bt
-          x/4i $pc
-          info registers rip rsp rbp
-          GDB
-          echo "===== rr replay ====="
-          rr replay "$_RR_TRACE_DIR/latest-trace" -- -batch -x /tmp/rr.gdb 2>&1 || true
-
       - name: Run the failing tests
-        if: matrix.rr != true
         working-directory: php-src
         env:
           # abort_on_error=1 → glibc dumps a core on the ASAN report too.
@@ -209,20 +154,18 @@ jobs:
                  ext/async/tests/curl/035-progress_exception.phpt
                  ext/async/tests/curl/056-multi_progress_exception.phpt"
           rc=0
-          # Pass 1 — no JIT. Pass 2 — tracing JIT. Tells whether #1's SEGV is
-          # JIT-specific.
-          echo "########## pass: NO JIT ##########"
-          $PHP run-tests.php -q -p $PHP \
-            -g FAIL,BORK,LEAK,XLEAK \
-            --no-progress --offline --show-diff --set-timeout 120 --repeat 30 \
-            $TESTS || rc=1
-          if [ "${{ matrix.jit }}" = "true" ]; then
-            echo "########## pass: TRACING JIT ##########"
-            $PHP run-tests.php -q -p $PHP \
-              -d opcache.enable_cli=1 -d opcache.jit=tracing -d opcache.jit_buffer_size=64M \
+          run_pass() {
+            echo "########## pass: $1 ##########"
+            $PHP run-tests.php -q -p $PHP $2 \
               -g FAIL,BORK,LEAK,XLEAK \
               --no-progress --offline --show-diff --set-timeout 120 --repeat 30 \
               $TESTS || rc=1
+          }
+          # off / function / tracing — pins which JIT mode triggers #1.
+          run_pass "NO JIT" ""
+          if [ "${{ matrix.jit }}" = "true" ]; then
+            run_pass "FUNCTION JIT" "-d opcache.enable_cli=1 -d opcache.jit=function -d opcache.jit_buffer_size=64M"
+            run_pass "TRACING JIT"  "-d opcache.enable_cli=1 -d opcache.jit=tracing -d opcache.jit_buffer_size=64M"
           fi
           exit $rc
 
