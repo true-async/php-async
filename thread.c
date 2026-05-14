@@ -381,6 +381,16 @@ static void thread_copy_op_array_ex(thread_copy_ctx_t *ctx, zend_op_array *op_ar
 	/* refcount: detach from parent's shared counter without modifying it */
 	op_array->refcount = NULL;
 
+	/* Detach per-op_array extension slots. reserved[zend_func_info_rid] holds
+	 * opcache's zend_jit_op_array_trace_extension — a zend_shared_alloc'd,
+	 * process-wide struct whose ->op_array back-pointer is the SOURCE op_array.
+	 * If the copy keeps it, a worker tracing the copy writes its trace result
+	 * through that shared extension and JIT-patches the source op_array with
+	 * code compiled from the worker's run — corrupting the owning thread.
+	 * The copy runs interpreter-only (handlers are re-specialized below), so
+	 * it must not carry any extension's per-op_array state. */
+	memset(op_array->reserved, 0, sizeof(op_array->reserved));
+
 	if (op_array->function_name) {
 		op_array->function_name = thread_copy_string(ctx, op_array->function_name);
 	}
