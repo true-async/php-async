@@ -110,12 +110,22 @@ jobs:
         working-directory: php-src/ext/async/fuzzy-tests
         run: ../../../sapi/cli/php _harness/generate.php
 
+      - name: Enable core dumps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo mkdir -p /tmp/cores && sudo chmod 1777 /tmp/cores
+          echo '/tmp/cores/core.%e.%p' | sudo tee /proc/sys/kernel/core_pattern
+          sudo sysctl -w kernel.core_uses_pid=0 || true
+          ulimit -c unlimited
+          sudo apt-get install -y --no-install-recommends gdb
+
       - name: Run the failing tests
         working-directory: php-src
         env:
           # Surface leaks instead of aborting the run on the first one.
           ASAN_OPTIONS: detect_leaks=1:abort_on_error=0:exitcode=0
         run: |
+          ulimit -c unlimited
           PHP=sapi/cli/php
           $PHP -v
           JIT_OPTS=""
@@ -134,6 +144,24 @@ jobs:
             ext/async/fuzzy-tests/_generated/thread_pool/cancel__00_submit_then_cancel_every_future_settles_cleanly.phpt \
             ext/async/tests/curl/035-progress_exception.phpt \
             ext/async/tests/curl/056-multi_progress_exception.phpt
+
+      - name: Backtrace core dumps (Linux)
+        if: always() && runner.os == 'Linux'
+        working-directory: php-src
+        run: |
+          shopt -s nullglob
+          cores=(/tmp/cores/core.*)
+          if [ ${#cores[@]} -eq 0 ]; then
+            echo "no core dumps — no crash this run"
+            exit 0
+          fi
+          for core in "${cores[@]}"; do
+            echo "===================== $core ====================="
+            gdb -batch -nx \
+              -ex 'set pagination off' \
+              -ex 'thread apply all bt 60' \
+              sapi/cli/php "$core" 2>&1 || true
+          done
 
       - name: Show diffs of failed tests
         if: always()
