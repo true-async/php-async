@@ -2224,10 +2224,8 @@ static bool libuv_thread_event_dispose(zend_async_event_t *event)
 		 * event_mutex as an empty barrier to drain a handoff already in
 		 * progress. After this, the child can no longer touch this event. */
 		zend_atomic_ptr_store(&ctx->event, NULL);
-		if (ctx->event_mutex) {
-			tsrm_mutex_lock(ctx->event_mutex);
-			tsrm_mutex_unlock(ctx->event_mutex);
-		}
+		ZEND_ASYNC_THREAD_CONTEXT_EVENT_MUTEX_LOCK(ctx);
+		ZEND_ASYNC_THREAD_CONTEXT_EVENT_MUTEX_UNLOCK(ctx);
 
 		thread->event.context = NULL;
 		ZEND_ASYNC_THREAD_CONTEXT_RELEASE(ctx);
@@ -2398,8 +2396,8 @@ zend_async_thread_event_t *libuv_new_thread_event(
 	thread_event->uv_notify.data = thread_event;
 
 	/* Allocate last: every early-failure path above pefree's ctx directly,
-	 * so keeping the mutex out of those paths avoids a leak. */
-	ctx->event_mutex = tsrm_mutex_alloc();
+	 * so keeping the mutex out of those paths avoids a leak. No-op under NTS. */
+	ZEND_ASYNC_THREAD_CONTEXT_EVENT_MUTEX_ALLOC(ctx);
 
 	return &thread_event->event;
 }

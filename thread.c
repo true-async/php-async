@@ -2402,7 +2402,7 @@ notify:
 	 * Done before ts_free_thread: the handoff and the persistent-memory
 	 * release below touch only pemalloc'd data and uv_async_send, none of
 	 * which need this thread's TSRM storage. */
-	tsrm_mutex_lock(context->event_mutex);
+	ZEND_ASYNC_THREAD_CONTEXT_EVENT_MUTEX_LOCK(context);
 	{
 		zend_async_thread_event_t *parent_event =
 			(zend_async_thread_event_t *) zend_atomic_ptr_load(&context->event);
@@ -2418,7 +2418,7 @@ notify:
 			parent_event->notify_parent(parent_event);
 		}
 	}
-	tsrm_mutex_unlock(context->event_mutex);
+	ZEND_ASYNC_THREAD_CONTEXT_EVENT_MUTEX_UNLOCK(context);
 
 	/* Parent already detached — release whatever was not handed off. */
 	if (!Z_ISUNDEF(thread_result)) {
