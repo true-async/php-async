@@ -148,22 +148,27 @@ jobs:
           ulimit -c unlimited
           PHP=sapi/cli/php
           $PHP -v
-          JIT_OPTS=""
-          if [ "${{ matrix.jit }}" = "true" ]; then
-            JIT_OPTS="-d opcache.enable_cli=1 -d opcache.jit=tracing -d opcache.jit_buffer_size=64M"
-          fi
-          # Each target test is run repeatedly; tests that need ZTS skip
-          # cleanly on the NTS jobs via their own --SKIPIF--.
-          # --repeat is high: #1 (thread_pool/cancel) is a rare race that only
-          # showed once in 5 repeats; #2 (cancel_during_io leak) did not show
-          # in 5 at all. More repeats raise the odds of catching them in CI.
-          $PHP run-tests.php -q -p $PHP $JIT_OPTS \
+          TESTS="ext/async/fuzzy-tests/_generated/cross_topic/cancel_during_io__00_cancel_a_coroutine_blocked_on_tcp_accept.phpt
+                 ext/async/fuzzy-tests/_generated/thread_pool/cancel__00_submit_then_cancel_every_future_settles_cleanly.phpt
+                 ext/async/tests/curl/035-progress_exception.phpt
+                 ext/async/tests/curl/056-multi_progress_exception.phpt"
+          rc=0
+          # Pass 1 — no JIT. Pass 2 — tracing JIT. Tells whether #1's SEGV is
+          # JIT-specific.
+          echo "########## pass: NO JIT ##########"
+          $PHP run-tests.php -q -p $PHP \
             -g FAIL,BORK,LEAK,XLEAK \
             --no-progress --offline --show-diff --set-timeout 120 --repeat 30 \
-            ext/async/fuzzy-tests/_generated/cross_topic/cancel_during_io__00_cancel_a_coroutine_blocked_on_tcp_accept.phpt \
-            ext/async/fuzzy-tests/_generated/thread_pool/cancel__00_submit_then_cancel_every_future_settles_cleanly.phpt \
-            ext/async/tests/curl/035-progress_exception.phpt \
-            ext/async/tests/curl/056-multi_progress_exception.phpt
+            $TESTS || rc=1
+          if [ "${{ matrix.jit }}" = "true" ]; then
+            echo "########## pass: TRACING JIT ##########"
+            $PHP run-tests.php -q -p $PHP \
+              -d opcache.enable_cli=1 -d opcache.jit=tracing -d opcache.jit_buffer_size=64M \
+              -g FAIL,BORK,LEAK,XLEAK \
+              --no-progress --offline --show-diff --set-timeout 120 --repeat 30 \
+              $TESTS || rc=1
+          fi
+          exit $rc
 
       - name: Backtrace core dumps (Linux)
         if: always() && runner.os == 'Linux'
@@ -180,6 +185,12 @@ jobs:
             gdb -batch -nx \
               -ex 'set pagination off' \
               -ex 'thread apply all bt 60' \
+              -ex 'frame 1' \
+              -ex 'info locals' \
+              -ex 'p *execute_data' \
+              -ex 'p *execute_data->func' \
+              -ex 'frame 3' \
+              -ex 'p *coroutine' \
               sapi/cli/php "$core" 2>&1 || true
           done
 
