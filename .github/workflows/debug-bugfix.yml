@@ -1,0 +1,142 @@
+name: Debug Bugfix (manual)
+
+# Manually-triggered, focused workflow for iterating on the CI failures
+# tracked in the bug-fix issue. Runs only the handful of failing tests across
+# the platform/build combos that reproduce them, so a fix can be verified
+# without waiting on the full build matrix.
+#
+# Trigger:  gh workflow run "Debug Bugfix (manual)" --repo true-async/php-async --ref main
+
+on:
+  workflow_dispatch:
+
+jobs:
+  bugfix:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # #2 — cancel_during_io getaddrinfo struct leak (NTS only). ASAN on.
+          - name: LINUX_NTS_ASAN
+            os: ubuntu-latest
+            zts: false
+            asan: true
+            jit: false
+          # #1 — thread_pool/cancel flake under tracing JIT (ZTS).
+          - name: LINUX_ZTS_JIT
+            os: ubuntu-latest
+            zts: true
+            asan: false
+            jit: true
+          # #3 — curl progress-callback exception (macOS NTS).
+          - name: MACOS_NTS
+            os: macos-latest
+            zts: false
+            asan: false
+            jit: false
+
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.asan && 180 || 60 }}
+
+    steps:
+      - name: Checkout php-async repo
+        uses: actions/checkout@v4
+        with:
+          path: async
+
+      - name: Clone php-src (true-async-stable)
+        run: git clone --depth=1 --branch=true-async-stable https://github.com/true-async/php-src php-src
+
+      - name: Copy php-async extension into php-src
+        run: |
+          mkdir -p php-src/ext/async
+          cp -r async/* php-src/ext/async/
+
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc g++ autoconf bison re2c \
+            libsqlite3-dev libonig-dev libcurl4-openssl-dev \
+            libxml2-dev libreadline-dev libsodium-dev libargon2-dev \
+            cmake
+
+      - name: Install build dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install autoconf bison re2c libuv curl oniguruma openssl@3 || true
+
+      - name: Install LibUV >= 1.45.0 (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          if pkg-config --exists libuv && pkg-config --atleast-version=1.45.0 libuv; then
+            sudo apt-get install -y libuv1-dev
+          else
+            wget https://github.com/libuv/libuv/archive/v1.45.0.tar.gz
+            tar -xzf v1.45.0.tar.gz
+            cd libuv-1.45.0 && mkdir build && cd build
+            cmake .. -DCMAKE_BUILD_TYPE=Release && make -j"$(nproc)" && sudo make install && sudo ldconfig
+          fi
+
+      - name: Configure PHP
+        working-directory: php-src
+        run: |
+          ./buildconf -f
+          ASAN_FLAGS=""
+          if [ "${{ matrix.asan }}" = "true" ]; then
+            ASAN_FLAGS="--enable-address-sanitizer"
+            export CFLAGS="-fsanitize=address -DZEND_TRACK_ARENA_ALLOC -g -O0"
+            export LDFLAGS="-fsanitize=address"
+          fi
+          ./configure \
+            --${{ matrix.zts && 'enable' || 'disable' }}-zts \
+            --enable-debug \
+            --enable-async \
+            --enable-pdo --with-pdo-sqlite \
+            --enable-sockets --enable-pcntl --enable-opcache \
+            --enable-mbstring --enable-tokenizer --enable-filter --enable-session \
+            --with-curl --with-openssl \
+            $ASAN_FLAGS
+
+      - name: Build PHP
+        working-directory: php-src
+        run: make -j"$(getconf _NPROCESSORS_ONLN)"
+
+      - name: Generate chaos tests
+        working-directory: php-src/ext/async/fuzzy-tests
+        run: ../../../sapi/cli/php _harness/generate.php
+
+      - name: Run the failing tests
+        working-directory: php-src
+        env:
+          # Surface leaks instead of aborting the run on the first one.
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=0:exitcode=0
+        run: |
+          PHP=sapi/cli/php
+          $PHP -v
+          JIT_OPTS=""
+          if [ "${{ matrix.jit }}" = "true" ]; then
+            JIT_OPTS="-d opcache.enable_cli=1 -d opcache.jit=tracing -d opcache.jit_buffer_size=64M"
+          fi
+          # Each target test is run repeatedly; tests that need ZTS skip
+          # cleanly on the NTS jobs via their own --SKIPIF--.
+          $PHP run-tests.php -q -p $PHP $JIT_OPTS \
+            -g FAIL,BORK,LEAK,XLEAK \
+            --no-progress --offline --show-diff --set-timeout 120 --repeat 5 \
+            ext/async/fuzzy-tests/_generated/cross_topic/cancel_during_io__00_cancel_a_coroutine_blocked_on_tcp_accept.phpt \
+            ext/async/fuzzy-tests/_generated/thread_pool/cancel__00_submit_then_cancel_every_future_settles_cleanly.phpt \
+            ext/async/tests/curl/035-progress_exception.phpt \
+            ext/async/tests/curl/056-multi_progress_exception.phpt
+
+      - name: Show diffs of failed tests
+        if: always()
+        working-directory: php-src
+        run: |
+          found=0
+          for d in $(find ext/async -name '*.diff' 2>/dev/null); do
+            found=1
+            echo "===== $d ====="
+            cat "$d"
+          done
+          [ "$found" = "0" ] && echo "no .diff files — all target tests passed"
