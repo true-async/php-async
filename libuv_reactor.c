@@ -420,10 +420,12 @@ bool libuv_reactor_shutdown(void)
 		libuv_cleanup_signal_events();
 		libuv_cleanup_process_events();
 
-		/* Drain pending uv_close callbacks (e.g. poll events disposed
-		 * during shutdown_executor via curl free_obj). */
-		int alive = uv_loop_alive(UVLOOP);
-		if (alive != 0) {
+		/* Drain pending callbacks before closing the loop. A single NOWAIT
+		 * pass misses threadpool requests (getaddrinfo) cancelled during
+		 * shutdown: their completion callback fires a few iterations later,
+		 * so uv_loop_close() would hit EBUSY and the request struct leaks.
+		 * Bounded busy-drain — cancelled requests always complete promptly. */
+		for (int guard = 0; guard < 10000 && uv_loop_alive(UVLOOP) != 0; guard++) {
 			uv_run(UVLOOP, UV_RUN_NOWAIT);
 		}
 
