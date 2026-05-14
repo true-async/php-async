@@ -22,11 +22,13 @@ jobs:
             zts: false
             asan: true
             jit: false
-          # #1 — thread_pool/cancel flake under tracing JIT (ZTS).
+          # #1 — thread_pool/cancel heap corruption under tracing JIT (ZTS).
+          # ASAN on + USE_ZEND_ALLOC=0 so the corruption is reported with
+          # alloc/free stacks instead of just a far-away crash site.
           - name: LINUX_ZTS_JIT
             os: ubuntu-latest
             zts: true
-            asan: false
+            asan: true
             jit: true
           # #3 — curl progress-callback exception (macOS NTS).
           - name: MACOS_NTS
@@ -92,6 +94,10 @@ jobs:
             export CFLAGS="-fsanitize=address -DZEND_TRACK_ARENA_ALLOC -g -O0"
             export LDFLAGS="-fsanitize=address"
           fi
+          ICONV=""
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            ICONV="--with-iconv=$(brew --prefix)/opt/libiconv"
+          fi
           ./configure \
             --${{ matrix.zts && 'enable' || 'disable' }}-zts \
             --enable-debug \
@@ -100,7 +106,7 @@ jobs:
             --enable-sockets --enable-pcntl --enable-opcache \
             --enable-mbstring --enable-tokenizer --enable-filter --enable-session \
             --with-curl --with-openssl \
-            $ASAN_FLAGS
+            $ICONV $ASAN_FLAGS
 
       - name: Build PHP
         working-directory: php-src
@@ -122,8 +128,11 @@ jobs:
       - name: Run the failing tests
         working-directory: php-src
         env:
-          # Surface leaks instead of aborting the run on the first one.
-          ASAN_OPTIONS: detect_leaks=1:abort_on_error=0:exitcode=0
+          # abort_on_error=1 → glibc dumps a core on the ASAN report too.
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1:halt_on_error=1
+          # Route every alloc/free through ASAN's allocator instead of Zend's
+          # pool, so a use-after-free is reported at the real site.
+          USE_ZEND_ALLOC: 0
         run: |
           ulimit -c unlimited
           PHP=sapi/cli/php
