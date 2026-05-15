@@ -80,7 +80,7 @@ jobs:
       - name: Install build dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install autoconf bison re2c libuv curl oniguruma openssl@3 || true
+          brew install autoconf bison re2c libuv curl oniguruma openssl@3 libiconv || true
           # bison is keg-only on macOS; the system bison (2.3) is too old.
           echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
 

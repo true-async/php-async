@@ -420,16 +420,25 @@ bool libuv_reactor_shutdown(void)
 		libuv_cleanup_signal_events();
 		libuv_cleanup_process_events();
 
-		/* Drain pending callbacks before closing the loop. A single NOWAIT
-		 * pass misses threadpool requests (getaddrinfo) cancelled during
-		 * shutdown: their completion callback fires a few iterations later,
-		 * so uv_loop_close() would hit EBUSY and the request struct leaks.
-		 * Bounded busy-drain — cancelled requests always complete promptly. */
-		for (int guard = 0; guard < 10000 && uv_loop_alive(UVLOOP) != 0; guard++) {
+		/* Sync drain: pick up ready callbacks. */
+		for (int i = 0; i < 100 && uv_loop_alive(UVLOOP); i++) {
 			uv_run(UVLOOP, UV_RUN_NOWAIT);
 		}
+		/* Async drain: wait for threadpool cancel-completions (getaddrinfo,
+		 * fs). uv_cancel can't preempt an in-flight worker, we must wait. */
+		for (int i = 0; i < 500 && uv_loop_alive(UVLOOP); i++) {
+			uv_run(UVLOOP, UV_RUN_ONCE);
+		}
+		/* Worker still running past the budget — leave the loop open;
+		 * pefree would race with the worker (UAF > leak; OS reclaims). */
+		if (uv_loop_alive(UVLOOP)) {
+#ifdef ZEND_DEBUG
+			fprintf(stderr, "async: libuv shutdown timeout; loop left open\n");
+#endif
+		} else {
+			uv_loop_close(UVLOOP);
+		}
 
-		uv_loop_close(UVLOOP);
 		ASYNC_G(reactor_started) = false;
 		zend_hash_destroy(&ASYNC_G(active_io_handles));
 	}

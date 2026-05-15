@@ -26,6 +26,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   squarely in PDO core overhead (PDOStatement object init, fetch wrapping).
 
 ### Fixed
+- **#118 — curl `XFERINFOFUNCTION` / `PROGRESSFUNCTION` exception leak (macOS).**
+  When the user callback threw, `curl_xferinfo` / `curl_progress` in
+  `ext/curl/interface.c` left `EG(exception)` set and returned 0, so libcurl
+  kept driving the transfer; `zend_call_known_fcc` on subsequent ticks
+  short-circuited on the pending exception without clearing it. Eventually
+  the transfer ended and the dangling exception surfaced outside the
+  coroutine — on Linux it landed on a frame the awaiter unwound, but on
+  macOS the libuv/kqueue reentry path delivered it as **uncaught** at
+  engine top-level (`Fatal error: Uncaught RuntimeException`), failing
+  `tests/curl/035-progress_exception.phpt` and
+  `056-multi_progress_exception.phpt` on `MACOS_*_NTS`.
+  Two other async-aware curl callbacks (`curl_prereqfunction`,
+  `curl_debug`) already did the right thing; `xferinfo`/`progress` were
+  missed when that pattern was applied.
+  Fix: in both callbacks, after `zend_call_known_fcc` returns, if
+  `EG(exception)` is set and `ch->async_event` exists, hand the exception
+  off to `curl_async_event_set_callback_exception()`, clear it, and
+  return 1 to abort the transfer — the captured exception is then
+  re-thrown into the awaiter through the normal `curl_async_event_t`
+  delivery path (`curl_async.c:1104`).
+- **#118 — getaddrinfo event-struct leak on reactor shutdown (NTS).** The
+  `async_dns_addrinfo_t` (288 B) was never freed when a coroutine cancelled
+  a DNS resolution and the reactor shut down before libuv's threadpool
+  worker finished its blocking `getaddrinfo()` syscall. The dispose path
+  set `LIBUV_DNS_F_DISPOSE_PENDING` and relied on `on_addrinfo_event`
+  firing to reach the `pefree` branch — but our shutdown drain used
+  `UV_RUN_NOWAIT` (non-blocking peeks) and didn't wait for the threadpool
+  cancel-completion to surface via libuv's internal pipe; after
+  `uv_loop_close()` the callback could no longer fire. Note: per libuv
+  docs, `uv_cancel(uv_getaddrinfo_t*)` returns `EBUSY` for an in-flight
+  request — we cannot preempt the worker, only wait for it.
+  Fix in `libuv_reactor_shutdown` (`ext/async/libuv_reactor.c`): two-phase
+  drain — bounded `UV_RUN_NOWAIT` for ready callbacks, then bounded
+  `UV_RUN_ONCE` for async cancel-completions from the threadpool. If a
+  worker is still wedged past the budget (e.g. DNS server not responding),
+  leave the loop open: `pefree`-ing pending structs would race with the
+  still-running worker (UAF, much worse than a leak); the OS reclaims the
+  memory at process exit.
 - **#118 — Tracing-JIT SEGV in `Async\Chaos` thread-pool fuzz tests
   (`FAST_CONCAT` deref of `0x1`).** Root cause was *not* in the async
   extension itself but in `ext/opcache/jit/zend_jit_ir.c`
