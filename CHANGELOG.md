@@ -26,6 +26,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   squarely in PDO core overhead (PDOStatement object init, fetch wrapping).
 
 ### Fixed
+- **#118 — Tracing-JIT SEGV in `Async\Chaos` thread-pool fuzz tests
+  (`FAST_CONCAT` deref of `0x1`).** Root cause was *not* in the async
+  extension itself but in `ext/opcache/jit/zend_jit_ir.c`
+  `zend_jit_leave_func`: after the `RSTORE(ZREG_FP, prev)` swap, any
+  subsequent `ir_GUARD*` triggered `jit_SNAPSHOT()`, which walked the
+  callee's `STACK_REF[]` and let the IR register-allocator emit a
+  materializing `STORE(RLOAD(ZREG_FP)+offset, %reg)` for live SSA values
+  — but `RLOAD(ZREG_FP)` resolved to the caller's FP at that point, so
+  the spill landed in a caller CV slot at the same offset and corrupted
+  it. Fix: clear the callee's `STACK_REF[]` immediately before the FP
+  swap. Single-file (+23 lines, `zend_jit_ir.c`). Repro
+  (`fuzzy-tests/_generated/thread_pool/cancel__00_submit_then_cancel_every_future_settles_cleanly.phpt`):
+  before — SIGSEGV in 2-3 of 30 `--repeat` iterations;
+  after — 30/30 PASS. `ext/opcache/tests` 881/881 PASS, no regressions.
+  Full root-cause writeup: `ext/async/docs/118-tracing-jit-stale-fp-spill.md`.
 - **Segfault on shutdown while a spawned thread is still running.** A child
   OS thread reached `event->notify_parent(event)` in `async_thread_run`
   after the main thread had already freed the `async_thread_event_t` during
