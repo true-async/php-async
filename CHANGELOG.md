@@ -26,6 +26,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   squarely in PDO core overhead (PDOStatement object init, fetch wrapping).
 
 ### Fixed
+- **#118 — getaddrinfo event-struct leak on reactor shutdown (NTS).** The
+  `async_dns_addrinfo_t` (288 B) was never freed when a coroutine cancelled
+  a DNS resolution and the reactor shut down before libuv's threadpool
+  worker finished its blocking `getaddrinfo()` syscall. The dispose path
+  set `LIBUV_DNS_F_DISPOSE_PENDING` and relied on `on_addrinfo_event`
+  firing to reach the `pefree` branch — but our shutdown drain used
+  `UV_RUN_NOWAIT` (non-blocking peeks) and didn't wait for the threadpool
+  cancel-completion to surface via libuv's internal pipe; after
+  `uv_loop_close()` the callback could no longer fire. Note: per libuv
+  docs, `uv_cancel(uv_getaddrinfo_t*)` returns `EBUSY` for an in-flight
+  request — we cannot preempt the worker, only wait for it.
+  Fix in `libuv_reactor_shutdown` (`ext/async/libuv_reactor.c`): two-phase
+  drain — bounded `UV_RUN_NOWAIT` for ready callbacks, then bounded
+  `UV_RUN_ONCE` for async cancel-completions from the threadpool. If a
+  worker is still wedged past the budget (e.g. DNS server not responding),
+  leave the loop open: `pefree`-ing pending structs would race with the
+  still-running worker (UAF, much worse than a leak); the OS reclaims the
+  memory at process exit.
 - **#118 — Tracing-JIT SEGV in `Async\Chaos` thread-pool fuzz tests
   (`FAST_CONCAT` deref of `0x1`).** Root cause was *not* in the async
   extension itself but in `ext/opcache/jit/zend_jit_ir.c`
