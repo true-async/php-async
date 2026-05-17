@@ -18,6 +18,7 @@
 
 #include "php_async_api.h"
 #include "future.h"
+#include "thread.h"
 #include "thread_channel.h"
 #include <Zend/zend_async_API.h>
 
@@ -33,6 +34,12 @@ struct _async_thread_pool_s {
 
 	/* Task channel (shared, persistent memory) */
 	async_thread_channel_t *task_channel;
+
+	/* Optional bootloader: deep-copied closure to be executed once per worker
+	 * on startup, before the task receive loop. The snapshot's `entry` slot
+	 * holds the bootloader copy (the pool has no per-pool "entry" — each task
+	 * brings its own snapshot). NULL when no bootloader was provided. */
+	async_thread_snapshot_t *bootloader_snapshot;
 };
 
 ///////////////////////////////////////////////////////////
@@ -52,8 +59,11 @@ extern zend_class_entry *async_ce_thread_pool_exception;
 #define ASYNC_THREAD_POOL_FROM_OBJ(obj) \
 	((thread_pool_object_t *)((char *)(obj) - XtOffsetOf(thread_pool_object_t, std)))
 
-/* Factory — creates a new thread pool (returns base pointer for API registration) */
-zend_async_thread_pool_t *async_thread_pool_create(int32_t worker_count, int32_t queue_size);
+/* Factory — creates a new thread pool (returns base pointer for API registration).
+ * If `bootloader` is non-NULL, it is deep-copied once and executed by each
+ * worker on startup. */
+zend_async_thread_pool_t *async_thread_pool_create(
+	int32_t worker_count, int32_t queue_size, const zend_fcall_t *bootloader);
 
 /* Registration function */
 void async_register_thread_pool_ce(void);

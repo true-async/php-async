@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.0] -
 
 ### Added
+- **#107 — `ThreadPool` accepts a `bootloader` closure.** Optional
+  `?Closure` executed once per worker on startup (e.g. to require an
+  autoloader), mirroring `spawn_thread()`. Deep-copied once into a
+  per-pool snapshot; each worker materialises its own closure via
+  `async_thread_create_closure`. If the bootloader throws, the pool is
+  failed: channel closes, pending futures reject with
+  `CancellationException`.
 - **`pdo_sqlite` honours `PDO::ATTR_POOL_STMT_CACHE_SIZE`**. Pool slots now
   carry a per-connection LRU cache of compiled `sqlite3_stmt*`. On
   `$pdo->prepare()` the driver looks up the SQL in the cache and reuses an

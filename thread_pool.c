@@ -26,6 +26,7 @@
 #include "zend_common.h"
 #include "zend_interfaces.h"
 #include "zend_exceptions.h"
+#include "zend_closures.h"
 
 zend_class_entry *async_ce_thread_pool = NULL;
 zend_class_entry *async_ce_thread_pool_exception = NULL;
@@ -40,6 +41,8 @@ static zend_object_handlers thread_pool_handlers;
 ///////////////////////////////////////////////////////////
 
 static void thread_pool_destroy(async_thread_pool_t *pool);
+static void thread_pool_close(async_thread_pool_t *pool);
+static void thread_pool_drain_tasks(async_thread_pool_t *pool, bool reject);
 
 ///////////////////////////////////////////////////////////
 /// Worker entry — C handler called inside spawned thread
@@ -93,6 +96,44 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			zend_exception_error(EG(exception), E_WARNING);
 			zend_clear_exception();
 			goto done;
+		}
+
+		/* Bootloader — run once per worker before entering the receive loop.
+		 * On failure we fail the entire pool: close the channel and reject all
+		 * pending submissions. Other workers will then exit on next recv(). */
+		if (pool->bootloader_snapshot != NULL) {
+			zval boot_callable, boot_retval;
+			ZVAL_UNDEF(&boot_callable);
+			ZVAL_UNDEF(&boot_retval);
+
+			async_thread_create_closure(&pool->bootloader_snapshot->entry, &boot_callable);
+
+			if (UNEXPECTED(EG(exception))) {
+				zend_exception_error(EG(exception), E_WARNING);
+				zend_clear_exception();
+				zval_ptr_dtor(&boot_callable);
+				thread_pool_close(pool);
+				thread_pool_drain_tasks(pool, true);
+				goto done;
+			}
+
+			zend_fcall_info boot_fci;
+			zend_fcall_info_cache boot_fcc;
+			if (zend_fcall_info_init(&boot_callable, 0, &boot_fci, &boot_fcc, NULL, NULL) == SUCCESS) {
+				boot_fci.retval = &boot_retval;
+				zend_call_function(&boot_fci, &boot_fcc);
+			}
+
+			zval_ptr_dtor(&boot_retval);
+			zval_ptr_dtor(&boot_callable);
+
+			if (UNEXPECTED(EG(exception))) {
+				zend_exception_error(EG(exception), E_WARNING);
+				zend_clear_exception();
+				thread_pool_close(pool);
+				thread_pool_drain_tasks(pool, true);
+				goto done;
+			}
 		}
 
 		zval task;
@@ -252,7 +293,6 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 /// Pool lifecycle
 ///////////////////////////////////////////////////////////
 
-static void thread_pool_close(async_thread_pool_t *pool);
 static void thread_pool_close_base(zend_async_thread_pool_t *pool);
 static void thread_pool_dispose_base(zend_async_thread_pool_t *pool);
 
@@ -353,7 +393,8 @@ static zend_async_event_t *thread_pool_submit_internal_impl(
 	return &remote->future.event;
 }
 
-zend_async_thread_pool_t *async_thread_pool_create(int32_t worker_count, int32_t queue_size)
+zend_async_thread_pool_t *async_thread_pool_create(
+	int32_t worker_count, int32_t queue_size, const zend_fcall_t *bootloader)
 {
 	async_thread_pool_t *pool = pecalloc(1, sizeof(async_thread_pool_t), 1);
 
@@ -368,6 +409,21 @@ zend_async_thread_pool_t *async_thread_pool_create(int32_t worker_count, int32_t
 	pool->base.close = thread_pool_close_base;
 	pool->base.dispose = thread_pool_dispose_base;
 	pool->base.submit_internal = thread_pool_submit_internal_impl;
+
+	/* Deep-copy bootloader once into a persistent snapshot reused by every
+	 * worker. We stash it in `entry` because pool snapshots have no separate
+	 * entry — each task brings its own. */
+	pool->bootloader_snapshot = NULL;
+	if (bootloader != NULL) {
+		pool->bootloader_snapshot = async_thread_snapshot_create(bootloader, NULL);
+		if (UNEXPECTED(pool->bootloader_snapshot == NULL)) {
+			/* snapshot_create propagated an exception (e.g. captured value
+			 * refused transfer). Fail construction. */
+			pool->task_channel = NULL;
+			pool->base.workers = NULL;
+			return &pool->base;
+		}
+	}
 
 	pool->task_channel = async_thread_channel_create(queue_size);
 	pool->base.workers = pecalloc(worker_count, sizeof(zend_async_thread_handle_t), 1);
@@ -496,6 +552,11 @@ static void thread_pool_destroy(async_thread_pool_t *pool)
 		pool->base.workers = NULL;
 	}
 
+	if (pool->bootloader_snapshot != NULL) {
+		async_thread_snapshot_destroy(pool->bootloader_snapshot);
+		pool->bootloader_snapshot = NULL;
+	}
+
 	pefree(pool, 1);
 }
 
@@ -544,11 +605,13 @@ METHOD(__construct)
 {
 	zend_long workers;
 	zend_long queue_size = 0;
+	zval *bootloader_zv = NULL;
 
-	ZEND_PARSE_PARAMETERS_START(1, 2)
+	ZEND_PARSE_PARAMETERS_START(1, 3)
 		Z_PARAM_LONG(workers)
 		Z_PARAM_OPTIONAL
 		Z_PARAM_LONG(queue_size)
+		Z_PARAM_OBJECT_OF_CLASS_OR_NULL(bootloader_zv, zend_ce_closure)
 	ZEND_PARSE_PARAMETERS_END();
 
 #ifndef ZTS
@@ -572,8 +635,24 @@ METHOD(__construct)
 		queue_size = (workers > INT32_MAX / 4) ? INT32_MAX : workers * 4;
 	}
 
+	zend_fcall_t boot, *boot_ptr = NULL;
+	if (bootloader_zv != NULL
+		&& zend_fcall_info_init(bootloader_zv, 0, &boot.fci, &boot.fci_cache, NULL, NULL) == SUCCESS) {
+		boot_ptr = &boot;
+	}
+
 	thread_pool_object_t *obj = ASYNC_THREAD_POOL_FROM_OBJ(Z_OBJ_P(ZEND_THIS));
-	obj->pool = (async_thread_pool_t *) async_thread_pool_create((int32_t) workers, (int32_t) queue_size);
+	obj->pool = (async_thread_pool_t *) async_thread_pool_create(
+		(int32_t) workers, (int32_t) queue_size, boot_ptr);
+
+	if (UNEXPECTED(EG(exception))) {
+		/* Factory failure (e.g. bootloader deep-copy refused a captured value).
+		 * Pool wrapper is already wired into obj->pool, but in a partial state —
+		 * thread_pool_free_object will tear it down via thread_pool_close +
+		 * destroy, which is safe (close is idempotent; destroy frees what
+		 * exists). */
+		RETURN_THROWS();
+	}
 }
 
 METHOD(submit)

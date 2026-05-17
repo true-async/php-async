@@ -17,8 +17,14 @@ final class ThreadPool
     /**
      * @param int $workers Number of worker threads.
      * @param int $queueSize Maximum pending task queue size (default: workers * 4).
+     * @param \Closure|null $bootloader Optional closure executed once per worker
+     *                                  thread on startup, before any task runs.
+     *                                  Typical use: require an autoloader.
+     *                                  If it throws, the pool is failed: the task
+     *                                  channel is closed and all pending submissions
+     *                                  are rejected with CancellationException.
      */
-    public function __construct(int $workers, int $queueSize = 0) {}
+    public function __construct(int $workers, int $queueSize = 0, ?\Closure $bootloader = null) {}
 
     /**
      * Submit a task for execution. Returns a Future that resolves
