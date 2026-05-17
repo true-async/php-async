@@ -15,6 +15,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `async_thread_create_closure`. If the bootloader throws, the pool is
   failed: channel closes, pending futures reject with
   `CancellationException`.
+- **#107 — `ThreadPool` `coroutine: true` mode.** New ctor flag: when
+  enabled, each submitted PHP-closure task runs inside its own coroutine
+  in the worker's scheduler (`ZEND_ASYNC_SPAWN`) instead of via
+  synchronous `zend_call_function`. Tasks can now `await`, use channels,
+  and do async IO without blocking the worker thread, so a pool with
+  `workers=2` can run N concurrent IO-bound tasks per worker. Completion
+  is delivered via an event callback on the coroutine that resolves the
+  future and releases the snapshot/state; the exception is marked
+  `EXCEPTION_HANDLED` so it isn't also propagated to the worker's main
+  scope (which would trigger a spurious graceful-shutdown cancel). ABI
+  unchanged: `async_thread_pool_create` keeps its `(workers, queue_size)`
+  signature for `zend_async_new_thread_pool_t` registration; the
+  bootloader/coroutine plumbing lives in a new `_ex` variant called from
+  the PHP constructor.
 - **`pdo_sqlite` honours `PDO::ATTR_POOL_STMT_CACHE_SIZE`**. Pool slots now
   carry a per-connection LRU cache of compiled `sqlite3_stmt*`. On
   `$pdo->prepare()` the driver looks up the SQL in the cache and reuses an

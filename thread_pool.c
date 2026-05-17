@@ -43,6 +43,11 @@ static zend_object_handlers thread_pool_handlers;
 static void thread_pool_destroy(async_thread_pool_t *pool);
 static void thread_pool_close(async_thread_pool_t *pool);
 static void thread_pool_drain_tasks(async_thread_pool_t *pool, bool reject);
+static bool thread_pool_spawn_task_coroutine(
+	async_thread_pool_t *pool, zval *callable,
+	zend_fcall_info *fci, zend_fcall_info_cache *fcc,
+	zval *params, uint32_t param_count,
+	async_thread_snapshot_t *snapshot, zend_future_shared_state_t *state);
 
 ///////////////////////////////////////////////////////////
 /// Worker entry — C handler called inside spawned thread
@@ -233,6 +238,35 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 				} ZEND_HASH_FOREACH_END();
 			}
 
+			if (pool->coroutine_mode) {
+				/* Spawn the task as a coroutine in this worker's scheduler.
+				 * Completion is reported via an event callback on the coroutine
+				 * itself — see pool_task_on_complete. Counters are decremented
+				 * and snapshot/state are released there. */
+				if (thread_pool_spawn_task_coroutine(
+						pool, &callable, &fci, &fcc, params, param_count,
+						snapshot, state)) {
+					/* Ownership of params/snapshot/state transferred to
+					 * coroutine + callback. The callable's closure object was
+					 * addref'd into fcall->fci.function_name — release our
+					 * local ref. retval was UNDEF (real return goes into
+					 * coroutine->result). */
+					zval_ptr_dtor(&callable);
+					zval_ptr_dtor(&retval);
+					zval_ptr_dtor(&task);
+					continue;
+				}
+				/* Spawn failed — fall through to reject the future with the
+				 * pending exception (if any) and free everything synchronously. */
+				zend_atomic_int_dec(&pool->base.running_count);
+				zend_atomic_int_inc(&pool->base.completed_count);
+				if (EG(exception)) {
+					async_future_shared_state_reject(state, EG(exception));
+					zend_clear_exception();
+				}
+				goto task_cleanup;
+			}
+
 			/* Decrement running and bump completed BEFORE notifying the awaiter
 			 * via complete/reject — otherwise a coroutine waking from await()
 			 * would observe stale running_count and a missing completed bump. */
@@ -287,6 +321,113 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 	if (bailout) {
 		zend_bailout();
 	}
+}
+
+///////////////////////////////////////////////////////////
+/// Coroutine-mode task: spawn + completion callback
+///////////////////////////////////////////////////////////
+
+typedef struct {
+	zend_coroutine_event_callback_t base;
+	async_thread_pool_t *pool;
+	async_thread_snapshot_t *snapshot;
+	zend_future_shared_state_t *state;
+} pool_task_callback_t;
+
+static void pool_task_callback_dispose(
+	zend_async_event_callback_t *callback, zend_async_event_t *event)
+{
+	(void) event;
+	efree(callback);
+}
+
+/* Completion callback for a task-coroutine spawned by a coroutine-mode worker.
+ * Fires when the spawned coroutine ends (returns or throws). result is zval*
+ * (NULL if no return value), exception is the unhandled exception (or NULL). */
+static void pool_task_on_complete(
+	zend_async_event_t *event, zend_async_event_callback_t *callback,
+	void *result, zend_object *exception)
+{
+	pool_task_callback_t *cb = (pool_task_callback_t *) callback;
+
+	zend_atomic_int_dec(&cb->pool->base.running_count);
+	zend_atomic_int_inc(&cb->pool->base.completed_count);
+
+	if (exception != NULL) {
+		/* Future delivers the exception to the awaiter — mark it handled on
+		 * the coroutine so the scheduler doesn't ALSO propagate it up the
+		 * scope chain (which would trigger a "Graceful shutdown" cancel of
+		 * sibling coroutines, including the worker's main). */
+		ZEND_ASYNC_EVENT_SET_EXCEPTION_HANDLED(event);
+		async_future_shared_state_reject(cb->state, exception);
+	} else if (result != NULL && Z_TYPE_P((zval *) result) != IS_UNDEF) {
+		async_future_shared_state_complete(cb->state, (zval *) result);
+	} else {
+		zval undef;
+		ZVAL_UNDEF(&undef);
+		async_future_shared_state_complete(cb->state, &undef);
+	}
+
+	async_future_shared_state_delref(cb->state);
+	async_thread_snapshot_destroy(cb->snapshot);
+	/* Framework calls cb->base.base.dispose -> efree(callback). */
+}
+
+/* Build fcall, spawn a coroutine in the worker's scheduler, attach the
+ * completion callback. Ownership of callable/params/snapshot/state transfers
+ * to the coroutine + callback on success. */
+static bool thread_pool_spawn_task_coroutine(
+	async_thread_pool_t *pool, zval *callable,
+	zend_fcall_info *fci, zend_fcall_info_cache *fcc,
+	zval *params, uint32_t param_count,
+	async_thread_snapshot_t *snapshot, zend_future_shared_state_t *state)
+{
+	zend_coroutine_t *coroutine = ZEND_ASYNC_SPAWN();
+	if (UNEXPECTED(coroutine == NULL)) {
+		return false;
+	}
+
+	/* Build the coroutine's fcall — mirrors ZEND_ASYNC_FCALL_DEFINE but takes
+	 * an existing emalloc'd params buffer (we already populated it above) to
+	 * avoid a second allocation + copy. */
+	zend_fcall_t *fcall = ecalloc(1, sizeof(zend_fcall_t));
+	fcall->fci = *fci;
+	fcall->fci_cache = *fcc;
+	fcall->fci.param_count = param_count;
+	fcall->fci.params = params; /* takes ownership; coroutine teardown frees */
+	fcall->fci.retval = &coroutine->result;
+	Z_TRY_ADDREF(fcall->fci.function_name);
+
+	coroutine->fcall = fcall;
+
+	pool_task_callback_t *cb = ecalloc(1, sizeof(pool_task_callback_t));
+	cb->base.base.ref_count = 0;
+	cb->base.base.callback = pool_task_on_complete;
+	cb->base.base.dispose = pool_task_callback_dispose;
+	cb->base.coroutine = NULL;
+	cb->base.event = &coroutine->event;
+	cb->pool = pool;
+	cb->snapshot = snapshot;
+	cb->state = state;
+
+	if (UNEXPECTED(!coroutine->event.add_callback(&coroutine->event, &cb->base.base))) {
+		/* Couldn't attach — cancel the spawn (best-effort) and let caller
+		 * synchronously fail the future. We free our own bits; the coroutine
+		 * itself will be torn down by its dispose handler. */
+		efree(cb);
+		zend_fcall_release(fcall);
+		coroutine->fcall = NULL;
+		/* callable was addref'd into fcall->fci.function_name; release zeroed
+		 * it on dtor, so the caller's zval is still valid to ptr_dtor.
+		 * params: fcall_release frees them — clear caller's pointer so the
+		 * worker loop doesn't double-free. */
+		(void) callable;
+		return false;
+	}
+
+	/* On success: callable can still be ptr_dtor'd by the caller — its
+	 * refcount was bumped (Z_TRY_ADDREF on function_name) into the fcall. */
+	return true;
 }
 
 ///////////////////////////////////////////////////////////
@@ -394,9 +535,17 @@ static zend_async_event_t *thread_pool_submit_internal_impl(
 }
 
 zend_async_thread_pool_t *async_thread_pool_create(
-	int32_t worker_count, int32_t queue_size, const zend_fcall_t *bootloader)
+	int32_t worker_count, int32_t queue_size)
+{
+	return async_thread_pool_create_ex(worker_count, queue_size, NULL, false);
+}
+
+zend_async_thread_pool_t *async_thread_pool_create_ex(
+	int32_t worker_count, int32_t queue_size, const zend_fcall_t *bootloader,
+	bool coroutine_mode)
 {
 	async_thread_pool_t *pool = pecalloc(1, sizeof(async_thread_pool_t), 1);
+	pool->coroutine_mode = coroutine_mode;
 
 	pool->base.worker_count = 0;
 	ZEND_ATOMIC_INT_INIT(&pool->base.pending_count, 0);
@@ -606,12 +755,14 @@ METHOD(__construct)
 	zend_long workers;
 	zend_long queue_size = 0;
 	zval *bootloader_zv = NULL;
+	bool coroutine_mode = false;
 
-	ZEND_PARSE_PARAMETERS_START(1, 3)
+	ZEND_PARSE_PARAMETERS_START(1, 4)
 		Z_PARAM_LONG(workers)
 		Z_PARAM_OPTIONAL
 		Z_PARAM_LONG(queue_size)
 		Z_PARAM_OBJECT_OF_CLASS_OR_NULL(bootloader_zv, zend_ce_closure)
+		Z_PARAM_BOOL(coroutine_mode)
 	ZEND_PARSE_PARAMETERS_END();
 
 #ifndef ZTS
@@ -642,8 +793,8 @@ METHOD(__construct)
 	}
 
 	thread_pool_object_t *obj = ASYNC_THREAD_POOL_FROM_OBJ(Z_OBJ_P(ZEND_THIS));
-	obj->pool = (async_thread_pool_t *) async_thread_pool_create(
-		(int32_t) workers, (int32_t) queue_size, boot_ptr);
+	obj->pool = (async_thread_pool_t *) async_thread_pool_create_ex(
+		(int32_t) workers, (int32_t) queue_size, boot_ptr, coroutine_mode);
 
 	if (UNEXPECTED(EG(exception))) {
 		/* Factory failure (e.g. bootloader deep-copy refused a captured value).

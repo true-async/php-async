@@ -23,8 +23,12 @@ final class ThreadPool
      *                                  If it throws, the pool is failed: the task
      *                                  channel is closed and all pending submissions
      *                                  are rejected with CancellationException.
+     * @param bool $coroutine When true, each submitted task runs inside a coroutine
+     *                        in the worker's scheduler instead of being called
+     *                        synchronously. Enables `await`, channels, and IO inside
+     *                        tasks without blocking the worker thread.
      */
-    public function __construct(int $workers, int $queueSize = 0, ?\Closure $bootloader = null) {}
+    public function __construct(int $workers, int $queueSize = 0, ?\Closure $bootloader = null, bool $coroutine = false) {}
 
     /**
      * Submit a task for execution. Returns a Future that resolves

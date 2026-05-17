@@ -40,6 +40,11 @@ struct _async_thread_pool_s {
 	 * holds the bootloader copy (the pool has no per-pool "entry" — each task
 	 * brings its own snapshot). NULL when no bootloader was provided. */
 	async_thread_snapshot_t *bootloader_snapshot;
+
+	/* When true, each PHP-closure task runs inside its own coroutine in the
+	 * worker's scheduler; completion is delivered via an event callback that
+	 * resolves the future. When false, tasks run synchronously inline. */
+	bool coroutine_mode;
 };
 
 ///////////////////////////////////////////////////////////
@@ -59,11 +64,17 @@ extern zend_class_entry *async_ce_thread_pool_exception;
 #define ASYNC_THREAD_POOL_FROM_OBJ(obj) \
 	((thread_pool_object_t *)((char *)(obj) - XtOffsetOf(thread_pool_object_t, std)))
 
-/* Factory — creates a new thread pool (returns base pointer for API registration).
- * If `bootloader` is non-NULL, it is deep-copied once and executed by each
- * worker on startup. */
+/* ABI factory — matches `zend_async_new_thread_pool_t`. Registered with
+ * `zend_async_thread_pool_register`. Equivalent to `_ex(..., NULL, false)`. */
 zend_async_thread_pool_t *async_thread_pool_create(
-	int32_t worker_count, int32_t queue_size, const zend_fcall_t *bootloader);
+	int32_t worker_count, int32_t queue_size);
+
+/* Extended factory — same as above plus optional bootloader (deep-copied once
+ * and executed by each worker on startup) and coroutine mode (each PHP-closure
+ * task runs inside its own coroutine in the worker's scheduler). */
+zend_async_thread_pool_t *async_thread_pool_create_ex(
+	int32_t worker_count, int32_t queue_size, const zend_fcall_t *bootloader,
+	bool coroutine_mode);
 
 /* Registration function */
 void async_register_thread_pool_ce(void);
