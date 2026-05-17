@@ -329,11 +329,15 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 		}
 
 	done:
-		/* Release pool_scope BEFORE draining the scheduler: clearing the
-		 * owner-pinned flag lets the scope dispose naturally once its last
-		 * child task coroutine ends, and the AFTER_MAIN drain runs all
-		 * still-pending task coroutines to completion. */
+		/* Cancel (if requested) and release pool_scope BEFORE AFTER_MAIN:
+		 * unpinning + release lets the cascade disposal complete during
+		 * the scheduler drain instead of leaking the scope. */
 		if (pool_scope != NULL) {
+			if (zend_atomic_int_load(&pool->cancel_requested)) {
+				/* is_safely=false overrides inherited DISPOSE_SAFELY —
+				 * we want in-flight task coroutines to actually die. */
+				ZEND_ASYNC_SCOPE_CANCEL(pool_scope, NULL, false, false);
+			}
 			ZEND_ASYNC_SCOPE_CLR_OWNER_PINNED(pool_scope);
 			ZEND_ASYNC_SCOPE_RELEASE(pool_scope);
 			pool_scope = NULL;
@@ -561,6 +565,7 @@ zend_async_thread_pool_t *async_thread_pool_create(
 {
 	async_thread_pool_t *pool = pecalloc(1, sizeof(async_thread_pool_t), 1);
 	pool->coroutine_mode = coroutine_mode;
+	ZEND_ATOMIC_INT_INIT(&pool->cancel_requested, 0);
 
 	pool->base.worker_count = 0;
 	ZEND_ATOMIC_INT_INIT(&pool->base.pending_count, 0);
@@ -1077,10 +1082,11 @@ METHOD(cancel)
 		return;
 	}
 
+	/* Order matters: flag before close so workers see it on wakeup. */
+	zend_atomic_int_store(&pool->cancel_requested, 1);
 	thread_pool_close(pool);
-	/* Reject futures of tasks that had not yet been picked up by a worker.
-	 * Running tasks are allowed to finish naturally — cancel() only covers
-	 * the backlog, not already-in-flight computations. */
+	/* Reject queued (not-yet-picked-up) tasks. In-flight: sync runs to
+	 * completion (not preemptible), coroutine dies via scope cascade. */
 	thread_pool_drain_tasks(pool, /*reject*/ true);
 }
 

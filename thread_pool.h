@@ -45,6 +45,11 @@ struct _async_thread_pool_s {
 	 * worker's scheduler; completion is delivered via an event callback that
 	 * resolves the future. When false, tasks run synchronously inline. */
 	bool coroutine_mode;
+
+	/* Set by cancel() before channel.close. Coroutine workers see it on
+	 * wakeup and scope-cancel in-flight tasks; sync workers can't be
+	 * preempted out of zend_call_function, so they ignore it. */
+	zend_atomic_int cancel_requested;
 };
 
 ///////////////////////////////////////////////////////////

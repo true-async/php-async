@@ -27,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ThreadPool::submit`/`map` SEGV when called from non-coroutine context
   with a full channel — backpressure suspend deref'd NULL coroutine.
   Now launches the scheduler first, like `Async\spawn`.
+
+### Changed
+- `ThreadPool::cancel()` in coroutine mode now actually kills in-flight
+  tasks: atomic `cancel_requested` set before channel close; worker, on
+  its way out, calls `ZEND_ASYNC_SCOPE_CANCEL(pool_scope, NULL, false,
+  false)` and AFTER_MAIN cascades the cancellation through every child
+  task scope. `close()` keeps soft semantics (in-flight runs to completion).
 - **`pdo_sqlite` honours `PDO::ATTR_POOL_STMT_CACHE_SIZE`**. Pool slots now
   carry a per-connection LRU cache of compiled `sqlite3_stmt*`. On
   `$pdo->prepare()` the driver looks up the SQL in the cache and reuses an
