@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.0] -
 
 ### Added
+- **#107 — `ThreadPool` workers auto-detect.** `workers` is now optional
+  (default `0`); `0` resolves to `Async\available_parallelism()` (CPU
+  count). Explicit positive values still honoured. Negative throws.
 - **#107 — `ThreadPool` accepts a `bootloader` closure.** Optional
   `?Closure` executed once per worker on startup (e.g. to require an
   autoloader), mirroring `spawn_thread()`. Deep-copied once into a

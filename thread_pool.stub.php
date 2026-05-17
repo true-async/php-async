@@ -15,7 +15,8 @@ namespace Async;
 final class ThreadPool
 {
     /**
-     * @param int $workers Number of worker threads.
+     * @param int $workers Number of worker threads. `0` (default) = auto-detect
+     *                     from available CPU parallelism (Async\available_parallelism()).
      * @param int $queueSize Maximum pending task queue size (default: workers * 4).
      * @param \Closure|null $bootloader Optional closure executed once per worker
      *                                  thread on startup, before any task runs.
@@ -28,7 +29,7 @@ final class ThreadPool
      *                        synchronously. Enables `await`, channels, and IO inside
      *                        tasks without blocking the worker thread.
      */
-    public function __construct(int $workers, int $queueSize = 0, ?\Closure $bootloader = null, bool $coroutine = false) {}
+    public function __construct(int $workers = 0, int $queueSize = 0, ?\Closure $bootloader = null, bool $coroutine = false) {}
 
     /**
      * Submit a task for execution. Returns a Future that resolves

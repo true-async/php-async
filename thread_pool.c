@@ -772,14 +772,14 @@ static void thread_pool_free_object(zend_object *object)
 
 METHOD(__construct)
 {
-	zend_long workers;
+	zend_long workers = 0;
 	zend_long queue_size = 0;
 	zval *bootloader_zv = NULL;
 	bool coroutine_mode = false;
 
-	ZEND_PARSE_PARAMETERS_START(1, 4)
-		Z_PARAM_LONG(workers)
+	ZEND_PARSE_PARAMETERS_START(0, 4)
 		Z_PARAM_OPTIONAL
+		Z_PARAM_LONG(workers)
 		Z_PARAM_LONG(queue_size)
 		Z_PARAM_OBJECT_OF_CLASS_OR_NULL(bootloader_zv, zend_ce_closure)
 		Z_PARAM_BOOL(coroutine_mode)
@@ -791,9 +791,17 @@ METHOD(__construct)
 	RETURN_THROWS();
 #endif
 
-	if (workers < 1 || workers > INT32_MAX) {
-		zend_argument_value_error(1, "must be between 1 and %d", INT32_MAX);
+	if (workers < 0 || workers > INT32_MAX) {
+		zend_argument_value_error(1, "must be between 0 and %d", INT32_MAX);
 		RETURN_THROWS();
+	}
+
+	if (workers == 0) {
+		/* Auto-detect: same source as Async\available_parallelism(). Floor
+		 * at 1 if the reactor reports 0 (defensive — should not happen). */
+		zend_long detected = zend_async_available_parallelism_fn != NULL
+			? (zend_long) ZEND_ASYNC_AVAILABLE_PARALLELISM() : 0;
+		workers = detected > 0 ? detected : 1;
 	}
 
 	if (queue_size > INT32_MAX) {
