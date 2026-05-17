@@ -15,20 +15,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `async_thread_create_closure`. If the bootloader throws, the pool is
   failed: channel closes, pending futures reject with
   `CancellationException`.
-- **#107 — `ThreadPool` `coroutine: true` mode.** New ctor flag: when
-  enabled, each submitted PHP-closure task runs inside its own coroutine
-  in the worker's scheduler (`ZEND_ASYNC_SPAWN`) instead of via
-  synchronous `zend_call_function`. Tasks can now `await`, use channels,
-  and do async IO without blocking the worker thread, so a pool with
-  `workers=2` can run N concurrent IO-bound tasks per worker. Completion
-  is delivered via an event callback on the coroutine that resolves the
-  future and releases the snapshot/state; the exception is marked
-  `EXCEPTION_HANDLED` so it isn't also propagated to the worker's main
-  scope (which would trigger a spurious graceful-shutdown cancel). ABI
-  unchanged: `async_thread_pool_create` keeps its `(workers, queue_size)`
-  signature for `zend_async_new_thread_pool_t` registration; the
-  bootloader/coroutine plumbing lives in a new `_ex` variant called from
-  the PHP constructor.
+- **#107 — `ThreadPool` `coroutine: true` mode.** Each task runs as a
+  coroutine in its own child scope under a per-worker pool scope, so
+  tasks can `await`/use channels/do IO without blocking the worker.
+  Completion via `extended_dispose`.
+- **ABI 0.15.0** — unified `zend_async_new_thread_pool_t` factory:
+  `(workers, queue, bootloader, coroutine_mode)`. Macros
+  `ZEND_ASYNC_NEW_THREAD_POOL(w,q)` and `_EX(w,q,b,c)` cover both forms.
+
+### Fixed
+- `ThreadPool::submit`/`map` SEGV when called from non-coroutine context
+  with a full channel — backpressure suspend deref'd NULL coroutine.
+  Now launches the scheduler first, like `Async\spawn`.
 - **`pdo_sqlite` honours `PDO::ATTR_POOL_STMT_CACHE_SIZE`**. Pool slots now
   carry a per-connection LRU cache of compiled `sqlite3_stmt*`. On
   `$pdo->prepare()` the driver looks up the SQL in the cache and reuses an
