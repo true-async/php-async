@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.0] -
 
 ### Added
+- **#107 — `ThreadPool` accepts a `bootloader` closure.** Optional
+  `?Closure` executed once per worker on startup (e.g. to require an
+  autoloader), mirroring `spawn_thread()`. Deep-copied once into a
+  per-pool snapshot; each worker materialises its own closure via
+  `async_thread_create_closure`. If the bootloader throws, the pool is
+  failed: channel closes, pending futures reject with
+  `CancellationException`.
+- **#107 — `ThreadPool` `coroutine: true` mode.** Each task runs as a
+  coroutine in its own child scope under a per-worker pool scope, so
+  tasks can `await`/use channels/do IO without blocking the worker.
+  Completion via `extended_dispose`.
+- **ABI 0.15.0** — unified `zend_async_new_thread_pool_t` factory:
+  `(workers, queue, bootloader, coroutine_mode)`. Macros
+  `ZEND_ASYNC_NEW_THREAD_POOL(w,q)` and `_EX(w,q,b,c)` cover both forms.
+
+### Fixed
+- `ThreadPool::submit`/`map` SEGV when called from non-coroutine context
+  with a full channel — backpressure suspend deref'd NULL coroutine.
+  Now launches the scheduler first, like `Async\spawn`.
+
+### Changed
+- `ThreadPool::cancel()` in coroutine mode now actually kills in-flight
+  tasks: atomic `cancel_requested` set before channel close; worker, on
+  its way out, calls `ZEND_ASYNC_SCOPE_CANCEL(pool_scope, NULL, false,
+  false)` and AFTER_MAIN cascades the cancellation through every child
+  task scope. `close()` keeps soft semantics (in-flight runs to completion).
 - **`pdo_sqlite` honours `PDO::ATTR_POOL_STMT_CACHE_SIZE`**. Pool slots now
   carry a per-connection LRU cache of compiled `sqlite3_stmt*`. On
   `$pdo->prepare()` the driver looks up the SQL in the cache and reuses an

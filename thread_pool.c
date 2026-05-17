@@ -26,6 +26,7 @@
 #include "zend_common.h"
 #include "zend_interfaces.h"
 #include "zend_exceptions.h"
+#include "zend_closures.h"
 
 zend_class_entry *async_ce_thread_pool = NULL;
 zend_class_entry *async_ce_thread_pool_exception = NULL;
@@ -40,6 +41,14 @@ static zend_object_handlers thread_pool_handlers;
 ///////////////////////////////////////////////////////////
 
 static void thread_pool_destroy(async_thread_pool_t *pool);
+static void thread_pool_close(async_thread_pool_t *pool);
+static void thread_pool_drain_tasks(async_thread_pool_t *pool, bool reject);
+static bool thread_pool_spawn_task_coroutine(
+	async_thread_pool_t *pool, zend_async_scope_t *pool_scope,
+	zval *callable,
+	zend_fcall_info *fci, zend_fcall_info_cache *fcc,
+	zval *params, uint32_t param_count,
+	async_thread_snapshot_t *snapshot, zend_future_shared_state_t *state);
 
 ///////////////////////////////////////////////////////////
 /// Worker entry — C handler called inside spawned thread
@@ -75,6 +84,11 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 	async_thread_pool_t *pool = (async_thread_pool_t *) ctx;
 	async_thread_channel_t *channel = pool->task_channel;
 	int bailout = 0;
+	/* Per-worker pool scope: child of worker's main scope. Pinned for the
+	 * worker's lifetime; each spawned task lives in its own child scope of
+	 * this one (see thread_pool_spawn_task_coroutine). Created lazily, only
+	 * when coroutine_mode is enabled — sync workers don't need it. */
+	zend_async_scope_t *pool_scope = NULL;
 
 	ZEND_ASSERT(event == NULL);
 
@@ -93,6 +107,44 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			zend_exception_error(EG(exception), E_WARNING);
 			zend_clear_exception();
 			goto done;
+		}
+
+		/* Bootloader — run once per worker before entering the receive loop.
+		 * On failure we fail the entire pool: close the channel and reject all
+		 * pending submissions. Other workers will then exit on next recv(). */
+		if (pool->bootloader_snapshot != NULL) {
+			zval boot_callable, boot_retval;
+			ZVAL_UNDEF(&boot_callable);
+			ZVAL_UNDEF(&boot_retval);
+
+			async_thread_create_closure(&pool->bootloader_snapshot->entry, &boot_callable);
+
+			if (UNEXPECTED(EG(exception))) {
+				zend_exception_error(EG(exception), E_WARNING);
+				zend_clear_exception();
+				zval_ptr_dtor(&boot_callable);
+				thread_pool_close(pool);
+				thread_pool_drain_tasks(pool, true);
+				goto done;
+			}
+
+			zend_fcall_info boot_fci;
+			zend_fcall_info_cache boot_fcc;
+			if (zend_fcall_info_init(&boot_callable, 0, &boot_fci, &boot_fcc, NULL, NULL) == SUCCESS) {
+				boot_fci.retval = &boot_retval;
+				zend_call_function(&boot_fci, &boot_fcc);
+			}
+
+			zval_ptr_dtor(&boot_retval);
+			zval_ptr_dtor(&boot_callable);
+
+			if (UNEXPECTED(EG(exception))) {
+				zend_exception_error(EG(exception), E_WARNING);
+				zend_clear_exception();
+				thread_pool_close(pool);
+				thread_pool_drain_tasks(pool, true);
+				goto done;
+			}
 		}
 
 		zval task;
@@ -192,6 +244,52 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 				} ZEND_HASH_FOREACH_END();
 			}
 
+			if (pool->coroutine_mode) {
+				/* Lazily create the worker's pool scope on first task. Pinned
+				 * so a cancellation cascade from the worker's main scope
+				 * doesn't free it out from under in-flight tasks. */
+				if (pool_scope == NULL) {
+					pool_scope = ZEND_ASYNC_NEW_SCOPE(ZEND_ASYNC_CURRENT_SCOPE);
+					if (UNEXPECTED(pool_scope == NULL)) {
+						zend_atomic_int_dec(&pool->base.running_count);
+						zend_atomic_int_inc(&pool->base.completed_count);
+						if (EG(exception)) {
+							async_future_shared_state_reject(state, EG(exception));
+							zend_clear_exception();
+						}
+						goto task_cleanup;
+					}
+					ZEND_ASYNC_SCOPE_SET_OWNER_PINNED(pool_scope);
+				}
+
+				/* Spawn the task as a coroutine in a fresh child scope of
+				 * pool_scope. Completion delivered via extended_dispose
+				 * (pool_task_dispose) — that releases snapshot/state and
+				 * decrements counters. */
+				if (thread_pool_spawn_task_coroutine(
+						pool, pool_scope, &callable, &fci, &fcc, params,
+						param_count, snapshot, state)) {
+					/* Ownership of params/snapshot/state transferred to
+					 * coroutine + callback. The callable's closure object was
+					 * addref'd into fcall->fci.function_name — release our
+					 * local ref. retval was UNDEF (real return goes into
+					 * coroutine->result). */
+					zval_ptr_dtor(&callable);
+					zval_ptr_dtor(&retval);
+					zval_ptr_dtor(&task);
+					continue;
+				}
+				/* Spawn failed — fall through to reject the future with the
+				 * pending exception (if any) and free everything synchronously. */
+				zend_atomic_int_dec(&pool->base.running_count);
+				zend_atomic_int_inc(&pool->base.completed_count);
+				if (EG(exception)) {
+					async_future_shared_state_reject(state, EG(exception));
+					zend_clear_exception();
+				}
+				goto task_cleanup;
+			}
+
 			/* Decrement running and bump completed BEFORE notifying the awaiter
 			 * via complete/reject — otherwise a coroutine waking from await()
 			 * would observe stale running_count and a missing completed bump. */
@@ -231,6 +329,20 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 		}
 
 	done:
+		/* Cancel (if requested) and release pool_scope BEFORE AFTER_MAIN:
+		 * unpinning + release lets the cascade disposal complete during
+		 * the scheduler drain instead of leaking the scope. */
+		if (pool_scope != NULL) {
+			if (zend_atomic_int_load(&pool->cancel_requested)) {
+				/* is_safely=false overrides inherited DISPOSE_SAFELY —
+				 * we want in-flight task coroutines to actually die. */
+				ZEND_ASYNC_SCOPE_CANCEL(pool_scope, NULL, false, false);
+			}
+			ZEND_ASYNC_SCOPE_CLR_OWNER_PINNED(pool_scope);
+			ZEND_ASYNC_SCOPE_RELEASE(pool_scope);
+			pool_scope = NULL;
+		}
+
 		ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN(false);
 
 	} zend_catch {
@@ -249,10 +361,104 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 }
 
 ///////////////////////////////////////////////////////////
+/// Coroutine-mode task: spawn + extended_dispose
+///////////////////////////////////////////////////////////
+
+typedef struct {
+	async_thread_pool_t *pool;
+	async_thread_snapshot_t *snapshot;
+	zend_future_shared_state_t *state;
+} pool_task_ctx_t;
+
+/* Coroutine extended_dispose — invoked by the runtime after the task
+ * coroutine finishes (return or throw). At this point coroutine->result
+ * and coroutine->exception are populated; event callbacks have already
+ * fired. We resolve the future, release pool-side resources, then mark
+ * the exception handled so the scheduler doesn't propagate it up the
+ * scope chain (which would trigger a spurious graceful-shutdown cancel
+ * of sibling coroutines, including the worker's main). */
+static void pool_task_dispose(zend_coroutine_t *coroutine)
+{
+	pool_task_ctx_t *ctx = coroutine->extended_data;
+	if (ctx == NULL) {
+		return;
+	}
+	coroutine->extended_data = NULL;
+
+	zend_atomic_int_dec(&ctx->pool->base.running_count);
+	zend_atomic_int_inc(&ctx->pool->base.completed_count);
+
+	if (coroutine->exception != NULL) {
+		async_future_shared_state_reject(ctx->state, coroutine->exception);
+		ZEND_COROUTINE_SET_EXCEPTION_HANDLED(coroutine);
+	} else if (Z_TYPE(coroutine->result) != IS_UNDEF) {
+		async_future_shared_state_complete(ctx->state, &coroutine->result);
+	} else {
+		zval undef;
+		ZVAL_UNDEF(&undef);
+		async_future_shared_state_complete(ctx->state, &undef);
+	}
+
+	async_future_shared_state_delref(ctx->state);
+	async_thread_snapshot_destroy(ctx->snapshot);
+	efree(ctx);
+}
+
+/* Build fcall, spawn a coroutine in the worker's scheduler, attach the
+ * completion handler via extended_dispose. Ownership of callable/params/
+ * snapshot/state transfers to the coroutine on success.
+ *
+ * Each task runs in its own child scope of `pool_scope` so cancellation of
+ * one task doesn't disturb siblings, and cancelling `pool_scope` cascades
+ * to every in-flight task. */
+static bool thread_pool_spawn_task_coroutine(
+	async_thread_pool_t *pool, zend_async_scope_t *pool_scope,
+	zval *callable,
+	zend_fcall_info *fci, zend_fcall_info_cache *fcc,
+	zval *params, uint32_t param_count,
+	async_thread_snapshot_t *snapshot, zend_future_shared_state_t *state)
+{
+	(void) callable;
+	zend_async_scope_t *task_scope = ZEND_ASYNC_NEW_SCOPE(pool_scope);
+	if (UNEXPECTED(task_scope == NULL)) {
+		return false;
+	}
+
+	zend_coroutine_t *coroutine = ZEND_ASYNC_SPAWN_WITH(task_scope);
+	if (UNEXPECTED(coroutine == NULL)) {
+		/* No coroutine took ownership; the task scope was freshly created
+		 * with refcount=1, so release it here. */
+		ZEND_ASYNC_SCOPE_RELEASE(task_scope);
+		return false;
+	}
+
+	/* Build the coroutine's fcall — same shape as ZEND_ASYNC_FCALL_DEFINE
+	 * but reuses the params buffer the worker already populated. */
+	zend_fcall_t *fcall = ecalloc(1, sizeof(zend_fcall_t));
+	fcall->fci = *fci;
+	fcall->fci_cache = *fcc;
+	fcall->fci.param_count = param_count;
+	fcall->fci.params = params; /* taken over by fcall; freed via release */
+	fcall->fci.retval = &coroutine->result;
+	Z_TRY_ADDREF(fcall->fci.function_name);
+
+	coroutine->fcall = fcall;
+
+	pool_task_ctx_t *ctx = emalloc(sizeof(pool_task_ctx_t));
+	ctx->pool = pool;
+	ctx->snapshot = snapshot;
+	ctx->state = state;
+
+	coroutine->extended_data = ctx;
+	coroutine->extended_dispose = pool_task_dispose;
+
+	return true;
+}
+
+///////////////////////////////////////////////////////////
 /// Pool lifecycle
 ///////////////////////////////////////////////////////////
 
-static void thread_pool_close(async_thread_pool_t *pool);
 static void thread_pool_close_base(zend_async_thread_pool_t *pool);
 static void thread_pool_dispose_base(zend_async_thread_pool_t *pool);
 
@@ -353,9 +559,13 @@ static zend_async_event_t *thread_pool_submit_internal_impl(
 	return &remote->future.event;
 }
 
-zend_async_thread_pool_t *async_thread_pool_create(int32_t worker_count, int32_t queue_size)
+zend_async_thread_pool_t *async_thread_pool_create(
+	int32_t worker_count, int32_t queue_size, const zend_fcall_t *bootloader,
+	bool coroutine_mode)
 {
 	async_thread_pool_t *pool = pecalloc(1, sizeof(async_thread_pool_t), 1);
+	pool->coroutine_mode = coroutine_mode;
+	ZEND_ATOMIC_INT_INIT(&pool->cancel_requested, 0);
 
 	pool->base.worker_count = 0;
 	ZEND_ATOMIC_INT_INIT(&pool->base.pending_count, 0);
@@ -368,6 +578,21 @@ zend_async_thread_pool_t *async_thread_pool_create(int32_t worker_count, int32_t
 	pool->base.close = thread_pool_close_base;
 	pool->base.dispose = thread_pool_dispose_base;
 	pool->base.submit_internal = thread_pool_submit_internal_impl;
+
+	/* Deep-copy bootloader once into a persistent snapshot reused by every
+	 * worker. We stash it in `entry` because pool snapshots have no separate
+	 * entry — each task brings its own. */
+	pool->bootloader_snapshot = NULL;
+	if (bootloader != NULL) {
+		pool->bootloader_snapshot = async_thread_snapshot_create(bootloader, NULL);
+		if (UNEXPECTED(pool->bootloader_snapshot == NULL)) {
+			/* snapshot_create propagated an exception (e.g. captured value
+			 * refused transfer). Fail construction. */
+			pool->task_channel = NULL;
+			pool->base.workers = NULL;
+			return &pool->base;
+		}
+	}
 
 	pool->task_channel = async_thread_channel_create(queue_size);
 	pool->base.workers = pecalloc(worker_count, sizeof(zend_async_thread_handle_t), 1);
@@ -496,6 +721,11 @@ static void thread_pool_destroy(async_thread_pool_t *pool)
 		pool->base.workers = NULL;
 	}
 
+	if (pool->bootloader_snapshot != NULL) {
+		async_thread_snapshot_destroy(pool->bootloader_snapshot);
+		pool->bootloader_snapshot = NULL;
+	}
+
 	pefree(pool, 1);
 }
 
@@ -544,11 +774,15 @@ METHOD(__construct)
 {
 	zend_long workers;
 	zend_long queue_size = 0;
+	zval *bootloader_zv = NULL;
+	bool coroutine_mode = false;
 
-	ZEND_PARSE_PARAMETERS_START(1, 2)
+	ZEND_PARSE_PARAMETERS_START(1, 4)
 		Z_PARAM_LONG(workers)
 		Z_PARAM_OPTIONAL
 		Z_PARAM_LONG(queue_size)
+		Z_PARAM_OBJECT_OF_CLASS_OR_NULL(bootloader_zv, zend_ce_closure)
+		Z_PARAM_BOOL(coroutine_mode)
 	ZEND_PARSE_PARAMETERS_END();
 
 #ifndef ZTS
@@ -572,8 +806,24 @@ METHOD(__construct)
 		queue_size = (workers > INT32_MAX / 4) ? INT32_MAX : workers * 4;
 	}
 
+	zend_fcall_t boot, *boot_ptr = NULL;
+	if (bootloader_zv != NULL
+		&& zend_fcall_info_init(bootloader_zv, 0, &boot.fci, &boot.fci_cache, NULL, NULL) == SUCCESS) {
+		boot_ptr = &boot;
+	}
+
 	thread_pool_object_t *obj = ASYNC_THREAD_POOL_FROM_OBJ(Z_OBJ_P(ZEND_THIS));
-	obj->pool = (async_thread_pool_t *) async_thread_pool_create((int32_t) workers, (int32_t) queue_size);
+	obj->pool = (async_thread_pool_t *) async_thread_pool_create(
+		(int32_t) workers, (int32_t) queue_size, boot_ptr, coroutine_mode);
+
+	if (UNEXPECTED(EG(exception))) {
+		/* Factory failure (e.g. bootloader deep-copy refused a captured value).
+		 * Pool wrapper is already wired into obj->pool, but in a partial state —
+		 * thread_pool_free_object will tear it down via thread_pool_close +
+		 * destroy, which is safe (close is idempotent; destroy frees what
+		 * exists). */
+		RETURN_THROWS();
+	}
 }
 
 METHOD(submit)
@@ -599,6 +849,9 @@ METHOD(submit)
 		zend_throw_exception(async_ce_thread_pool_exception, "ThreadPool is closed", 0);
 		RETURN_THROWS();
 	}
+
+	/* channel.send may suspend on a full buffer — needs a live coroutine. */
+	ZEND_ASYNC_SCHEDULER_INIT();
 
 	/* 1. Create snapshot — deep-copies closure op_array + bound vars */
 	const zend_fcall_t fcall = { .fci = fci, .fci_cache = fcc };
@@ -691,6 +944,9 @@ METHOD(map)
 		zend_throw_exception(async_ce_thread_pool_exception, "ThreadPool is closed", 0);
 		RETURN_THROWS();
 	}
+
+	/* See submit() — channel.send may suspend on backpressure. */
+	ZEND_ASYNC_SCHEDULER_INIT();
 
 	HashTable *ht = Z_ARRVAL_P(items);
 	uint32_t count = zend_hash_num_elements(ht);
@@ -826,10 +1082,11 @@ METHOD(cancel)
 		return;
 	}
 
+	/* Order matters: flag before close so workers see it on wakeup. */
+	zend_atomic_int_store(&pool->cancel_requested, 1);
 	thread_pool_close(pool);
-	/* Reject futures of tasks that had not yet been picked up by a worker.
-	 * Running tasks are allowed to finish naturally — cancel() only covers
-	 * the backlog, not already-in-flight computations. */
+	/* Reject queued (not-yet-picked-up) tasks. In-flight: sync runs to
+	 * completion (not preemptible), coroutine dies via scope cascade. */
 	thread_pool_drain_tasks(pool, /*reject*/ true);
 }
 

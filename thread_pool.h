@@ -18,6 +18,7 @@
 
 #include "php_async_api.h"
 #include "future.h"
+#include "thread.h"
 #include "thread_channel.h"
 #include <Zend/zend_async_API.h>
 
@@ -33,6 +34,22 @@ struct _async_thread_pool_s {
 
 	/* Task channel (shared, persistent memory) */
 	async_thread_channel_t *task_channel;
+
+	/* Optional bootloader: deep-copied closure to be executed once per worker
+	 * on startup, before the task receive loop. The snapshot's `entry` slot
+	 * holds the bootloader copy (the pool has no per-pool "entry" — each task
+	 * brings its own snapshot). NULL when no bootloader was provided. */
+	async_thread_snapshot_t *bootloader_snapshot;
+
+	/* When true, each PHP-closure task runs inside its own coroutine in the
+	 * worker's scheduler; completion is delivered via an event callback that
+	 * resolves the future. When false, tasks run synchronously inline. */
+	bool coroutine_mode;
+
+	/* Set by cancel() before channel.close. Coroutine workers see it on
+	 * wakeup and scope-cancel in-flight tasks; sync workers can't be
+	 * preempted out of zend_call_function, so they ignore it. */
+	zend_atomic_int cancel_requested;
 };
 
 ///////////////////////////////////////////////////////////
@@ -52,8 +69,13 @@ extern zend_class_entry *async_ce_thread_pool_exception;
 #define ASYNC_THREAD_POOL_FROM_OBJ(obj) \
 	((thread_pool_object_t *)((char *)(obj) - XtOffsetOf(thread_pool_object_t, std)))
 
-/* Factory — creates a new thread pool (returns base pointer for API registration) */
-zend_async_thread_pool_t *async_thread_pool_create(int32_t worker_count, int32_t queue_size);
+/* Factory — matches `zend_async_new_thread_pool_t`. Registered with
+ * `zend_async_thread_pool_register` and invoked from PHP `__construct`.
+ * `bootloader` may be NULL; `coroutine_mode` may be false for the basic
+ * synchronous-task pool (see ZEND_ASYNC_NEW_THREAD_POOL macro). */
+zend_async_thread_pool_t *async_thread_pool_create(
+	int32_t worker_count, int32_t queue_size, const zend_fcall_t *bootloader,
+	bool coroutine_mode);
 
 /* Registration function */
 void async_register_thread_pool_ce(void);
