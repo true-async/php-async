@@ -538,19 +538,6 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 			}
 		} else {
 			coroutine->coroutine.internal_entry();
-			/* C-coroutine: clear EG and fiber_context after internal_entry
-			 * returns. Pre-call value restored by zend_call_function inside
-			 * the handler may point into stale frames of a previous
-			 * coroutine that ran in this same fiber (vm_stack is shared
-			 * across coroutines in one fiber — see scheduler.c:556-564).
-			 * Without this, scope cancel-path in finalize calls
-			 * async_new_exception → object_init_ex →
-			 * zend_default_exception_new → zend_get_executed_filename_ex
-			 * which dereferences a torn-down execute_data. */
-			EG(current_execute_data) = NULL;
-			if (coroutine->fiber_context != NULL) {
-				coroutine->fiber_context->execute_data = NULL;
-			}
 		}
 	}
 	zend_catch
