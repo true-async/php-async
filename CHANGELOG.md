@@ -27,6 +27,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ThreadPool::submit`/`map` SEGV when called from non-coroutine context
   with a full channel — backpressure suspend deref'd NULL coroutine.
   Now launches the scheduler first, like `Async\spawn`.
+- **Coroutine SEGV via stale `EG(current_execute_data)` after C-coroutine
+  `internal_entry`.** Multiple coroutines share one fiber's
+  `vm_stack_memory[]`; when a C-entry coroutine (e.g. an extension's
+  request handler) ran after a PHP coroutine in the same fiber, the
+  `zend_call_function` inside `internal_entry` would restore the
+  pre-call EG which still pointed into the previous coroutine's
+  torn-down frames. The next scope cancel-path then crashed in
+  `zend_get_executed_filename_ex` via `async_new_exception →
+  zend_default_exception_new`. `async_coroutine_execute` now clears
+  `EG(current_execute_data)` and `fiber_context->execute_data` after
+  `internal_entry()` returns, matching the existing PHP-entry branch.
 
 ### Changed
 - `ThreadPool::cancel()` in coroutine mode now actually kills in-flight
