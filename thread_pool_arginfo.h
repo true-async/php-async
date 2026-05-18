@@ -1,11 +1,12 @@
 /* This is a generated file, edit thread_pool.stub.php instead.
- * Stub hash: dfb807ca55580e72aff8c3797cc87d987dce906d */
+ * Stub hash: f8d1b70e2ee14b5629298c079eb52315477d5078 */
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Async_ThreadPool___construct, 0, 0, 1)
-	ZEND_ARG_TYPE_INFO(0, workers, IS_LONG, 0)
+ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Async_ThreadPool___construct, 0, 0, 0)
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, workers, IS_LONG, 0, "0")
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, queueSize, IS_LONG, 0, "0")
 	ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, bootloader, Closure, 1, "null")
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, coroutine, _IS_BOOL, 0, "false")
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, concurrency, IS_LONG, 0, "0")
 ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_class_Async_ThreadPool_submit, 0, 1, Async\\Future, 0)

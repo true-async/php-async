@@ -67,7 +67,7 @@ static void fire_all_triggers(HashTable *triggers)
 ///////////////////////////////////////////////////////////////////////////////
 
 static bool thread_channel_send(zend_async_channel_t *channel, zval *value);
-static bool thread_channel_receive(zend_async_channel_t *channel, zval *result);
+static bool thread_channel_receive(zend_async_channel_t *channel, zval *result, zend_async_event_t *cancellation);
 
 static bool thread_channel_send(zend_async_channel_t *channel, zval *value)
 {
@@ -129,15 +129,17 @@ retry:
 	goto retry;
 }
 
-static bool thread_channel_receive(zend_async_channel_t *channel, zval *result)
+static bool thread_channel_receive(
+	zend_async_channel_t *channel, zval *result, zend_async_event_t *cancellation)
 {
 	async_thread_channel_t *ch = (async_thread_channel_t *) channel;
 	zend_async_trigger_event_t *trigger = NULL;
+	const bool wait_only = (result == NULL);
 
 retry:
 	ASYNC_MUTEX_LOCK(ch->mutex);
 
-	if (circular_buffer_is_not_empty(&ch->buffer)) {
+	if (!wait_only && circular_buffer_is_not_empty(&ch->buffer)) {
 		/* Data available — pop and notify waiting senders */
 		zval persistent_zval;
 		circular_buffer_pop(&ch->buffer, &persistent_zval);
@@ -153,17 +155,21 @@ retry:
 		return true;
 	}
 
-	/* Buffer empty — check if closed */
+	/* Buffer empty (or wait_only) — check if closed */
 	if (UNEXPECTED(ZEND_ASYNC_EVENT_IS_CLOSED(&ch->channel.event))) {
 		ASYNC_MUTEX_UNLOCK(ch->mutex);
 		if (trigger != NULL) {
 			trigger->base.dispose(&trigger->base);
 		}
-		zend_throw_exception(async_ce_thread_channel_exception, "ThreadChannel is closed", 0);
+		/* wait_only callers expect a quiet false on close. */
+		if (!wait_only) {
+			zend_throw_exception(async_ce_thread_channel_exception, "ThreadChannel is closed", 0);
+		}
 		return false;
 	}
 
-	/* Buffer empty, not closed — create trigger (once), register and suspend */
+	/* Buffer empty, not closed — create trigger (once), register and suspend.
+	 * If a cancellation event was supplied, also resume on it. */
 	if (trigger == NULL) {
 		trigger = ZEND_ASYNC_NEW_TRIGGER_EVENT();
 	}
@@ -172,17 +178,43 @@ retry:
 
 	zend_async_resume_when(ZEND_ASYNC_CURRENT_COROUTINE,
 		&trigger->base, false, zend_async_waker_callback_resolve, NULL);
+	if (cancellation != NULL) {
+		zend_async_resume_when(ZEND_ASYNC_CURRENT_COROUTINE,
+			cancellation, false, zend_async_waker_callback_resolve, NULL);
+	}
 	ZEND_ASYNC_SUSPEND();
 	ZEND_ASYNC_WAKER_DESTROY(ZEND_ASYNC_CURRENT_COROUTINE);
 
-	/* Woke up — remove from receiver queue */
+	/* Woke up — remove from receiver queue, observe closed state */
 	ASYNC_MUTEX_LOCK(ch->mutex);
 	zend_hash_index_del(&ch->receiver_triggers, (zend_ulong)(uintptr_t) trigger);
+	const bool closed = ZEND_ASYNC_EVENT_IS_CLOSED(&ch->channel.event);
 	ASYNC_MUTEX_UNLOCK(ch->mutex);
 
 	if (EG(exception)) {
 		trigger->base.dispose(&trigger->base);
 		return false;
+	}
+
+	if (wait_only) {
+		/* Wake delivered (send, close, or cancellation) — caller decides
+		 * what to do; we don't consume and we don't throw. */
+		trigger->base.dispose(&trigger->base);
+		return !closed;
+	}
+
+	if (cancellation != NULL && closed == false) {
+		/* Non-wait_only call: data still wasn't ready (else the retry's
+		 * pop branch would have caught it), and channel isn't closed, so
+		 * the cancellation event is what woke us. Return false without
+		 * exception — caller distinguishes from the closed-channel path. */
+		ASYNC_MUTEX_LOCK(ch->mutex);
+		const bool still_empty = !circular_buffer_is_not_empty(&ch->buffer);
+		ASYNC_MUTEX_UNLOCK(ch->mutex);
+		if (still_empty) {
+			trigger->base.dispose(&trigger->base);
+			return false;
+		}
 	}
 
 	goto retry;
@@ -422,7 +454,7 @@ METHOD(recv)
 
 	ENSURE_COROUTINE_CONTEXT
 
-	if (!THIS_CHANNEL()->channel.receive(&THIS_CHANNEL()->channel, return_value)) {
+	if (!THIS_CHANNEL()->channel.receive(&THIS_CHANNEL()->channel, return_value, NULL)) {
 		RETURN_THROWS();
 	}
 }

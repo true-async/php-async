@@ -48,7 +48,8 @@ static bool thread_pool_spawn_task_coroutine(
 	zval *callable,
 	zend_fcall_info *fci, zend_fcall_info_cache *fcc,
 	zval *params, uint32_t param_count,
-	async_thread_snapshot_t *snapshot, zend_future_shared_state_t *state);
+	async_thread_snapshot_t *snapshot, zend_future_shared_state_t *state,
+	int32_t *active_count, zend_async_trigger_event_t *slot_event);
 
 ///////////////////////////////////////////////////////////
 /// Worker entry — C handler called inside spawned thread
@@ -89,6 +90,11 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 	 * this one (see thread_pool_spawn_task_coroutine). Created lazily, only
 	 * when coroutine_mode is enabled — sync workers don't need it. */
 	zend_async_scope_t *pool_scope = NULL;
+	/* Concurrency slot accounting (only used when pool->concurrency > 0).
+	 * Worker parks on slot_event when at the limit; dispose decrements
+	 * active and fires slot_event to wake it. */
+	int32_t active_count = 0;
+	zend_async_trigger_event_t *slot_event = NULL;
 
 	ZEND_ASSERT(event == NULL);
 
@@ -148,7 +154,29 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 		}
 
 		zval task;
-		while (channel->channel.receive(&channel->channel, &task)) {
+		while (true) {
+			/* Concurrency gate: when at the limit, park via wait-only
+			 * receive (result=NULL) suspending on both the channel and
+			 * slot_event. Wakes on a free slot (dispose fires
+			 * slot_event), new submit, OR close. */
+			while (pool->coroutine_mode && pool->concurrency > 0
+				&& active_count >= pool->concurrency) {
+				if (slot_event == NULL) {
+					slot_event = ZEND_ASYNC_NEW_TRIGGER_EVENT();
+				}
+				if (!channel->channel.receive(&channel->channel, NULL, &slot_event->base)) {
+					/* Channel closed — bail out. */
+					goto done;
+				}
+				if (UNEXPECTED(EG(exception))) {
+					zend_clear_exception();
+					goto done;
+				}
+			}
+
+			if (!channel->channel.receive(&channel->channel, &task, NULL)) {
+				break;
+			}
 			ZEND_ASSERT(Z_TYPE(task) == IS_ARRAY);
 
 			const zend_long kind =
@@ -262,18 +290,30 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 					ZEND_ASYNC_SCOPE_SET_OWNER_PINNED(pool_scope);
 				}
 
-				/* Spawn the task as a coroutine in a fresh child scope of
-				 * pool_scope. Completion delivered via extended_dispose
-				 * (pool_task_dispose) — that releases snapshot/state and
-				 * decrements counters. */
+				/* Spawn task in a fresh child scope of pool_scope.
+				 * Completion via pool_task_dispose. The slot pointers are
+				 * passed only when concurrency is enforced so dispose
+				 * skips the fire path entirely otherwise. */
+				int32_t *task_active = NULL;
+				zend_async_trigger_event_t *task_event = NULL;
+				if (pool->concurrency > 0) {
+					if (slot_event == NULL) {
+						slot_event = ZEND_ASYNC_NEW_TRIGGER_EVENT();
+					}
+					task_active = &active_count;
+					task_event = slot_event;
+				}
 				if (thread_pool_spawn_task_coroutine(
 						pool, pool_scope, &callable, &fci, &fcc, params,
-						param_count, snapshot, state)) {
+						param_count, snapshot, state,
+						task_active, task_event)) {
+					if (pool->concurrency > 0) {
+						active_count++;
+					}
 					/* Ownership of params/snapshot/state transferred to
-					 * coroutine + callback. The callable's closure object was
-					 * addref'd into fcall->fci.function_name — release our
-					 * local ref. retval was UNDEF (real return goes into
-					 * coroutine->result). */
+					 * coroutine. callable's closure was addref'd into
+					 * fcall->fci.function_name — release our local ref.
+					 * retval was UNDEF (real return goes into coroutine->result). */
 					zval_ptr_dtor(&callable);
 					zval_ptr_dtor(&retval);
 					zval_ptr_dtor(&task);
@@ -345,6 +385,13 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 
 		ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN(false);
 
+		/* AFTER_MAIN drained all task coroutines (and ran their dispose,
+		 * which may have fired slot_event). Now safe to release it. */
+		if (slot_event != NULL) {
+			slot_event->base.dispose(&slot_event->base);
+			slot_event = NULL;
+		}
+
 	} zend_catch {
 		bailout = 1;
 	} zend_end_try();
@@ -368,6 +415,11 @@ typedef struct {
 	async_thread_pool_t *pool;
 	async_thread_snapshot_t *snapshot;
 	zend_future_shared_state_t *state;
+	/* Slot accounting (both NULL when concurrency=0). Pointers point into
+	 * the worker handler's stack — safe because dispose runs in the same
+	 * scheduler as the worker. */
+	int32_t *active_count;
+	zend_async_trigger_event_t *slot_event;
 } pool_task_ctx_t;
 
 /* Coroutine extended_dispose — invoked by the runtime after the task
@@ -401,6 +453,16 @@ static void pool_task_dispose(zend_coroutine_t *coroutine)
 
 	async_future_shared_state_delref(ctx->state);
 	async_thread_snapshot_destroy(ctx->snapshot);
+
+	/* Release the slot: decrement and wake the worker. notify is a no-op
+	 * if no waker is registered. The active < limit invariant always holds
+	 * after decrement (worker never exceeds the limit), so we fire
+	 * unconditionally. */
+	if (ctx->active_count != NULL) {
+		(*ctx->active_count)--;
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&ctx->slot_event->base, NULL, NULL);
+	}
+
 	efree(ctx);
 }
 
@@ -416,7 +478,8 @@ static bool thread_pool_spawn_task_coroutine(
 	zval *callable,
 	zend_fcall_info *fci, zend_fcall_info_cache *fcc,
 	zval *params, uint32_t param_count,
-	async_thread_snapshot_t *snapshot, zend_future_shared_state_t *state)
+	async_thread_snapshot_t *snapshot, zend_future_shared_state_t *state,
+	int32_t *active_count, zend_async_trigger_event_t *slot_event)
 {
 	(void) callable;
 	zend_async_scope_t *task_scope = ZEND_ASYNC_NEW_SCOPE(pool_scope);
@@ -448,6 +511,8 @@ static bool thread_pool_spawn_task_coroutine(
 	ctx->pool = pool;
 	ctx->snapshot = snapshot;
 	ctx->state = state;
+	ctx->active_count = active_count;
+	ctx->slot_event = slot_event;
 
 	coroutine->extended_data = ctx;
 	coroutine->extended_dispose = pool_task_dispose;
@@ -561,10 +626,11 @@ static zend_async_event_t *thread_pool_submit_internal_impl(
 
 zend_async_thread_pool_t *async_thread_pool_create(
 	int32_t worker_count, int32_t queue_size, const zend_fcall_t *bootloader,
-	bool coroutine_mode)
+	bool coroutine_mode, int32_t concurrency)
 {
 	async_thread_pool_t *pool = pecalloc(1, sizeof(async_thread_pool_t), 1);
 	pool->coroutine_mode = coroutine_mode;
+	pool->concurrency = concurrency;
 	ZEND_ATOMIC_INT_INIT(&pool->cancel_requested, 0);
 
 	pool->base.worker_count = 0;
@@ -772,17 +838,19 @@ static void thread_pool_free_object(zend_object *object)
 
 METHOD(__construct)
 {
-	zend_long workers;
+	zend_long workers = 0;
 	zend_long queue_size = 0;
 	zval *bootloader_zv = NULL;
 	bool coroutine_mode = false;
+	zend_long concurrency = 0;
 
-	ZEND_PARSE_PARAMETERS_START(1, 4)
-		Z_PARAM_LONG(workers)
+	ZEND_PARSE_PARAMETERS_START(0, 5)
 		Z_PARAM_OPTIONAL
+		Z_PARAM_LONG(workers)
 		Z_PARAM_LONG(queue_size)
 		Z_PARAM_OBJECT_OF_CLASS_OR_NULL(bootloader_zv, zend_ce_closure)
 		Z_PARAM_BOOL(coroutine_mode)
+		Z_PARAM_LONG(concurrency)
 	ZEND_PARSE_PARAMETERS_END();
 
 #ifndef ZTS
@@ -791,13 +859,26 @@ METHOD(__construct)
 	RETURN_THROWS();
 #endif
 
-	if (workers < 1 || workers > INT32_MAX) {
-		zend_argument_value_error(1, "must be between 1 and %d", INT32_MAX);
+	if (workers < 0 || workers > INT32_MAX) {
+		zend_argument_value_error(1, "must be between 0 and %d", INT32_MAX);
 		RETURN_THROWS();
+	}
+
+	if (workers == 0) {
+		/* Auto-detect: same source as Async\available_parallelism(). Floor
+		 * at 1 if the reactor reports 0 (defensive — should not happen). */
+		zend_long detected = zend_async_available_parallelism_fn != NULL
+			? (zend_long) ZEND_ASYNC_AVAILABLE_PARALLELISM() : 0;
+		workers = detected > 0 ? detected : 1;
 	}
 
 	if (queue_size > INT32_MAX) {
 		zend_argument_value_error(2, "must be between 0 and %d", INT32_MAX);
+		RETURN_THROWS();
+	}
+
+	if (concurrency < 0 || concurrency > INT32_MAX) {
+		zend_argument_value_error(5, "must be between 0 and %d", INT32_MAX);
 		RETURN_THROWS();
 	}
 
@@ -814,7 +895,8 @@ METHOD(__construct)
 
 	thread_pool_object_t *obj = ASYNC_THREAD_POOL_FROM_OBJ(Z_OBJ_P(ZEND_THIS));
 	obj->pool = (async_thread_pool_t *) async_thread_pool_create(
-		(int32_t) workers, (int32_t) queue_size, boot_ptr, coroutine_mode);
+		(int32_t) workers, (int32_t) queue_size, boot_ptr, coroutine_mode,
+		(int32_t) concurrency);
 
 	if (UNEXPECTED(EG(exception))) {
 		/* Factory failure (e.g. bootloader deep-copy refused a captured value).
