@@ -291,10 +291,9 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 				}
 
 				/* Spawn task in a fresh child scope of pool_scope.
-				 * Completion via pool_task_dispose. active_count + slot_event
-				 * passed only when concurrency is enforced — dispose fast-
-				 * path stays branch-free otherwise. slot_event is created
-				 * lazily on first park (may still be NULL here). */
+				 * Completion via pool_task_dispose. The slot pointers are
+				 * passed only when concurrency is enforced so dispose
+				 * skips the fire path entirely otherwise. */
 				int32_t *task_active = NULL;
 				zend_async_trigger_event_t *task_event = NULL;
 				if (pool->concurrency > 0) {
@@ -416,12 +415,10 @@ typedef struct {
 	async_thread_pool_t *pool;
 	async_thread_snapshot_t *snapshot;
 	zend_future_shared_state_t *state;
-	/* Concurrency slot accounting (NULL when concurrency=0). Pointers into
-	 * worker handler's stack — safe because dispose runs in the same
-	 * scheduler as the worker. dispose decrements active and fires
-	 * slot_event to wake the worker if it parked at the limit. */
+	/* Slot accounting (both NULL when concurrency=0). Pointers point into
+	 * the worker handler's stack — safe because dispose runs in the same
+	 * scheduler as the worker. */
 	int32_t *active_count;
-	int32_t concurrency;
 	zend_async_trigger_event_t *slot_event;
 } pool_task_ctx_t;
 
@@ -457,13 +454,13 @@ static void pool_task_dispose(zend_coroutine_t *coroutine)
 	async_future_shared_state_delref(ctx->state);
 	async_thread_snapshot_destroy(ctx->snapshot);
 
-	/* Release the concurrency slot: decrement and, if we dropped below the
-	 * limit, fire slot_event to wake the worker (no-op if no callbacks). */
+	/* Release the slot: decrement and wake the worker. notify is a no-op
+	 * if no waker is registered. The active < limit invariant always holds
+	 * after decrement (worker never exceeds the limit), so we fire
+	 * unconditionally. */
 	if (ctx->active_count != NULL) {
 		(*ctx->active_count)--;
-		if (*ctx->active_count < ctx->concurrency && ctx->slot_event != NULL) {
-			ZEND_ASYNC_CALLBACKS_NOTIFY(&ctx->slot_event->base, NULL, NULL);
-		}
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&ctx->slot_event->base, NULL, NULL);
 	}
 
 	efree(ctx);
@@ -515,7 +512,6 @@ static bool thread_pool_spawn_task_coroutine(
 	ctx->snapshot = snapshot;
 	ctx->state = state;
 	ctx->active_count = active_count;
-	ctx->concurrency = pool->concurrency;
 	ctx->slot_event = slot_event;
 
 	coroutine->extended_data = ctx;
