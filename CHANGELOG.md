@@ -38,6 +38,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   core_globals_dtor`, which asserts `!last_error_message` on debug
   builds (silent leak on release). Worker teardown now mirrors
   `clear_last_error()` unconditionally before `ts_free_thread`.
+- **`async_coroutine_execute` left `fiber_context->execute_data` stale
+  after a C-entry coroutine returned.** Only the PHP-entry branch
+  synced it post-`zend_call_function`; the C-entry branch (e.g. an
+  extension's request handler) left the previous PHP-entry coroutine's
+  pointer in place. Subsequent readers (`getTrace`, finally handlers,
+  scope cancel-path's `async_new_exception → zend_default_exception_new
+  → zend_get_executed_filename_ex`) then dereferenced a freed frame,
+  crashing under mixed coroutine load. The sync is now unconditional
+  for both branches.
 
 ### Changed
 - `ThreadPool::cancel()` in coroutine mode now actually kills in-flight
