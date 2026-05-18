@@ -1169,12 +1169,33 @@ final class ThreadPool
      * Workers start immediately. Destroying the ThreadPool object without
      * calling close() or cancel() first triggers a graceful shutdown.
      *
-     * @param int $workers   Number of worker threads (typically = CPU core count).
-     * @param int $queueSize Maximum number of tasks that may wait in the queue.
-     *                       0 = default (workers × 4). When the queue is full,
-     *                       submit() suspends the caller until a slot opens.
+     * @param int           $workers     Number of worker threads. `0` (default) =
+     *                                   auto-detect from available CPU parallelism
+     *                                   (see {@see available_parallelism()}).
+     * @param int           $queueSize   Maximum number of tasks that may wait in
+     *                                   the queue. `0` = default (workers × 4).
+     *                                   When the queue is full, submit() suspends
+     *                                   the caller until a slot opens.
+     * @param \Closure|null $bootloader  Optional closure executed once per worker
+     *                                   thread on startup, before any task runs.
+     *                                   Typical use: register an autoloader. If
+     *                                   the bootloader throws, the pool is failed:
+     *                                   the task channel is closed and all pending
+     *                                   submissions are rejected with
+     *                                   CancellationException.
+     * @param bool          $coroutine   When true, each submitted task runs inside
+     *                                   its own coroutine in the worker's scheduler
+     *                                   instead of being invoked synchronously.
+     *                                   Enables `await`, channels, and IO inside
+     *                                   tasks without blocking the worker thread,
+     *                                   and makes cancel() able to interrupt
+     *                                   in-flight tasks.
+     * @param int           $concurrency Max concurrent task-coroutines per worker
+     *                                   (only meaningful when `coroutine: true`).
+     *                                   `0` (default) = unlimited. Total pool
+     *                                   concurrency = workers × concurrency.
      */
-    public function __construct(int $workers, int $queueSize = 0) {}
+    public function __construct(int $workers = 0, int $queueSize = 0, ?\Closure $bootloader = null, bool $coroutine = false, int $concurrency = 0) {}
 
     /**
      * Submit a callable for execution in a worker thread.
@@ -1216,8 +1237,11 @@ final class ThreadPool
     /**
      * Forcefully stop the pool.
      *
-     * Cancels all pending tasks and signals workers to stop after finishing
-     * their current task.
+     * Rejects all pending (queued) tasks. In coroutine mode (see the
+     * `$coroutine` constructor flag), in-flight tasks are hard-cancelled —
+     * their coroutines receive an Async\AsyncCancellation and reject the
+     * corresponding Future. In synchronous mode, an already-running task
+     * cannot be preempted and runs to completion; workers stop afterwards.
      */
     public function cancel(): void {}
 
