@@ -38,6 +38,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   zend_default_exception_new`. `async_coroutine_execute` now clears
   `EG(current_execute_data)` and `fiber_context->execute_data` after
   `internal_entry()` returns, matching the existing PHP-entry branch.
+- **`async_thread_run` leaked `PG(last_error_message)` across thread
+  teardown.** If a `php_request_shutdown` inside the worker bailed out
+  (RSHUTDOWN bailout, GC dtor fatal, etc.) the `zend_first_try` caught
+  it but `php_free_request_globals → clear_last_error` never ran, so
+  the last PHP error string survived into `ts_free_thread →
+  core_globals_dtor`, which asserts `!last_error_message` on debug
+  builds (silent leak on release). Worker teardown now mirrors
+  `clear_last_error()` unconditionally before `ts_free_thread`.
 
 ### Changed
 - `ThreadPool::cancel()` in coroutine mode now actually kills in-flight

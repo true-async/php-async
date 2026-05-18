@@ -2441,6 +2441,25 @@ notify:
 		thread_exception = NULL;
 	}
 
+	/* Mirror of main.c clear_last_error() (static, no PHPAPI exposed).
+	 * php_request_shutdown() normally clears these via php_free_request_globals,
+	 * but if request shutdown bailed out (caught by zend_first_try above) or
+	 * a worker-internal error fired between shutdown and ts_free_thread, the
+	 * strings survive. core_globals_dtor asserts !last_error_message on debug
+	 * builds; on release it would silently leak. Unconditional + idempotent. */
+#ifdef ZTS
+	if (tsrm_initialized) {
+		if (PG(last_error_message)) {
+			zend_string_release(PG(last_error_message));
+			PG(last_error_message) = NULL;
+		}
+		if (PG(last_error_file)) {
+			zend_string_release(PG(last_error_file));
+			PG(last_error_file) = NULL;
+		}
+	}
+#endif
+
 	/* Free TSRM storage after all zend_end_try blocks.
 	 * Must be separate because zend_end_try accesses EG(bailout).
 	 * Skipped on early-exit paths where TSRM was never initialized. */
