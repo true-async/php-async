@@ -16,7 +16,7 @@ spawn(function() {
     $group = new TaskGroup();
     $group->spawn(function() { throw new \RuntimeException("fail1"); });
     $group->spawn(function() { throw new \LogicException("fail2"); });
-    $group->seal();
+    $group->close();
 
     // Let tasks run to completion before calling any().
     suspend();

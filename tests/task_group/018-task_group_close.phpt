@@ -1,5 +1,5 @@
 --TEST--
-TaskGroup: seal() - prevents new spawns, existing tasks continue
+TaskGroup: close() - prevents new spawns, existing tasks continue
 --FILE--
 <?php
 
@@ -15,9 +15,9 @@ spawn(function() {
         return "completed";
     });
 
-    $group->seal();
+    $group->close();
 
-    var_dump($group->isSealed());
+    var_dump($group->isClosed());
 
     try {
         $group->spawn(function() { return "new"; });
@@ -32,5 +32,5 @@ spawn(function() {
 ?>
 --EXPECT--
 bool(true)
-caught: Cannot spawn tasks on a sealed TaskGroup
+caught: Cannot spawn tasks on a closed TaskGroup
 result: completed

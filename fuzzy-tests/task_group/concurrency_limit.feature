@@ -7,7 +7,7 @@ Feature: TaskGroup respects concurrency limit
   Invariants:
     tg_max_active_G <= K
     tg_spawned_G + tg_spawn_failed_G == N  (every spawn either succeeded or
-        was rejected when the seal raced ahead — both are legal under chaos)
+        was rejected when the close raced ahead — both are legal under chaos)
     tg_done_G == tg_spawned_G               (every queued task eventually runs)
 
   Scenario Outline: concurrency K over N tasks
@@ -15,7 +15,7 @@ Feature: TaskGroup respects concurrency limit
       And a coroutine "S"
       And a coroutine "A"
      When coroutine "S" spawns <n> tasks into "G" that print "t"
-      And coroutine "A" seals group "G"
+      And coroutine "A" closes group "G"
       And coroutine "A" awaits all of "G"
      Then counter "tg_spawned_G" plus counter "tg_spawn_failed_G" equals <n>
       And counter "tg_done_G" equals counter "tg_spawned_G"

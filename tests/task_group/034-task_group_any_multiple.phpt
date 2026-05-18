@@ -11,7 +11,7 @@ spawn(function() {
 
     $group->spawn(function() { throw new \RuntimeException("fail"); });
     $group->spawn(function() { return "success"; });
-    $group->seal();
+    $group->close();
 
     $r1 = $group->any()->await();
     echo "any 1: $r1\n";

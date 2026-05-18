@@ -15,7 +15,7 @@ spawn(function() {
 
     echo "before joinAll: count=" . $set->count() . "\n";
 
-    $set->seal();
+    $set->close();
     $results = $set->joinAll()->await();
 
     echo "after joinAll: count=" . $set->count() . "\n";

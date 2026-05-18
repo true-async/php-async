@@ -20,7 +20,7 @@ spawn(function() {
     // spawnWithKey with variadic args
     $group->spawnWithKey("sum", 'compute', 100, 200);
 
-    $group->seal();
+    $group->close();
     $results = $group->all()->await();
 
     var_dump($results[0]);

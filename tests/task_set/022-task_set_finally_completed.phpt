@@ -10,7 +10,7 @@ spawn(function() {
     $set = new TaskSet();
 
     $set->spawn(function() { return 1; });
-    $set->seal();
+    $set->close();
     $set->joinAll()->await();
 
     echo "before finally\n";

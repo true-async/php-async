@@ -13,7 +13,7 @@ spawn(function() {
     $group->spawnWithKey("b", function() { return "second"; });
     $group->spawnWithKey("c", function() { return "third"; });
 
-    $group->seal();
+    $group->close();
 
     foreach ($group as $key => $pair) {
         [$result, $error] = $pair;

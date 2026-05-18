@@ -12,7 +12,7 @@ spawn(function() {
     $group->spawnWithKey("good", function() { return "ok"; });
     $group->spawnWithKey("fail", function() { throw new \RuntimeException("bad"); });
 
-    $group->seal();
+    $group->close();
     $group->all(ignoreErrors: true)->await();
 
     $results = $group->getResults();

@@ -177,9 +177,9 @@ indirect calls and complex flows may underreport.
 · `getIterator`
 · `getResults`
 ✓ `isFinished`
-✓ `isSealed`
+✓ `isClosed`
 ✓ `race`
-✓ `seal`
+✓ `close`
 ✓ `spawn`
 · `spawnWithKey`
 · `suppressErrors`
@@ -193,11 +193,11 @@ indirect calls and complex flows may underreport.
 ✓ `finally`
 · `getIterator`
 ✓ `isFinished`
-✓ `isSealed`
+✓ `isClosed`
 · `joinAll`
 · `joinAny`
 · `joinNext`
-✓ `seal`
+✓ `close`
 ✓ `spawn`
 · `spawnWithKey`
 

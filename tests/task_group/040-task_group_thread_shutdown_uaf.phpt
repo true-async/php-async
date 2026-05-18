@@ -39,7 +39,7 @@ for ($i = 0; $i < 4; $i++) {
                     });
                 }
             } catch (\Async\ThreadChannelException) {
-                $group->seal();
+                $group->close();
                 $group->awaitCompletion();
             }
         }

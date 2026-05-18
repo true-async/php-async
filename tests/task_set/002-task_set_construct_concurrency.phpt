@@ -30,7 +30,7 @@ spawn(function() {
         return "r3";
     });
 
-    $set->seal();
+    $set->close();
     $set->joinAll()->await();
 
     foreach ($order as $item) {

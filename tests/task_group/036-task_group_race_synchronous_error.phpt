@@ -17,7 +17,7 @@ spawn(function() {
     $group->spawn(function() { throw new \RuntimeException("first-fail"); });
     $group->spawn(function() { return "second"; });
 
-    $group->seal();
+    $group->close();
 
     // Let tasks run to completion before calling race().
     suspend();

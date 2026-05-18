@@ -8,7 +8,7 @@ use function Async\spawn;
 
 spawn(function() {
     $set = new TaskSet();
-    $set->seal();
+    $set->close();
 
     $results = $set->joinAll()->await();
 

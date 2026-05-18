@@ -47,13 +47,13 @@ final class TaskSet implements Awaitable, \Countable, \IteratorAggregate
 
     public function cancel(?AsyncCancellation $cancellation = null): void {}
 
-    public function seal(): void {}
+    public function close(): void {}
 
     public function dispose(): void {}
 
     public function isFinished(): bool {}
 
-    public function isSealed(): bool {}
+    public function isClosed(): bool {}
 
     public function count(): int {}
 

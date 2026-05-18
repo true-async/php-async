@@ -55,7 +55,7 @@ symmetrically.
 | await/          | await_all, await_any, await_all_or_fail, await_first_success, await_any_of, mixed_triggers, with_cancellation | broad (combinator family done) |
 | scope/          | basic (spawn-in-scope, cancel mid-flight)               | thin                              |
 | future/         | complete (with multiple awaiters)                       | thin                              |
-| task_group/     | basic, concurrency_limit, race, cancel, seal_then_spawn, dispose | broad (every public verb hit) |
+| task_group/     | basic, concurrency_limit, race, cancel, close_then_spawn, dispose | broad (every public verb hit) |
 | thread_channel/ | basic, close, lock_contention                           | partial (multi-thread sender/receiver TODO) |
 | thread_pool/    | submit_n, close_pending, cancel (XFAIL), map            | broad                             |
 
@@ -85,7 +85,7 @@ class of bug.
 ### 2. task_group/ — entire surface is uncovered
 
 `Async\TaskGroup` is non-trivial (concurrency limit, queue limit,
-seal/dispose, all/race/any). New step definitions needed:
+close/dispose, all/race/any). New step definitions needed:
 
 ```
 Given a task group "G"
@@ -95,7 +95,7 @@ When coroutine "X" awaits all of "G"
 When coroutine "X" awaits race of "G"
 When coroutine "X" awaits any of "G"
 When coroutine "X" cancels "G"
-When coroutine "X" seals "G"
+When coroutine "X" closes "G"
 Then group "G" is finished
 Then group "G" count equals <N>
 ```
@@ -105,7 +105,7 @@ Then group "G" count equals <N>
   run simultaneously (counter `running_max <= 2` invariant).
 - **race.feature** — first to finish wins, others get cancelled.
 - **cancel.feature** — cancel mid-flight, all children stop.
-- **seal_then_spawn.feature** — spawning into a sealed group throws.
+- **close_then_spawn.feature** — spawning into a closed group throws.
 - **dispose.feature** — dispose triggers cancellation.
 
 ### 3. thread_channel/ — known race, fuzz target

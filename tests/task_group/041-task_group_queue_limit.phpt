@@ -25,7 +25,7 @@ $driver = spawn(function() {
         });
         $log[] = "after_spawn_$i";
     }
-    $group->seal();
+    $group->close();
     await($group->all());
 
     /* Invariants:

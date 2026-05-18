@@ -14,7 +14,7 @@ spawn(function() {
     $group->spawn(function() { return "b"; });
     $group->spawn(function() { return "c"; });
 
-    $group->seal();
+    $group->close();
     $results = $group->all()->await();
 
     var_dump($results);

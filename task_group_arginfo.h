@@ -1,5 +1,5 @@
 /* This is a generated file, edit task_group.stub.php instead.
- * Stub hash: manual-queue-limit-phase1 */
+ * Stub hash: f99788ba947fa50be003a36f7351d2ca68a11380 */
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Async_TaskGroup___construct, 0, 0, 0)
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, concurrency, IS_LONG, 1, "null")
@@ -39,14 +39,14 @@ ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_TaskGroup_cancel, 0,
 	ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, cancellation, Async\\AsyncCancellation, 1, "null")
 ZEND_END_ARG_INFO()
 
-#define arginfo_class_Async_TaskGroup_seal arginfo_class_Async_TaskGroup_suppressErrors
+#define arginfo_class_Async_TaskGroup_close arginfo_class_Async_TaskGroup_suppressErrors
 
 #define arginfo_class_Async_TaskGroup_dispose arginfo_class_Async_TaskGroup_suppressErrors
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_TaskGroup_isFinished, 0, 0, _IS_BOOL, 0)
 ZEND_END_ARG_INFO()
 
-#define arginfo_class_Async_TaskGroup_isSealed arginfo_class_Async_TaskGroup_isFinished
+#define arginfo_class_Async_TaskGroup_isClosed arginfo_class_Async_TaskGroup_isFinished
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_TaskGroup_count, 0, 0, IS_LONG, 0)
 ZEND_END_ARG_INFO()
@@ -70,10 +70,10 @@ ZEND_METHOD(Async_TaskGroup, getResults);
 ZEND_METHOD(Async_TaskGroup, getErrors);
 ZEND_METHOD(Async_TaskGroup, suppressErrors);
 ZEND_METHOD(Async_TaskGroup, cancel);
-ZEND_METHOD(Async_TaskGroup, seal);
+ZEND_METHOD(Async_TaskGroup, close);
 ZEND_METHOD(Async_TaskGroup, dispose);
 ZEND_METHOD(Async_TaskGroup, isFinished);
-ZEND_METHOD(Async_TaskGroup, isSealed);
+ZEND_METHOD(Async_TaskGroup, isClosed);
 ZEND_METHOD(Async_TaskGroup, count);
 ZEND_METHOD(Async_TaskGroup, awaitCompletion);
 ZEND_METHOD(Async_TaskGroup, finally);
@@ -90,10 +90,10 @@ static const zend_function_entry class_Async_TaskGroup_methods[] = {
 	ZEND_ME(Async_TaskGroup, getErrors, arginfo_class_Async_TaskGroup_getErrors, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_TaskGroup, suppressErrors, arginfo_class_Async_TaskGroup_suppressErrors, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_TaskGroup, cancel, arginfo_class_Async_TaskGroup_cancel, ZEND_ACC_PUBLIC)
-	ZEND_ME(Async_TaskGroup, seal, arginfo_class_Async_TaskGroup_seal, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_TaskGroup, close, arginfo_class_Async_TaskGroup_close, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_TaskGroup, dispose, arginfo_class_Async_TaskGroup_dispose, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_TaskGroup, isFinished, arginfo_class_Async_TaskGroup_isFinished, ZEND_ACC_PUBLIC)
-	ZEND_ME(Async_TaskGroup, isSealed, arginfo_class_Async_TaskGroup_isSealed, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_TaskGroup, isClosed, arginfo_class_Async_TaskGroup_isClosed, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_TaskGroup, count, arginfo_class_Async_TaskGroup_count, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_TaskGroup, awaitCompletion, arginfo_class_Async_TaskGroup_awaitCompletion, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_TaskGroup, finally, arginfo_class_Async_TaskGroup_finally, ZEND_ACC_PUBLIC)

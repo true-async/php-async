@@ -1,5 +1,5 @@
 --TEST--
-TaskGroup: awaitCompletion() - throws if group is not sealed
+TaskGroup: awaitCompletion() - throws if group is not closed
 --FILE--
 <?php
 
@@ -18,10 +18,10 @@ spawn(function() {
         echo $e->getMessage() . "\n";
     }
 
-    $group->seal();
+    $group->close();
     echo "done\n";
 });
 ?>
 --EXPECT--
-TaskGroup must be sealed before calling awaitCompletion()
+TaskGroup must be closed before calling awaitCompletion()
 done

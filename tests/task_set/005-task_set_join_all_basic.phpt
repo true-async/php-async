@@ -13,7 +13,7 @@ spawn(function() {
     $set->spawnWithKey("b", function() { return 20; });
     $set->spawnWithKey("c", function() { return 30; });
 
-    $set->seal();
+    $set->close();
     $results = $set->joinAll()->await();
 
     var_dump($results["a"]);

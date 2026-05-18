@@ -13,7 +13,7 @@ spawn(function() {
     $group->spawnWithKey("b", function() { return 20; });
     $group->spawnWithKey("c", function() { return 30; });
 
-    $group->seal();
+    $group->close();
     $results = $group->all()->await();
 
     var_dump($results["a"]);

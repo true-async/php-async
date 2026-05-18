@@ -13,7 +13,7 @@ Feature: TaskGroup basic spawn + await
       And a coroutine "S"
       And a coroutine "A"
      When coroutine "S" spawns <n> tasks into "G" that print "t"
-      And coroutine "A" seals group "G"
+      And coroutine "A" closes group "G"
       And coroutine "A" awaits all of "G"
      Then counter "tg_spawned_G" equals <n>
       And counter "tg_done_G" equals <n>
@@ -28,10 +28,10 @@ Feature: TaskGroup basic spawn + await
       | 3  |
       | 10 |
 
-  Scenario: empty group — sealing then awaiting all returns empty result
+  Scenario: empty group — closing then awaiting all returns empty result
     Given a task group "G"
       And a coroutine "A"
-     When coroutine "A" seals group "G"
+     When coroutine "A" closes group "G"
       And coroutine "A" awaits all of "G"
      Then counter "tg_await_all_succeeded_G" equals 1
       And counter "tg_await_all_results_G" equals 0

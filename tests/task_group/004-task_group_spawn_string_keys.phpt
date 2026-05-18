@@ -13,7 +13,7 @@ spawn(function() {
     $group->spawnWithKey("user2", function() { return "Bob"; });
     $group->spawnWithKey("user3", function() { return "Charlie"; });
 
-    $group->seal();
+    $group->close();
     $results = $group->all()->await();
 
     foreach ($results as $key => $value) {

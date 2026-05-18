@@ -12,7 +12,7 @@ spawn(function() {
     $set->spawnWithKey("good", function() { return "ok"; });
     $set->spawnWithKey("bad", function() { throw new \RuntimeException("fail"); });
 
-    $set->seal();
+    $set->close();
     $results = $set->joinAll(ignoreErrors: true)->await();
 
     echo "results count: " . count($results) . "\n";

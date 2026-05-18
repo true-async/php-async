@@ -1,5 +1,5 @@
 --TEST--
-TaskGroup: spawn() - on sealed group throws error
+TaskGroup: spawn() - on closed group throws error
 --FILE--
 <?php
 
@@ -8,7 +8,7 @@ use function Async\spawn;
 
 spawn(function() {
     $group = new TaskGroup();
-    $group->seal();
+    $group->close();
 
     try {
         $group->spawn(function() { return 1; });
@@ -19,4 +19,4 @@ spawn(function() {
 });
 ?>
 --EXPECT--
-caught: Cannot spawn tasks on a sealed TaskGroup
+caught: Cannot spawn tasks on a closed TaskGroup

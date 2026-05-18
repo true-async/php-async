@@ -1426,7 +1426,7 @@ final class TaskGroup implements Awaitable, \Countable, \IteratorAggregate
      *
      * @param callable $task
      * @param mixed    ...$args
-     * @throws AsyncException If the group is sealed or cancelled.
+     * @throws AsyncException If the group is closed or cancelled.
      */
     public function spawn(callable $task, mixed ...$args): void {}
 
@@ -1436,7 +1436,7 @@ final class TaskGroup implements Awaitable, \Countable, \IteratorAggregate
      * @param string|int $key  Result key (must be unique within the group).
      * @param callable   $task
      * @param mixed      ...$args
-     * @throws AsyncException If the group is sealed, cancelled, or the key is a duplicate.
+     * @throws AsyncException If the group is closed, cancelled, or the key is a duplicate.
      */
     public function spawnWithKey(string|int $key, callable $task, mixed ...$args): void {}
 
@@ -1491,18 +1491,18 @@ final class TaskGroup implements Awaitable, \Countable, \IteratorAggregate
     /**
      * Cancel all running coroutines and discard queued tasks.
      *
-     * Implicitly calls {@see seal()}.
+     * Implicitly calls {@see close()}.
      *
      * @param AsyncCancellation|null $cancellation
      */
     public function cancel(?AsyncCancellation $cancellation = null): void {}
 
     /**
-     * Seal the group: no new tasks may be added.
+     * Close the group: no new tasks may be added.
      *
      * Running and queued tasks continue normally.
      */
-    public function seal(): void {}
+    public function close(): void {}
 
     /**
      * Dispose of the group's scope, cancelling all coroutines.
@@ -1512,14 +1512,14 @@ final class TaskGroup implements Awaitable, \Countable, \IteratorAggregate
     /**
      * Return true if the queue is empty and no coroutines are active.
      *
-     * This state may be temporary if the group is not yet sealed.
+     * This state may be temporary if the group is not yet closed.
      */
     public function isFinished(): bool {}
 
     /**
-     * Return true if the group has been sealed.
+     * Return true if the group has been closed.
      */
-    public function isSealed(): bool {}
+    public function isClosed(): bool {}
 
     /**
      * Return the total number of tasks (queued + running + completed).
@@ -1529,15 +1529,15 @@ final class TaskGroup implements Awaitable, \Countable, \IteratorAggregate
     /**
      * Suspend the current coroutine until all tasks finish.
      *
-     * The group **must** be sealed before calling this method.
+     * The group **must** be closed before calling this method.
      * Unlike {@see all()}, this method never throws on task errors.
      *
-     * @throws AsyncException If the group is not sealed.
+     * @throws AsyncException If the group is not closed.
      */
     public function awaitCompletion(): void {}
 
     /**
-     * Register a callback invoked when the group is sealed and all tasks complete.
+     * Register a callback invoked when the group is closed and all tasks complete.
      *
      * If the group is already in that state, the callback is invoked immediately.
      *
@@ -1550,7 +1550,7 @@ final class TaskGroup implements Awaitable, \Countable, \IteratorAggregate
      *
      * Each iteration yields `[$result, null]` on success or `[null, $error]`
      * on failure, keyed by the task key. Errors are marked as handled on
-     * delivery. Iteration ends when the group is sealed and all tasks are
+     * delivery. Iteration ends when the group is closed and all tasks are
      * delivered.
      *
      * @return \Iterator<string|int, array{mixed, \Throwable|null}>
@@ -1590,7 +1590,7 @@ final class TaskSet implements Awaitable, \Countable, \IteratorAggregate
      *
      * @param callable $task
      * @param mixed    ...$args
-     * @throws AsyncException If the set is sealed or cancelled.
+     * @throws AsyncException If the set is closed or cancelled.
      */
     public function spawn(callable $task, mixed ...$args): void {}
 
@@ -1600,7 +1600,7 @@ final class TaskSet implements Awaitable, \Countable, \IteratorAggregate
      * @param string|int $key  Result key (must be unique within the set).
      * @param callable   $task
      * @param mixed      ...$args
-     * @throws AsyncException If the set is sealed, cancelled, or the key is a duplicate.
+     * @throws AsyncException If the set is closed, cancelled, or the key is a duplicate.
      */
     public function spawnWithKey(string|int $key, callable $task, mixed ...$args): void {}
 
@@ -1640,18 +1640,18 @@ final class TaskSet implements Awaitable, \Countable, \IteratorAggregate
     /**
      * Cancel all running coroutines and discard queued tasks.
      *
-     * Implicitly calls {@see seal()}.
+     * Implicitly calls {@see close()}.
      *
      * @param AsyncCancellation|null $cancellation
      */
     public function cancel(?AsyncCancellation $cancellation = null): void {}
 
     /**
-     * Seal the set: no new tasks may be added.
+     * Close the set: no new tasks may be added.
      *
      * Running and queued tasks continue normally.
      */
-    public function seal(): void {}
+    public function close(): void {}
 
     /**
      * Dispose of the set's scope, cancelling all coroutines.
@@ -1661,14 +1661,14 @@ final class TaskSet implements Awaitable, \Countable, \IteratorAggregate
     /**
      * Return true if no coroutines are active and no tasks are queued.
      *
-     * This state may be temporary if the set is not yet sealed.
+     * This state may be temporary if the set is not yet closed.
      */
     public function isFinished(): bool {}
 
     /**
-     * Return true if the set has been sealed.
+     * Return true if the set has been closed.
      */
-    public function isSealed(): bool {}
+    public function isClosed(): bool {}
 
     /**
      * Return the number of tasks currently in the set.
@@ -1680,15 +1680,15 @@ final class TaskSet implements Awaitable, \Countable, \IteratorAggregate
     /**
      * Suspend the current coroutine until all tasks finish.
      *
-     * The set **must** be sealed before calling this method.
+     * The set **must** be closed before calling this method.
      * Unlike {@see joinAll()}, this method never throws on task errors.
      *
-     * @throws AsyncException If the set is not sealed.
+     * @throws AsyncException If the set is not closed.
      */
     public function awaitCompletion(): void {}
 
     /**
-     * Register a callback invoked when the set is sealed and all tasks complete.
+     * Register a callback invoked when the set is closed and all tasks complete.
      *
      * If the set is already in that state, the callback is invoked immediately.
      *
@@ -1701,7 +1701,7 @@ final class TaskSet implements Awaitable, \Countable, \IteratorAggregate
      *
      * Each iteration yields `[$result, null]` on success or `[null, $error]`
      * on failure, keyed by the task key. Consumed entries are automatically
-     * removed from the set. Iteration ends when the set is sealed and all
+     * removed from the set. Iteration ends when the set is closed and all
      * tasks are delivered.
      *
      * @return \Iterator<string|int, array{mixed, \Throwable|null}>

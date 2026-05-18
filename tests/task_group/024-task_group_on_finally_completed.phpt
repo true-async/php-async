@@ -10,7 +10,7 @@ spawn(function() {
     $group = new TaskGroup();
 
     $group->spawn(function() { return 1; });
-    $group->seal();
+    $group->close();
     $group->all()->await();
 
     echo "before finally\n";

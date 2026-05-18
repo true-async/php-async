@@ -12,7 +12,7 @@ spawn(function() {
     $group->spawnWithKey("good", function() { return "ok"; });
     $group->spawnWithKey("bad", function() { throw new \RuntimeException("fail"); });
 
-    $group->seal();
+    $group->close();
 
     foreach ($group as $key => $pair) {
         [$result, $error] = $pair;

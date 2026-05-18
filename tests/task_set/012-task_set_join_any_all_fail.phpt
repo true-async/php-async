@@ -13,7 +13,7 @@ spawn(function() {
     $set->spawn(function() { throw new \RuntimeException("err1"); });
     $set->spawn(function() { throw new \LogicException("err2"); });
 
-    $set->seal();
+    $set->close();
 
     try {
         $set->joinAny()->await();

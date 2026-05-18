@@ -10,7 +10,7 @@ $set = new TaskSet();
 var_dump($set instanceof TaskSet);
 var_dump($set->count());
 var_dump($set->isFinished());
-var_dump($set->isSealed());
+var_dump($set->isClosed());
 
 echo "done\n";
 ?>

@@ -12,7 +12,7 @@ spawn(function() {
     $set->spawnWithKey("good", function() { return "ok"; });
     $set->spawnWithKey("bad", function() { throw new \RuntimeException("fail"); });
 
-    $set->seal();
+    $set->close();
 
     foreach ($set as $key => $pair) {
         [$result, $error] = $pair;

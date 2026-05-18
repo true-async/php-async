@@ -1400,7 +1400,7 @@ static void task_group_do_spawn(async_task_group_t *group,
 {
 	/* Check sealed/completed */
 	if (UNEXPECTED(ASYNC_TASK_GROUP_IS_SEALED(group))) {
-		async_throw_error("Cannot spawn tasks on a sealed TaskGroup");
+		async_throw_error("Cannot spawn tasks on a closed TaskGroup");
 		return;
 	}
 
@@ -1448,7 +1448,7 @@ static void task_group_do_spawn(async_task_group_t *group,
 
 		/* Re-check terminal state after resume — group may have been sealed/completed. */
 		if (UNEXPECTED(ASYNC_TASK_GROUP_IS_SEALED(group))) {
-			async_throw_error("Cannot spawn tasks on a sealed TaskGroup");
+			async_throw_error("Cannot spawn tasks on a closed TaskGroup");
 			return;
 		}
 		if (UNEXPECTED(ASYNC_TASK_GROUP_IS_COMPLETED(group))) {
@@ -1719,7 +1719,7 @@ METHOD(cancel)
 	task_group_try_complete(group);
 }
 
-METHOD(seal)
+METHOD(close)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
@@ -1760,7 +1760,7 @@ METHOD(isFinished)
 	RETURN_BOOL(task_group_all_settled(group) && !task_group_has_pending(group));
 }
 
-METHOD(isSealed)
+METHOD(isClosed)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
@@ -1783,7 +1783,7 @@ METHOD(awaitCompletion)
 	async_task_group_t *group = THIS_GROUP();
 
 	if (UNEXPECTED(!ASYNC_TASK_GROUP_IS_SEALED(group))) {
-		async_throw_error("TaskGroup must be sealed before calling awaitCompletion()");
+		async_throw_error("TaskGroup must be closed before calling awaitCompletion()");
 		RETURN_THROWS();
 	}
 

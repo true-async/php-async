@@ -1,5 +1,5 @@
 --TEST--
-TaskSet: finally() - called when set is sealed and all tasks complete
+TaskSet: finally() - called when set is closed and all tasks complete
 --FILE--
 <?php
 
@@ -17,7 +17,7 @@ spawn(function() {
     $set->spawn(function() { return "a"; });
     $set->spawn(function() { return "b"; });
 
-    $set->seal();
+    $set->close();
     $set->joinAll()->await();
 
     echo "after joinAll\n";

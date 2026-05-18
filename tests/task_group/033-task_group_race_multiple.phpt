@@ -11,7 +11,7 @@ spawn(function() {
 
     $group->spawn(function() { return "first"; });
     $group->spawn(function() { return "second"; });
-    $group->seal();
+    $group->close();
 
     $r1 = $group->race()->await();
     echo "race 1: $r1\n";

@@ -1,5 +1,5 @@
 --TEST--
-TaskGroup: all() - multiple all() calls on sealed group
+TaskGroup: all() - multiple all() calls on closed group
 --FILE--
 <?php
 
@@ -11,7 +11,7 @@ spawn(function() {
 
     $group->spawn(function() { return "a"; });
     $group->spawn(function() { return "b"; });
-    $group->seal();
+    $group->close();
 
     $results1 = $group->all()->await();
     echo "first all: " . count($results1) . "\n";

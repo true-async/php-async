@@ -14,7 +14,7 @@ $driver = spawn(function() {
     for ($i = 0; $i < 10; $i++) {
         $g1->spawn(function() use (&$done) { $done++; });
     }
-    $g1->seal();
+    $g1->close();
     await($g1->all());
     echo "unbounded: done=$done\n";
 
@@ -26,7 +26,7 @@ $driver = spawn(function() {
         $g2->spawn(function() use ($i, &$trace) { $trace[] = "task$i"; });
         $trace[] = "after$i";
     }
-    $g2->seal();
+    $g2->close();
     await($g2->all());
     echo "explicit_0: " . implode(",", array_slice($trace, 0, 10)) . "\n";
 

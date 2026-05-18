@@ -27,7 +27,7 @@ spawn(function() {
         return "r3";
     });
 
-    $group->seal();
+    $group->close();
     $results = $group->all()->await();
 
     echo "count: " . count($results) . "\n";

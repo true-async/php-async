@@ -1,5 +1,5 @@
 --TEST--
-TaskSet: isFinished() and isSealed() state transitions
+TaskSet: isFinished() and isClosed() state transitions
 --FILE--
 <?php
 
@@ -11,7 +11,7 @@ spawn(function() {
     $set = new TaskSet();
 
     echo "initial: finished=" . var_export($set->isFinished(), true)
-       . " sealed=" . var_export($set->isSealed(), true) . "\n";
+       . " closed=" . var_export($set->isClosed(), true) . "\n";
 
     $set->spawn(function() {
         suspend();
@@ -19,21 +19,21 @@ spawn(function() {
     });
 
     echo "after spawn: finished=" . var_export($set->isFinished(), true)
-       . " sealed=" . var_export($set->isSealed(), true) . "\n";
+       . " closed=" . var_export($set->isClosed(), true) . "\n";
 
-    $set->seal();
+    $set->close();
 
-    echo "after seal: finished=" . var_export($set->isFinished(), true)
-       . " sealed=" . var_export($set->isSealed(), true) . "\n";
+    echo "after close: finished=" . var_export($set->isFinished(), true)
+       . " closed=" . var_export($set->isClosed(), true) . "\n";
 
     $set->joinAll()->await();
 
     echo "after joinAll: finished=" . var_export($set->isFinished(), true)
-       . " sealed=" . var_export($set->isSealed(), true) . "\n";
+       . " closed=" . var_export($set->isClosed(), true) . "\n";
 });
 ?>
 --EXPECT--
-initial: finished=true sealed=false
-after spawn: finished=false sealed=false
-after seal: finished=false sealed=true
-after joinAll: finished=true sealed=true
+initial: finished=true closed=false
+after spawn: finished=false closed=false
+after close: finished=false closed=true
+after joinAll: finished=true closed=true

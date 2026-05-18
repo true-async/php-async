@@ -19,7 +19,7 @@ spawn(function() {
     $group->spawn(function() { throw new \RuntimeException("sync-fail-1"); });
     $group->spawn(function() { throw new \LogicException("sync-fail-2"); });
 
-    $group->seal();
+    $group->close();
 
     // Let the spawned tasks run to completion before calling all().
     suspend();

@@ -12,7 +12,7 @@ spawn(function() {
     $set->spawnWithKey("a", function() { return "first"; });
     $set->spawnWithKey("b", function() { return "second"; });
 
-    $set->seal();
+    $set->close();
 
     foreach ($set as $key => [$result, $error]) {
         echo "$key => $result (count=" . $set->count() . ")\n";

@@ -18,7 +18,7 @@ spawn(function() {
     $group->spawn(function() { return "a"; });
     $group->spawn(function() { return "b"; });
 
-    $group->seal();
+    $group->close();
     $group->all()->await();
 
     echo "after all\n";

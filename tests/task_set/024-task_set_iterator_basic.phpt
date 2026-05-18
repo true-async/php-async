@@ -13,7 +13,7 @@ spawn(function() {
     $set->spawnWithKey("b", function() { return "second"; });
     $set->spawnWithKey("c", function() { return "third"; });
 
-    $set->seal();
+    $set->close();
 
     foreach ($set as $key => $pair) {
         [$result, $error] = $pair;

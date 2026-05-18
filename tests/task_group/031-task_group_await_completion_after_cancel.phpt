@@ -22,7 +22,7 @@ spawn(function() {
 
     echo "completed after cancel\n";
     var_dump($group->isFinished());
-    var_dump($group->isSealed());
+    var_dump($group->isClosed());
 });
 ?>
 --EXPECT--

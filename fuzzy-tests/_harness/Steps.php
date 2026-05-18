@@ -1076,16 +1076,16 @@ final class StandardSteps {
                 });
             });
 
-        // When coroutine "X" seals group "G"
-        $r->on('/^coroutine "([^"]+)" seals group "([^"]+)"$/',
+        // When coroutine "X" closes group "G"
+        $r->on('/^coroutine "([^"]+)" closes group "([^"]+)"$/',
             function(Context $ctx, string $coro, string $g) {
                 $ctx->planAction($coro, function(Context $ctx) use ($g) {
-                    $ctx->inc("tg_seal_attempts_$g");
+                    $ctx->inc("tg_close_attempts_$g");
                     try {
-                        $ctx->taskGroups[$g]->seal();
-                        $ctx->inc("tg_sealed_$g");
+                        $ctx->taskGroups[$g]->close();
+                        $ctx->inc("tg_closed_$g");
                     } catch (\Throwable $e) {
-                        $ctx->inc("tg_seal_failed_$g");
+                        $ctx->inc("tg_close_failed_$g");
                     }
                 });
             });
@@ -1466,11 +1466,11 @@ final class StandardSteps {
                 }
             });
 
-        // Then group "G" is sealed
-        $r->on('/^group "([^"]+)" is sealed$/',
+        // Then group "G" is closed
+        $r->on('/^group "([^"]+)" is closed$/',
             function(Context $ctx, string $name) {
-                if (!isset($ctx->taskGroups[$name]) || !$ctx->taskGroups[$name]->isSealed()) {
-                    throw new \RuntimeException("group $name expected to be sealed");
+                if (!isset($ctx->taskGroups[$name]) || !$ctx->taskGroups[$name]->isClosed()) {
+                    throw new \RuntimeException("group $name expected to be closed");
                 }
             });
 

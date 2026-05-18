@@ -22,7 +22,7 @@ spawn(function() {
 
     $set->cancel();
 
-    var_dump($set->isSealed());
+    var_dump($set->isClosed());
     var_dump($set->isFinished());
     echo "done\n";
 });

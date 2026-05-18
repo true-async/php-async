@@ -7,7 +7,7 @@ Feature: TaskGroup::race returns the first task to settle
   Invariants:
     tg_race_attempts_G == 1
     tg_race_succeeded_G + tg_race_failed_G == 1
-    no orphan coroutines after the group is sealed and drained
+    no orphan coroutines after the group is closed and drained
 
   Scenario Outline: N tasks, awaiter sees one of them via race()
     Given a task group "G"
@@ -15,7 +15,7 @@ Feature: TaskGroup::race returns the first task to settle
       And a coroutine "A"
      When coroutine "S" spawns <n> tasks into "G" that print "t"
       And coroutine "A" awaits race of "G"
-      And coroutine "A" seals group "G"
+      And coroutine "A" closes group "G"
       And coroutine "A" awaits all of "G"
      Then counter "tg_race_attempts_G" equals 1
       And counter "tg_race_succeeded_G" plus counter "tg_race_failed_G" equals 1

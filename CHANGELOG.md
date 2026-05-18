@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Async `open(2)`** — `zend_async_fs_open_t` + `ZEND_ASYNC_FS_OPEN(path, flags, mode)`. Returns pending `zend_async_io_t *` immediately; thread-pool worker fills fd; libuv flips `READABLE` on completion.
 
 ### Changed
+- **`TaskGroup` / `TaskSet`: `seal()` → `close()`, `isSealed()` → `isClosed()`** — renamed to align with the broader close/closed terminology used across the API. Error messages updated accordingly ("Cannot spawn tasks on a closed TaskGroup", "TaskGroup must be closed before calling awaitCompletion()"). Internal `ASYNC_TASK_GROUP_F_SEALED` flag kept as-is.
 - **ABI bumped through 0.15.0 → 0.16.0** — unified `zend_async_new_thread_pool_t` factory `(workers, queue, bootloader, coroutine_mode)` plus `concurrency` (0.16.0). Macros `ZEND_ASYNC_NEW_THREAD_POOL(w,q)` / `_EX(w,q,b,c)` cover both forms.
 - **`zend_async_io_register` extended signature** — adds `sendfile_fn` and `fs_open_fn` slots between `seek_fn` and `udp_sendto_fn`. Out-of-tree reactors must mirror.
 - **`ThreadPool::cancel()` in coroutine mode** actually kills in-flight tasks: atomic `cancel_requested` set before channel close; worker calls `ZEND_ASYNC_SCOPE_CANCEL(pool_scope, NULL, false, false)`, AFTER_MAIN cascades through child task scopes. `close()` keeps soft semantics.

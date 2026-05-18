@@ -37,7 +37,7 @@ final class TaskGroup implements Awaitable, \Countable, \IteratorAggregate
      *
      * @param callable $task Callable to execute.
      * @param mixed ...$args Arguments to pass to the callable.
-     * @throws AsyncException if group is sealed/cancelled.
+     * @throws AsyncException if group is closed/cancelled.
      */
     public function spawn(callable $task, mixed ...$args): void {}
 
@@ -50,7 +50,7 @@ final class TaskGroup implements Awaitable, \Countable, \IteratorAggregate
      * @param string|int $key Result key.
      * @param callable $task Callable to execute.
      * @param mixed ...$args Arguments to pass to the callable.
-     * @throws AsyncException if group is sealed/cancelled or key is duplicate.
+     * @throws AsyncException if group is closed/cancelled or key is duplicate.
      */
     public function spawnWithKey(string|int $key, callable $task, mixed ...$args): void {}
 
@@ -111,18 +111,18 @@ final class TaskGroup implements Awaitable, \Countable, \IteratorAggregate
 
     /**
      * Cancel all running coroutines and queued closures.
-     * Implicitly calls seal(). Queued closures are never started.
+     * Implicitly calls close(). Queued closures are never started.
      *
      * @param AsyncCancellation|null $cancellation Cancellation reason.
      */
     public function cancel(?AsyncCancellation $cancellation = null): void {}
 
     /**
-     * Seal the group for new tasks.
+     * Close the group for new tasks.
      * Already running coroutines and queued closures continue working.
-     * Unlike close/cancel, the group can still be awaited.
+     * Unlike cancel(), the group can still be awaited.
      */
-    public function seal(): void {}
+    public function close(): void {}
 
     /**
      * Dispose the group's scope, cancelling all coroutines.
@@ -136,9 +136,9 @@ final class TaskGroup implements Awaitable, \Countable, \IteratorAggregate
     public function isFinished(): bool {}
 
     /**
-     * Check if the group is sealed for new tasks.
+     * Check if the group is closed for new tasks.
      */
-    public function isSealed(): bool {}
+    public function isClosed(): bool {}
 
     /**
      * Total number of tasks (queued + running + completed).
@@ -147,16 +147,16 @@ final class TaskGroup implements Awaitable, \Countable, \IteratorAggregate
 
     /**
      * Wait until all tasks are fully completed (settled).
-     * The group must be sealed before calling this method.
+     * The group must be closed before calling this method.
      * Unlike all(), this method never throws on task errors —
      * it simply waits for termination.
      *
-     * @throws AsyncException if group is not sealed.
+     * @throws AsyncException if group is not closed.
      */
     public function awaitCompletion(): void {}
 
     /**
-     * Register a callback invoked when the group is sealed AND all tasks are completed.
+     * Register a callback invoked when the group is closed AND all tasks are completed.
      * If the group is already completed, the callback is invoked immediately.
      *
      * @param \Closure $callback Callback receiving the TaskGroup as parameter.
@@ -170,7 +170,7 @@ final class TaskGroup implements Awaitable, \Countable, \IteratorAggregate
      *   Success: [$result, null]
      *   Error:   [null, $error]
      * Iteration suspends waiting for results.
-     * Ends when group is sealed and all tasks are delivered.
+     * Ends when group is closed and all tasks are delivered.
      * Marks errors as handled.
      */
     public function getIterator(): \Iterator {}

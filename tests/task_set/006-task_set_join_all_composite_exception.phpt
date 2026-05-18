@@ -14,7 +14,7 @@ spawn(function() {
     $set->spawnWithKey("bad1", function() { throw new \RuntimeException("fail1"); });
     $set->spawnWithKey("bad2", function() { throw new \LogicException("fail2"); });
 
-    $set->seal();
+    $set->close();
 
     try {
         $set->joinAll()->await();

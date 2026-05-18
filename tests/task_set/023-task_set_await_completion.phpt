@@ -12,7 +12,7 @@ spawn(function() {
     $set->spawn(function() { return "a"; });
     $set->spawn(function() { return "b"; });
 
-    $set->seal();
+    $set->close();
     $set->awaitCompletion();
 
     echo "completed\n";
