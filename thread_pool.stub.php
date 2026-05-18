@@ -28,8 +28,11 @@ final class ThreadPool
      *                        in the worker's scheduler instead of being called
      *                        synchronously. Enables `await`, channels, and IO inside
      *                        tasks without blocking the worker thread.
+     * @param int $concurrency Max concurrent task-coroutines per worker (only
+     *                         meaningful when `coroutine: true`). `0` (default) =
+     *                         unlimited. Total pool concurrency = workers × concurrency.
      */
-    public function __construct(int $workers = 0, int $queueSize = 0, ?\Closure $bootloader = null, bool $coroutine = false) {}
+    public function __construct(int $workers = 0, int $queueSize = 0, ?\Closure $bootloader = null, bool $coroutine = false, int $concurrency = 0) {}
 
     /**
      * Submit a task for execution. Returns a Future that resolves

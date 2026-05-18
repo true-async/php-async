@@ -46,6 +46,12 @@ struct _async_thread_pool_s {
 	 * resolves the future. When false, tasks run synchronously inline. */
 	bool coroutine_mode;
 
+	/* Max concurrent task coroutines per worker (0 = unlimited). Only
+	 * meaningful in coroutine_mode. Total pool concurrency = workers ×
+	 * concurrency. Worker blocks on a slot-trigger before each receive
+	 * once its active count hits this limit. */
+	int32_t concurrency;
+
 	/* Set by cancel() before channel.close. Coroutine workers see it on
 	 * wakeup and scope-cancel in-flight tasks; sync workers can't be
 	 * preempted out of zend_call_function, so they ignore it. */
@@ -71,11 +77,12 @@ extern zend_class_entry *async_ce_thread_pool_exception;
 
 /* Factory — matches `zend_async_new_thread_pool_t`. Registered with
  * `zend_async_thread_pool_register` and invoked from PHP `__construct`.
- * `bootloader` may be NULL; `coroutine_mode` may be false for the basic
- * synchronous-task pool (see ZEND_ASYNC_NEW_THREAD_POOL macro). */
+ * `bootloader` may be NULL; `coroutine_mode`=false uses the basic
+ * synchronous-task path; `concurrency`=0 means unlimited (only used
+ * in coroutine mode). See ZEND_ASYNC_NEW_THREAD_POOL macro. */
 zend_async_thread_pool_t *async_thread_pool_create(
 	int32_t worker_count, int32_t queue_size, const zend_fcall_t *bootloader,
-	bool coroutine_mode);
+	bool coroutine_mode, int32_t concurrency);
 
 /* Registration function */
 void async_register_thread_pool_ce(void);
