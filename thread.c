@@ -1369,6 +1369,17 @@ static bool async_thread_check_op_array(zend_op_array *op_array)
 		return true;
 	}
 
+	/* $this cannot cross threads: zend_create_closure is invoked with
+	 * this_ptr=NULL in the worker, so EX(This) stays undef and the
+	 * FETCH_OBJ_R UNUSED handler dereferences a NULL object → SEGV. */
+	if (op_array->fn_flags & ZEND_ACC_USES_THIS) {
+		zend_throw_error(NULL,
+			"Cannot transfer closure to another thread: closure binds $this at %s:%u",
+			op_array->filename ? ZSTR_VAL(op_array->filename) : "(closure)",
+			op_array->line_start);
+		return false;
+	}
+
 	const zend_op *it = op_array->opcodes;
 	const zend_op *const end = it + op_array->last;
 	for (; it < end; it++) {
