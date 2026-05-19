@@ -1323,11 +1323,13 @@ static void thread_release_transferred_zval(thread_release_ctx_t *ctx, zval *z)
 
 static void thread_release_transferred_hash_table(thread_release_ctx_t *ctx, HashTable *ht)
 {
-	if (ht->nNumUsed == 0 && ht->nNumOfElements == 0 && ht->nTableSize == 0) {
+	/* first_visit uses only the pointer value, no deref — safe against UAF
+	 * when a shared HT is encountered a second time after being freed. */
+	if (!thread_release_first_visit(ctx, ht)) {
 		return;
 	}
 
-	if (!thread_release_first_visit(ctx, ht)) {
+	if (ht->nNumUsed == 0 && ht->nNumOfElements == 0 && ht->nTableSize == 0) {
 		return;
 	}
 
@@ -1336,6 +1338,9 @@ static void thread_release_transferred_hash_table(thread_release_ctx_t *ctx, Has
 		thread_release_transferred_zval(ctx, val);
 	} ZEND_HASH_FOREACH_END();
 
+	/* zend_hash_destroy asserts refcount<=1 on debug builds; transit HTs
+	 * carry build-side refcounts >=2 when xlat-shared. Reset before destroy. */
+	GC_SET_REFCOUNT(ht, 1);
 	zend_hash_destroy(ht);
 	pefree(ht, 1);
 }
