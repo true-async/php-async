@@ -1369,17 +1369,6 @@ static bool async_thread_check_op_array(zend_op_array *op_array)
 		return true;
 	}
 
-	/* $this cannot cross threads: zend_create_closure is invoked with
-	 * this_ptr=NULL in the worker, so EX(This) stays undef and the
-	 * FETCH_OBJ_R UNUSED handler dereferences a NULL object → SEGV. */
-	if (op_array->fn_flags & ZEND_ACC_USES_THIS) {
-		zend_throw_error(NULL,
-			"Cannot transfer closure to another thread: closure binds $this at %s:%u",
-			op_array->filename ? ZSTR_VAL(op_array->filename) : "(closure)",
-			op_array->line_start);
-		return false;
-	}
-
 	const zend_op *it = op_array->opcodes;
 	const zend_op *const end = it + op_array->last;
 	for (; it < end; it++) {
@@ -1444,25 +1433,33 @@ static void thread_copy_callable(
 	thread_copy_op_array(ctx, &tmp);
 	dst->func = Z_PTR(tmp);
 
-	/* Transfer captured variables (use ($a, $b)) into persistent memory.
-	 * bound_vars use pemalloc (not arena) because they're released individually
-	 * in thread_release_closure_copy via async_thread_release_transferred_zval. */
+	ZVAL_UNDEF(&dst->bound_this);
+	dst->bound_vars = NULL;
+
+	/* Captured variables (use ($a, $b)) live in static_variables_ptr. */
 	HashTable *static_vars = ZEND_MAP_PTR_GET(src_op->static_variables_ptr);
 	if (!static_vars) {
 		static_vars = src_op->static_variables;
 	}
+	const bool has_vars = (static_vars && zend_hash_num_elements(static_vars) > 0);
+	zend_object *bound_obj = fcall->fci_cache.object;
 
-	if (static_vars && zend_hash_num_elements(static_vars) > 0) {
+	if (!has_vars && bound_obj == NULL) {
+		return;
+	}
+
+	/* Shared transfer ctx across bound vars and $this: xlat preserves
+	 * identity so the same object captured in use() and as $this ends up
+	 * as a single transit copy on the receiving side. */
+	thread_transfer_ctx_t transfer_ctx;
+	thread_transfer_ctx_init(&transfer_ctx);
+
+	/* bound_vars use pemalloc (not arena) because they're released individually
+	 * in thread_release_closure_copy via async_thread_release_transferred_zval. */
+	if (has_vars) {
 		dst->bound_vars = pemalloc(sizeof(HashTable), 1);
 		zend_hash_init(dst->bound_vars, zend_hash_num_elements(static_vars), NULL, NULL, 1);
 		GC_MAKE_PERSISTENT_LOCAL(dst->bound_vars);
-
-		/* Shared transfer ctx across all bound vars: xlat preserves identity
-		 * so two captured variables pointing to the same object end up as the
-		 * same transit copy (otherwise each var would be transferred with its
-		 * own ctx → independent copies on the receiving side). */
-		thread_transfer_ctx_t transfer_ctx;
-		thread_transfer_ctx_init(&transfer_ctx);
 
 		zend_string *key;
 		zval *val;
@@ -1477,9 +1474,20 @@ static void thread_copy_callable(
 			zend_hash_add(dst->bound_vars, pkey, &transferred);
 			zend_string_release(pkey);
 		} ZEND_HASH_FOREACH_END();
+	}
 
+	if (!transfer_ctx.error && bound_obj != NULL) {
+		zval src_this;
+		ZVAL_OBJ(&src_this, bound_obj);
+		thread_transfer_zval_inner(&transfer_ctx, &dst->bound_this, &src_this);
 		if (UNEXPECTED(transfer_ctx.error)) {
-			/* Clean up partially transferred bound vars */
+			thread_release_transferred_zval(&dst->bound_this);
+			ZVAL_UNDEF(&dst->bound_this);
+		}
+	}
+
+	if (UNEXPECTED(transfer_ctx.error)) {
+		if (dst->bound_vars) {
 			zval *v;
 			ZEND_HASH_FOREACH_VAL(dst->bound_vars, v) {
 				thread_release_transferred_zval(v);
@@ -1487,15 +1495,14 @@ static void thread_copy_callable(
 			zend_hash_destroy(dst->bound_vars);
 			pefree(dst->bound_vars, 1);
 			dst->bound_vars = NULL;
-			thread_transfer_ctx_destroy(&transfer_ctx);
-			zend_throw_error(NULL, "%s", transfer_ctx.error);
-			return;
 		}
-
+		const char *err = transfer_ctx.error;
+		zend_throw_error(NULL, "%s", err);
 		thread_transfer_ctx_destroy(&transfer_ctx);
-	} else {
-		dst->bound_vars = NULL;
+		return;
 	}
+
+	thread_transfer_ctx_destroy(&transfer_ctx);
 }
 
 /**
@@ -1512,6 +1519,10 @@ static void thread_release_closure_copy(async_thread_closure_copy_t *copy)
 		/* zend_hash_destroy releases string keys itself */
 		zend_hash_destroy(copy->bound_vars);
 		pefree(copy->bound_vars, 1);
+	}
+	if (!Z_ISUNDEF(copy->bound_this)) {
+		async_thread_release_transferred_zval(&copy->bound_this);
+		ZVAL_UNDEF(&copy->bound_this);
 	}
 }
 
@@ -2139,16 +2150,15 @@ void async_thread_create_closure(
 	 * and destroy_op_array returns early without freeing pemalloc'd data. */
 	func.op_array.refcount = NULL;
 
-	/* Load bound variables from persistent memory into child's emalloc.
-	 * Shared load ctx: same reason as on the transfer side — preserves
-	 * identity across bound vars (same transit pointer → same loaded object). */
+	/* Shared load ctx for bound vars and $this: preserves identity
+	 * (same transit pointer → same loaded object across both). */
+	thread_transfer_ctx_t load_ctx;
+	thread_transfer_ctx_init(&load_ctx);
+
 	HashTable *loaded_vars = NULL;
 	if (copy->bound_vars) {
 		loaded_vars = zend_new_array(
 			zend_hash_num_elements(copy->bound_vars));
-
-		thread_transfer_ctx_t load_ctx;
-		thread_transfer_ctx_init(&load_ctx);
 
 		zend_string *key;
 		zval *val;
@@ -2160,11 +2170,18 @@ void async_thread_create_closure(
 			zend_string_release(local_key);
 		} ZEND_HASH_FOREACH_END();
 
-		thread_transfer_ctx_destroy(&load_ctx);
 		ZEND_MAP_PTR_INIT(func.op_array.static_variables_ptr, loaded_vars);
 	} else {
 		ZEND_MAP_PTR_INIT(func.op_array.static_variables_ptr, NULL);
 	}
+
+	zval loaded_this;
+	ZVAL_UNDEF(&loaded_this);
+	if (!Z_ISUNDEF(copy->bound_this)) {
+		thread_load_zval_inner(&load_ctx, &loaded_this, &copy->bound_this);
+	}
+
+	thread_transfer_ctx_destroy(&load_ctx);
 
 	/* Detach from persistent static_variables — we already loaded them
 	 * into loaded_vars / static_variables_ptr above */
@@ -2174,7 +2191,19 @@ void async_thread_create_closure(
 	ZEND_MAP_PTR_INIT(func.op_array.run_time_cache, NULL);
 	func.op_array.fn_flags &= ~ZEND_ACC_HEAP_RT_CACHE;
 
-	zend_create_closure(closure_zv, &func, NULL, NULL, NULL);
+	zend_class_entry *this_scope = NULL;
+	zval *this_arg = NULL;
+	if (Z_TYPE(loaded_this) == IS_OBJECT) {
+		this_scope = Z_OBJCE(loaded_this);
+		this_arg = &loaded_this;
+	}
+
+	zend_create_closure(closure_zv, &func, this_scope, this_scope, this_arg);
+
+	if (Z_TYPE(loaded_this) == IS_OBJECT) {
+		/* zend_create_closure took its own ZVAL_OBJ_COPY ref on $this. */
+		zval_ptr_dtor(&loaded_this);
+	}
 
 	/* zend_create_closure duplicates static_variables via zend_array_dup,
 	 * so we must free our intermediate copy */
@@ -2206,6 +2235,7 @@ static bool thread_call_closure(
 	async_thread_create_closure(copy, &closure_zv);
 
 	const zend_function *func = zend_get_closure_method_def(Z_OBJ(closure_zv));
+	async_zend_closure_t *closure = (async_zend_closure_t *) Z_OBJ(closure_zv);
 
 	ZVAL_UNDEF(retval);
 
@@ -2214,8 +2244,14 @@ static bool thread_call_closure(
 	 * when current_execute_data is NULL (no PHP caller above us),
 	 * converting any uncaught exception into a fatal bailout.
 	 * With zend_execute_ex we get the exception cleanly in EG(exception). */
+	uint32_t call_info = ZEND_CALL_TOP_FUNCTION;
+	void *object_or_scope = NULL;
+	if (Z_TYPE(closure->this_ptr) == IS_OBJECT) {
+		call_info |= ZEND_CALL_HAS_THIS;
+		object_or_scope = Z_OBJ(closure->this_ptr);
+	}
 	zend_execute_data *frame = zend_vm_stack_push_call_frame(
-		ZEND_CALL_TOP_FUNCTION, (zend_function *) func, 0, NULL);
+		call_info, (zend_function *) func, 0, object_or_scope);
 	zend_init_func_execute_data(frame, (zend_op_array *) &func->op_array, retval);
 	zend_execute_ex(frame);
 

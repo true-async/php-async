@@ -1,5 +1,5 @@
 --TEST--
-spawn_thread() - closure that binds $this is rejected (no SEGV)
+spawn_thread() - closure that binds $this transfers $this as a deep copy
 --SKIPIF--
 <?php
 if (!PHP_ZTS) die('skip ZTS required');
@@ -10,24 +10,36 @@ if (!function_exists('Async\spawn_thread')) die('skip spawn_thread not available
 
 use function Async\spawn;
 use function Async\spawn_thread;
+use function Async\await;
 
 class C {
-    protected string $var1 = "hello";
-    public function run(): void {
-        try {
-            spawn_thread(function() {
-                $var = $this->var1;
-            });
-            echo "FAIL: no exception\n";
-        } catch (\Error $e) {
-            echo $e->getMessage() . "\n";
-        }
+    public string $var1 = "default";
+    public int $n = 0;
+
+    public function run(\Closure $boot): int {
+        $t = spawn_thread(function() {
+            echo "worker: var1={$this->var1} n={$this->n} class=", get_class($this), "\n";
+            $this->n = 999;
+            return $this->n;
+        }, bootloader: $boot);
+        return await($t);
     }
 }
 
-spawn(function() {
-    (new C)->run();
+$boot = function() {
+    eval('class C { public string $var1 = "default"; public int $n = 0; }');
+};
+
+spawn(function() use ($boot) {
+    $obj = new C();
+    $obj->var1 = "from parent";
+    $obj->n = 7;
+    $r = $obj->run($boot);
+    echo "result=$r\n";
+    echo "parent n={$obj->n}\n";
 });
 ?>
---EXPECTF--
-Cannot transfer closure to another thread: closure binds $this at %s:%d
+--EXPECT--
+worker: var1=from parent n=7 class=C
+result=999
+parent n=7

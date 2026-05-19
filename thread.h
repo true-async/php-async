@@ -45,6 +45,7 @@ typedef struct _thread_copy_arena_block_t {
 typedef struct _async_thread_closure_copy_t {
 	zend_op_array *func;
 	HashTable *bound_vars;   /* NULL if no captured variables (pemalloc, not arena) */
+	zval bound_this;         /* IS_UNDEF if closure has no $this binding (pemalloc) */
 } async_thread_closure_copy_t;
 
 typedef struct _async_thread_snapshot_t {
