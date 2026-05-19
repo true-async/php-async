@@ -854,10 +854,8 @@ static zend_object *thread_transfer_object_default(
 	dst->handlers = (const zend_object_handlers *)(uintptr_t) prop_count;
 	dst->properties = NULL;
 
-	/* Register the dst mapping BEFORE recursing into properties so that
-	 * self-references ($this->self === $this, doubly-linked nodes, etc.)
-	 * resolve back to the same dst on the second visit instead of looping
-	 * until THREAD_TRANSFER_MAX_DEPTH. */
+	/* xlat must be set before property recursion so back-edges
+	 * ($x->self = $x, doubly-linked nodes) resolve through xlat. */
 	thread_transfer_xlat_put(ctx, src, dst);
 
 	/* Deep-copy each property zval in the copy */
@@ -911,8 +909,7 @@ static zend_object *thread_transfer_object(thread_transfer_ctx_t *ctx, const zen
 		return NULL;
 	}
 
-	/* xlat_put is performed inside thread_transfer_object_default
-	 * before property recursion (cycle support). */
+	/* xlat_put is performed inside _default before property recursion. */
 	zend_object *dst = thread_transfer_object_default(src, ctx, 0);
 
 	THREAD_DEPTH_RELEASE(ctx);
@@ -1116,10 +1113,8 @@ static zend_object *thread_load_object_default(
 		return fallback;
 	}
 
-	/* Enum cases are singletons — recreating them via the regular alloc path
-	 * would break `===` identity (e.g. `$this->status === Status::Open`).
-	 * Resolve the canonical case from the worker's enum table by name
-	 * (property 0 of the transit object is the case name string). */
+	/* Enum cases are singletons — fresh alloc would break `===` / match.
+	 * Resolve the canonical case by name (transit prop 0 is the case name). */
 	if (ce->ce_flags & ZEND_ACC_ENUM) {
 		if (src_prop_count >= 1) {
 			const zval *case_name_zv = &src->properties_table[0];
@@ -1152,9 +1147,7 @@ static zend_object *thread_load_object_default(
 		object_properties_init(dst, ce);
 	}
 
-	/* Register the dst mapping BEFORE recursing into properties so
-	 * self-referential property graphs resolve through xlat instead of
-	 * looping until THREAD_TRANSFER_MAX_DEPTH. */
+	/* xlat must be set before property recursion (see transfer side). */
 	thread_transfer_xlat_put(ctx, src, dst);
 
 	/* Copy declared properties from transit object */
@@ -1203,8 +1196,7 @@ static zend_object *thread_load_object(thread_transfer_ctx_t *ctx, const zend_ob
 		return dst;
 	}
 
-	/* xlat_put is performed inside thread_load_object_default
-	 * before property recursion (cycle support). */
+	/* xlat_put is performed inside _default before property recursion. */
 	zend_object *dst = thread_load_object_default(src, ctx, 0);
 
 	THREAD_DEPTH_RELEASE(ctx);
@@ -1477,7 +1469,6 @@ static void thread_copy_callable(
 	ZVAL_UNDEF(&dst->bound_this);
 	dst->bound_vars = NULL;
 
-	/* Captured variables (use ($a, $b)) live in static_variables_ptr. */
 	HashTable *static_vars = ZEND_MAP_PTR_GET(src_op->static_variables_ptr);
 	if (!static_vars) {
 		static_vars = src_op->static_variables;
@@ -1489,14 +1480,13 @@ static void thread_copy_callable(
 		return;
 	}
 
-	/* Shared transfer ctx across bound vars and $this: xlat preserves
-	 * identity so the same object captured in use() and as $this ends up
-	 * as a single transit copy on the receiving side. */
+	/* One transfer_ctx for both bound vars and $this — xlat preserves identity
+	 * when the same object is captured via use() and as $this. */
 	thread_transfer_ctx_t transfer_ctx;
 	thread_transfer_ctx_init(&transfer_ctx);
 
-	/* bound_vars use pemalloc (not arena) because they're released individually
-	 * in thread_release_closure_copy via async_thread_release_transferred_zval. */
+	/* bound_vars use pemalloc (not arena) — released individually in
+	 * thread_release_closure_copy. */
 	if (has_vars) {
 		dst->bound_vars = pemalloc(sizeof(HashTable), 1);
 		zend_hash_init(dst->bound_vars, zend_hash_num_elements(static_vars), NULL, NULL, 1);
@@ -2191,8 +2181,7 @@ void async_thread_create_closure(
 	 * and destroy_op_array returns early without freeing pemalloc'd data. */
 	func.op_array.refcount = NULL;
 
-	/* Shared load ctx for bound vars and $this: preserves identity
-	 * (same transit pointer → same loaded object across both). */
+	/* One load_ctx for both bound vars and $this — see transfer side. */
 	thread_transfer_ctx_t load_ctx;
 	thread_transfer_ctx_init(&load_ctx);
 
@@ -2241,8 +2230,8 @@ void async_thread_create_closure(
 
 	zend_create_closure(closure_zv, &func, this_scope, this_scope, this_arg);
 
+	/* zend_create_closure took its own ref on $this; release our load ref. */
 	if (Z_TYPE(loaded_this) == IS_OBJECT) {
-		/* zend_create_closure took its own ZVAL_OBJ_COPY ref on $this. */
 		zval_ptr_dtor(&loaded_this);
 	}
 
