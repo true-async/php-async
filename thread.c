@@ -740,7 +740,10 @@ static void thread_transfer_xlat_put(thread_transfer_ctx_t *ctx, const void *old
 static void thread_transfer_zval_inner(thread_transfer_ctx_t *ctx, zval *dst, const zval *src);
 static HashTable *thread_transfer_hash_table(thread_transfer_ctx_t *ctx, const HashTable *src);
 static zend_object *thread_transfer_object(thread_transfer_ctx_t *ctx, const zend_object *src);
-static void thread_release_transferred_zval(zval *z);
+typedef struct _thread_release_ctx_t thread_release_ctx_t;
+static void thread_release_transferred_zval(thread_release_ctx_t *ctx, zval *z);
+/* Refcount-based, for build-error partial releases only; see definition. */
+static void thread_release_subgraph_zval(zval *z);
 
 /* Copy a zend_string into persistent memory */
 static zend_string *thread_transfer_string(thread_transfer_ctx_t *ctx, const zend_string *str)
@@ -790,7 +793,7 @@ static HashTable *thread_transfer_hash_table(thread_transfer_ctx_t *ctx, const H
 			zval copy;
 			thread_transfer_zval_inner(ctx, &copy, val);
 			if (UNEXPECTED(ctx->error)) {
-				thread_release_transferred_zval(&copy);
+				thread_release_subgraph_zval(&copy);
 				break;
 			}
 			zend_hash_index_add(dst, idx, &copy);
@@ -803,7 +806,7 @@ static HashTable *thread_transfer_hash_table(thread_transfer_ctx_t *ctx, const H
 			zval copy;
 			thread_transfer_zval_inner(ctx, &copy, val);
 			if (UNEXPECTED(ctx->error)) {
-				thread_release_transferred_zval(&copy);
+				thread_release_subgraph_zval(&copy);
 				break;
 			}
 			if (key) {
@@ -1011,7 +1014,7 @@ void async_thread_transfer_zval(zval *dst, const zval *src)
 		 * zend_throw_error triggers zend_bailout() when there is no
 		 * active execute_data (which is the case during thread transfer). */
 		const char *error = ctx.error;
-		thread_release_transferred_zval(dst);
+		thread_release_subgraph_zval(dst);
 		ZVAL_UNDEF(dst);
 		thread_transfer_ctx_destroy(&ctx);
 		zend_throw_error(NULL, "%s", error);
@@ -1268,12 +1271,37 @@ void async_thread_load_zval(zval *dst, const zval *src)
 	thread_transfer_ctx_destroy(&ctx);
 }
 
-/* {{{ Release — free persistent zvals created by async_thread_transfer_zval */
+/* {{{ Release — free persistent zvals created by async_thread_transfer_zval.
+ *
+ * Graph walk with visited-set keyed by node address. Each pemalloc-block is
+ * freed once; revisits (shared edges, self-cycles) are short-circuited.
+ * Transit-side refcounts are not consulted — they remain only because the
+ * layout is shared with real zend_object/HashTable types. */
 
-static void thread_release_transferred_hash_table(HashTable *ht);
-static void thread_release_transferred_object(zend_object *obj);
+struct _thread_release_ctx_t {
+	HashTable seen;   /* node address → empty (set semantics) */
+};
 
-static void thread_release_transferred_zval(zval *z)
+static zend_always_inline void thread_release_ctx_init(thread_release_ctx_t *ctx)
+{
+	zend_hash_init(&ctx->seen, 16, NULL, NULL, 0);
+}
+
+static zend_always_inline void thread_release_ctx_destroy(thread_release_ctx_t *ctx)
+{
+	zend_hash_destroy(&ctx->seen);
+}
+
+/* Returns true on first visit (records it); false on revisit. */
+static zend_always_inline bool thread_release_first_visit(thread_release_ctx_t *ctx, const void *node)
+{
+	return zend_hash_index_add_empty_element(&ctx->seen, (zend_ulong)(uintptr_t) node) != NULL;
+}
+
+static void thread_release_transferred_hash_table(thread_release_ctx_t *ctx, HashTable *ht);
+static void thread_release_transferred_object(thread_release_ctx_t *ctx, zend_object *obj);
+
+static void thread_release_transferred_zval(thread_release_ctx_t *ctx, zval *z)
 {
 	switch (Z_TYPE_P(z)) {
 		case IS_STRING:
@@ -1281,11 +1309,11 @@ static void thread_release_transferred_zval(zval *z)
 			break;
 
 		case IS_ARRAY:
-			thread_release_transferred_hash_table(Z_ARR_P(z));
+			thread_release_transferred_hash_table(ctx, Z_ARR_P(z));
 			break;
 
 		case IS_OBJECT:
-			thread_release_transferred_object(Z_OBJ_P(z));
+			thread_release_transferred_object(ctx, Z_OBJ_P(z));
 			break;
 
 		default:
@@ -1293,34 +1321,33 @@ static void thread_release_transferred_zval(zval *z)
 	}
 }
 
-static void thread_release_transferred_hash_table(HashTable *ht)
+static void thread_release_transferred_hash_table(thread_release_ctx_t *ctx, HashTable *ht)
 {
 	if (ht->nNumUsed == 0 && ht->nNumOfElements == 0 && ht->nTableSize == 0) {
 		return;
 	}
 
-	if (GC_DELREF(ht) > 0) {
+	if (!thread_release_first_visit(ctx, ht)) {
 		return;
 	}
 
 	zval *val;
 	ZEND_HASH_FOREACH_VAL(ht, val) {
-		thread_release_transferred_zval(val);
+		thread_release_transferred_zval(ctx, val);
 	} ZEND_HASH_FOREACH_END();
 
 	zend_hash_destroy(ht);
 	pefree(ht, 1);
 }
 
-static void thread_release_transferred_object(zend_object *obj)
+static void thread_release_transferred_object(thread_release_ctx_t *ctx, zend_object *obj)
 {
-	if (GC_DELREF(obj) > 0) {
+	if (!thread_release_first_visit(ctx, obj)) {
 		return;
 	}
 
-	/* Read transit fields */
 	const uint32_t prop_count = (uint32_t)(uintptr_t) obj->handlers;
-	zend_string *class_name = (zend_string *) obj->ce;
+	zend_string * const class_name = (zend_string *) obj->ce;
 
 	/* Closure shell stashes the snapshot pointer in `properties` (which is
 	 * always NULL for non-closure shells). LOAD normally consumes it and
@@ -1332,7 +1359,7 @@ static void thread_release_transferred_object(zend_object *obj)
 	}
 
 	for (uint32_t i = 0; i < prop_count; i++) {
-		thread_release_transferred_zval(&obj->properties_table[i]);
+		thread_release_transferred_zval(ctx, &obj->properties_table[i]);
 	}
 
 	zend_string_release(class_name);
@@ -1344,8 +1371,70 @@ static void thread_release_transferred_object(zend_object *obj)
 
 void async_thread_release_transferred_zval(zval *z)
 {
-	thread_release_transferred_zval(z);
+	thread_release_ctx_t ctx;
+	thread_release_ctx_init(&ctx);
+	thread_release_transferred_zval(&ctx, z);
+	thread_release_ctx_destroy(&ctx);
 	ZVAL_UNDEF(z);
+}
+
+/* Partial-release for build-error paths: refcount-based so xlat-shared
+ * sub-pieces still owned by the half-built snapshot survive; the snapshot's
+ * full release frees them shortly afterwards. */
+static void thread_release_subgraph_ht(HashTable *ht);
+static void thread_release_subgraph_obj(zend_object *obj);
+
+static void thread_release_subgraph_zval(zval *z)
+{
+	switch (Z_TYPE_P(z)) {
+		case IS_STRING:
+			zend_string_release(Z_STR_P(z));
+			break;
+		case IS_ARRAY:
+			thread_release_subgraph_ht(Z_ARR_P(z));
+			break;
+		case IS_OBJECT:
+			thread_release_subgraph_obj(Z_OBJ_P(z));
+			break;
+		default:
+			break;
+	}
+}
+
+static void thread_release_subgraph_ht(HashTable *ht)
+{
+	if (ht->nNumUsed == 0 && ht->nNumOfElements == 0 && ht->nTableSize == 0) {
+		return;
+	}
+	if (GC_DELREF(ht) > 0) {
+		return;
+	}
+	zval *val;
+	ZEND_HASH_FOREACH_VAL(ht, val) {
+		thread_release_subgraph_zval(val);
+	} ZEND_HASH_FOREACH_END();
+	zend_hash_destroy(ht);
+	pefree(ht, 1);
+}
+
+static void thread_release_subgraph_obj(zend_object *obj)
+{
+	if (GC_DELREF(obj) > 0) {
+		return;
+	}
+	const uint32_t prop_count = (uint32_t)(uintptr_t) obj->handlers;
+	zend_string * const class_name = (zend_string *) obj->ce;
+
+	if (obj->properties != NULL && zend_string_equals_literal(class_name, "Closure")) {
+		async_thread_snapshot_destroy((async_thread_snapshot_t *) obj->properties);
+		obj->properties = NULL;
+	}
+	for (uint32_t i = 0; i < prop_count; i++) {
+		thread_release_subgraph_zval(&obj->properties_table[i]);
+	}
+	zend_string_release(class_name);
+	const uint32_t offset = obj->extra_flags;
+	pefree((char *)obj - offset, 1);
 }
 
 /* }}} */
@@ -1498,7 +1587,7 @@ static void thread_copy_callable(
 			zval transferred;
 			thread_transfer_zval_inner(&transfer_ctx, &transferred, val);
 			if (UNEXPECTED(transfer_ctx.error)) {
-				thread_release_transferred_zval(&transferred);
+				thread_release_subgraph_zval(&transferred);
 				break;
 			}
 			zend_string *pkey = zend_string_dup(key, 1);
@@ -1512,7 +1601,7 @@ static void thread_copy_callable(
 		ZVAL_OBJ(&src_this, bound_obj);
 		thread_transfer_zval_inner(&transfer_ctx, &dst->bound_this, &src_this);
 		if (UNEXPECTED(transfer_ctx.error)) {
-			thread_release_transferred_zval(&dst->bound_this);
+			thread_release_subgraph_zval(&dst->bound_this);
 			ZVAL_UNDEF(&dst->bound_this);
 		}
 	}
@@ -1521,7 +1610,7 @@ static void thread_copy_callable(
 		if (dst->bound_vars) {
 			zval *v;
 			ZEND_HASH_FOREACH_VAL(dst->bound_vars, v) {
-				thread_release_transferred_zval(v);
+				thread_release_subgraph_zval(v);
 			} ZEND_HASH_FOREACH_END();
 			zend_hash_destroy(dst->bound_vars);
 			pefree(dst->bound_vars, 1);
@@ -1537,22 +1626,22 @@ static void thread_copy_callable(
 }
 
 /**
- * Free resources of a copied closure (bound vars only;
- * op_array is freed via arena).
+ * Free closure-copy bound vars/this. ctx is shared across calls so nodes
+ * referenced from multiple roots are released exactly once.
  */
-static void thread_release_closure_copy(async_thread_closure_copy_t *copy)
+static void thread_release_closure_copy(thread_release_ctx_t *ctx, async_thread_closure_copy_t *copy)
 {
 	if (copy->bound_vars) {
 		zval *val;
 		ZEND_HASH_FOREACH_VAL(copy->bound_vars, val) {
-			async_thread_release_transferred_zval(val);
+			thread_release_transferred_zval(ctx, val);
 		} ZEND_HASH_FOREACH_END();
 		/* zend_hash_destroy releases string keys itself */
 		zend_hash_destroy(copy->bound_vars);
 		pefree(copy->bound_vars, 1);
 	}
 	if (!Z_ISUNDEF(copy->bound_this)) {
-		async_thread_release_transferred_zval(&copy->bound_this);
+		thread_release_transferred_zval(ctx, &copy->bound_this);
 		ZVAL_UNDEF(&copy->bound_this);
 	}
 }
@@ -1594,11 +1683,16 @@ async_thread_snapshot_t *async_thread_snapshot_create(const zend_fcall_t *entry,
  */
 void async_thread_snapshot_destroy(async_thread_snapshot_t *snapshot)
 {
-	thread_release_closure_copy(&snapshot->entry);
+	thread_release_ctx_t ctx;
+	thread_release_ctx_init(&ctx);
+
+	thread_release_closure_copy(&ctx, &snapshot->entry);
 
 	if (snapshot->bootloader.func != NULL) {
-		thread_release_closure_copy(&snapshot->bootloader);
+		thread_release_closure_copy(&ctx, &snapshot->bootloader);
 	}
+
+	thread_release_ctx_destroy(&ctx);
 
 	/* Free all arena blocks at once */
 	thread_copy_arena_free(snapshot->arena_blocks);
