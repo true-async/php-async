@@ -853,6 +853,12 @@ static zend_object *thread_transfer_object_default(
 	dst->handlers = (const zend_object_handlers *)(uintptr_t) prop_count;
 	dst->properties = NULL;
 
+	/* Register the dst mapping BEFORE recursing into properties so that
+	 * self-references ($this->self === $this, doubly-linked nodes, etc.)
+	 * resolve back to the same dst on the second visit instead of looping
+	 * until THREAD_TRANSFER_MAX_DEPTH. */
+	thread_transfer_xlat_put(ctx, src, dst);
+
 	/* Deep-copy each property zval in the copy */
 	for (uint32_t i = 0; i < prop_count; i++) {
 		zval *prop = &dst->properties_table[i];
@@ -904,8 +910,9 @@ static zend_object *thread_transfer_object(thread_transfer_ctx_t *ctx, const zen
 		return NULL;
 	}
 
+	/* xlat_put is performed inside thread_transfer_object_default
+	 * before property recursion (cycle support). */
 	zend_object *dst = thread_transfer_object_default(src, ctx, 0);
-	thread_transfer_xlat_put(ctx, src, dst);
 
 	THREAD_DEPTH_RELEASE(ctx);
 	return dst;
@@ -1117,6 +1124,11 @@ static zend_object *thread_load_object_default(
 		object_properties_init(dst, ce);
 	}
 
+	/* Register the dst mapping BEFORE recursing into properties so
+	 * self-referential property graphs resolve through xlat instead of
+	 * looping until THREAD_TRANSFER_MAX_DEPTH. */
+	thread_transfer_xlat_put(ctx, src, dst);
+
 	/* Copy declared properties from transit object */
 	const uint32_t prop_count = MIN(src_prop_count,
 		(uint32_t) ce->default_properties_count);
@@ -1163,8 +1175,9 @@ static zend_object *thread_load_object(thread_transfer_ctx_t *ctx, const zend_ob
 		return dst;
 	}
 
+	/* xlat_put is performed inside thread_load_object_default
+	 * before property recursion (cycle support). */
 	zend_object *dst = thread_load_object_default(src, ctx, 0);
-	thread_transfer_xlat_put(ctx, src, dst);
 
 	THREAD_DEPTH_RELEASE(ctx);
 	return dst;
