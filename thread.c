@@ -29,6 +29,7 @@
 #include "zend_autoload.h"
 #include "zend_hash.h"
 #include "zend_exceptions.h"
+#include "zend_enum.h"
 #include "zend_attributes.h"
 #include "zend_vm.h"
 #include "zend_interfaces.h"
@@ -1110,6 +1111,33 @@ static zend_object *thread_load_object_default(
 				"Cannot load transferred object: class \"%s\" not found",
 				ZSTR_VAL(class_name));
 		}
+		zend_object *fallback = zend_objects_new(zend_standard_class_def);
+		object_properties_init(fallback, zend_standard_class_def);
+		return fallback;
+	}
+
+	/* Enum cases are singletons — recreating them via the regular alloc path
+	 * would break `===` identity (e.g. `$this->status === Status::Open`).
+	 * Resolve the canonical case from the worker's enum table by name
+	 * (property 0 of the transit object is the case name string). */
+	if (ce->ce_flags & ZEND_ACC_ENUM) {
+		if (src_prop_count >= 1) {
+			const zval *case_name_zv = &src->properties_table[0];
+			if (Z_TYPE_P(case_name_zv) == IS_STRING) {
+				zend_string *case_name = zend_string_init(
+					Z_STRVAL_P(case_name_zv), Z_STRLEN_P(case_name_zv), 0);
+				zend_object *canonical = zend_enum_get_case(ce, case_name);
+				zend_string_release(case_name);
+				if (canonical) {
+					GC_ADDREF(canonical);
+					thread_transfer_xlat_put(ctx, src, canonical);
+					return canonical;
+				}
+			}
+		}
+		zend_throw_error(NULL,
+			"Cannot resolve transferred enum case for \"%s\"",
+			ZSTR_VAL(class_name));
 		zend_object *fallback = zend_objects_new(zend_standard_class_def);
 		object_properties_init(fallback, zend_standard_class_def);
 		return fallback;
