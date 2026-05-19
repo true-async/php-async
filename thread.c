@@ -2636,6 +2636,35 @@ notify:
 	}
 #endif
 
+	/* Explicit OpenSSL 3 per-thread state cleanup.
+	 *
+	 * OpenSSL 3 registers a pthread_key destructor on first use to clean up
+	 * per-thread RCU reader state. That destructor only frees state allocated
+	 * against the *default* libctx — state allocated against a custom libctx
+	 * (OSSL_LIB_CTX_new) is invisible to it, even after OSSL_LIB_CTX_free.
+	 *
+	 * PHP's openssl extension hits exactly this combination: MINIT initialises
+	 * the default libctx (via OPENSSL_init_ssl), then per-thread GINIT creates
+	 * its own custom libctx in php_openssl_backend_init_libctx and calls
+	 * CONF_modules_load_file_ex on it — which allocates ~240 B per worker
+	 * thread that the destructor cannot reach.
+	 *
+	 * Verified standalone: pthread_create + pthread_join, main-thread call to
+	 * CONF_modules_load(NULL,...) + worker creating custom libctx → 240 B
+	 * leak. Same code without the main-thread call: no leak. Same code with
+	 * an explicit OPENSSL_thread_stop() in the worker: no leak.
+	 *
+	 * Weak external so we don't take a hard libcrypto dependency. If openssl
+	 * is not loaded the symbol is NULL and the call is skipped. */
+#if defined(__GNUC__) || defined(__clang__)
+	{
+		extern void OPENSSL_thread_stop(void) __attribute__((weak));
+		if (OPENSSL_thread_stop != NULL) {
+			OPENSSL_thread_stop();
+		}
+	}
+#endif
+
 	/* Free TSRM storage after all zend_end_try blocks.
 	 * Must be separate because zend_end_try accesses EG(bailout).
 	 * Skipped on early-exit paths where TSRM was never initialized. */
