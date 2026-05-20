@@ -5189,7 +5189,14 @@ static zend_async_io_req_t *libuv_io_stat(zend_async_io_t *io_base, zend_stat_t 
 typedef struct
 {
 	zend_async_listen_event_t event;
-	uv_tcp_t uv_handle;
+	/* AF_UNIX listeners bind a uv_pipe_t, TCP listeners a uv_tcp_t. Both are
+	 * uv_stream_t subtypes, so uv_listen / uv_accept / on_connection_event
+	 * treat them uniformly — only init, bind and getsockname differ. */
+	union {
+		uv_tcp_t  tcp;
+		uv_pipe_t pipe;
+	} uv_handle;
+	bool is_unix;
 } async_listen_event_t;
 
 /* {{{ on_connection_event */
@@ -5207,17 +5214,21 @@ static void on_connection_event(uv_stream_t *server, int status)
 		exception = async_new_exception(
 				async_ce_input_output_exception, "Connection accept error: %s", uv_strerror(status));
 	} else {
-		/* The uv_tcp_t must outlive the uv_close callback that fires on a
+		/* The handle must outlive the uv_close callback that fires on a
 		 * later loop tick — a stack-allocated handle here dangles in libuv's
-		 * closing queue and crashes uv__finish_close at reactor shutdown. */
-		uv_tcp_t *client = pemalloc(sizeof(uv_tcp_t), 0);
-		int result = uv_tcp_init(UVLOOP, client);
+		 * closing queue and crashes uv__finish_close at reactor shutdown.
+		 * uv_accept requires the client handle be the same stream type as
+		 * the server, so AF_UNIX listeners init a uv_pipe_t. */
+		const bool is_unix = listen_event->is_unix;
+		uv_handle_t *client = pemalloc(is_unix ? sizeof(uv_pipe_t) : sizeof(uv_tcp_t), 0);
+		int result = is_unix ? uv_pipe_init(UVLOOP, (uv_pipe_t *) client, 0)
+							  : uv_tcp_init(UVLOOP, (uv_tcp_t *) client);
 
 		if (result == 0) {
 			result = uv_accept(server, (uv_stream_t *) client);
 			if (result == 0) {
 				uv_os_fd_t fd;
-				result = uv_fileno((uv_handle_t *) client, &fd);
+				result = uv_fileno(client, &fd);
 				if (result == 0) {
 					/* Dup the fd so the accepted socket survives uv_close
 					 * of the internal handle below. The consumer owns the
@@ -5247,10 +5258,10 @@ static void on_connection_event(uv_stream_t *server, int status)
 		}
 
 		/* Always close the uv handle; the close callback pefrees it via
-		 * handle->data. uv_close is safe on a handle that reached uv_tcp_init
-		 * but not uv_accept. */
+		 * handle->data. uv_close is safe on a handle that reached
+		 * uv_tcp_init / uv_pipe_init but not uv_accept. */
 		client->data = client;
-		uv_close((uv_handle_t *) client, libuv_close_handle_cb);
+		uv_close(client, libuv_close_handle_cb);
 	}
 
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&listen_event->event.base, &client_socket, exception);
@@ -5331,11 +5342,31 @@ static bool libuv_listen_dispose(zend_async_event_t *event)
 static int
 libuv_listen_get_local_address(zend_async_listen_event_t *listen_event, char *host, size_t host_len, int *port)
 {
+	async_listen_event_t *ev = (async_listen_event_t *) listen_event;
+
+	/* AF_UNIX has no IP/port — report the bound filesystem path as host. */
+	if (ev->is_unix) {
+		if (port != NULL) {
+			*port = 0;
+		}
+		if (host != NULL && host_len > 0) {
+			/* uv_pipe_getsockname does not null-terminate; reserve one byte
+			 * and terminate at the returned length (UV_ENOBUFS if too long). */
+			size_t len = host_len - 1;
+			int rc = uv_pipe_getsockname(&ev->uv_handle.pipe, host, &len);
+			if (rc < 0) {
+				return rc;
+			}
+			host[len] = '\0';
+		}
+		return 0;
+	}
+
 	struct sockaddr_storage addr;
 	int addr_len = sizeof(addr);
 
 	int result = uv_tcp_getsockname(
-			&((async_listen_event_t *) listen_event)->uv_handle, (struct sockaddr *) &addr, &addr_len);
+			&ev->uv_handle.tcp, (struct sockaddr *) &addr, &addr_len);
 
 	if (result < 0) {
 		return result;
@@ -5367,57 +5398,82 @@ zend_async_listen_event_t *libuv_socket_listen(const char *host, int port, int b
 {
 	START_REACTOR_OR_RETURN_NULL;
 
+	const bool is_unix = (flags & ZEND_ASYNC_LISTEN_F_UNIX) != 0;
+
 	async_listen_event_t *listen_event =
 			pecalloc(1, extra_size != 0 ? sizeof(async_listen_event_t) + extra_size : sizeof(async_listen_event_t), 0);
+	listen_event->is_unix = is_unix;
 
-	int error = uv_tcp_init(UVLOOP, &listen_event->uv_handle);
-	if (error < 0) {
-		async_throw_error("Failed to initialize TCP handle: %s", uv_strerror(error));
-		pefree(listen_event, 0);
-		return NULL;
-	}
+	int error;
 
-	// Set socket options
-	uv_tcp_nodelay(&listen_event->uv_handle, 1);
-	uv_tcp_simultaneous_accepts(&listen_event->uv_handle, 1);
+	if (is_unix) {
+		/* AF_UNIX: host is a filesystem path, port is ignored. libuv drives
+		 * unix-domain sockets through uv_pipe_t. The caller owns stale-socket
+		 * cleanup and unlinking the path on teardown — libuv does neither. */
+		error = uv_pipe_init(UVLOOP, &listen_event->uv_handle.pipe, 0);
+		if (error < 0) {
+			async_throw_error("Failed to initialize pipe handle: %s", uv_strerror(error));
+			pefree(listen_event, 0);
+			return NULL;
+		}
 
-	// Bind to address
-	struct sockaddr_storage addr;
-	if (strchr(host, ':') != NULL) {
-		// IPv6
-		error = uv_ip6_addr(host, port, (struct sockaddr_in6 *) &addr);
+		error = uv_pipe_bind(&listen_event->uv_handle.pipe, host);
+		if (error < 0) {
+			async_throw_error("Failed to bind AF_UNIX socket %s: %s", host, uv_strerror(error));
+			((uv_handle_t *) &listen_event->uv_handle)->data = listen_event;
+			uv_close((uv_handle_t *) &listen_event->uv_handle, libuv_close_handle_cb);
+			return NULL;
+		}
 	} else {
-		// IPv4
-		error = uv_ip4_addr(host, port, (struct sockaddr_in *) &addr);
-	}
+		error = uv_tcp_init(UVLOOP, &listen_event->uv_handle.tcp);
+		if (error < 0) {
+			async_throw_error("Failed to initialize TCP handle: %s", uv_strerror(error));
+			pefree(listen_event, 0);
+			return NULL;
+		}
 
-	if (error < 0) {
-		async_throw_error("Failed to parse address %s:%d: %s", host, port, uv_strerror(error));
-		/* close_cb frees listen_event via handle->data; freeing here would UAF on
-		 * the next loop tick when libuv accesses the closing handle. */
-		listen_event->uv_handle.data = listen_event;
-		uv_close((uv_handle_t *) &listen_event->uv_handle, libuv_close_handle_cb);
-		return NULL;
-	}
+		// Set socket options
+		uv_tcp_nodelay(&listen_event->uv_handle.tcp, 1);
+		uv_tcp_simultaneous_accepts(&listen_event->uv_handle.tcp, 1);
 
-	unsigned int bind_flags = 0;
-	/* UV_TCP_REUSEPORT is an enum value (not a #define), so #ifdef can't
-	 * detect it — gate on libuv version instead. Added in libuv 1.49.0. */
+		// Bind to address
+		struct sockaddr_storage addr;
+		if (strchr(host, ':') != NULL) {
+			// IPv6
+			error = uv_ip6_addr(host, port, (struct sockaddr_in6 *) &addr);
+		} else {
+			// IPv4
+			error = uv_ip4_addr(host, port, (struct sockaddr_in *) &addr);
+		}
+
+		if (error < 0) {
+			async_throw_error("Failed to parse address %s:%d: %s", host, port, uv_strerror(error));
+			/* close_cb frees listen_event via handle->data; freeing here would UAF on
+			 * the next loop tick when libuv accesses the closing handle. */
+			((uv_handle_t *) &listen_event->uv_handle)->data = listen_event;
+			uv_close((uv_handle_t *) &listen_event->uv_handle, libuv_close_handle_cb);
+			return NULL;
+		}
+
+		unsigned int bind_flags = 0;
+		/* UV_TCP_REUSEPORT is an enum value (not a #define), so #ifdef can't
+		 * detect it — gate on libuv version instead. Added in libuv 1.49.0. */
 #if UV_VERSION_HEX >= ((1 << 16) | (49 << 8))
-	if (flags & ZEND_ASYNC_LISTEN_F_REUSEPORT) {
-		bind_flags |= UV_TCP_REUSEPORT;
-	}
+		if (flags & ZEND_ASYNC_LISTEN_F_REUSEPORT) {
+			bind_flags |= UV_TCP_REUSEPORT;
+		}
 #endif
-	if (flags & ZEND_ASYNC_LISTEN_F_IPV6ONLY) {
-		bind_flags |= UV_TCP_IPV6ONLY;
-	}
+		if (flags & ZEND_ASYNC_LISTEN_F_IPV6ONLY) {
+			bind_flags |= UV_TCP_IPV6ONLY;
+		}
 
-	error = uv_tcp_bind(&listen_event->uv_handle, (struct sockaddr *) &addr, bind_flags);
-	if (error < 0) {
-		async_throw_error("Failed to bind to %s:%d: %s", host, port, uv_strerror(error));
-		listen_event->uv_handle.data = listen_event;
-		uv_close((uv_handle_t *) &listen_event->uv_handle, libuv_close_handle_cb);
-		return NULL;
+		error = uv_tcp_bind(&listen_event->uv_handle.tcp, (struct sockaddr *) &addr, bind_flags);
+		if (error < 0) {
+			async_throw_error("Failed to bind to %s:%d: %s", host, port, uv_strerror(error));
+			((uv_handle_t *) &listen_event->uv_handle)->data = listen_event;
+			uv_close((uv_handle_t *) &listen_event->uv_handle, libuv_close_handle_cb);
+			return NULL;
+		}
 	}
 
 	// Get actual socket fd
@@ -5425,13 +5481,13 @@ zend_async_listen_event_t *libuv_socket_listen(const char *host, int port, int b
 	error = uv_fileno((uv_handle_t *) &listen_event->uv_handle, &fd);
 	if (error < 0) {
 		async_throw_error("Failed to get socket descriptor: %s", uv_strerror(error));
-		listen_event->uv_handle.data = listen_event;
+		((uv_handle_t *) &listen_event->uv_handle)->data = listen_event;
 		uv_close((uv_handle_t *) &listen_event->uv_handle, libuv_close_handle_cb);
 		return NULL;
 	}
 
 	// Link the handle to the loop
-	listen_event->uv_handle.data = listen_event;
+	((uv_handle_t *) &listen_event->uv_handle)->data = listen_event;
 	listen_event->event.host = estrdup(host);
 	listen_event->event.port = port;
 	listen_event->event.backlog = backlog;
@@ -5440,6 +5496,77 @@ zend_async_listen_event_t *libuv_socket_listen(const char *host, int port, int b
 	listen_event->event.base.ref_count = 1;
 
 	// Initialize the event methods
+	listen_event->event.base.add_callback = libuv_add_callback;
+	listen_event->event.base.del_callback = libuv_remove_callback;
+	listen_event->event.base.start = libuv_listen_start;
+	listen_event->event.base.stop = libuv_listen_stop;
+	listen_event->event.base.dispose = libuv_listen_dispose;
+	listen_event->event.base.info = libuv_listen_info;
+	listen_event->event.get_local_address = libuv_listen_get_local_address;
+
+	return &listen_event->event;
+}
+
+/* }}} */
+
+/* Portable close of a raw socket fd handed to libuv_socket_listen_fd. */
+static void close_listen_fd(zend_socket_t fd)
+{
+#ifdef PHP_WIN32
+	closesocket(fd);
+#else
+	close(fd);
+#endif
+}
+
+/* {{{ libuv_socket_listen_fd */
+zend_async_listen_event_t *libuv_socket_listen_fd(zend_socket_t fd, int backlog, uint32_t flags, size_t extra_size)
+{
+	/* Contract: this call takes ownership of fd. Close it on every failure
+	 * path so the caller never has to track it after handing it over. */
+	if (UNEXPECTED(ASYNC_G(reactor_started) == false)) {
+		libuv_reactor_startup();
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			close_listen_fd(fd);
+			return NULL;
+		}
+	}
+
+	const bool is_unix = (flags & ZEND_ASYNC_LISTEN_F_UNIX) != 0;
+
+	async_listen_event_t *listen_event =
+			pecalloc(1, extra_size != 0 ? sizeof(async_listen_event_t) + extra_size : sizeof(async_listen_event_t), 0);
+	listen_event->is_unix = is_unix;
+
+	int error = is_unix ? uv_pipe_init(UVLOOP, &listen_event->uv_handle.pipe, 0)
+						: uv_tcp_init(UVLOOP, &listen_event->uv_handle.tcp);
+	if (error < 0) {
+		async_throw_error("Failed to initialize handle: %s", uv_strerror(error));
+		pefree(listen_event, 0);
+		close_listen_fd(fd);
+		return NULL;
+	}
+
+	/* Adopt the pre-bound, already-listening fd. On success the uv handle
+	 * owns it; on failure it does not, so we close it ourselves. */
+	error = is_unix ? uv_pipe_open(&listen_event->uv_handle.pipe, fd)
+					: uv_tcp_open(&listen_event->uv_handle.tcp, (uv_os_sock_t) fd);
+	if (error < 0) {
+		async_throw_error("Failed to adopt listening socket fd: %s", uv_strerror(error));
+		close_listen_fd(fd);
+		((uv_handle_t *) &listen_event->uv_handle)->data = listen_event;
+		uv_close((uv_handle_t *) &listen_event->uv_handle, libuv_close_handle_cb);
+		return NULL;
+	}
+
+	((uv_handle_t *) &listen_event->uv_handle)->data = listen_event;
+	listen_event->event.host = NULL;  /* fd-adopt path carries no address string */
+	listen_event->event.port = 0;
+	listen_event->event.backlog = backlog;
+	listen_event->event.socket_fd = fd;
+	listen_event->event.base.extra_offset = sizeof(async_listen_event_t);
+	listen_event->event.base.ref_count = 1;
+
 	listen_event->event.base.add_callback = libuv_add_callback;
 	listen_event->event.base.del_callback = libuv_remove_callback;
 	listen_event->event.base.start = libuv_listen_start;
@@ -5864,7 +5991,7 @@ void async_libuv_reactor_register(void)
 								libuv_available_parallelism,
 								libuv_now);
 
-	zend_async_socket_listening_register(LIBUV_REACTOR_NAME, false, libuv_socket_listen);
+	zend_async_socket_listening_register(LIBUV_REACTOR_NAME, false, libuv_socket_listen, libuv_socket_listen_fd);
 
 	zend_async_io_register(LIBUV_REACTOR_NAME,
 						   false,
