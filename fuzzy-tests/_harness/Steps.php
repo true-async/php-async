@@ -2013,13 +2013,17 @@ final class StandardSteps {
 
         // When coroutine "X" schedules dispose of a scope after T ms
         // disposeAfterTimeout() arms a timer; once it fires the scope is
-        // disposed and its sleeping child is cancelled.
+        // disposed and its sleeping child is cancelled. The scope is built
+        // with asNotSafely() — on a *safe* scope a started child is turned
+        // into a zombie instead of being cancelled (it would outlive the
+        // scope, parked in delay()), so a not-safely scope is required to
+        // exercise the real reap path.
         $r->on('/^coroutine "([^"]+)" schedules dispose of a scope after (\S+) ms$/',
             function(Context $ctx, string $coro, string $tExpr) {
                 $t = (int)$ctx->resolver->resolve($tExpr);
                 $ctx->planAction($coro, function(Context $ctx) use ($t) {
                     $ctx->inc("dat_attempts");
-                    $scope = \Async\Scope::inherit();
+                    $scope = \Async\Scope::inherit()->asNotSafely();
                     $scope->spawn(function() {
                         try { \Async\delay(5000); }
                         catch (\Throwable $e) { /* cancelled by dispose */ }

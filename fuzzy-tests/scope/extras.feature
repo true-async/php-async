@@ -56,15 +56,12 @@ Feature: Scope lifecycle extras under chaos scheduler
       And no orphan coroutines
 
   Scenario: disposeAfterTimeout finishes the scope when the timer fires
-    # NB: no "no orphan coroutines" assertion here — disposeAfterTimeout()
-    # leaves its internal timer coroutine live after the timer has fired and
-    # the scope is finished; it is not reaped within the harness drain window.
-    # Tracked as a potential leak in Scope::disposeAfterTimeout().
     Given a coroutine "C"
      When coroutine "C" schedules dispose of a scope after 20 ms
      Then counter "dat_attempts" equals 1
       And counter "dat_done" equals 1
       And counter "dat_finished" equals 1
+      And no orphan coroutines
 
   Scenario: many coroutines exercise scope extras concurrently
     Given a coroutine "A"
