@@ -1378,6 +1378,119 @@ final class StandardSteps {
             })
             ->requires('zts');
 
+        // ---- ThreadChannel cross-thread traffic ----
+
+        // When coroutine "X" runs a thread that sends N to thread channel "tc"
+        // A real OS-thread worker pushes N values into the ThreadChannel; the
+        // calling coroutine drains them on the main thread. The worker returns
+        // the count it sent — checked once joined.
+        $r->on('/^coroutine "([^"]+)" runs a thread that sends (\S+) to thread channel "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $nExpr, string $tc) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($n, $tc) {
+                    if (!isset($ctx->threadChannels[$tc])) {
+                        $ctx->inc("tc_target_missing_$tc");
+                        return;
+                    }
+                    $ch = $ctx->threadChannels[$tc];
+                    $ctx->inc("tc_thread_send_attempts_$tc");
+                    $h = \Async\spawn_thread(static function() use ($ch, $n): int {
+                        for ($i = 0; $i < $n; $i++) {
+                            $ch->send($i);
+                        }
+                        return $n;
+                    });
+                    for ($i = 0; $i < $n; $i++) {
+                        try {
+                            $ch->recv();
+                            $ctx->inc("tc_main_received_$tc");
+                        } catch (\Throwable $e) {
+                            $ctx->inc("tc_main_recv_failed_$tc");
+                        }
+                    }
+                    try {
+                        if (\Async\await($h) === $n) {
+                            $ctx->inc("tc_thread_send_ok_$tc");
+                        }
+                    } catch (\Throwable $e) {
+                        $ctx->inc("tc_thread_send_failed_$tc");
+                    }
+                });
+            })
+            ->requires('zts');
+
+        // When coroutine "X" runs a thread that receives N from thread channel "tc"
+        // Mirror of the above: the worker drains N values, the calling coroutine
+        // feeds them from the main thread.
+        $r->on('/^coroutine "([^"]+)" runs a thread that receives (\S+) from thread channel "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $nExpr, string $tc) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($n, $tc) {
+                    if (!isset($ctx->threadChannels[$tc])) {
+                        $ctx->inc("tc_target_missing_$tc");
+                        return;
+                    }
+                    $ch = $ctx->threadChannels[$tc];
+                    $ctx->inc("tc_thread_recv_attempts_$tc");
+                    $h = \Async\spawn_thread(static function() use ($ch, $n): int {
+                        for ($i = 0; $i < $n; $i++) {
+                            $ch->recv();
+                        }
+                        return $n;
+                    });
+                    for ($i = 0; $i < $n; $i++) {
+                        try {
+                            $ch->send($i);
+                            $ctx->inc("tc_main_sent_$tc");
+                        } catch (\Throwable $e) {
+                            $ctx->inc("tc_main_send_failed_$tc");
+                        }
+                    }
+                    try {
+                        if (\Async\await($h) === $n) {
+                            $ctx->inc("tc_thread_recv_ok_$tc");
+                        }
+                    } catch (\Throwable $e) {
+                        $ctx->inc("tc_thread_recv_failed_$tc");
+                    }
+                });
+            })
+            ->requires('zts');
+
+        // When coroutine "X" runs a thread that blocks on closed thread channel "tc"
+        // The worker parks on recv() of an empty ThreadChannel; the calling
+        // coroutine closes it from the main thread. The worker's recv() must
+        // unblock with a ChannelException — exercising cross-thread close.
+        $r->on('/^coroutine "([^"]+)" runs a thread that blocks on closed thread channel "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $tc) {
+                $ctx->planAction($coro, function(Context $ctx) use ($tc) {
+                    if (!isset($ctx->threadChannels[$tc])) {
+                        $ctx->inc("tc_target_missing_$tc");
+                        return;
+                    }
+                    $ch = $ctx->threadChannels[$tc];
+                    $ctx->inc("tc_close_race_attempts_$tc");
+                    $h = \Async\spawn_thread(static function() use ($ch): string {
+                        try {
+                            $ch->recv();
+                            return "no-throw";
+                        } catch (\Throwable $e) {
+                            return "threw";
+                        }
+                    });
+                    $ch->close();
+                    try {
+                        $outcome = \Async\await($h);
+                        $ctx->inc($outcome === "threw"
+                            ? "tc_close_race_threw_$tc"
+                            : "tc_close_race_no_throw_$tc");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("tc_close_race_await_failed_$tc");
+                    }
+                });
+            })
+            ->requires('zts');
+
         // ---- TaskGroup actions ----
 
         // When coroutine "X" spawns N tasks into "G" that print "msg"

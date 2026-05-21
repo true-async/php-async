@@ -25,9 +25,9 @@ Feature: await_any returns when any of the given futures completes
       And counter "await_any_succeeded" plus counter "await_any_failed" equals 1
       And no orphan coroutines
 
-  # NOTE: The F2-only completion case currently deadlocks the runtime —
-  # tracked as https://github.com/true-async/php-async/issues/103.
-  # When that is fixed, restore the row | F2 | 2 | here.
+  # The F2-only completion case once deadlocked the runtime (await_any saw
+  # no inline-fired waker for a later future); fixed under issue #103
+  # (start_waker_events replay). The | F2 | 2 | row is reinstated below.
   Scenario Outline: vary which producers fire
     Given a future "F1"
       And a future "F2"
@@ -37,7 +37,9 @@ Feature: await_any returns when any of the given futures completes
       And coroutine "A" awaits any of futures "F1,F2"
      Then counter "await_any_attempts" equals 1
       And counter "await_any_succeeded" plus counter "await_any_failed" equals 1
+      And no orphan coroutines
 
     Examples:
       | which | val |
       | F1    | 1   |
+      | F2    | 2   |
