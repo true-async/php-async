@@ -9,6 +9,7 @@ if (!function_exists('posix_kill')) echo "skip posix extension required";
 ?>
 --FILE--
 <?php
+
 use Async\Signal;
 use function Async\signal;
 use function Async\await;
