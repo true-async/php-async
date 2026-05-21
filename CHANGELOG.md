@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Async\ThreadChannelException`**.
 - **Async file → socket zero-copy** — `zend_async_io_sendfile_t` + `ZEND_ASYNC_IO_SENDFILE(out, in, offset, length)`. libuv via `uv_fs_sendfile` (Linux/BSD `sendfile`, Windows `TransmitFile`). Pure zero-copy — bypass for user-space-encrypted transports.
 - **Async `open(2)`** — `zend_async_fs_open_t` + `ZEND_ASYNC_FS_OPEN(path, flags, mode)`. Returns pending `zend_async_io_t *` immediately; thread-pool worker fills fd; libuv flips `READABLE` on completion.
+- **#125 chaos coverage: `Coroutine` introspection accessors** — new `fuzzy-tests/coroutine/introspection.feature` exercises `getSpawnFileAndLine`/`getSpawnLocation`/`getSuspendFileAndLine`/`getSuspendLocation`/`getAwaitingInfo`/`getContext`/`isQueued`/`asHiPriority` under the random scheduler. `Coroutine` API coverage now 20/20; overall 104/167 (62.3%).
 
 ### Changed
 - **`TaskGroup` / `TaskSet`: `seal()` → `close()`, `isSealed()` → `isClosed()`** — renamed to align with the broader close/closed terminology used across the API. Error messages updated accordingly ("Cannot spawn tasks on a closed TaskGroup", "TaskGroup must be closed before calling awaitCompletion()"). Internal `ASYNC_TASK_GROUP_F_SEALED` flag kept as-is.

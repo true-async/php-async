@@ -698,6 +698,116 @@ final class StandardSteps {
                 });
             });
 
+        // When coroutine "X" inspects spawn location of coroutine "Y"
+        // Spawn location is fixed at creation: getSpawnFileAndLine() must be a
+        // 2-element [file, line] array and getSpawnLocation() a "file:line"
+        // string, for every interleaving and every lifecycle phase of Y.
+        $r->on('/^coroutine "([^"]+)" inspects spawn location of coroutine "([^"]+)"$/',
+            function(Context $ctx, string $caller, string $target) {
+                $ctx->planAction($caller, function(Context $ctx) use ($target) {
+                    $ctx->inc("spawn_loc_attempts_$target");
+                    if (!isset($ctx->coroutineHandles[$target])) {
+                        $ctx->inc("spawn_loc_target_missing_$target");
+                        return;
+                    }
+                    $h  = $ctx->coroutineHandles[$target];
+                    $fl = $h->getSpawnFileAndLine();
+                    $loc = $h->getSpawnLocation();
+                    $ok = is_array($fl) && count($fl) === 2
+                        && (is_string($fl[0]) || $fl[0] === null)
+                        && is_int($fl[1])
+                        && is_string($loc) && strpos($loc, ':') !== false;
+                    $ctx->inc($ok ? "spawn_loc_ok_$target" : "spawn_loc_bad_$target");
+                });
+            });
+
+        // When coroutine "X" inspects suspend location of coroutine "Y"
+        // getSuspendFileAndLine() is always a 2-element array and
+        // getSuspendLocation() always a string — even before Y ever suspends.
+        $r->on('/^coroutine "([^"]+)" inspects suspend location of coroutine "([^"]+)"$/',
+            function(Context $ctx, string $caller, string $target) {
+                $ctx->planAction($caller, function(Context $ctx) use ($target) {
+                    $ctx->inc("suspend_loc_attempts_$target");
+                    if (!isset($ctx->coroutineHandles[$target])) {
+                        $ctx->inc("suspend_loc_target_missing_$target");
+                        return;
+                    }
+                    $h  = $ctx->coroutineHandles[$target];
+                    $fl = $h->getSuspendFileAndLine();
+                    $loc = $h->getSuspendLocation();
+                    $ok = is_array($fl) && count($fl) === 2 && is_string($loc);
+                    $ctx->inc($ok ? "suspend_loc_ok_$target" : "suspend_loc_bad_$target");
+                });
+            });
+
+        // When coroutine "X" inspects awaiting info of coroutine "Y"
+        // getAwaitingInfo() returns an array for every observable state.
+        $r->on('/^coroutine "([^"]+)" inspects awaiting info of coroutine "([^"]+)"$/',
+            function(Context $ctx, string $caller, string $target) {
+                $ctx->planAction($caller, function(Context $ctx) use ($target) {
+                    $ctx->inc("await_info_attempts_$target");
+                    if (!isset($ctx->coroutineHandles[$target])) {
+                        $ctx->inc("await_info_target_missing_$target");
+                        return;
+                    }
+                    $info = $ctx->coroutineHandles[$target]->getAwaitingInfo();
+                    $ctx->inc(is_array($info) ? "await_info_array_$target" : "await_info_bad_$target");
+                });
+            });
+
+        // When coroutine "X" inspects queued state of coroutine "Y"
+        // isQueued() is a strict bool sampled at the call instant — under
+        // random scheduling both buckets are reachable; never a non-bool.
+        $r->on('/^coroutine "([^"]+)" inspects queued state of coroutine "([^"]+)"$/',
+            function(Context $ctx, string $caller, string $target) {
+                $ctx->planAction($caller, function(Context $ctx) use ($target) {
+                    $ctx->inc("queued_attempts_$target");
+                    if (!isset($ctx->coroutineHandles[$target])) {
+                        $ctx->inc("queued_target_missing_$target");
+                        return;
+                    }
+                    $q = $ctx->coroutineHandles[$target]->isQueued();
+                    if ($q === true)       $ctx->inc("queued_true_$target");
+                    elseif ($q === false)  $ctx->inc("queued_false_$target");
+                    else                   $ctx->inc("queued_bad_$target");
+                });
+            });
+
+        // When coroutine "X" inspects context of coroutine "Y"
+        // getContext() yields an Async\Context (or null) — never a malformed
+        // value, regardless of where Y is in its lifecycle.
+        $r->on('/^coroutine "([^"]+)" inspects context of coroutine "([^"]+)"$/',
+            function(Context $ctx, string $caller, string $target) {
+                $ctx->planAction($caller, function(Context $ctx) use ($target) {
+                    $ctx->inc("ctx_attempts_$target");
+                    if (!isset($ctx->coroutineHandles[$target])) {
+                        $ctx->inc("ctx_target_missing_$target");
+                        return;
+                    }
+                    $c = $ctx->coroutineHandles[$target]->getContext();
+                    if ($c instanceof \Async\Context) $ctx->inc("ctx_ok_$target");
+                    elseif ($c === null)              $ctx->inc("ctx_null_$target");
+                    else                              $ctx->inc("ctx_bad_$target");
+                });
+            });
+
+        // When coroutine "X" raises priority of coroutine "Y"
+        // asHiPriority() marks Y high priority and must return the very same
+        // Coroutine handle — identity holds for every interleaving.
+        $r->on('/^coroutine "([^"]+)" raises priority of coroutine "([^"]+)"$/',
+            function(Context $ctx, string $caller, string $target) {
+                $ctx->planAction($caller, function(Context $ctx) use ($target) {
+                    $ctx->inc("hipri_attempts_$target");
+                    if (!isset($ctx->coroutineHandles[$target])) {
+                        $ctx->inc("hipri_target_missing_$target");
+                        return;
+                    }
+                    $h = $ctx->coroutineHandles[$target];
+                    $r = $h->asHiPriority();
+                    $ctx->inc($r === $h ? "hipri_identity_ok_$target" : "hipri_identity_bad_$target");
+                });
+            });
+
         // When coroutine "X" registers finally on coroutine "Y"
         // Increments counter "finally_called_Y" when finally fires —
         // must hold for every termination path: return / throw / cancel.
@@ -1406,6 +1516,54 @@ final class StandardSteps {
                         "coroutine $name expected null trace post-termination, got "
                             . (is_array($t) ? 'array(' . count($t) . ')' : gettype($t))
                     );
+                }
+            });
+
+        // Then coroutine "X" has a well-formed spawn location
+        // Post-termination the spawn location is still a [file,int] pair and a
+        // "file:line" string — it is captured once at spawn() and never reset.
+        $r->on('/^coroutine "([^"]+)" has a well-formed spawn location$/',
+            function(Context $ctx, string $name) {
+                if (!isset($ctx->coroutineHandles[$name])) {
+                    throw new \RuntimeException("coroutine $name not defined");
+                }
+                $h  = $ctx->coroutineHandles[$name];
+                $fl = $h->getSpawnFileAndLine();
+                $loc = $h->getSpawnLocation();
+                if (!is_array($fl) || count($fl) !== 2
+                    || !(is_string($fl[0]) || $fl[0] === null) || !is_int($fl[1])) {
+                    throw new \RuntimeException("coroutine $name malformed getSpawnFileAndLine()");
+                }
+                if (!is_string($loc) || strpos($loc, ':') === false) {
+                    throw new \RuntimeException(
+                        "coroutine $name malformed getSpawnLocation(): " . var_export($loc, true));
+                }
+            });
+
+        // Then coroutine "X" awaiting info is an array
+        $r->on('/^coroutine "([^"]+)" awaiting info is an array$/',
+            function(Context $ctx, string $name) {
+                if (!isset($ctx->coroutineHandles[$name])) {
+                    throw new \RuntimeException("coroutine $name not defined");
+                }
+                $info = $ctx->coroutineHandles[$name]->getAwaitingInfo();
+                if (!is_array($info)) {
+                    throw new \RuntimeException(
+                        "coroutine $name expected getAwaitingInfo() array, got " . gettype($info));
+                }
+            });
+
+        // Then coroutine "X" context is a Context
+        $r->on('/^coroutine "([^"]+)" context is a Context$/',
+            function(Context $ctx, string $name) {
+                if (!isset($ctx->coroutineHandles[$name])) {
+                    throw new \RuntimeException("coroutine $name not defined");
+                }
+                $c = $ctx->coroutineHandles[$name]->getContext();
+                if (!($c instanceof \Async\Context)) {
+                    throw new \RuntimeException(
+                        "coroutine $name expected getContext() Async\\Context, got "
+                            . (is_object($c) ? get_class($c) : gettype($c)));
                 }
             });
 
