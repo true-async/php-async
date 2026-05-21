@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.0] -
 
 ### Added
+- **#127 I/O chaos: EvilPeer foundation** — new `fuzzy-tests/_peers/EvilPeer.php`, a deliberately misbehaving network peer driven by a declarative fault table. First toxics: payload slicing and inter-chunk drip delay. New chaos topic `fuzzy-tests/io/` with `evil_peer.feature` — verifies the async reactor reassembles a sliced/dripped byte stream exactly. Harness gains `defineEvilPeer()` + a prep-phase that binds each peer's listening socket and serves it from a coroutine.
 - **#107 `ThreadPool` workers auto-detect** — `workers` is optional (default `0` → `Async\available_parallelism()`).
 - **#107 `ThreadPool` `bootloader` closure** — per-worker startup hook; bootloader throw fails the pool.
 - **#107 `ThreadPool` `coroutine: true` mode** — each task runs as a coroutine in its own child scope under a per-worker pool scope; tasks may `await`/use channels/IO without blocking the worker.
