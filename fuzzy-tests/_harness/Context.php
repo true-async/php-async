@@ -80,6 +80,12 @@ final class Context {
     /** @var array<string, TaskGroup> populated by run() */
     public array $taskGroups = [];
 
+    /** @var array<string, array{concurrency:?int,queueLimit:?int}> */
+    public array $taskSetDefs = [];
+
+    /** @var array<string, \Async\TaskSet> populated by run() */
+    public array $taskSets = [];
+
     /** @var array<string, int> name => capacity */
     public array $threadChannelDefs = [];
 
@@ -165,6 +171,10 @@ final class Context {
 
     public function defineTaskGroup(string $name, ?int $concurrency = null, ?int $queueLimit = null): void {
         $this->taskGroupDefs[$name] = ['concurrency' => $concurrency, 'queueLimit' => $queueLimit];
+    }
+
+    public function defineTaskSet(string $name, ?int $concurrency = null, ?int $queueLimit = null): void {
+        $this->taskSetDefs[$name] = ['concurrency' => $concurrency, 'queueLimit' => $queueLimit];
     }
 
     public function defineThreadChannel(string $name, int $capacity): void {
@@ -274,6 +284,15 @@ final class Context {
                 $this->taskGroups[$name] = new TaskGroup($spec['concurrency']);
             } else {
                 $this->taskGroups[$name] = new TaskGroup($spec['concurrency'], $spec['queueLimit']);
+            }
+        }
+        foreach ($this->taskSetDefs as $name => $spec) {
+            if ($spec['concurrency'] === null && $spec['queueLimit'] === null) {
+                $this->taskSets[$name] = new \Async\TaskSet();
+            } elseif ($spec['queueLimit'] === null) {
+                $this->taskSets[$name] = new \Async\TaskSet($spec['concurrency']);
+            } else {
+                $this->taskSets[$name] = new \Async\TaskSet($spec['concurrency'], $spec['queueLimit']);
             }
         }
         foreach ($this->futureDefs as $name) {
@@ -441,6 +460,13 @@ final class Context {
         foreach ($this->threadPools as $pool) {
             if (!$pool->isClosed()) {
                 $pool->close();
+            }
+        }
+        // Belt-and-braces: dispose any TaskSet a scenario left open so its
+        // child scope and coroutines are released before assertions run.
+        foreach ($this->taskSets as $set) {
+            if (!$set->isClosed()) {
+                try { $set->dispose(); } catch (\Throwable $e) { /* already closing */ }
             }
         }
 

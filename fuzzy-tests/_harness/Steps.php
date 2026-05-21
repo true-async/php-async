@@ -153,6 +153,18 @@ final class StandardSteps {
                 $ctx->defineTaskGroup($name, $c, $q);
             });
 
+        // Given a task set "T"
+        $r->on('/^a task set "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                $ctx->defineTaskSet($name);
+            });
+
+        // Given a task set "T" with concurrency N
+        $r->on('/^a task set "([^"]+)" with concurrency (\S+)$/',
+            function(Context $ctx, string $name, string $cExpr) {
+                $ctx->defineTaskSet($name, (int)$ctx->resolver->resolve($cExpr));
+            });
+
         // ---- When: actions inside a coroutine ----
 
         // When coroutine "A" sends N messages to "ch"
@@ -1620,6 +1632,125 @@ final class StandardSteps {
                 });
             });
 
+        // ---- TaskSet: joinAll / joinNext / joinAny ----
+
+        // When coroutine "X" spawns N tasks into set "T"
+        // Succeeding tasks: each suspends then returns a distinct value.
+        $r->on('/^coroutine "([^"]+)" spawns (\S+) tasks into set "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $nExpr, string $t) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($n, $t) {
+                    if (!isset($ctx->taskSets[$t])) { $ctx->inc("ts_spawn_target_missing_$t"); return; }
+                    $set = $ctx->taskSets[$t];
+                    for ($i = 0; $i < $n; $i++) {
+                        $ctx->inc("ts_spawn_attempts_$t");
+                        try {
+                            $set->spawn(function() use ($ctx, $t, $i) {
+                                \Async\suspend();
+                                $ctx->inc("ts_done_$t");
+                                return "r$i";
+                            });
+                            $ctx->inc("ts_spawned_$t");
+                        } catch (\Throwable $e) {
+                            $ctx->inc("ts_spawn_failed_$t");
+                        }
+                    }
+                });
+            });
+
+        // When coroutine "X" spawns N failing tasks into set "T"
+        $r->on('/^coroutine "([^"]+)" spawns (\S+) failing tasks into set "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $nExpr, string $t) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($n, $t) {
+                    if (!isset($ctx->taskSets[$t])) { $ctx->inc("ts_spawn_target_missing_$t"); return; }
+                    $set = $ctx->taskSets[$t];
+                    for ($i = 0; $i < $n; $i++) {
+                        $ctx->inc("ts_fspawn_attempts_$t");
+                        try {
+                            $set->spawn(function() use ($ctx, $t) {
+                                \Async\suspend();
+                                $ctx->inc("ts_fran_$t");
+                                throw new \RuntimeException("set task boom");
+                            });
+                            $ctx->inc("ts_fspawned_$t");
+                        } catch (\Throwable $e) {
+                            $ctx->inc("ts_fspawn_failed_$t");
+                        }
+                    }
+                });
+            });
+
+        // When coroutine "X" closes set "T"
+        $r->on('/^coroutine "([^"]+)" closes set "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $t) {
+                $ctx->planAction($coro, function(Context $ctx) use ($t) {
+                    $ctx->inc("ts_close_attempts_$t");
+                    try {
+                        $ctx->taskSets[$t]->close();
+                        $ctx->inc("ts_closed_$t");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("ts_close_failed_$t");
+                    }
+                });
+            });
+
+        // When coroutine "X" joins all of set "T"
+        // joinAll(true) resolves with every successful result; the set drains
+        // to empty afterwards. The set must already be closed.
+        $r->on('/^coroutine "([^"]+)" joins all of set "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $t) {
+                $ctx->planAction($coro, function(Context $ctx) use ($t) {
+                    $ctx->inc("ts_joinall_attempts_$t");
+                    try {
+                        $res = $ctx->taskSets[$t]->joinAll(true)->await();
+                        $ctx->inc("ts_joinall_succeeded_$t");
+                        $ctx->inc("ts_joinall_results_$t", is_array($res) ? count($res) : 0);
+                    } catch (\Throwable $e) {
+                        $ctx->inc("ts_joinall_failed_$t");
+                    }
+                });
+            });
+
+        // When coroutine "X" joins N times from set "T"
+        // Each joinNext() delivers one settled task (success or error) and
+        // removes its entry. ok + err == N for N spawned tasks.
+        $r->on('/^coroutine "([^"]+)" joins (\S+) times from set "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $nExpr, string $t) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($n, $t) {
+                    for ($i = 0; $i < $n; $i++) {
+                        $ctx->inc("ts_joinnext_attempts_$t");
+                        try {
+                            $ctx->taskSets[$t]->joinNext()->await();
+                            $ctx->inc("ts_joinnext_ok_$t");
+                        } catch (\Throwable $e) {
+                            $ctx->inc("ts_joinnext_err_$t");
+                        }
+                    }
+                });
+            });
+
+        // When coroutine "X" joins any from set "T"
+        // joinAny() resolves with the first successful task, skipping errors.
+        // If every task fails it rejects with CompositeException — caught here
+        // and its getExceptions() count recorded.
+        $r->on('/^coroutine "([^"]+)" joins any from set "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $t) {
+                $ctx->planAction($coro, function(Context $ctx) use ($t) {
+                    $ctx->inc("ts_joinany_attempts_$t");
+                    try {
+                        $ctx->taskSets[$t]->joinAny()->await();
+                        $ctx->inc("ts_joinany_succeeded_$t");
+                    } catch (\Async\CompositeException $e) {
+                        $ctx->inc("ts_joinany_composite_$t");
+                        $ctx->inc("ts_joinany_composite_count_$t", count($e->getExceptions()));
+                    } catch (\Throwable $e) {
+                        $ctx->inc("ts_joinany_failed_$t");
+                    }
+                });
+            });
+
         // When coroutine "X" recursively spawns to depth N
         // Each level spawns a child that recurses one fewer; counter
         // "rec_depth" increments once per coroutine, so for depth N the
@@ -2060,6 +2191,26 @@ final class StandardSteps {
                 $c = $ctx->taskGroups[$name]->count();
                 if ($c !== (int)$expected) {
                     throw new \RuntimeException("group $name count = $c, expected $expected");
+                }
+            });
+
+        // Then set "T" is finished
+        $r->on('/^set "([^"]+)" is finished$/',
+            function(Context $ctx, string $name) {
+                if (!isset($ctx->taskSets[$name]) || !$ctx->taskSets[$name]->isFinished()) {
+                    throw new \RuntimeException("set $name expected to be finished");
+                }
+            });
+
+        // Then set "T" count equals N
+        $r->on('/^set "([^"]+)" count equals (\d+)$/',
+            function(Context $ctx, string $name, string $expected) {
+                if (!isset($ctx->taskSets[$name])) {
+                    throw new \RuntimeException("set $name not defined");
+                }
+                $c = $ctx->taskSets[$name]->count();
+                if ($c !== (int)$expected) {
+                    throw new \RuntimeException("set $name count = $c, expected $expected");
                 }
             });
 
