@@ -58,6 +58,26 @@ Feature: spawn_thread result and exception handoff
       | 6  |
       | 16 |
 
+  Scenario Outline: throwing threads surface as Async\RemoteException
+    # A thread that throws is delivered to the awaiter wrapped in
+    # RemoteException; getRemoteClass() names the original class and
+    # getRemoteException() returns the original Throwable.
+    Given a coroutine "W"
+     When coroutine "W" spawns <n> threads that throw
+      And coroutine "W" awaits all threads inspecting remote exceptions
+     Then counter "thr_inspect_attempts_W" equals <n>
+      And counter "thr_remote_W" equals <n>
+      And counter "thr_remote_class_ok_W" equals <n>
+      And counter "thr_remote_exc_ok_W" equals <n>
+      And counter "thr_inspect_other_W" equals 0
+      And no orphan coroutines
+
+    Examples:
+      | n |
+      | 1 |
+      | 4 |
+      | 8 |
+
   Scenario: value-returning and throwing threads from separate coroutines
     Given a coroutine "A"
       And a coroutine "B"

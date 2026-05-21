@@ -1347,6 +1347,37 @@ final class StandardSteps {
             })
             ->requires('zts');
 
+        // When coroutine "X" awaits all threads inspecting remote exceptions
+        // A thread that throws surfaces to the awaiter as Async\RemoteException;
+        // getRemoteClass() names the original class and getRemoteException()
+        // returns the original Throwable (or null if it could not be loaded).
+        $r->on('/^coroutine "([^"]+)" awaits all threads inspecting remote exceptions$/',
+            function(Context $ctx, string $coro) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro) {
+                    $handles = $ctx->threadHandles[$coro] ?? [];
+                    foreach ($handles as $h) {
+                        $ctx->inc("thr_inspect_attempts_$coro");
+                        try {
+                            \Async\await($h);
+                            $ctx->inc("thr_inspect_ok_$coro");
+                        } catch (\Async\RemoteException $e) {
+                            $ctx->inc("thr_remote_$coro");
+                            $cls = $e->getRemoteClass();
+                            if (is_string($cls) && $cls !== '') {
+                                $ctx->inc("thr_remote_class_ok_$coro");
+                            }
+                            $remote = $e->getRemoteException();
+                            if ($remote === null || $remote instanceof \Throwable) {
+                                $ctx->inc("thr_remote_exc_ok_$coro");
+                            }
+                        } catch (\Throwable $e) {
+                            $ctx->inc("thr_inspect_other_$coro");
+                        }
+                    }
+                });
+            })
+            ->requires('zts');
+
         // ---- TaskGroup actions ----
 
         // When coroutine "X" spawns N tasks into "G" that print "msg"
@@ -1885,6 +1916,172 @@ final class StandardSteps {
                     $ctx->pools[$p]->setCircuitBreakerStrategy(null);
                     unset($ctx->poolStrategies[$p]);
                     $ctx->inc("cb_strategy_detached_$p");
+                });
+            });
+
+        // ---- Scope extras: asNotSafely / getChildScopes / handlers ----
+
+        // When coroutine "X" marks a fresh scope as not-safely
+        // asNotSafely() flips the cancellation-safety flag and returns the
+        // SAME Scope — identity must hold.
+        $r->on('/^coroutine "([^"]+)" marks a fresh scope as not-safely$/',
+            function(Context $ctx, string $coro) {
+                $ctx->planAction($coro, function(Context $ctx) {
+                    $ctx->inc("scope_not_safely_attempts");
+                    $scope = \Async\Scope::inherit();
+                    $same = $scope->asNotSafely();
+                    $ctx->inc($same === $scope ? "scope_not_safely_ok" : "scope_not_safely_bad");
+                    // provideScope() on a Scope returns the scope itself.
+                    $provided = $scope->provideScope();
+                    $ctx->inc($provided === $scope ? "scope_provide_ok" : "scope_provide_bad");
+                    $scope->dispose();
+                });
+            });
+
+        // When coroutine "X" counts child scopes of a fresh parent of N
+        // A parent created with N inheriting children reports exactly N via
+        // getChildScopes(), each entry a Scope.
+        $r->on('/^coroutine "([^"]+)" counts child scopes of a fresh parent of (\S+)$/',
+            function(Context $ctx, string $coro, string $nExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($n) {
+                    $ctx->inc("child_scopes_attempts");
+                    $parent = \Async\Scope::inherit();
+                    $children = [];
+                    for ($i = 0; $i < $n; $i++) {
+                        $children[] = \Async\Scope::inherit($parent);
+                    }
+                    $reported = $parent->getChildScopes();
+                    $ok = is_array($reported) && count($reported) === $n;
+                    foreach ($reported as $c) {
+                        $ok = $ok && ($c instanceof \Async\Scope);
+                    }
+                    $ctx->inc($ok ? "child_scopes_ok" : "child_scopes_bad");
+                    $ctx->inc("child_scopes_count", is_array($reported) ? count($reported) : 0);
+                    foreach ($children as $c) { $c->dispose(); }
+                    $parent->dispose();
+                });
+            });
+
+        // When coroutine "X" exercises a child-scope exception handler
+        // A child scope coroutine throws; the parent's child-scope handler,
+        // installed via setChildScopeExceptionHandler(), must receive it.
+        $r->on('/^coroutine "([^"]+)" exercises a child-scope exception handler$/',
+            function(Context $ctx, string $coro) {
+                $ctx->planAction($coro, function(Context $ctx) {
+                    $ctx->inc("csh_attempts");
+                    $handled = 0;
+                    $parent = \Async\Scope::inherit();
+                    $parent->setChildScopeExceptionHandler(
+                        function($scope, $co, \Throwable $e) use (&$handled) { $handled++; });
+                    $child = \Async\Scope::inherit($parent);
+                    $child->spawn(function() { throw new \RuntimeException("child boom"); });
+                    for ($i = 0; $i < 4 && $handled === 0; $i++) {
+                        \Async\suspend();
+                    }
+                    if ($handled >= 1) $ctx->inc("csh_handled");
+                    $ctx->inc("csh_done");
+                    if (!$parent->isClosed()) { $parent->dispose(); }
+                });
+            });
+
+        // When coroutine "X" awaits a scope after cancellation
+        // Cancels a fresh scope with a sleeping child, then drains it via
+        // awaitAfterCancellation() — the scope ends finished.
+        $r->on('/^coroutine "([^"]+)" awaits a scope after cancellation$/',
+            function(Context $ctx, string $coro) {
+                $ctx->planAction($coro, function(Context $ctx) {
+                    $ctx->inc("aac_attempts");
+                    $scope = \Async\Scope::inherit();
+                    $scope->spawn(function() {
+                        try { \Async\delay(5000); }
+                        catch (\Throwable $e) { /* cancelled */ }
+                    });
+                    $scope->cancel();
+                    \Async\suspend();
+                    try {
+                        $scope->awaitAfterCancellation(
+                            function(\Throwable $e) use ($ctx) { $ctx->inc("aac_error_seen"); });
+                        $ctx->inc("aac_done");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("aac_threw");
+                    }
+                    if ($scope->isFinished()) $ctx->inc("aac_finished");
+                    if (!$scope->isClosed()) { $scope->dispose(); }
+                });
+            });
+
+        // When coroutine "X" schedules dispose of a scope after T ms
+        // disposeAfterTimeout() arms a timer; once it fires the scope is
+        // disposed and its sleeping child is cancelled.
+        $r->on('/^coroutine "([^"]+)" schedules dispose of a scope after (\S+) ms$/',
+            function(Context $ctx, string $coro, string $tExpr) {
+                $t = (int)$ctx->resolver->resolve($tExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($t) {
+                    $ctx->inc("dat_attempts");
+                    $scope = \Async\Scope::inherit();
+                    $scope->spawn(function() {
+                        try { \Async\delay(5000); }
+                        catch (\Throwable $e) { /* cancelled by dispose */ }
+                    });
+                    $scope->disposeAfterTimeout($t);
+                    // Give the timer ample room to fire AND let the internal
+                    // cancellation coroutine run to completion — do not bail
+                    // out early on isFinished(), the child may still unwind.
+                    for ($i = 0; $i < 12; $i++) {
+                        \Async\delay($t);
+                    }
+                    for ($i = 0; $i < 4; $i++) {
+                        \Async\suspend();
+                    }
+                    if ($scope->isFinished()) $ctx->inc("dat_finished");
+                    $ctx->inc("dat_done");
+                    if (!$scope->isClosed()) { $scope->dispose(); }
+                });
+            });
+
+        // When coroutine "X" spawns a strategy-driven coroutine labelled "L"
+        // spawn_with() drives the SpawnStrategy hooks: provideScope, then
+        // beforeCoroutineEnqueue / afterCoroutineEnqueue around the enqueue.
+        $r->on('/^coroutine "([^"]+)" spawns a strategy-driven coroutine labelled "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $label) {
+                $ctx->planAction($coro, function(Context $ctx) use ($label) {
+                    $ctx->inc("ss_attempts_$label");
+                    $scope = new \Async\Scope();
+                    $strategy = new ChaosSpawnStrategy($ctx, $label, $scope);
+                    try {
+                        $h = \Async\spawn_with($strategy, function() use ($ctx, $label) {
+                            $ctx->inc("ss_body_ran_$label");
+                            return "ok";
+                        });
+                        \Async\await($h);
+                        $ctx->inc("ss_spawn_ok_$label");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("ss_spawn_failed_$label");
+                    }
+                    if (!$scope->isClosed()) { $scope->dispose(); }
+                });
+            });
+
+        // When coroutine "X" builds a composite exception with N parts
+        // CompositeException::addException() accumulates Throwables;
+        // getExceptions() returns every one.
+        $r->on('/^coroutine "([^"]+)" builds a composite exception with (\S+) parts$/',
+            function(Context $ctx, string $coro, string $nExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($n) {
+                    $ctx->inc("composite_attempts");
+                    $ce = new \Async\CompositeException("composite");
+                    for ($i = 0; $i < $n; $i++) {
+                        $ce->addException(new \RuntimeException("part $i"));
+                    }
+                    $parts = $ce->getExceptions();
+                    $ok = is_array($parts) && count($parts) === $n;
+                    foreach ($parts as $p) {
+                        $ok = $ok && ($p instanceof \Throwable);
+                    }
+                    $ctx->inc($ok ? "composite_ok" : "composite_bad");
+                    $ctx->inc("composite_count", is_array($parts) ? count($parts) : 0);
                 });
             });
 

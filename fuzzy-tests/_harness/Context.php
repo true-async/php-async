@@ -461,17 +461,18 @@ final class Context {
         // these suspends the scheduler hasn't run the post-dispose microtasks
         // by the time Then-step assertions execute. Bound the loop so a stuck
         // coroutine surfaces as an orphan-coroutines failure rather than a
-        // hang.
-        if ($this->scopes || $this->nonAwaited) {
-            // First a couple of suspends drain micro-tasks (post-dispose
-            // finally callbacks fire here). Then short delays advance the
-            // reactor so any timer-blocked child receives its cancellation.
-            for ($i = 0; $i < 4 && count(\Async\get_coroutines()) > 1; $i++) {
-                suspend();
-            }
-            for ($i = 0; $i < 8 && count(\Async\get_coroutines()) > 1; $i++) {
-                \Async\delay(1);
-            }
+        // hang. Run unconditionally: a scenario may leave internal helper
+        // coroutines (e.g. a Scope::disposeAfterTimeout timer coroutine)
+        // that need a few ticks to reap even when no harness scope exists.
+        //
+        // First a couple of suspends drain micro-tasks (post-dispose finally
+        // callbacks fire here). Then short delays advance the reactor so any
+        // timer-blocked child receives its cancellation.
+        for ($i = 0; $i < 4 && count(\Async\get_coroutines()) > 1; $i++) {
+            suspend();
+        }
+        for ($i = 0; $i < 8 && count(\Async\get_coroutines()) > 1; $i++) {
+            \Async\delay(1);
         }
 
         // Belt-and-braces: every channel ends closed so leftover senders/receivers wake up.
@@ -533,5 +534,34 @@ final class ChaosCircuitBreakerStrategy implements \Async\CircuitBreakerStrategy
     public function shouldRecover(): bool {
         $this->ctx->inc("cb_should_recover_{$this->pool}");
         return true;
+    }
+}
+
+/**
+ * SpawnStrategy implementation for chaos scenarios.
+ *
+ * spawn_with() drives every hook: provideScope() supplies the scope,
+ * beforeCoroutineEnqueue() / afterCoroutineEnqueue() bracket the enqueue.
+ * Each call is tallied into the scenario counters.
+ */
+final class ChaosSpawnStrategy implements \Async\SpawnStrategy, \Async\ScopeProvider {
+    public function __construct(
+        private Context $ctx,
+        private string $label,
+        private \Async\Scope $scope,
+    ) {}
+
+    public function provideScope(): ?\Async\Scope {
+        $this->ctx->inc("ss_provide_scope_{$this->label}");
+        return $this->scope;
+    }
+
+    public function beforeCoroutineEnqueue(\Async\Coroutine $coroutine, \Async\Scope $scope): array {
+        $this->ctx->inc("ss_before_enqueue_{$this->label}");
+        return [];
+    }
+
+    public function afterCoroutineEnqueue(\Async\Coroutine $coroutine, \Async\Scope $scope): void {
+        $this->ctx->inc("ss_after_enqueue_{$this->label}");
     }
 }
