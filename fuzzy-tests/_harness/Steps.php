@@ -304,6 +304,66 @@ final class StandardSteps {
                 });
             });
 
+        // When coroutine "X" inspects locations of future "F"
+        // Samples the created/completed location accessors on BOTH the Future
+        // and its FutureState. getCreated* is fixed at construction — always a
+        // [file,int] pair / "file:line" string. getCompleted* must be well
+        // typed at every instant (a 2-element array / string) even before the
+        // future settles. Buckets ok/bad so the sum invariant holds for any
+        // interleaving relative to the producer.
+        $r->on('/^coroutine "([^"]+)" inspects locations of future "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $f) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $f) {
+                    $ctx->inc("fut_loc_attempts_$f");
+                    if (!isset($ctx->futures[$f]) || !isset($ctx->futureStates[$f])) {
+                        $ctx->inc("fut_loc_target_missing_$f");
+                        return;
+                    }
+                    $wellFormedPair = static function($fl): bool {
+                        return is_array($fl) && count($fl) === 2
+                            && (is_string($fl[0]) || $fl[0] === null)
+                            && is_int($fl[1]);
+                    };
+                    $ok = true;
+                    foreach ([$ctx->futures[$f], $ctx->futureStates[$f]] as $obj) {
+                        // Created location is fixed — must be fully well-formed.
+                        $ok = $ok && $wellFormedPair($obj->getCreatedFileAndLine());
+                        $cl = $obj->getCreatedLocation();
+                        $ok = $ok && is_string($cl) && strpos($cl, ':') !== false;
+                        // Completed location may be unset — only require it be
+                        // well typed (2-element array / string).
+                        $ok = $ok && $wellFormedPair($obj->getCompletedFileAndLine());
+                        $ok = $ok && is_string($obj->getCompletedLocation());
+                    }
+                    $ctx->inc($ok ? "fut_loc_ok_$f" : "fut_loc_bad_$f");
+                });
+            });
+
+        // Then future "F" has well-formed created and completed locations
+        // After run() the future has settled, so getCompleted* on both the
+        // Future and the FutureState must be a [file,int] pair / "file:line".
+        $r->on('/^future "([^"]+)" has well-formed created and completed locations$/',
+            function(Context $ctx, string $f) {
+                if (!isset($ctx->futures[$f]) || !isset($ctx->futureStates[$f])) {
+                    throw new \RuntimeException("future $f not defined");
+                }
+                foreach (['Future' => $ctx->futures[$f],
+                          'FutureState' => $ctx->futureStates[$f]] as $label => $obj) {
+                    foreach (['Created' => 'getCreated', 'Completed' => 'getCompleted'] as $kind => $prefix) {
+                        $fl = $obj->{$prefix . 'FileAndLine'}();
+                        if (!is_array($fl) || count($fl) !== 2
+                            || !(is_string($fl[0]) || $fl[0] === null) || !is_int($fl[1])) {
+                            throw new \RuntimeException("$label $f malformed {$prefix}FileAndLine()");
+                        }
+                        $loc = $obj->{$prefix . 'Location'}();
+                        if (!is_string($loc) || strpos($loc, ':') === false) {
+                            throw new \RuntimeException(
+                                "$label $f malformed {$prefix}Location(): " . var_export($loc, true));
+                        }
+                    }
+                }
+            });
+
         // When coroutine "X" awaits any of futures "F1,F2,F3"
         $r->on('/^coroutine "([^"]+)" awaits any of futures "([^"]+)"$/',
             function(Context $ctx, string $coro, string $list) {
