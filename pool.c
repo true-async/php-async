@@ -1111,18 +1111,23 @@ static HashTable *async_pool_get_gc(zend_object *object, zval **table, int *num)
 	 * beforeRelease — e.g. a factory closure that captures an object which
 	 * owns the pool — is invisible to the cycle collector and leaks. */
 	zend_async_pool_t *base = &obj->pool->base;
+
 	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_FACTORY_INTERNAL) && base->factory.fcall) {
 		zend_get_gc_buffer_add_zval(buf, &base->factory.fcall->fci.function_name);
 	}
+
 	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_DESTRUCTOR_INTERNAL) && base->destructor.fcall) {
 		zend_get_gc_buffer_add_zval(buf, &base->destructor.fcall->fci.function_name);
 	}
+
 	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_HEALTHCHECK_INTERNAL) && base->healthcheck.fcall) {
 		zend_get_gc_buffer_add_zval(buf, &base->healthcheck.fcall->fci.function_name);
 	}
+
 	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_BEFORE_ACQUIRE_INTERNAL) && base->before_acquire.fcall) {
 		zend_get_gc_buffer_add_zval(buf, &base->before_acquire.fcall->fci.function_name);
 	}
+
 	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_BEFORE_RELEASE_INTERNAL) && base->before_release.fcall) {
 		zend_get_gc_buffer_add_zval(buf, &base->before_release.fcall->fci.function_name);
 	}
