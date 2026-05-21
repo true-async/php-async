@@ -1257,6 +1257,178 @@ final class StandardSteps {
                 });
             });
 
+        // When coroutine "X" spawns N keyed tasks into "G"
+        // Uses spawnWithKey() with explicit keys "k0".."k(N-1)"; each task
+        // suspends then returns a distinct value "r<i>" so getResults() /
+        // the iterator can be checked against the keys.
+        $r->on('/^coroutine "([^"]+)" spawns (\S+) keyed tasks into "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $nExpr, string $g) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($n, $g) {
+                    if (!isset($ctx->taskGroups[$g])) {
+                        $ctx->inc("tg_spawn_target_missing_$g");
+                        return;
+                    }
+                    $tg = $ctx->taskGroups[$g];
+                    for ($i = 0; $i < $n; $i++) {
+                        $ctx->inc("tg_kspawn_attempts_$g");
+                        try {
+                            $tg->spawnWithKey("k$i", function() use ($ctx, $g, $i) {
+                                \Async\suspend();
+                                $ctx->inc("tg_kdone_$g");
+                                return "r$i";
+                            });
+                            $ctx->inc("tg_kspawned_$g");
+                        } catch (\Throwable $e) {
+                            $ctx->inc("tg_kspawn_failed_$g");
+                        }
+                    }
+                });
+            });
+
+        // When coroutine "X" spawns N failing tasks into "G"
+        // Each task suspends then throws — used to drive getErrors() /
+        // suppressErrors() and the error branch of the iterator.
+        $r->on('/^coroutine "([^"]+)" spawns (\S+) failing tasks into "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $nExpr, string $g) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($n, $g) {
+                    if (!isset($ctx->taskGroups[$g])) {
+                        $ctx->inc("tg_spawn_target_missing_$g");
+                        return;
+                    }
+                    $tg = $ctx->taskGroups[$g];
+                    for ($i = 0; $i < $n; $i++) {
+                        $ctx->inc("tg_fspawn_attempts_$g");
+                        try {
+                            $tg->spawn(function() use ($ctx, $g) {
+                                \Async\suspend();
+                                $ctx->inc("tg_fran_$g");
+                                throw new \RuntimeException("task boom");
+                            });
+                            $ctx->inc("tg_fspawned_$g");
+                        } catch (\Throwable $e) {
+                            $ctx->inc("tg_fspawn_failed_$g");
+                        }
+                    }
+                });
+            });
+
+        // When coroutine "X" spawns a duplicate-key task into "G"
+        // spawnWithKey() with a key already present must throw AsyncException;
+        // the first spawn succeeds, the second is rejected.
+        $r->on('/^coroutine "([^"]+)" spawns a duplicate-key task into "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $g) {
+                $ctx->planAction($coro, function(Context $ctx) use ($g) {
+                    if (!isset($ctx->taskGroups[$g])) {
+                        $ctx->inc("tg_spawn_target_missing_$g");
+                        return;
+                    }
+                    $tg = $ctx->taskGroups[$g];
+                    $task = function() { \Async\suspend(); return "dup"; };
+                    try {
+                        $tg->spawnWithKey("dup", $task);
+                        $ctx->inc("tg_dupkey_first_ok_$g");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("tg_dupkey_first_failed_$g");
+                    }
+                    try {
+                        $tg->spawnWithKey("dup", $task);
+                        $ctx->inc("tg_dupkey_second_ok_$g");
+                    } catch (\Async\AsyncException $e) {
+                        $ctx->inc("tg_dupkey_threw_$g");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("tg_dupkey_other_throw_$g");
+                    }
+                });
+            });
+
+        // When coroutine "X" reads results of "G"
+        // getResults() returns successful task results keyed by task key.
+        $r->on('/^coroutine "([^"]+)" reads results of "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $g) {
+                $ctx->planAction($coro, function(Context $ctx) use ($g) {
+                    $ctx->inc("tg_get_results_attempts_$g");
+                    $res = $ctx->taskGroups[$g]->getResults();
+                    if (is_array($res)) {
+                        $ctx->inc("tg_results_count_$g", count($res));
+                    } else {
+                        $ctx->inc("tg_results_bad_$g");
+                    }
+                });
+            });
+
+        // When coroutine "X" reads errors of "G"
+        // getErrors() returns Throwables keyed by task key and marks them handled.
+        $r->on('/^coroutine "([^"]+)" reads errors of "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $g) {
+                $ctx->planAction($coro, function(Context $ctx) use ($g) {
+                    $ctx->inc("tg_get_errors_attempts_$g");
+                    $err = $ctx->taskGroups[$g]->getErrors();
+                    if (is_array($err)) {
+                        $ctx->inc("tg_errors_count_$g", count($err));
+                        foreach ($err as $e) {
+                            if ($e instanceof \Throwable) $ctx->inc("tg_errors_throwable_$g");
+                        }
+                    } else {
+                        $ctx->inc("tg_errors_bad_$g");
+                    }
+                });
+            });
+
+        // When coroutine "X" suppresses errors of "G"
+        $r->on('/^coroutine "([^"]+)" suppresses errors of "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $g) {
+                $ctx->planAction($coro, function(Context $ctx) use ($g) {
+                    $ctx->inc("tg_suppress_attempts_$g");
+                    try {
+                        $ctx->taskGroups[$g]->suppressErrors();
+                        $ctx->inc("tg_suppressed_$g");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("tg_suppress_failed_$g");
+                    }
+                });
+            });
+
+        // When coroutine "X" calls getIterator on "G" directly
+        // foreach goes through the C get_iterator handler; the PHP-level
+        // getIterator() method is a guard that always throws Error. The guard
+        // must hold under the chaos scheduler regardless of group state.
+        $r->on('/^coroutine "([^"]+)" calls getIterator on "([^"]+)" directly$/',
+            function(Context $ctx, string $coro, string $g) {
+                $ctx->planAction($coro, function(Context $ctx) use ($g) {
+                    $ctx->inc("tg_get_iterator_attempts_$g");
+                    try {
+                        $ctx->taskGroups[$g]->getIterator();
+                        $ctx->inc("tg_get_iterator_no_throw_$g");
+                    } catch (\Error $e) {
+                        $ctx->inc("tg_get_iterator_threw_$g");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("tg_get_iterator_other_throw_$g");
+                    }
+                });
+            });
+
+        // When coroutine "X" iterates "G" collecting outcomes
+        // foreach over the group yields key => [result, error] as tasks settle;
+        // success lands in tg_iter_ok, failure in tg_iter_error. The group must
+        // already be closed so iteration terminates.
+        $r->on('/^coroutine "([^"]+)" iterates "([^"]+)" collecting outcomes$/',
+            function(Context $ctx, string $coro, string $g) {
+                $ctx->planAction($coro, function(Context $ctx) use ($g) {
+                    $ctx->inc("tg_iterate_attempts_$g");
+                    foreach ($ctx->taskGroups[$g] as $key => $pair) {
+                        $ctx->inc("tg_iter_total_$g");
+                        $error = is_array($pair) ? ($pair[1] ?? null) : null;
+                        if ($error instanceof \Throwable) {
+                            $ctx->inc("tg_iter_error_$g");
+                        } else {
+                            $ctx->inc("tg_iter_ok_$g");
+                        }
+                    }
+                });
+            });
+
         // When coroutine "X" awaits all of "G"
         $r->on('/^coroutine "([^"]+)" awaits all of "([^"]+)"$/',
             function(Context $ctx, string $coro, string $g) {
