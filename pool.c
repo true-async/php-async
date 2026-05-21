@@ -1106,6 +1106,33 @@ static HashTable *async_pool_get_gc(zend_object *object, zval **table, int *num)
 		idx = (idx + 1) & (cb->capacity - 1);
 	}
 
+	/* GC for the PHP callable handlers. Without these, any reference cycle
+	 * that passes through factory/destructor/healthcheck/beforeAcquire/
+	 * beforeRelease — e.g. a factory closure that captures an object which
+	 * owns the pool — is invisible to the cycle collector and leaks. */
+	zend_async_pool_t *base = &obj->pool->base;
+	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_FACTORY_INTERNAL) && base->factory.fcall) {
+		zend_get_gc_buffer_add_zval(buf, &base->factory.fcall->fci.function_name);
+	}
+	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_DESTRUCTOR_INTERNAL) && base->destructor.fcall) {
+		zend_get_gc_buffer_add_zval(buf, &base->destructor.fcall->fci.function_name);
+	}
+	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_HEALTHCHECK_INTERNAL) && base->healthcheck.fcall) {
+		zend_get_gc_buffer_add_zval(buf, &base->healthcheck.fcall->fci.function_name);
+	}
+	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_BEFORE_ACQUIRE_INTERNAL) && base->before_acquire.fcall) {
+		zend_get_gc_buffer_add_zval(buf, &base->before_acquire.fcall->fci.function_name);
+	}
+	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_BEFORE_RELEASE_INTERNAL) && base->before_release.fcall) {
+		zend_get_gc_buffer_add_zval(buf, &base->before_release.fcall->fci.function_name);
+	}
+
+	/* GC for the circuit breaker strategy object (cycles through it otherwise
+	 * leak the same way — Pool::setCircuitBreakerStrategy holds a ref). */
+	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_STRATEGY_INTERNAL) && base->strategy.object != NULL) {
+		zend_get_gc_buffer_add_obj(buf, base->strategy.object);
+	}
+
 	zend_get_gc_buffer_use(buf, table, num);
 	return NULL;
 }
