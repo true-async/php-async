@@ -98,6 +98,12 @@ final class Context {
     /** @var array<string, mixed[]> thread handles from spawn_thread, keyed by group label */
     public array $threadHandles = [];
 
+    /** @var array<string, array<string,string>> scope name => seeded context
+     * key/value pairs. Applied synchronously in run()'s prep-phase by a
+     * creator coroutine spawned inside the scope, so every inherited-scope
+     * coroutine deterministically observes them. */
+    public array $contextSeeds = [];
+
     /** @var array<string, int> arbitrary named counters */
     public array $counters = [];
 
@@ -148,6 +154,13 @@ final class Context {
         if (!in_array($name, $this->scopeDefs, true)) {
             $this->scopeDefs[] = $name;
         }
+    }
+
+    /** Register a context key/value to seed into a scope before user
+     * coroutines run; defines the scope if not already known. */
+    public function defineContextSeed(string $scope, string $key, string $value): void {
+        $this->defineScope($scope);
+        $this->contextSeeds[$scope][$key] = $value;
     }
 
     public function defineTaskGroup(string $name, ?int $concurrency = null, ?int $queueLimit = null): void {
@@ -296,6 +309,25 @@ final class Context {
         }
         if ($creators) {
             await_all($creators);
+        }
+
+        // Seed scope contexts: spawn a creator coroutine inside each scope and
+        // have it write the declared key/value pairs into current_context()
+        // (the scope context). Awaited here so every inherited-scope user
+        // coroutine deterministically observes the seeds — the chaos then
+        // lives purely in the concurrent reads, not in seed-vs-read ordering.
+        $seeders = [];
+        foreach ($this->contextSeeds as $scopeName => $pairs) {
+            $scope = $this->scopes[$scopeName];
+            $seeders[] = $scope->spawn(function() use ($pairs) {
+                $cc = \Async\current_context();
+                foreach ($pairs as $k => $v) {
+                    $cc->set($k, $v, true);
+                }
+            });
+        }
+        if ($seeders) {
+            await_all($seeders);
         }
         // First pass: spawn every coroutine, populate handles. Coroutine bodies
         // do NOT run yet (spawn just queues), so by the time the first body

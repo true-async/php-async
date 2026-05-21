@@ -92,6 +92,15 @@ final class StandardSteps {
                 $ctx->scopeParent[$child] = $parent;
             });
 
+        // Given scope "S" seeded with context "key" = "value"
+        // The pair is written into S's context in run()'s prep-phase, before
+        // any user coroutine runs — inherited-scope coroutines see it without
+        // racing the writer.
+        $r->on('/^scope "([^"]+)" seeded with context "([^"]+)" = "([^"]*)"$/',
+            function(Context $ctx, string $scope, string $key, string $value) {
+                $ctx->defineContextSeed($scope, $key, $value);
+            });
+
         // Given a future "F"
         $r->on('/^a future "([^"]+)"$/',
             function(Context $ctx, string $name) {
@@ -805,6 +814,125 @@ final class StandardSteps {
                     $h = $ctx->coroutineHandles[$target];
                     $r = $h->asHiPriority();
                     $ctx->inc($r === $h ? "hipri_identity_ok_$target" : "hipri_identity_bad_$target");
+                });
+            });
+
+        // When coroutine "X" sets coroutine-context "key" to "value"
+        // Writes into the per-coroutine context (coroutine_context()), which is
+        // isolated from every sibling — used to test cross-coroutine isolation.
+        $r->on('/^coroutine "([^"]+)" sets coroutine-context "([^"]+)" to "([^"]*)"$/',
+            function(Context $ctx, string $coro, string $key, string $value) {
+                $ctx->planAction($coro, function(Context $ctx) use ($key, $value) {
+                    \Async\coroutine_context()->set($key, $value, true);
+                });
+            });
+
+        // When coroutine "X" verifies coroutine-context "key" is "value"
+        // Suspends once (yielding to siblings that may be mutating their own
+        // contexts) then reads the key back via get/getLocal/has/hasLocal.
+        // Isolation invariant: the value is always X's own, for any interleaving.
+        $r->on('/^coroutine "([^"]+)" verifies coroutine-context "([^"]+)" is "([^"]*)"$/',
+            function(Context $ctx, string $coro, string $key, string $value) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $key, $value) {
+                    \Async\suspend();
+                    $cc = \Async\coroutine_context();
+                    $ctx->inc("iso_attempts_$coro");
+                    $ok = $cc->get($key) === $value
+                        && $cc->getLocal($key) === $value
+                        && $cc->has($key) === true
+                        && $cc->hasLocal($key) === true;
+                    $ctx->inc($ok ? "iso_ok_$coro" : "iso_bad_$coro");
+                });
+            });
+
+        // When coroutine "X" reads inherited context "key" expecting "value"
+        // X lives in a scope inheriting a seeded parent. find()/get()/has()
+        // must walk up and see the parent value; the *Local() variants must
+        // NOT — the seed lives in the parent layer, not X's local layer.
+        $r->on('/^coroutine "([^"]+)" reads inherited context "([^"]+)" expecting "([^"]*)"$/',
+            function(Context $ctx, string $coro, string $key, string $value) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $key, $value) {
+                    \Async\suspend();
+                    $cc = \Async\current_context();
+                    $ctx->inc("inherit_attempts_$coro");
+                    $inheritOk = $cc->find($key) === $value
+                        && $cc->get($key) === $value
+                        && $cc->has($key) === true;
+                    $ctx->inc($inheritOk ? "inherit_hit_$coro" : "inherit_miss_$coro");
+                    $localAbsent = $cc->findLocal($key) === null
+                        && $cc->getLocal($key) === null
+                        && $cc->hasLocal($key) === false;
+                    $ctx->inc($localAbsent ? "local_absent_$coro" : "local_present_$coro");
+                });
+            });
+
+        // When coroutine "X" overrides context "key" with local "value"
+        // X is in an inheriting scope; a local set() shadows the parent seed.
+        // After the override both inherited and local reads must yield "value".
+        $r->on('/^coroutine "([^"]+)" overrides context "([^"]+)" with local "([^"]*)"$/',
+            function(Context $ctx, string $coro, string $key, string $value) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $key, $value) {
+                    $cc = \Async\current_context();
+                    $ctx->inc("override_attempts_$coro");
+                    $cc->set($key, $value);
+                    \Async\suspend();
+                    $ok = $cc->getLocal($key) === $value
+                        && $cc->findLocal($key) === $value
+                        && $cc->hasLocal($key) === true
+                        && $cc->get($key) === $value
+                        && $cc->find($key) === $value;
+                    $ctx->inc($ok ? "override_ok_$coro" : "override_bad_$coro");
+                });
+            });
+
+        // When coroutine "X" exercises context replace and unset on "key"
+        // Single-coroutine CRUD over coroutine_context(): set, the replace=false
+        // collision (must throw AsyncException), replace=true, then unset.
+        $r->on('/^coroutine "([^"]+)" exercises context replace and unset on "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $key) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $key) {
+                    $ctx->inc("crud_attempts_$coro");
+                    $cc = \Async\coroutine_context();
+                    $pass = true;
+                    try {
+                        $cc->set($key, 'v1');
+                        if ($cc->get($key) !== 'v1') $pass = false;
+                        \Async\suspend();
+                        $threw = false;
+                        try { $cc->set($key, 'v2'); }
+                        catch (\Async\AsyncException $e) { $threw = true; }
+                        if (!$threw) $pass = false;
+                        if ($cc->get($key) !== 'v1') $pass = false;   // unchanged
+                        $cc->set($key, 'v2', true);                    // replace
+                        if ($cc->get($key) !== 'v2') $pass = false;
+                        \Async\suspend();
+                        $cc->unset($key);
+                        if ($cc->has($key) !== false) $pass = false;
+                        if ($cc->hasLocal($key) !== false) $pass = false;
+                        if ($cc->get($key) !== null) $pass = false;
+                    } catch (\Throwable $e) {
+                        $pass = false;
+                    }
+                    $ctx->inc($pass ? "crud_ok_$coro" : "crud_bad_$coro");
+                });
+            });
+
+        // When coroutine "X" writes shared context "key" value "value"
+        // X writes a UNIQUE key into the shared scope context, suspends so
+        // siblings interleave their own writes into the same HashTable, then
+        // reads its own key back. Distinct keys => set() never collides.
+        $r->on('/^coroutine "([^"]+)" writes shared context "([^"]+)" value "([^"]*)"$/',
+            function(Context $ctx, string $coro, string $key, string $value) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $key, $value) {
+                    $cc = \Async\current_context();
+                    $ctx->inc("shared_attempts_$coro");
+                    $cc->set($key, $value, true);
+                    \Async\suspend();
+                    \Async\suspend();
+                    $ok = $cc->get($key) === $value
+                        && $cc->find($key) === $value
+                        && $cc->has($key) === true;
+                    $ctx->inc($ok ? "shared_ok_$coro" : "shared_bad_$coro");
                 });
             });
 
