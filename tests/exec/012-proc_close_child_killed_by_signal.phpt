@@ -1,5 +1,7 @@
 --TEST--
 proc_close() after child process killed by signal (SIGSEGV)
+--EXTENSIONS--
+pcntl
 --SKIPIF--
 <?php
 if (!function_exists("proc_open")) echo "skip proc_open() is not available";

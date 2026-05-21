@@ -1,5 +1,7 @@
 --TEST--
 Async\signal() - receive signal from another coroutine
+--EXTENSIONS--
+pcntl
 --SKIPIF--
 <?php
 if (PHP_OS_FAMILY === 'Windows') echo "skip Unix-only test";
