@@ -80,6 +80,22 @@ final class Context {
     /** @var array<string, TaskGroup> populated by run() */
     public array $taskGroups = [];
 
+    /** @var array<string, array{concurrency:?int,queueLimit:?int}> */
+    public array $taskSetDefs = [];
+
+    /** @var array<string, \Async\TaskSet> populated by run() */
+    public array $taskSets = [];
+
+    /** @var array<string, array{min:int,max:int,rejectRelease:bool}> */
+    public array $poolDefs = [];
+
+    /** @var array<string, \Async\Pool> populated by run() */
+    public array $pools = [];
+
+    /** @var array<string, \Async\CircuitBreakerStrategy> keeps attached
+     * strategies referenced for the scenario's lifetime */
+    public array $poolStrategies = [];
+
     /** @var array<string, int> name => capacity */
     public array $threadChannelDefs = [];
 
@@ -97,6 +113,12 @@ final class Context {
 
     /** @var array<string, mixed[]> thread handles from spawn_thread, keyed by group label */
     public array $threadHandles = [];
+
+    /** @var array<string, array<string,string>> scope name => seeded context
+     * key/value pairs. Applied synchronously in run()'s prep-phase by a
+     * creator coroutine spawned inside the scope, so every inherited-scope
+     * coroutine deterministically observes them. */
+    public array $contextSeeds = [];
 
     /** @var array<string, int> arbitrary named counters */
     public array $counters = [];
@@ -150,8 +172,23 @@ final class Context {
         }
     }
 
+    /** Register a context key/value to seed into a scope before user
+     * coroutines run; defines the scope if not already known. */
+    public function defineContextSeed(string $scope, string $key, string $value): void {
+        $this->defineScope($scope);
+        $this->contextSeeds[$scope][$key] = $value;
+    }
+
     public function defineTaskGroup(string $name, ?int $concurrency = null, ?int $queueLimit = null): void {
         $this->taskGroupDefs[$name] = ['concurrency' => $concurrency, 'queueLimit' => $queueLimit];
+    }
+
+    public function defineTaskSet(string $name, ?int $concurrency = null, ?int $queueLimit = null): void {
+        $this->taskSetDefs[$name] = ['concurrency' => $concurrency, 'queueLimit' => $queueLimit];
+    }
+
+    public function definePool(string $name, int $min = 0, int $max = 10, bool $rejectRelease = false): void {
+        $this->poolDefs[$name] = ['min' => $min, 'max' => $max, 'rejectRelease' => $rejectRelease];
     }
 
     public function defineThreadChannel(string $name, int $capacity): void {
@@ -263,6 +300,29 @@ final class Context {
                 $this->taskGroups[$name] = new TaskGroup($spec['concurrency'], $spec['queueLimit']);
             }
         }
+        foreach ($this->taskSetDefs as $name => $spec) {
+            if ($spec['concurrency'] === null && $spec['queueLimit'] === null) {
+                $this->taskSets[$name] = new \Async\TaskSet();
+            } elseif ($spec['queueLimit'] === null) {
+                $this->taskSets[$name] = new \Async\TaskSet($spec['concurrency']);
+            } else {
+                $this->taskSets[$name] = new \Async\TaskSet($spec['concurrency'], $spec['queueLimit']);
+            }
+        }
+        foreach ($this->poolDefs as $name => $spec) {
+            // Factory hands out a fresh incrementing resource id; rejectRelease
+            // pools install a beforeRelease that always rejects, so each
+            // release destroys the resource and (with a strategy attached)
+            // triggers reportFailure.
+            $resourceId = 0;
+            $factory = function() use (&$resourceId) { return ++$resourceId; };
+            $this->pools[$name] = new \Async\Pool(
+                factory: $factory,
+                beforeRelease: $spec['rejectRelease'] ? (static fn($r): bool => false) : null,
+                min: $spec['min'],
+                max: $spec['max'],
+            );
+        }
         foreach ($this->futureDefs as $name) {
             $state = new FutureState();
             $this->futureStates[$name] = $state;
@@ -296,6 +356,25 @@ final class Context {
         }
         if ($creators) {
             await_all($creators);
+        }
+
+        // Seed scope contexts: spawn a creator coroutine inside each scope and
+        // have it write the declared key/value pairs into current_context()
+        // (the scope context). Awaited here so every inherited-scope user
+        // coroutine deterministically observes the seeds — the chaos then
+        // lives purely in the concurrent reads, not in seed-vs-read ordering.
+        $seeders = [];
+        foreach ($this->contextSeeds as $scopeName => $pairs) {
+            $scope = $this->scopes[$scopeName];
+            $seeders[] = $scope->spawn(function() use ($pairs) {
+                $cc = \Async\current_context();
+                foreach ($pairs as $k => $v) {
+                    $cc->set($k, $v, true);
+                }
+            });
+        }
+        if ($seeders) {
+            await_all($seeders);
         }
         // First pass: spawn every coroutine, populate handles. Coroutine bodies
         // do NOT run yet (spawn just queues), so by the time the first body
@@ -382,17 +461,18 @@ final class Context {
         // these suspends the scheduler hasn't run the post-dispose microtasks
         // by the time Then-step assertions execute. Bound the loop so a stuck
         // coroutine surfaces as an orphan-coroutines failure rather than a
-        // hang.
-        if ($this->scopes || $this->nonAwaited) {
-            // First a couple of suspends drain micro-tasks (post-dispose
-            // finally callbacks fire here). Then short delays advance the
-            // reactor so any timer-blocked child receives its cancellation.
-            for ($i = 0; $i < 4 && count(\Async\get_coroutines()) > 1; $i++) {
-                suspend();
-            }
-            for ($i = 0; $i < 8 && count(\Async\get_coroutines()) > 1; $i++) {
-                \Async\delay(1);
-            }
+        // hang. Run unconditionally: a scenario may leave internal helper
+        // coroutines (e.g. a Scope::disposeAfterTimeout timer coroutine)
+        // that need a few ticks to reap even when no harness scope exists.
+        //
+        // First a couple of suspends drain micro-tasks (post-dispose finally
+        // callbacks fire here). Then short delays advance the reactor so any
+        // timer-blocked child receives its cancellation.
+        for ($i = 0; $i < 4 && count(\Async\get_coroutines()) > 1; $i++) {
+            suspend();
+        }
+        for ($i = 0; $i < 8 && count(\Async\get_coroutines()) > 1; $i++) {
+            \Async\delay(1);
         }
 
         // Belt-and-braces: every channel ends closed so leftover senders/receivers wake up.
@@ -411,11 +491,77 @@ final class Context {
                 $pool->close();
             }
         }
+        // Belt-and-braces: dispose any TaskSet a scenario left open so its
+        // child scope and coroutines are released before assertions run.
+        foreach ($this->taskSets as $set) {
+            if (!$set->isClosed()) {
+                try { $set->dispose(); } catch (\Throwable $e) { /* already closing */ }
+            }
+        }
+        foreach ($this->pools as $pool) {
+            if (!$pool->isClosed()) {
+                try { $pool->close(); } catch (\Throwable $e) { /* already closing */ }
+            }
+        }
 
         // Suppress "Future was never used" warnings for futures that no
         // coroutine got around to awaiting (await_any only consumes one).
         foreach ($this->futures as $f) {
             $f->ignore();
         }
+    }
+}
+
+/**
+ * CircuitBreakerStrategy implementation for chaos scenarios.
+ *
+ * The Pool runtime drives every method: reportSuccess / reportFailure fire
+ * on each release (success, or failure when beforeRelease rejects), and
+ * shouldRecover is polled while the circuit is INACTIVE. Each call is tallied
+ * into the scenario counters so invariants can assert against them.
+ */
+final class ChaosCircuitBreakerStrategy implements \Async\CircuitBreakerStrategy {
+    public function __construct(private Context $ctx, private string $pool) {}
+
+    public function reportSuccess(mixed $source): void {
+        $this->ctx->inc("cb_success_{$this->pool}");
+    }
+
+    public function reportFailure(mixed $source, \Throwable $error): void {
+        $this->ctx->inc("cb_failure_{$this->pool}");
+    }
+
+    public function shouldRecover(): bool {
+        $this->ctx->inc("cb_should_recover_{$this->pool}");
+        return true;
+    }
+}
+
+/**
+ * SpawnStrategy implementation for chaos scenarios.
+ *
+ * spawn_with() drives every hook: provideScope() supplies the scope,
+ * beforeCoroutineEnqueue() / afterCoroutineEnqueue() bracket the enqueue.
+ * Each call is tallied into the scenario counters.
+ */
+final class ChaosSpawnStrategy implements \Async\SpawnStrategy, \Async\ScopeProvider {
+    public function __construct(
+        private Context $ctx,
+        private string $label,
+        private \Async\Scope $scope,
+    ) {}
+
+    public function provideScope(): ?\Async\Scope {
+        $this->ctx->inc("ss_provide_scope_{$this->label}");
+        return $this->scope;
+    }
+
+    public function beforeCoroutineEnqueue(\Async\Coroutine $coroutine, \Async\Scope $scope): array {
+        $this->ctx->inc("ss_before_enqueue_{$this->label}");
+        return [];
+    }
+
+    public function afterCoroutineEnqueue(\Async\Coroutine $coroutine, \Async\Scope $scope): void {
+        $this->ctx->inc("ss_after_enqueue_{$this->label}");
     }
 }

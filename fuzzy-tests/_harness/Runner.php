@@ -13,13 +13,16 @@ require_once __DIR__ . '/Executor.php';
 
 final class Runner {
     /**
-     * Run a single scenario from a feature, optionally with a specific Examples row.
+     * Run a single scenario from a feature, optionally with a specific Examples
+     * row and a specific mutation-block selection.
      *
      * @param string                $featureFile  absolute path to .feature
      * @param string                $scenarioName exact Scenario name (Outline name without row data)
      * @param array<string,string>|null $row     when provided, scenario is treated as Outline with one row
+     * @param array<int,int|int[]>|null $mutationSelection  per-group choice:
+     *        int for a "One of:" block, int[] for an "Any of:" block
      */
-    public static function runScenario(string $featureFile, string $scenarioName, ?array $row = null, ?int $genSeed = null): void {
+    public static function runScenario(string $featureFile, string $scenarioName, ?array $row = null, ?array $mutationSelection = null, ?int $genSeed = null): void {
         $genSeed ??= (int)(getenv('CHAOS_GEN_SEED') ?: 1);
 
         $source = @file_get_contents($featureFile);
@@ -44,10 +47,11 @@ final class Runner {
             return;
         }
 
-        // Build a synthetic feature with just the chosen scenario.
+        // Build a synthetic feature with just the chosen scenario, with any
+        // mutation blocks flattened down to the selected alternatives.
         $synth = new GherkinFeature($feature->name);
         $synthScenario = new GherkinScenario($picked->name);
-        $synthScenario->steps = $picked->steps;
+        $synthScenario->steps = Gherkin::flatten($picked->steps, $mutationSelection);
         if ($row !== null) {
             $synthScenario->isOutline = true;
             $synthScenario->examples = [$row];

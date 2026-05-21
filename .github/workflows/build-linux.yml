@@ -294,6 +294,30 @@ jobs:
             --set-timeout 120 \
             .
 
+      - name: Run chaos suite under randomised schedulers
+        # The chaos/fuzz scenarios in fuzzy-tests/ are interleaving-invariant:
+        # their assertions must hold under every scheduler order. "Run basic
+        # tests" above covered the deterministic FIFO scheduler; this step
+        # replays the generated chaos suite under several random scheduler
+        # seeds (TRUE_ASYNC_SCHED=random:N). Gated to ZTS non-ASAN builds —
+        # ZTS because most chaos tests SKIPIF non-ZTS, non-ASAN to keep the
+        # already-long ASAN job bounded (it still runs the suite once on FIFO).
+        if: matrix.zts == true && matrix.asan == false
+        working-directory: php-src/ext/async
+        run: |
+          set -e
+          for sched in random:1 random:7 random:42 random:1337; do
+            echo "=== TRUE_ASYNC_SCHED=$sched ==="
+            TRUE_ASYNC_SCHED=$sched /usr/local/bin/php ../../run-tests.php \
+              -P -q -j$(nproc) \
+              -g FAIL,BORK,LEAK,XLEAK \
+              --no-progress \
+              --offline \
+              --show-diff \
+              --set-timeout 120 \
+              fuzzy-tests/_generated
+          done
+
       - name: Collect core dumps + backtraces (ASAN only)
         if: matrix.asan == true && always()
         run: |

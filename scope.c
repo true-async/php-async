@@ -634,7 +634,9 @@ static void scope_timeout_coroutine_entry(void)
 	zend_object *exception =
 			async_new_exception(async_ce_cancellation_exception, "Scope has been disposed due to timeout");
 
-	ZEND_ASYNC_SCOPE_CANCEL(&scope->scope, exception, false, ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(&scope->scope));
+	/* transfer_error = true: this exception is freshly created and owned here;
+	 * hand ownership to the cancel path so it is not leaked. */
+	ZEND_ASYNC_SCOPE_CANCEL(&scope->scope, exception, true, ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(&scope->scope));
 
 	/* Release the ref added in disposeAfterTimeout() and transferred to this
 	 * coroutine via scope_timeout_callback(). */
