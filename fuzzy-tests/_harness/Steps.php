@@ -225,6 +225,15 @@ final class StandardSteps {
                 $ctx->evilPeerDefs[$name]['delay'] = (int)$ctx->resolver->resolve($nExpr);
             });
 
+        // Given evil peer "EP" closes abruptly after N bytes
+        // The peer drops the connection mid-stream once N bytes are out — the
+        // client must see a clean truncation, not a hang or a corrupt buffer.
+        $r->on('/^evil peer "([^"]+)" closes abruptly after (\S+) bytes$/',
+            function(Context $ctx, string $name, string $nExpr) {
+                $ctx->defineEvilPeer($name);
+                $ctx->evilPeerDefs[$name]['reset'] = (int)$ctx->resolver->resolve($nExpr);
+            });
+
         // ---- When: actions inside a coroutine ----
 
         // When coroutine "X" downloads from peer "EP"
@@ -2711,6 +2720,32 @@ final class StandardSteps {
                     throw new \RuntimeException(sprintf(
                         "coroutine %s payload mismatch: expected %d bytes, got %d bytes",
                         $coro, strlen($expected), strlen($got)));
+                }
+            });
+
+        // Then coroutine "X" received a clean prefix of peer "EP"
+        // After an abrupt mid-stream close the client gets fewer bytes than
+        // the full payload — but those bytes must be an exact prefix of it
+        // (correct partial data, no corruption), and non-empty up to the
+        // payload length.
+        $r->on('/^coroutine "([^"]+)" received a clean prefix of peer "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $peer) {
+                if (!isset($ctx->evilPeerDefs[$peer])) {
+                    throw new \RuntimeException("evil peer $peer not defined");
+                }
+                $payload = $ctx->evilPeerDefs[$peer]['payload'];
+                $got = $ctx->ioData[$coro] ?? null;
+                if ($got === null) {
+                    throw new \RuntimeException("coroutine $coro received nothing from peer $peer");
+                }
+                if (strlen($got) > strlen($payload)) {
+                    throw new \RuntimeException(sprintf(
+                        "coroutine %s got %d bytes — more than the %d-byte payload",
+                        $coro, strlen($got), strlen($payload)));
+                }
+                if ($got !== substr($payload, 0, strlen($got))) {
+                    throw new \RuntimeException(
+                        "coroutine $coro received bytes are not a prefix of peer $peer's payload");
                 }
             });
 

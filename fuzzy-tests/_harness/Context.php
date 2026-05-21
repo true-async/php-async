@@ -98,7 +98,7 @@ final class Context {
      * strategies referenced for the scenario's lifetime */
     public array $poolStrategies = [];
 
-    /** @var array<string, array{payload:string,slice:int,delay:int,forked:bool}>
+    /** @var array<string, array{payload:string,slice:int,delay:int,reset:int,forked:bool}>
      * EvilPeer fault tables, keyed by peer name. */
     public array $evilPeerDefs = [];
 
@@ -209,7 +209,8 @@ final class Context {
     /** Define an EvilPeer; idempotent. Toxics are layered on by later steps. */
     public function defineEvilPeer(string $name): void {
         if (!isset($this->evilPeerDefs[$name])) {
-            $this->evilPeerDefs[$name] = ['payload' => '', 'slice' => 0, 'delay' => 0, 'forked' => false];
+            $this->evilPeerDefs[$name] =
+                ['payload' => '', 'slice' => 0, 'delay' => 0, 'reset' => -1, 'forked' => false];
         }
     }
 
