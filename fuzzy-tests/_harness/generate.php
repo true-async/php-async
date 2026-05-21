@@ -35,6 +35,108 @@ function rowSlug(array $row): string {
     return implode('_', $parts);
 }
 
+/** Max mutation variants emitted per scenario (override: `# @chaos-max N`). */
+const CHAOS_EMIT_DEFAULT = 20;
+/** Largest combination space we enumerate in memory before random drawing. */
+const CHAOS_ENUM_CAP = 500;
+
+/**
+ * Selection alternatives for one mutation group.
+ *   'one' → list of ints  (each is the chosen alternative index)
+ *   'any' → list of int[] (each is a chosen subset, the full power set)
+ */
+function groupSelections(\Async\Chaos\GherkinMutationGroup $g): array {
+    $k = count($g->alternatives);
+    if ($g->mode === 'one') {
+        return range(0, $k - 1);
+    }
+    $subsets = [];
+    for ($mask = 0; $mask < (1 << $k); $mask++) {
+        $s = [];
+        for ($b = 0; $b < $k; $b++) {
+            if ($mask & (1 << $b)) {
+                $s[] = $b;
+            }
+        }
+        $subsets[] = $s;
+    }
+    return $subsets;
+}
+
+/**
+ * The mutation selections to emit for a scenario. Returns [null] when the
+ * scenario has no mutation blocks. Otherwise: enumerate the full cartesian
+ * product when small and sample it down to $emitMax; when the space is huge,
+ * draw $emitMax distinct random selections directly. Deterministic in $seed.
+ *
+ * @param \Async\Chaos\GherkinMutationGroup[] $groups
+ * @return array<?array<int,int|int[]>>
+ */
+function mutationVariants(array $groups, int $emitMax, int $seed): array {
+    if (!$groups) {
+        return [null];
+    }
+    $perGroup = array_map(static fn($g) => groupSelections($g), $groups);
+    $total = 1;
+    foreach ($perGroup as $sels) {
+        $total *= count($sels);
+    }
+    mt_srand($seed);
+
+    if ($total <= CHAOS_ENUM_CAP) {
+        $combos = [[]];
+        foreach ($perGroup as $sels) {
+            $next = [];
+            foreach ($combos as $c) {
+                foreach ($sels as $s) {
+                    $cc = $c;
+                    $cc[] = $s;
+                    $next[] = $cc;
+                }
+            }
+            $combos = $next;
+        }
+        if (count($combos) > $emitMax) {
+            shuffle($combos);   // deterministic: mt_srand() seeded above
+            $combos = array_slice($combos, 0, $emitMax);
+        }
+        return $combos;
+    }
+    // Space too large to materialise — draw distinct random selections.
+    $seen = [];
+    $combos = [];
+    $budget = $emitMax * 50;
+    while (count($combos) < $emitMax && $budget-- > 0) {
+        $c = [];
+        foreach ($perGroup as $sels) {
+            $c[] = $sels[mt_rand(0, count($sels) - 1)];
+        }
+        $key = json_encode($c);
+        if (isset($seen[$key])) {
+            continue;
+        }
+        $seen[$key] = true;
+        $combos[] = $c;
+    }
+    return $combos;
+}
+
+/** Compact, filename-safe slug for one mutation selection. */
+function mutationSlug(?array $combo): string {
+    if ($combo === null) {
+        return '';
+    }
+    $parts = [];
+    foreach ($combo as $g => $sel) {
+        if (is_array($sel)) {
+            $parts[] = 'g' . $g . ($sel === [] ? 'none' : 'a' . implode('a', $sel));
+        } else {
+            $parts[] = 'g' . $g . 'o' . $sel;
+        }
+    }
+    return implode('_', $parts);
+}
+
 function rrmdir(string $dir): void {
     if (!is_dir($dir)) return;
     foreach (scandir($dir) as $entry) {
@@ -113,6 +215,7 @@ function emitPhpt(
     string  $featureName,
     string  $scenarioName,
     ?array  $row,
+    ?array  $mutationSelection,
     string  $featureAbs,
     string  $relativeHarness,
     array   $requires = []
@@ -123,7 +226,17 @@ function emitPhpt(
         $rowComment = ' (Examples: ' . implode(', ', array_map(fn($k, $v) => "$k=$v", array_keys($row), $row)) . ')';
         $rowArg = var_export($row, true);
     }
-    $title = $featureName . ' :: ' . $scenarioName . $rowComment;
+    $mutComment = '';
+    $mutArg = 'null';
+    if ($mutationSelection !== null) {
+        $bits = [];
+        foreach ($mutationSelection as $g => $sel) {
+            $bits[] = "g$g=" . (is_array($sel) ? '{' . implode(',', $sel) . '}' : $sel);
+        }
+        $mutComment = ' (Mutation: ' . implode(', ', $bits) . ')';
+        $mutArg = var_export($mutationSelection, true);
+    }
+    $title = $featureName . ' :: ' . $scenarioName . $rowComment . $mutComment;
     $titleEscaped = str_replace("\n", ' ', $title);
     $featureExport  = var_export($featureAbs, true);
     $scenarioExport = var_export($scenarioName, true);
@@ -142,7 +255,8 @@ require_once __DIR__ . '/{$relativeHarness}/Runner.php';
 \\Async\\Chaos\\Runner::runScenario(
     {$featureExport},
     {$scenarioExport},
-    {$rowArg}
+    {$rowArg},
+    {$mutArg}
 );
 ?>
 --EXPECT--
@@ -154,11 +268,10 @@ PHPT;
     file_put_contents($path, $content);
 }
 
-/** Walk a scenario's steps, match each against the registry, union the
- * requires tags. Steps that don't match are reported as warnings. */
-function collectScenarioRequires(\Async\Chaos\StepRegistry $registry, \Async\Chaos\GherkinScenario $scenario): array {
+/** Match a flat list of steps against the registry, union the requires tags. */
+function collectStepsRequires(\Async\Chaos\StepRegistry $registry, array $steps): array {
     $tags = [];
-    foreach ($scenario->steps as $step) {
+    foreach ($steps as $step) {
         $hit = $registry->match($step->text);
         if ($hit === null) {
             continue; // Runner reports unmatched steps at run time
@@ -213,26 +326,33 @@ function main(): int {
 
         foreach ($feature->scenarios as $idx => $scenario) {
             $scenarioSlug = slug($scenario->name);
-            $requires = collectScenarioRequires($registry, $scenario);
-            if ($scenario->isOutline) {
-                foreach ($scenario->examples as $rowIdx => $row) {
-                    $rs = rowSlug($row);
-                    $name = sprintf('%s__%02d_%s__%s.phpt', $featureBase, $idx, $scenarioSlug, $rs);
+            $groups   = $scenario->mutationGroups();
+            $emitMax  = $feature->chaosMax ?? CHAOS_EMIT_DEFAULT;
+            $seed     = crc32($featureRel . '::' . $scenario->name);
+            $variants = mutationVariants($groups, $emitMax, $seed);   // [null] if none
+            $rows     = $scenario->isOutline ? $scenario->examples : [null];
+
+            foreach ($variants as $combo) {
+                // SKIPIF reflects exactly the steps this variant runs.
+                $flatSteps = \Async\Chaos\Gherkin::flatten($scenario->steps, $combo);
+                $requires  = collectStepsRequires($registry, $flatSteps);
+                $mutSlug   = mutationSlug($combo);
+
+                foreach ($rows as $row) {
+                    $suffix = [];
+                    if ($mutSlug !== '')  { $suffix[] = $mutSlug; }
+                    if ($row !== null)    { $suffix[] = rowSlug($row); }
+                    $name = $suffix === []
+                        ? sprintf('%s__%02d_%s.phpt', $featureBase, $idx, $scenarioSlug)
+                        : sprintf('%s__%02d_%s__%s.phpt',
+                            $featureBase, $idx, $scenarioSlug, implode('_', $suffix));
                     emitPhpt(
                         $outSubdir . '/' . $name,
-                        $featureRel, $feature->name, $scenario->name, $row, $featureAbs,
-                        $relativeHarness, $requires
+                        $featureRel, $feature->name, $scenario->name, $row, $combo,
+                        $featureAbs, $relativeHarness, $requires
                     );
                     $written++;
                 }
-            } else {
-                $name = sprintf('%s__%02d_%s.phpt', $featureBase, $idx, $scenarioSlug);
-                emitPhpt(
-                    $outSubdir . '/' . $name,
-                    $featureRel, $feature->name, $scenario->name, null, $featureAbs,
-                    $relativeHarness, $requires
-                );
-                $written++;
             }
         }
     }

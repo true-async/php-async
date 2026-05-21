@@ -74,6 +74,47 @@ Feature: descriptive name
 Steps are matched against regex patterns registered in
 `_harness/Steps.php`. Add new step definitions there.
 
+## Mutation blocks
+
+A scenario can leave a step slot open and let the generator fill it several
+ways. Two block kinds:
+
+```gherkin
+  Scenario: a future is created one way, then one thing happens to it
+    Given a future "F"
+      And a coroutine "P"
+      And a coroutine "A"
+    One of:
+      - coroutine "P" completes future "F" with 1
+      - coroutine "P" completes future "F" with 2
+      - coroutine "P" fails future "F" with "boom"
+    One of:
+      - coroutine "A" awaits future "F"
+      - coroutine "A" inspects locations of future "F"
+     Then counter "fut_loc_bad_F" equals 0
+      And no orphan coroutines
+```
+
+- **`One of:`** — exactly one `- ` alternative is chosen per generated `.phpt`.
+- **`Any of:`** — any subset (the power set, including none and all).
+
+Multiple blocks multiply: the example above expands to `3 × 2 = 6` `.phpt`
+files, named `…__g0o2_g1o0.phpt` (group 0 → alternative 2, group 1 →
+alternative 0). Mutation blocks combine with `Examples:` rows too — the
+product of both axes is generated.
+
+The generator emits at most **20** variants per scenario; a larger
+combination space is sampled deterministically (seeded from the scenario
+name, so re-running `regen.sh` is stable). Override the cap with a comment:
+
+```gherkin
+# @chaos-max 50
+```
+
+Because the chosen alternatives vary, `Then`-invariants must hold for **every**
+variant — write them against counters (`attempts == ok + bad`), not against a
+value that only one alternative produces.
+
 ## Fuzz syntax in step values
 
 Inside a step value (after the regex captures it), the `ValueResolver` accepts:

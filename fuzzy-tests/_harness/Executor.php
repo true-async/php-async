@@ -57,7 +57,10 @@ final class Executor {
         $ctx = new Context($this->genSeed);
         $phase = 'given';
         try {
-            foreach ($scenario->steps as $step) {
+            // Flatten any mutation blocks. runScenario() pre-flattens with the
+            // chosen selection; here (whole-feature runs) the default applies.
+            $steps = Gherkin::flatten($scenario->steps);
+            foreach ($steps as $step) {
                 $effective = $row ? $step->substitute($row) : $step;
 
                 if ($effective->keyword === 'when' && $phase === 'given') {
