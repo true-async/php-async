@@ -1034,6 +1034,38 @@ final class StandardSteps {
                 });
             });
 
+        // When coroutine "X" inspects counters of pool "P"
+        // Samples getPendingCount/getRunningCount/getCompletedCount/
+        // getWorkerCount. Each must be a non-negative int. The sampled values
+        // are recorded into tp_seen_* counters (the step runs once) so the
+        // feature can assert the drained snapshot after awaiting all work.
+        $r->on('/^coroutine "([^"]+)" inspects counters of pool "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $pool) {
+                $ctx->planAction($coro, function(Context $ctx) use ($pool) {
+                    $ctx->inc("tp_counters_attempts_$pool");
+                    if (!isset($ctx->threadPools[$pool])) {
+                        $ctx->inc("tp_counters_target_missing_$pool");
+                        return;
+                    }
+                    $p = $ctx->threadPools[$pool];
+                    $pending   = $p->getPendingCount();
+                    $running   = $p->getRunningCount();
+                    $completed = $p->getCompletedCount();
+                    $workers   = $p->getWorkerCount();
+                    $ok = is_int($pending) && $pending >= 0
+                        && is_int($running) && $running >= 0
+                        && is_int($completed) && $completed >= 0
+                        && is_int($workers) && $workers >= 0;
+                    $ctx->inc($ok ? "tp_counters_ok_$pool" : "tp_counters_bad_$pool");
+                    if ($ok) {
+                        $ctx->inc("tp_seen_pending_$pool", $pending);
+                        $ctx->inc("tp_seen_running_$pool", $running);
+                        $ctx->inc("tp_seen_completed_$pool", $completed);
+                        $ctx->inc("tp_seen_workers_$pool", $workers);
+                    }
+                });
+            });
+
         // When coroutine "X" closes pool "P"
         $r->on('/^coroutine "([^"]+)" closes pool "([^"]+)"$/',
             function(Context $ctx, string $coro, string $pool) {
@@ -1713,6 +1745,36 @@ final class StandardSteps {
             function(Context $ctx, string $name) {
                 if (!isset($ctx->channels[$name]) || !$ctx->channels[$name]->isClosed()) {
                     throw new \RuntimeException("channel $name expected to be closed");
+                }
+            });
+
+        // Then channel "ch" capacity equals N
+        // capacity() reports the buffer size fixed at construction — stable for
+        // the channel's whole lifetime, including after close.
+        $r->on('/^channel "([^"]+)" capacity equals (\d+)$/',
+            function(Context $ctx, string $name, string $nExpr) {
+                if (!isset($ctx->channels[$name])) {
+                    throw new \RuntimeException("channel $name not defined");
+                }
+                $cap = $ctx->channels[$name]->capacity();
+                $want = (int)$nExpr;
+                if ($cap !== $want) {
+                    throw new \RuntimeException("channel $name capacity expected $want, got "
+                        . var_export($cap, true));
+                }
+            });
+
+        // Then thread channel "tc" capacity equals N
+        $r->on('/^thread channel "([^"]+)" capacity equals (\d+)$/',
+            function(Context $ctx, string $name, string $nExpr) {
+                if (!isset($ctx->threadChannels[$name])) {
+                    throw new \RuntimeException("thread channel $name not defined");
+                }
+                $cap = $ctx->threadChannels[$name]->capacity();
+                $want = (int)$nExpr;
+                if ($cap !== $want) {
+                    throw new \RuntimeException("thread channel $name capacity expected $want, got "
+                        . var_export($cap, true));
                 }
             });
 
