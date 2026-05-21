@@ -165,6 +165,28 @@ final class StandardSteps {
                 $ctx->defineTaskSet($name, (int)$ctx->resolver->resolve($cExpr));
             });
 
+        // Given a pool "P"
+        $r->on('/^a pool "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                $ctx->definePool($name);
+            });
+
+        // Given a pool "P" with min N and max M
+        $r->on('/^a pool "([^"]+)" with min (\S+) and max (\S+)$/',
+            function(Context $ctx, string $name, string $minExpr, string $maxExpr) {
+                $ctx->definePool($name,
+                    (int)$ctx->resolver->resolve($minExpr),
+                    (int)$ctx->resolver->resolve($maxExpr));
+            });
+
+        // Given a pool "P" that rejects release
+        // beforeRelease returns false, so every release destroys the resource
+        // and — with a strategy attached — drives reportFailure.
+        $r->on('/^a pool "([^"]+)" that rejects release$/',
+            function(Context $ctx, string $name) {
+                $ctx->definePool($name, 1, 10, true);
+            });
+
         // ---- When: actions inside a coroutine ----
 
         // When coroutine "A" sends N messages to "ch"
@@ -1751,6 +1773,121 @@ final class StandardSteps {
                 });
             });
 
+        // ---- Pool: acquire / release / tryAcquire / circuit breaker ----
+
+        // When coroutine "X" acquires and releases N resources from pool "P"
+        // Each iteration: acquire (blocking), suspend so siblings interleave,
+        // then release. acquired == released when nothing throws.
+        $r->on('/^coroutine "([^"]+)" acquires and releases (\S+) resources from pool "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $nExpr, string $p) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($n, $p) {
+                    if (!isset($ctx->pools[$p])) { $ctx->inc("pool_target_missing_$p"); return; }
+                    $pool = $ctx->pools[$p];
+                    for ($i = 0; $i < $n; $i++) {
+                        $ctx->inc("pool_acquire_attempts_$p");
+                        try {
+                            $res = $pool->acquire();
+                            $ctx->inc("pool_acquired_$p");
+                            \Async\suspend();
+                            $pool->release($res);
+                            $ctx->inc("pool_released_$p");
+                        } catch (\Throwable $e) {
+                            $ctx->inc("pool_acquire_failed_$p");
+                        }
+                    }
+                });
+            });
+
+        // When coroutine "X" tries to acquire from pool "P"
+        // tryAcquire() never blocks: a resource or null. A resource is released
+        // straight back so the pool stays balanced.
+        $r->on('/^coroutine "([^"]+)" tries to acquire from pool "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $p) {
+                $ctx->planAction($coro, function(Context $ctx) use ($p) {
+                    if (!isset($ctx->pools[$p])) { $ctx->inc("pool_target_missing_$p"); return; }
+                    $pool = $ctx->pools[$p];
+                    $ctx->inc("pool_try_attempts_$p");
+                    try {
+                        $res = $pool->tryAcquire();
+                        if ($res === null) {
+                            $ctx->inc("pool_try_null_$p");
+                        } else {
+                            $ctx->inc("pool_try_got_$p");
+                            \Async\suspend();
+                            $pool->release($res);
+                        }
+                    } catch (\Throwable $e) {
+                        $ctx->inc("pool_try_failed_$p");
+                    }
+                });
+            });
+
+        // When coroutine "X" inspects pool "P" counts
+        // count() == idleCount() + activeCount() must hold at every instant;
+        // each counter is a non-negative int.
+        $r->on('/^coroutine "([^"]+)" inspects pool "([^"]+)" counts$/',
+            function(Context $ctx, string $coro, string $p) {
+                $ctx->planAction($coro, function(Context $ctx) use ($p) {
+                    $ctx->inc("pool_counts_attempts_$p");
+                    if (!isset($ctx->pools[$p])) { $ctx->inc("pool_target_missing_$p"); return; }
+                    $pool = $ctx->pools[$p];
+                    $total = $pool->count();
+                    $idle  = $pool->idleCount();
+                    $active = $pool->activeCount();
+                    $ok = is_int($total) && $total >= 0
+                        && is_int($idle) && $idle >= 0
+                        && is_int($active) && $active >= 0
+                        && $total === $idle + $active;
+                    $ctx->inc($ok ? "pool_counts_ok_$p" : "pool_counts_bad_$p");
+                });
+            });
+
+        // When coroutine "X" cycles the circuit breaker of pool "P"
+        // ACTIVE -> deactivate -> INACTIVE -> recover -> RECOVERING ->
+        // activate -> ACTIVE. getState() must report each transition exactly.
+        $r->on('/^coroutine "([^"]+)" cycles the circuit breaker of pool "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $p) {
+                $ctx->planAction($coro, function(Context $ctx) use ($p) {
+                    $ctx->inc("cb_cycle_attempts_$p");
+                    if (!isset($ctx->pools[$p])) { $ctx->inc("pool_target_missing_$p"); return; }
+                    $pool = $ctx->pools[$p];
+                    $s0 = $pool->getState();
+                    $pool->deactivate(); $s1 = $pool->getState();
+                    $pool->recover();    $s2 = $pool->getState();
+                    $pool->activate();   $s3 = $pool->getState();
+                    $ok = $s0 === \Async\CircuitBreakerState::ACTIVE
+                        && $s1 === \Async\CircuitBreakerState::INACTIVE
+                        && $s2 === \Async\CircuitBreakerState::RECOVERING
+                        && $s3 === \Async\CircuitBreakerState::ACTIVE;
+                    $ctx->inc($ok ? "cb_cycle_ok_$p" : "cb_cycle_bad_$p");
+                });
+            });
+
+        // When coroutine "X" attaches a recording strategy to pool "P"
+        // The strategy's reportSuccess/reportFailure fire on each release.
+        $r->on('/^coroutine "([^"]+)" attaches a recording strategy to pool "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $p) {
+                $ctx->planAction($coro, function(Context $ctx) use ($p) {
+                    if (!isset($ctx->pools[$p])) { $ctx->inc("pool_target_missing_$p"); return; }
+                    $strategy = new ChaosCircuitBreakerStrategy($ctx, $p);
+                    $ctx->poolStrategies[$p] = $strategy;
+                    $ctx->pools[$p]->setCircuitBreakerStrategy($strategy);
+                    $ctx->inc("cb_strategy_attached_$p");
+                });
+            });
+
+        // When coroutine "X" detaches the strategy from pool "P"
+        $r->on('/^coroutine "([^"]+)" detaches the strategy from pool "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $p) {
+                $ctx->planAction($coro, function(Context $ctx) use ($p) {
+                    if (!isset($ctx->pools[$p])) { $ctx->inc("pool_target_missing_$p"); return; }
+                    $ctx->pools[$p]->setCircuitBreakerStrategy(null);
+                    unset($ctx->poolStrategies[$p]);
+                    $ctx->inc("cb_strategy_detached_$p");
+                });
+            });
+
         // When coroutine "X" recursively spawns to depth N
         // Each level spawns a child that recurses one fewer; counter
         // "rec_depth" increments once per coroutine, so for depth N the
@@ -2211,6 +2348,43 @@ final class StandardSteps {
                 $c = $ctx->taskSets[$name]->count();
                 if ($c !== (int)$expected) {
                     throw new \RuntimeException("set $name count = $c, expected $expected");
+                }
+            });
+
+        // Then pool "P" active count equals N
+        $r->on('/^pool "([^"]+)" active count equals (\d+)$/',
+            function(Context $ctx, string $name, string $expected) {
+                if (!isset($ctx->pools[$name])) {
+                    throw new \RuntimeException("pool $name not defined");
+                }
+                $c = $ctx->pools[$name]->activeCount();
+                if ($c !== (int)$expected) {
+                    throw new \RuntimeException("pool $name activeCount = $c, expected $expected");
+                }
+            });
+
+        // Then pool "P" count equals N
+        $r->on('/^pool "([^"]+)" count equals (\d+)$/',
+            function(Context $ctx, string $name, string $expected) {
+                if (!isset($ctx->pools[$name])) {
+                    throw new \RuntimeException("pool $name not defined");
+                }
+                $c = $ctx->pools[$name]->count();
+                if ($c !== (int)$expected) {
+                    throw new \RuntimeException("pool $name count = $c, expected $expected");
+                }
+            });
+
+        // Then pool "P" circuit state is ACTIVE|INACTIVE|RECOVERING
+        $r->on('/^pool "([^"]+)" circuit state is (ACTIVE|INACTIVE|RECOVERING)$/',
+            function(Context $ctx, string $name, string $expected) {
+                if (!isset($ctx->pools[$name])) {
+                    throw new \RuntimeException("pool $name not defined");
+                }
+                $state = $ctx->pools[$name]->getState();
+                if ($state->name !== $expected) {
+                    throw new \RuntimeException(
+                        "pool $name circuit state = {$state->name}, expected $expected");
                 }
             });
 

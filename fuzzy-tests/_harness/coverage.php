@@ -32,8 +32,11 @@ function collectApi(string $extDir): array {
         // Track current class
         $currentClass = null;
         foreach (explode("\n", $clean) as $line) {
-            if (preg_match('/^\s*(?:final\s+|abstract\s+)?(?:class|interface)\s+([A-Z][A-Za-z0-9_]*)/', $line, $m)) {
-                $currentClass = $m[1];
+            if (preg_match('/^\s*(?:final\s+|abstract\s+)?(class|interface)\s+([A-Z][A-Za-z0-9_]*)/', $line, $m)) {
+                $currentClass = $m[2];
+                if ($m[1] === 'interface') {
+                    $api['_interfaces'][$currentClass] = true;
+                }
                 $api[$currentClass] = $api[$currentClass] ?? [];
                 continue;
             }
@@ -49,6 +52,7 @@ function collectApi(string $extDir): array {
         }
     }
     foreach ($api as $k => $v) {
+        if ($k === '_interfaces') continue;
         $api[$k] = array_values(array_unique($v));
         sort($api[$k]);
     }
@@ -74,9 +78,27 @@ function isMethodCovered(string $haystack, string $name): bool {
     return false;
 }
 
+/**
+ * Callback-interface methods (CircuitBreakerStrategy, SpawnStrategy, …) are
+ * invoked by the C runtime, never by `->method(` in harness code — so the
+ * call-site heuristic cannot see them. When the harness defines a class that
+ * `implements` the interface, every method it provides IS exercised: the
+ * runtime drives them. Treat such methods as covered.
+ */
+function interfaceImplementedByHarness(string $haystack, string $interface): bool {
+    return (bool)preg_match('/\bimplements\b[^{]*\b' . preg_quote($interface, '/') . '\b/', $haystack);
+}
+
+/** Method names declared by a harness class (matches `function name(`). */
+function harnessDefinesMethod(string $haystack, string $name): bool {
+    return (bool)preg_match('/\bfunction\s+' . preg_quote($name, '/') . '\s*\(/', $haystack);
+}
+
 function main(): int {
     $api = collectApi(EXT_DIR);
     $haystack = harnessText(FUZZY_DIR);
+    $interfaces = $api['_interfaces'] ?? [];
+    unset($api['_interfaces']);
 
     $totalCovered = 0;
     $totalAll = 0;
@@ -89,10 +111,15 @@ function main(): int {
 
     foreach ($api as $entity => $methods) {
         if (empty($methods)) continue;
+        // A callback interface implemented by a harness class: its methods are
+        // driven by the runtime, so count any the harness actually defines.
+        $harnessImpl = isset($interfaces[$entity])
+            && interfaceImplementedByHarness($haystack, $entity);
         $covered = 0;
         $rows = [];
         foreach ($methods as $m) {
-            $isCov = isMethodCovered($haystack, $m);
+            $isCov = isMethodCovered($haystack, $m)
+                || ($harnessImpl && harnessDefinesMethod($haystack, $m));
             if ($isCov) $covered++;
             $rows[] = ($isCov ? '✓' : '·') . ' `' . $m . '`';
         }

@@ -86,6 +86,16 @@ final class Context {
     /** @var array<string, \Async\TaskSet> populated by run() */
     public array $taskSets = [];
 
+    /** @var array<string, array{min:int,max:int,rejectRelease:bool}> */
+    public array $poolDefs = [];
+
+    /** @var array<string, \Async\Pool> populated by run() */
+    public array $pools = [];
+
+    /** @var array<string, \Async\CircuitBreakerStrategy> keeps attached
+     * strategies referenced for the scenario's lifetime */
+    public array $poolStrategies = [];
+
     /** @var array<string, int> name => capacity */
     public array $threadChannelDefs = [];
 
@@ -175,6 +185,10 @@ final class Context {
 
     public function defineTaskSet(string $name, ?int $concurrency = null, ?int $queueLimit = null): void {
         $this->taskSetDefs[$name] = ['concurrency' => $concurrency, 'queueLimit' => $queueLimit];
+    }
+
+    public function definePool(string $name, int $min = 0, int $max = 10, bool $rejectRelease = false): void {
+        $this->poolDefs[$name] = ['min' => $min, 'max' => $max, 'rejectRelease' => $rejectRelease];
     }
 
     public function defineThreadChannel(string $name, int $capacity): void {
@@ -294,6 +308,20 @@ final class Context {
             } else {
                 $this->taskSets[$name] = new \Async\TaskSet($spec['concurrency'], $spec['queueLimit']);
             }
+        }
+        foreach ($this->poolDefs as $name => $spec) {
+            // Factory hands out a fresh incrementing resource id; rejectRelease
+            // pools install a beforeRelease that always rejects, so each
+            // release destroys the resource and (with a strategy attached)
+            // triggers reportFailure.
+            $resourceId = 0;
+            $factory = function() use (&$resourceId) { return ++$resourceId; };
+            $this->pools[$name] = new \Async\Pool(
+                factory: $factory,
+                beforeRelease: $spec['rejectRelease'] ? (static fn($r): bool => false) : null,
+                min: $spec['min'],
+                max: $spec['max'],
+            );
         }
         foreach ($this->futureDefs as $name) {
             $state = new FutureState();
@@ -469,11 +497,41 @@ final class Context {
                 try { $set->dispose(); } catch (\Throwable $e) { /* already closing */ }
             }
         }
+        foreach ($this->pools as $pool) {
+            if (!$pool->isClosed()) {
+                try { $pool->close(); } catch (\Throwable $e) { /* already closing */ }
+            }
+        }
 
         // Suppress "Future was never used" warnings for futures that no
         // coroutine got around to awaiting (await_any only consumes one).
         foreach ($this->futures as $f) {
             $f->ignore();
         }
+    }
+}
+
+/**
+ * CircuitBreakerStrategy implementation for chaos scenarios.
+ *
+ * The Pool runtime drives every method: reportSuccess / reportFailure fire
+ * on each release (success, or failure when beforeRelease rejects), and
+ * shouldRecover is polled while the circuit is INACTIVE. Each call is tallied
+ * into the scenario counters so invariants can assert against them.
+ */
+final class ChaosCircuitBreakerStrategy implements \Async\CircuitBreakerStrategy {
+    public function __construct(private Context $ctx, private string $pool) {}
+
+    public function reportSuccess(mixed $source): void {
+        $this->ctx->inc("cb_success_{$this->pool}");
+    }
+
+    public function reportFailure(mixed $source, \Throwable $error): void {
+        $this->ctx->inc("cb_failure_{$this->pool}");
+    }
+
+    public function shouldRecover(): bool {
+        $this->ctx->inc("cb_should_recover_{$this->pool}");
+        return true;
     }
 }
