@@ -3051,6 +3051,18 @@ static zend_object *closure_transfer_obj(
 		memset(&fcall, 0, sizeof(fcall));
 		fcall.fci_cache.function_handler = (zend_function *) func;
 
+		/* Preserve the closure's bound $this. thread_copy_callable reads the
+		 * bound instance from fci_cache.object; without this the snapshot is
+		 * built unbound and the destination thread recreates an object-less
+		 * closure — a method/object-bound closure then dereferences a NULL
+		 * $this on first use. */
+		zval closure_zv;
+		ZVAL_OBJ(&closure_zv, object);
+		zval *bound_this = zend_get_closure_this_ptr(&closure_zv);
+		if (bound_this != NULL && Z_TYPE_P(bound_this) == IS_OBJECT) {
+			fcall.fci_cache.object = Z_OBJ_P(bound_this);
+		}
+
 		async_thread_snapshot_t *snapshot = async_thread_snapshot_create(&fcall, NULL);
 		if (snapshot == NULL) {
 			return NULL;
