@@ -1,5 +1,7 @@
 --TEST--
 Async\signal() - receive signal from another coroutine
+--EXTENSIONS--
+pcntl
 --SKIPIF--
 <?php
 if (PHP_OS_FAMILY === 'Windows') echo "skip Unix-only test";
@@ -7,7 +9,6 @@ if (!function_exists('posix_kill')) echo "skip posix extension required";
 ?>
 --FILE--
 <?php
-
 use Async\Signal;
 use function Async\signal;
 use function Async\await;
