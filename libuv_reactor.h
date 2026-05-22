@@ -138,6 +138,15 @@ struct _async_io_t
 	int orig_fd;   /* original stdio fd (0/1/2) when dup'd, or -1 */
 	async_io_req_t *active_req;
 
+	/* File-write serialization: at most one uv_fs_write may be in flight
+	 * per handle. Concurrent thread-pool writes with offset=-1 race the
+	 * shared kernel file offset and silently lose data on platforms that
+	 * do not serialize them in-kernel (macOS, Windows). Extra writes wait
+	 * in this FIFO and are dispatched one at a time, on each completion. */
+	async_io_req_t *write_q_head;
+	async_io_req_t *write_q_tail;
+	bool file_write_in_flight;
+
 	union
 	{
 		uv_stream_t stream;
@@ -165,6 +174,9 @@ struct _async_io_req_t
 	 * in a trailing flex array right after the req struct (single pecalloc).
 	 * Completion / dispose paths release each ref. Zero means non-writev. */
 	uint16_t writev_nbufs;
+
+	/* Link in async_io_t::write_q_* while this file write waits its turn. */
+	async_io_req_t *write_q_next;
 
 	union
 	{
