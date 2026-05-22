@@ -234,6 +234,53 @@ final class StandardSteps {
                 $ctx->evilPeerDefs[$name]['reset'] = (int)$ctx->resolver->resolve($nExpr);
             });
 
+        // Given an evil peer "EP" that never reads
+        // A consume-mode peer that accepts the connection and never drains a
+        // single byte. The client's send buffer fills and its fwrite()
+        // suspends on the reactor's write-wait hook — the back-pressure path.
+        $r->on('/^an evil peer "([^"]+)" that never reads$/',
+            function(Context $ctx, string $name) {
+                $ctx->defineEvilPeer($name);
+                $ctx->evilPeerDefs[$name]['mode']  = 'consume';
+                $ctx->evilPeerDefs[$name]['slice'] = 0;
+            });
+
+        // Given an evil peer "EP" that reads N bytes at a time
+        // A consume-mode peer that drains its receive buffer in fixed-size
+        // reads — slow enough (especially with a between-reads delay) to keep
+        // the client's writer suspended for a while.
+        $r->on('/^an evil peer "([^"]+)" that reads (\S+) bytes at a time$/',
+            function(Context $ctx, string $name, string $nExpr) {
+                $ctx->defineEvilPeer($name);
+                $ctx->evilPeerDefs[$name]['mode']  = 'consume';
+                $ctx->evilPeerDefs[$name]['slice'] = (int)$ctx->resolver->resolve($nExpr);
+            });
+
+        // Given evil peer "EP" delays N ms between reads
+        $r->on('/^evil peer "([^"]+)" delays (\S+) ms between reads$/',
+            function(Context $ctx, string $name, string $nExpr) {
+                $ctx->defineEvilPeer($name);
+                $ctx->evilPeerDefs[$name]['delay'] = (int)$ctx->resolver->resolve($nExpr);
+            });
+
+        // Given evil peer "EP" stops reading after N bytes
+        // The peer drains N bytes then abandons the connection — the client's
+        // writer must see a clean broken-pipe failure, not a hang.
+        $r->on('/^evil peer "([^"]+)" stops reading after (\S+) bytes$/',
+            function(Context $ctx, string $name, string $nExpr) {
+                $ctx->defineEvilPeer($name);
+                $ctx->evilPeerDefs[$name]['reset'] = (int)$ctx->resolver->resolve($nExpr);
+            });
+
+        // Given evil peer "EP" holds the connection for N ms
+        // Only meaningful for a never-read peer: how long it keeps the stalled
+        // connection open before closing, i.e. the killer's window to cancel.
+        $r->on('/^evil peer "([^"]+)" holds the connection for (\S+) ms$/',
+            function(Context $ctx, string $name, string $nExpr) {
+                $ctx->defineEvilPeer($name);
+                $ctx->evilPeerDefs[$name]['hold'] = (int)$ctx->resolver->resolve($nExpr);
+            });
+
         // ---- When: actions inside a coroutine ----
 
         // When coroutine "X" downloads from peer "EP"
@@ -258,6 +305,35 @@ final class StandardSteps {
             function(Context $ctx, string $coro, string $peer) {
                 $ctx->planAction($coro, function(Context $ctx) use ($coro, $peer) {
                     StandardSteps::ioDownload($ctx, $coro, $peer, 1);
+                });
+            });
+
+        // When coroutine "X" uploads N bytes to peer "EP"
+        // Connects and writes N bytes in a single fwrite(). Against a slow or
+        // never-reading consume-mode peer that fwrite() suspends on a full
+        // send buffer. Cancellation-aware: a cancel mid-write lands in
+        // io_upload_cancelled with the partial byte count preserved. The
+        // liveness invariant
+        //   io_upload_ok + io_upload_cancelled + io_upload_failed
+        //     + io_upload_connect_failed + io_upload_no_peer == attempts
+        // therefore holds for every interleaving.
+        $r->on('/^coroutine "([^"]+)" uploads (\S+) bytes to peer "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $nExpr, string $peer) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $peer, $n) {
+                    StandardSteps::ioUpload($ctx, $coro, $peer, $n, $n);
+                });
+            });
+
+        // When coroutine "X" uploads N bytes to peer "EP" in M-byte writes
+        // Same, but chunked into M-byte fwrite() calls — a logic-chaos
+        // alternative that crosses the write-path with different call shapes.
+        $r->on('/^coroutine "([^"]+)" uploads (\S+) bytes to peer "([^"]+)" in (\S+)-byte writes$/',
+            function(Context $ctx, string $coro, string $nExpr, string $peer, string $mExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $m = (int)$ctx->resolver->resolve($mExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $peer, $n, $m) {
+                    StandardSteps::ioUpload($ctx, $coro, $peer, $n, $m > 0 ? $m : $n);
                 });
             });
 
@@ -2910,6 +2986,76 @@ final class StandardSteps {
             $ctx->events[] = sprintf(
                 'client %s: peer=%s readsize=%d reads=%d recv=%dB outcome=%s',
                 $coro, $peer, $readSize, $reads, strlen($buf), $outcome);
+        }
+    }
+
+    /**
+     * Shared EvilPeer upload routine used by the "uploads ... to peer" steps.
+     * Connects to a consume-mode peer and writes `$bytes` bytes in `$writeSize`
+     * -byte fwrite() calls. Against a slow / never-reading peer the writes
+     * suspend on a full send buffer — this is what exercises the reactor's
+     * write-wait hook.
+     *
+     * Cancellation-aware: a cancel mid-write is caught, the partial sent count
+     * is still stashed, and the outcome is bucketed into exactly one counter
+     * so the liveness invariant holds across every interleaving. A peer that
+     * abandons the connection mid-stream surfaces as a clean io_upload_failed
+     * (broken pipe), never a hang.
+     */
+    public static function ioUpload(Context $ctx, string $coro, string $peer, int $bytes, int $writeSize): void {
+        $ctx->inc("io_upload_attempts_$coro");
+        $addr = $ctx->evilPeerAddr[$peer] ?? null;
+        if ($addr === null) {
+            $ctx->inc("io_upload_no_peer_$coro");
+            return;
+        }
+        $sent    = 0;
+        $writes  = 0;
+        $outcome = 'ok';
+        $sock    = null;
+        try {
+            $sock = @stream_socket_client('tcp://' . $addr, $errno, $errstr, 5);
+            if ($sock === false) {
+                $ctx->inc("io_upload_connect_failed_$coro");
+                $outcome = 'connect_failed';
+                return;
+            }
+            // Deterministic payload — printable ASCII cycle (built fast so a
+            // multi-MiB upload does not dominate the test runtime).
+            $block = '';
+            for ($i = 0; $i < 94; $i++) {
+                $block .= chr(33 + $i);
+            }
+            $payload = substr(str_repeat($block, intdiv($bytes, 94) + 1), 0, $bytes);
+            while ($sent < $bytes) {
+                $n = @fwrite($sock, substr($payload, $sent, $writeSize)); /* may block */
+                if ($n === false || $n === 0) {
+                    break; // peer gone — broken pipe
+                }
+                $sent += $n;
+                $writes++;
+                $ctx->inc("io_write_calls_$coro");
+            }
+            if ($sent >= $bytes) {
+                $ctx->inc("io_upload_ok_$coro");
+            } else {
+                $outcome = 'failed';
+                $ctx->inc("io_upload_failed_$coro");
+            }
+        } catch (\Async\AsyncCancellation $e) {
+            $outcome = 'cancelled';
+            $ctx->inc("io_upload_cancelled_$coro");
+        } catch (\Throwable $e) {
+            $outcome = 'failed';
+            $ctx->inc("io_upload_failed_$coro");
+        } finally {
+            if (is_resource($sock)) {
+                @fclose($sock);
+            }
+            $ctx->inc("io_sent_bytes_$coro", $sent);
+            $ctx->events[] = sprintf(
+                'client %s: peer=%s upload=%dB writesize=%d writes=%d sent=%dB outcome=%s',
+                $coro, $peer, $bytes, $writeSize, $writes, $sent, $outcome);
         }
     }
 }

@@ -705,16 +705,28 @@ static bool libuv_poll_dispose(zend_async_event_t *event)
 static zend_always_inline void
 async_poll_notify_proxies(async_poll_event_t *poll, async_poll_event triggered_events, zend_object *exception)
 {
+	/* A disconnect or error is terminal for the descriptor: every waiter on
+	 * it must be released, not only those whose mask requested DISCONNECT.
+	 * Otherwise a writer parked on ASYNC_WRITABLE hangs forever when the peer
+	 * resets the connection — libuv reports POLLERR as UV_EBADF, which
+	 * on_poll_event turns into a bare ASYNC_DISCONNECT that no write proxy
+	 * mask matches. */
+	const bool is_terminal = (triggered_events & ASYNC_DISCONNECT) != 0 || exception != NULL;
+
 	/* Process each proxy that matches triggered events */
 	for (uint32_t i = 0; i < poll->proxies_count; i++) {
 		zend_async_poll_proxy_t *proxy = poll->proxies[i];
 
-		if ((triggered_events & proxy->events) != 0) {
+		if (is_terminal || (triggered_events & proxy->events) != 0) {
 			/* Increase ref count to prevent disposal during processing */
 			ZEND_ASYNC_EVENT_ADD_REF(&proxy->base);
 
-			/* Calculate events relevant to this proxy */
-			async_poll_event proxy_events = triggered_events & proxy->events;
+			/* Calculate events relevant to this proxy. On a terminal
+			 * condition the proxy observes the disconnect even if its mask
+			 * never asked for it. */
+			async_poll_event proxy_events = is_terminal
+				? (triggered_events | (triggered_events & proxy->events))
+				: (triggered_events & proxy->events);
 
 			/* Set triggered events and notify callbacks */
 			proxy->triggered_events = proxy_events;
