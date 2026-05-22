@@ -62,6 +62,7 @@ final class EvilPeer {
         $delay     = $spec['delay']     ?? 0;
         $reset     = $spec['reset']     ?? -1;
         $hardReset = $spec['hardReset'] ?? false;
+        $forked    = $spec['forked']    ?? false;
 
         // A reset toxic caps delivery at `reset` bytes; otherwise deliver all.
         $len = strlen($payload);
@@ -78,7 +79,7 @@ final class EvilPeer {
             @fwrite($conn, substr($payload, $off, $n));
             $trace[] = 'w' . $n;
             if ($delay > 0 && $off + $step < $len) {
-                \Async\delay($delay);
+                self::pause($delay, $forked);
                 $trace[] = 'd' . $delay;
             }
         }
@@ -96,6 +97,19 @@ final class EvilPeer {
             $ctx->events[] = sprintf(
                 'evil-peer %s: payload=%dB slice=%d delay=%d reset=%d hardReset=%d | %s',
                 $name, strlen($payload), $slice, $delay, $reset, (int) $hardReset, implode(' ', $trace));
+        }
+    }
+
+    /**
+     * Pause between chunks/reads. An in-process peer must yield to the shared
+     * reactor (\Async\delay); a forked peer is its own process with no shared
+     * event loop, so a plain blocking usleep() is correct and simpler.
+     */
+    private static function pause(int $ms, bool $forked): void {
+        if ($forked) {
+            usleep($ms * 1000);
+        } else {
+            \Async\delay($ms);
         }
     }
 
@@ -133,6 +147,7 @@ final class EvilPeer {
         $reset     = $spec['reset']     ?? -1;
         $hold      = $spec['hold']      ?? 0;
         $hardReset = $spec['hardReset'] ?? false;
+        $forked    = $spec['forked']    ?? false;
 
         $trace = [];
         $total = 0;
@@ -142,7 +157,7 @@ final class EvilPeer {
             // and its fwrite() suspends. Hold the connection open so a killer
             // coroutine has a window to cancel the blocked writer, then close.
             if ($hold > 0) {
-                \Async\delay($hold);
+                self::pause($hold, $forked);
                 $trace[] = 'h' . $hold;
             }
             $trace[] = 'noread';
@@ -166,7 +181,7 @@ final class EvilPeer {
                     break;
                 }
                 if ($delay > 0) {
-                    \Async\delay($delay);
+                    self::pause($delay, $forked);
                     $trace[] = 'd' . $delay;
                 }
             }

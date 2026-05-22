@@ -292,6 +292,16 @@ final class StandardSteps {
             })
             ->requires('sockets');
 
+        // Given evil peer "EP" runs as a forked peer
+        // Toxic modifier: the peer runs in a separate OS process (proc_open)
+        // instead of an in-process coroutine — a genuinely independent TCP
+        // endpoint, no shared reactor. The same fault table applies.
+        $r->on('/^evil peer "([^"]+)" runs as a forked peer$/',
+            function(Context $ctx, string $name) {
+                $ctx->defineEvilPeer($name);
+                $ctx->evilPeerDefs[$name]['forked'] = true;
+            });
+
         // ---- When: actions inside a coroutine ----
 
         // When coroutine "X" downloads from peer "EP"

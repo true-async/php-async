@@ -108,6 +108,10 @@ final class Context {
     /** @var array<string, resource> peer name => listening socket */
     public array $evilPeerServers = [];
 
+    /** @var array<string, array{proc:resource,pipes:array}> peer name =>
+     * forked peer process handle (only for peers run as a forked peer) */
+    public array $evilPeerProcs = [];
+
     /** @var array<string, string> coroutine name => bytes it received over I/O */
     public array $ioData = [];
 
@@ -214,6 +218,33 @@ final class Context {
                 'hold' => 0, 'hardReset' => false, 'mode' => 'serve', 'forked' => false,
             ];
         }
+    }
+
+    /** Launch a forked EvilPeer in its own process and record its address.
+     * The fault table is handed over on the child's stdin; the child prints
+     * its bound "host:port" as the first stdout line. */
+    private function startForkedPeer(string $name, array $spec): void {
+        $script = __DIR__ . '/../_peers/forked_peer.php';
+        $descriptors = [
+            0 => ['pipe', 'r'],   // child stdin  — the serialized fault table
+            1 => ['pipe', 'w'],   // child stdout — the bound address
+            2 => ['pipe', 'w'],   // child stderr
+        ];
+        $pipes = [];
+        $proc = @proc_open([PHP_BINARY, $script], $descriptors, $pipes);
+        if (!is_resource($proc)) {
+            throw new \RuntimeException("EvilPeer $name: cannot fork peer process");
+        }
+        fwrite($pipes[0], base64_encode(serialize($spec)));
+        fclose($pipes[0]);
+        $addr = trim((string) fgets($pipes[1]));
+        if ($addr === '') {
+            @proc_terminate($proc);
+            @proc_close($proc);
+            throw new \RuntimeException("EvilPeer $name: forked peer did not report an address");
+        }
+        $this->evilPeerAddr[$name] = $addr;
+        $this->evilPeerProcs[$name] = ['proc' => $proc, 'pipes' => $pipes];
     }
 
     public function defineThreadChannel(string $name, int $capacity): void {
@@ -409,6 +440,12 @@ final class Context {
         // served (or failed to serve) one connection.
         $peerCoros = [];
         foreach ($this->evilPeerDefs as $name => $spec) {
+            // A forked peer runs in its own OS process — no in-process socket
+            // or accept coroutine; proc_open binds and serves it externally.
+            if (!empty($spec['forked'])) {
+                $this->startForkedPeer($name, $spec);
+                continue;
+            }
             $server = @stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
             if ($server === false) {
                 throw new \RuntimeException("EvilPeer $name: cannot listen: $errstr");
@@ -565,6 +602,19 @@ final class Context {
         foreach ($this->evilPeerServers as $server) {
             if (is_resource($server)) {
                 @fclose($server);
+            }
+        }
+        // Reap forked peer processes — each exits on its own after serving
+        // one connection; terminate is a safety net for an unconnected peer.
+        foreach ($this->evilPeerProcs as $entry) {
+            foreach ([1, 2] as $fd) {
+                if (isset($entry['pipes'][$fd]) && is_resource($entry['pipes'][$fd])) {
+                    @fclose($entry['pipes'][$fd]);
+                }
+            }
+            if (is_resource($entry['proc'])) {
+                @proc_terminate($entry['proc']);
+                @proc_close($entry['proc']);
             }
         }
 
