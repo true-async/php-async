@@ -66,3 +66,33 @@ Fixed in `php_stdiop_write()` / `php_stdiop_read()`: re-suspend until *this*
 request completed. Regression test `tests/io/083-concurrent_async_write.phpt`.
 The structural fix — per-request completion events instead of the broadcast —
 is tracked in true-async/php-async#130.
+
+## Async curl drops a chunked response body (real bug — fixed)
+
+The new `curl/http_chaos.feature` (issue #136) drives an async `ext/curl`
+client against the EvilPeer in its `http` mode. Every scenario passed except
+the three "chunked transfer encoding" rows, which failed with
+`curl_get_ok == 0`: curl reported `CURLE_WRITE_ERROR` —
+*"Failure writing output to destination, passed 272 returned 17"* — after
+delivering only the first 17-byte chunk to the `CURLOPT_WRITEFUNCTION`
+callback. The same program on stock PHP 8.3 returns the whole body.
+
+Root cause in `ext/curl/curl_async.c`. The async write path uses libcurl's
+`CURL_WRITEFUNC_PAUSE` / unpause pattern: the first `curl_write` call copies
+the data, spawns a coroutine for the PHP callback and returns `PAUSE`; the
+completion callback stores the callback's return value and unpauses, and the
+*re-call* returns that stored value. The re-call branch assumed libcurl
+re-delivers exactly the slice that was paused on — but on unpause libcurl
+re-delivers the whole paused window **and coalesces any freshly decoded data
+into it**. With chunked transfer-encoding the de-chunker produces many small
+pieces, so the re-call carried 272 bytes while the stored result was 17 →
+`passed 272 returned 17` → `CURLE_WRITE_ERROR`. (A fixed Content-Length body
+arrives one network read at a time, one write callback per reactor wakeup,
+so it never tripped — only chunked decoding coalesces.)
+
+Fixed in `curl_async_write_user()`: the re-call now tracks a
+`consumed_offset` through the (possibly grown) window — it reports the full
+length back to libcurl only once the PHP callback has accepted every byte,
+otherwise it feeds the remainder through another callback slice. A genuine
+short return / exception still surfaces verbatim via a new `aborted` flag.
+Tracked in php-src as `#136`.

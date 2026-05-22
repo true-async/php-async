@@ -383,6 +383,96 @@ final class StandardSteps {
             })
             ->requires('toxiproxy');
 
+        // ---- Evil HTTP peer: an EvilPeer that speaks HTTP/1.1 ----
+        // The peer drains one HTTP request, then writes back a response. The
+        // body-level toxics ("slices output", "delays ms between chunks",
+        // "closes abruptly after N bytes", "uses a hard reset", "runs as a
+        // forked peer", every Toxiproxy step) all reuse the serve-mode steps
+        // above — they only set keys, mode-agnostic. The steps below add the
+        // HTTP-specific framing and toxics. An async ext/curl client driven by
+        // the reactor faces this peer.
+
+        // Given an evil HTTP peer "EP" serving N bytes
+        $r->on('/^an evil HTTP peer "([^"]+)" serving (\S+) bytes$/',
+            function(Context $ctx, string $name, string $nExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->defineEvilPeer($name);
+                $ctx->evilPeerDefs[$name]['mode'] = 'http';
+                $payload = '';
+                for ($i = 0; $i < $n; $i++) {
+                    $payload .= chr(33 + ($i % 94)); // printable ASCII cycle
+                }
+                $ctx->evilPeerDefs[$name]['payload'] = $payload;
+            })
+            ->requires('curl');
+
+        // Given an evil HTTP peer "EP" serving "body"
+        $r->on('/^an evil HTTP peer "([^"]+)" serving "([^"]*)"$/',
+            function(Context $ctx, string $name, string $body) {
+                $ctx->defineEvilPeer($name);
+                $ctx->evilPeerDefs[$name]['mode']    = 'http';
+                $ctx->evilPeerDefs[$name]['payload'] = $body;
+            })
+            ->requires('curl');
+
+        // Given evil HTTP peer "EP" responds with status N
+        // The peer answers with an arbitrary HTTP status. curl still completes
+        // the transaction successfully (errno 0) — a 4xx/5xx is a valid HTTP
+        // response, not a transport error.
+        $r->on('/^evil HTTP peer "([^"]+)" responds with status (\S+)$/',
+            function(Context $ctx, string $name, string $sExpr) {
+                $ctx->defineEvilPeer($name);
+                $ctx->evilPeerDefs[$name]['mode']       = 'http';
+                $ctx->evilPeerDefs[$name]['httpStatus'] = (int)$ctx->resolver->resolve($sExpr);
+            })
+            ->requires('curl');
+
+        // Given evil HTTP peer "EP" uses chunked transfer encoding
+        // The body arrives Transfer-Encoding: chunked; curl must de-chunk it
+        // back to the exact byte stream regardless of how it was framed.
+        $r->on('/^evil HTTP peer "([^"]+)" uses chunked transfer encoding$/',
+            function(Context $ctx, string $name) {
+                $ctx->defineEvilPeer($name);
+                $ctx->evilPeerDefs[$name]['mode']        = 'http';
+                $ctx->evilPeerDefs[$name]['httpChunked'] = true;
+            })
+            ->requires('curl');
+
+        // Given evil HTTP peer "EP" overstates Content-Length by N bytes
+        // A mendacious header — the peer promises more than it delivers. curl
+        // waits for bytes that never come and must report CURLE_PARTIAL_FILE,
+        // never hang.
+        $r->on('/^evil HTTP peer "([^"]+)" overstates Content-Length by (\S+) bytes$/',
+            function(Context $ctx, string $name, string $nExpr) {
+                $ctx->defineEvilPeer($name);
+                $ctx->evilPeerDefs[$name]['mode']        = 'http';
+                $ctx->evilPeerDefs[$name]['httpClenLie'] = (int)$ctx->resolver->resolve($nExpr);
+            })
+            ->requires('curl');
+
+        // Given evil HTTP peer "EP" understates Content-Length by N bytes
+        // The peer promises fewer bytes than it sends; curl stops reading at
+        // the advertised length, so the client sees a clean prefix.
+        $r->on('/^evil HTTP peer "([^"]+)" understates Content-Length by (\S+) bytes$/',
+            function(Context $ctx, string $name, string $nExpr) {
+                $ctx->defineEvilPeer($name);
+                $ctx->evilPeerDefs[$name]['mode']        = 'http';
+                $ctx->evilPeerDefs[$name]['httpClenLie'] = -(int)$ctx->resolver->resolve($nExpr);
+            })
+            ->requires('curl');
+
+        // Given evil HTTP peer "EP" delays N ms mid-headers
+        // Slow-headers toxic: the response status line and headers dribble in
+        // over two TCP writes with a pause between. curl's header parser must
+        // stay interruptible and reassemble them correctly.
+        $r->on('/^evil HTTP peer "([^"]+)" delays (\S+) ms mid-headers$/',
+            function(Context $ctx, string $name, string $nExpr) {
+                $ctx->defineEvilPeer($name);
+                $ctx->evilPeerDefs[$name]['mode']            = 'http';
+                $ctx->evilPeerDefs[$name]['httpHeaderDelay'] = (int)$ctx->resolver->resolve($nExpr);
+            })
+            ->requires('curl');
+
         // ---- When: actions inside a coroutine ----
 
         // When coroutine "X" downloads from peer "EP"
@@ -409,6 +499,23 @@ final class StandardSteps {
                     StandardSteps::ioDownload($ctx, $coro, $peer, 1);
                 });
             });
+
+        // When coroutine "X" fetches peer "EP" over HTTP
+        // Runs an async ext/curl GET against the evil HTTP peer. The body is
+        // captured incrementally through CURLOPT_WRITEFUNCTION, so a truncated
+        // or cancelled transfer still leaves the prefix that did arrive.
+        // Cancellation-aware: a cancel mid-request lands in curl_get_cancelled.
+        // The liveness invariant
+        //   curl_get_ok + curl_get_cancelled + curl_get_failed
+        //     + curl_get_no_peer == curl_get_attempts
+        // therefore holds for every interleaving.
+        $r->on('/^coroutine "([^"]+)" fetches peer "([^"]+)" over HTTP$/',
+            function(Context $ctx, string $coro, string $peer) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $peer) {
+                    StandardSteps::curlGet($ctx, $coro, $peer);
+                });
+            })
+            ->requires('curl');
 
         // When coroutine "X" uploads N bytes to peer "EP"
         // Connects and writes N bytes in a single fwrite(). Against a slow or
@@ -2942,6 +3049,20 @@ final class StandardSteps {
                 }
             });
 
+        // Then coroutine "X" received HTTP status N
+        // The curl client stashes the response status code into the
+        // curl_http_code_$coro counter; a 4xx/5xx is a valid response, so this
+        // is decidable independently of the transport-level outcome bucket.
+        $r->on('/^coroutine "([^"]+)" received HTTP status (\S+)$/',
+            function(Context $ctx, string $coro, string $sExpr) {
+                $want = (int)$ctx->resolver->resolve($sExpr);
+                $got  = $ctx->counters["curl_http_code_$coro"] ?? 0;
+                if ($got !== $want) {
+                    throw new \RuntimeException(sprintf(
+                        "coroutine %s expected HTTP status %d, got %d", $coro, $want, $got));
+                }
+            });
+
         // Then group "G" is finished
         $r->on('/^group "([^"]+)" is finished$/',
             function(Context $ctx, string $name) {
@@ -3167,6 +3288,79 @@ final class StandardSteps {
             $ctx->events[] = sprintf(
                 'client %s: peer=%s upload=%dB writesize=%d writes=%d sent=%dB outcome=%s',
                 $coro, $peer, $bytes, $writeSize, $writes, $sent, $outcome);
+        }
+    }
+
+    /**
+     * Shared async-curl routine used by the "fetches peer over HTTP" step.
+     * Runs one ext/curl GET against an evil HTTP peer; ext/async drives the
+     * transfer through the libuv reactor, so the coroutine yields for the
+     * duration and a concurrent killer can cancel it mid-request.
+     *
+     * The body is captured incrementally via CURLOPT_WRITEFUNCTION into
+     * $ctx->ioData so a truncated / cancelled transfer still leaves the prefix
+     * that arrived — the same clean-prefix invariant the raw-socket download
+     * uses. The outcome is bucketed into exactly one counter:
+     *   curl_get_ok          — curl_errno() == 0 (a 4xx/5xx still counts)
+     *   curl_get_cancelled   — AsyncCancellation delivered into the transfer
+     *   curl_get_failed      — any curl error / other throwable
+     *   curl_get_no_peer     — peer address never resolved
+     * so curl_get_ok + cancelled + failed + no_peer == curl_get_attempts for
+     * every interleaving. The response status is stashed separately into
+     * curl_http_code_$coro.
+     */
+    public static function curlGet(Context $ctx, string $coro, string $peer): void {
+        $ctx->inc("curl_get_attempts_$coro");
+        // Define the body slot up front so a clean-prefix assertion stays valid
+        // even when the request never produces a byte.
+        $ctx->ioData[$coro] = '';
+        $addr = $ctx->evilPeerAddr[$peer] ?? null;
+        if ($addr === null) {
+            $ctx->inc("curl_get_no_peer_$coro");
+            return;
+        }
+        $buf      = '';
+        $outcome  = 'ok';
+        $errno    = 0;
+        $httpCode = 0;
+        $ch       = null;
+        try {
+            $ch = curl_init();
+            curl_setopt($ch, CURLOPT_URL, 'http://' . $addr . '/');
+            curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+            curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
+            // Append every delivered chunk; returning a short count would make
+            // curl abort, so always report the full length back.
+            curl_setopt($ch, CURLOPT_WRITEFUNCTION,
+                function($ch, string $data) use (&$buf) {
+                    $buf .= $data;
+                    return strlen($data);
+                });
+            curl_exec($ch);
+            $errno    = curl_errno($ch);
+            $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            if ($errno === 0) {
+                $ctx->inc("curl_get_ok_$coro");
+            } else {
+                $outcome = 'failed';
+                $ctx->inc("curl_get_failed_$coro");
+            }
+        } catch (\Async\AsyncCancellation $e) {
+            $outcome = 'cancelled';
+            $ctx->inc("curl_get_cancelled_$coro");
+        } catch (\Throwable $e) {
+            $outcome = 'failed';
+            $ctx->inc("curl_get_failed_$coro");
+        } finally {
+            if ($ch instanceof \CurlHandle) {
+                @curl_close($ch);
+            }
+            $ctx->ioData[$coro] = $buf;
+            $ctx->inc("curl_recv_bytes_$coro", strlen($buf));
+            $ctx->counters["curl_http_code_$coro"] = $httpCode;
+            $ctx->events[] = sprintf(
+                'curl %s: peer=%s http=%d errno=%d recv=%dB outcome=%s',
+                $coro, $peer, $httpCode, $errno, strlen($buf), $outcome);
         }
     }
 }

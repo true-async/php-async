@@ -99,7 +99,7 @@ final class Context {
      * strategies referenced for the scenario's lifetime */
     public array $poolStrategies = [];
 
-    /** @var array<string, array{payload:string,slice:int,delay:int,reset:int,hold:int,hardReset:bool,mode:string,forked:bool,toxiproxy:bool}>
+    /** @var array<string, array{payload:string,slice:int,delay:int,reset:int,hold:int,hardReset:bool,mode:string,forked:bool,toxiproxy:bool,httpStatus:int,httpChunked:bool,httpClenLie:int,httpHeaderDelay:int}>
      * EvilPeer fault tables, keyed by peer name. */
     public array $evilPeerDefs = [];
 
@@ -228,6 +228,8 @@ final class Context {
                 'payload' => '', 'slice' => 0, 'delay' => 0, 'reset' => -1,
                 'hold' => 0, 'hardReset' => false, 'mode' => 'serve', 'forked' => false,
                 'toxiproxy' => false,
+                'httpStatus' => 200, 'httpChunked' => false,
+                'httpClenLie' => 0, 'httpHeaderDelay' => 0,
             ];
         }
     }
@@ -492,11 +494,11 @@ final class Context {
                     return;
                 }
                 $self->inc("evil_peer_served_$name");
-                if (($spec['mode'] ?? 'serve') === 'consume') {
-                    EvilPeer::consume($conn, $spec, $self, $name);
-                } else {
-                    EvilPeer::serve($conn, $spec, $self, $name);
-                }
+                match ($spec['mode'] ?? 'serve') {
+                    'consume' => EvilPeer::consume($conn, $spec, $self, $name),
+                    'http'    => EvilPeer::serveHttp($conn, $spec, $self, $name),
+                    default   => EvilPeer::serve($conn, $spec, $self, $name),
+                };
             });
         }
 

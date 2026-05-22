@@ -38,11 +38,11 @@ fflush(STDOUT);
 
 $conn = @stream_socket_accept($server, 10);
 if ($conn !== false) {
-    if (($spec['mode'] ?? 'serve') === 'consume') {
-        EvilPeer::consume($conn, $spec);
-    } else {
-        EvilPeer::serve($conn, $spec);
-    }
+    match ($spec['mode'] ?? 'serve') {
+        'consume' => EvilPeer::consume($conn, $spec),
+        'http'    => EvilPeer::serveHttp($conn, $spec),
+        default   => EvilPeer::serve($conn, $spec),
+    };
 }
 
 @fclose($server);
