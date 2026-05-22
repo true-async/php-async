@@ -96,3 +96,21 @@ length back to libcurl only once the PHP callback has accepted every byte,
 otherwise it feeds the remainder through another callback slice. A genuine
 short return / exception still surfaces verbatim via a new `aborted` flag.
 Tracked in php-src as `#136`.
+
+## Async PDO MySQL pool leaks a raw warning on a dropped connection (observation)
+
+The `db/mysql_chaos.feature` suite (issue #136) fronts a real MySQL server
+with Toxiproxy and drops the connection mid-query with the `reset_peer`
+toxic. With `PDO::ATTR_ERRMODE = ERRMODE_EXCEPTION` the driver correctly
+raises a `PDOException` — but the **pool-enabled** path also emits a bare
+`E_WARNING` ("Error while reading greeting packet") from mysqlnd on top of
+the exception, where the non-pooled `new PDO()` path of the same failing
+connect does not.
+
+It does not break error handling — the exception still propagates and is
+caught — so the chaos steps simply `@`-silence the expected noise, the same
+way the raw-socket I/O steps already do. Worth a follow-up: under
+ERRMODE_EXCEPTION the pool's internal connect (`pdo_pool_acquire_conn` →
+`db_handle_factory`) should suppress the low-level mysqlnd warning the way
+the direct constructor path does. Not a correctness bug; tracked as a
+loose end, not fixed here.

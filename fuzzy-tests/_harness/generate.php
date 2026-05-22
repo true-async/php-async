@@ -202,6 +202,19 @@ $ts = @stream_socket_client("tcp://$th:$tport", $te, $tm, 2);
 if ($ts === false) { echo "skip Toxiproxy not running at $tp (set CHAOS_TOXIPROXY)"; exit; }
 fclose($ts);
 PROBE,
+    'pdo_mysql'    => 'if (!extension_loaded("pdo_mysql")) { echo "skip ext/pdo_mysql required"; exit; }',
+    // A reachable MySQL server is opt-in, like Toxiproxy: the database chaos
+    // tests run only where one answers and skip everywhere else. The probe is
+    // a plain TCP connect — the upstream the Toxiproxy proxy will point at.
+    'mysql-server' => <<<'PROBE'
+$ms = getenv("CHAOS_MYSQL") ?: "127.0.0.1:3306";
+$mp = strrpos($ms, ":");
+$mh = $mp === false ? $ms : substr($ms, 0, $mp);
+$mport = $mp === false ? 3306 : (int)substr($ms, $mp + 1);
+$msk = @stream_socket_client("tcp://$mh:$mport", $me, $mm, 2);
+if ($msk === false) { echo "skip MySQL not reachable at $ms (set CHAOS_MYSQL)"; exit; }
+fclose($msk);
+PROBE,
 ];
 
 function buildSkipIfBlock(array $requires): string {

@@ -27,8 +27,7 @@ use function Async\spawn;
 use function Async\await_all;
 use function Async\suspend;
 
-require_once __DIR__ . '/../_peers/EvilPeer.php';
-require_once __DIR__ . '/../_peers/ToxiproxyClient.php';
+require_once __DIR__ . '/ChaosNet.php';
 
 final class Context {
     public Rng $rng;
@@ -99,30 +98,6 @@ final class Context {
      * strategies referenced for the scenario's lifetime */
     public array $poolStrategies = [];
 
-    /** @var array<string, array{payload:string,slice:int,delay:int,reset:int,hold:int,hardReset:bool,mode:string,forked:bool,toxiproxy:bool,httpStatus:int,httpChunked:bool,httpClenLie:int,httpHeaderDelay:int}>
-     * EvilPeer fault tables, keyed by peer name. */
-    public array $evilPeerDefs = [];
-
-    /** @var array<string, string> peer name => "host:port" — populated by run() */
-    public array $evilPeerAddr = [];
-
-    /** @var array<string, resource> peer name => listening socket */
-    public array $evilPeerServers = [];
-
-    /** @var array<string, array{proc:resource,pipes:array}> peer name =>
-     * forked peer process handle (only for peers run as a forked peer) */
-    public array $evilPeerProcs = [];
-
-    /** @var array<string, array<int,array{type:string,stream:string,attributes:array}>>
-     * Toxiproxy toxics layered onto a fronted peer, keyed by peer name. */
-    public array $evilPeerToxics = [];
-
-    /** @var string[] Toxiproxy proxy names created in run(), torn down after. */
-    public array $toxiproxyProxies = [];
-
-    /** Toxiproxy admin client — constructed lazily when a peer is fronted. */
-    public ?ToxiproxyClient $toxiproxy = null;
-
     /** @var array<string, string> coroutine name => bytes it received over I/O */
     public array $ioData = [];
 
@@ -158,9 +133,13 @@ final class Context {
 
     public bool $hasRun = false;
 
+    /** Network-fixture layer: EvilPeers, Toxiproxy proxies, chaos databases. */
+    public ChaosNet $net;
+
     public function __construct(int $seed) {
         $this->rng = new Rng($seed);
         $this->resolver = new ValueResolver($this->rng);
+        $this->net = new ChaosNet();
     }
 
     /** Define a channel by name; idempotent (last wins). */
@@ -219,66 +198,6 @@ final class Context {
 
     public function definePool(string $name, int $min = 0, int $max = 10, bool $rejectRelease = false): void {
         $this->poolDefs[$name] = ['min' => $min, 'max' => $max, 'rejectRelease' => $rejectRelease];
-    }
-
-    /** Define an EvilPeer; idempotent. Toxics are layered on by later steps. */
-    public function defineEvilPeer(string $name): void {
-        if (!isset($this->evilPeerDefs[$name])) {
-            $this->evilPeerDefs[$name] = [
-                'payload' => '', 'slice' => 0, 'delay' => 0, 'reset' => -1,
-                'hold' => 0, 'hardReset' => false, 'mode' => 'serve', 'forked' => false,
-                'toxiproxy' => false,
-                'httpStatus' => 200, 'httpChunked' => false,
-                'httpClenLie' => 0, 'httpHeaderDelay' => 0,
-            ];
-        }
-    }
-
-    /**
-     * Front an EvilPeer with Toxiproxy and, optionally, append one transport
-     * toxic. `stream` may be 'auto' — resolved at proxy-creation time to
-     * 'downstream' for a serve peer or 'upstream' for a consume peer.
-     */
-    public function addEvilPeerToxic(
-        string $name,
-        ?string $type = null,
-        string $stream = 'auto',
-        array $attributes = []
-    ): void {
-        $this->defineEvilPeer($name);
-        $this->evilPeerDefs[$name]['toxiproxy'] = true;
-        if ($type !== null) {
-            $this->evilPeerToxics[$name][] = [
-                'type' => $type, 'stream' => $stream, 'attributes' => $attributes,
-            ];
-        }
-    }
-
-    /** Launch a forked EvilPeer in its own process and record its address.
-     * The fault table is handed over on the child's stdin; the child prints
-     * its bound "host:port" as the first stdout line. */
-    private function startForkedPeer(string $name, array $spec): void {
-        $script = __DIR__ . '/../_peers/forked_peer.php';
-        $descriptors = [
-            0 => ['pipe', 'r'],   // child stdin  — the serialized fault table
-            1 => ['pipe', 'w'],   // child stdout — the bound address
-            2 => ['pipe', 'w'],   // child stderr
-        ];
-        $pipes = [];
-        $proc = @proc_open([PHP_BINARY, $script], $descriptors, $pipes);
-        if (!is_resource($proc)) {
-            throw new \RuntimeException("EvilPeer $name: cannot fork peer process");
-        }
-        fwrite($pipes[0], base64_encode(serialize($spec)));
-        fclose($pipes[0]);
-        $addr = trim((string) fgets($pipes[1]));
-        if ($addr === '') {
-            @proc_terminate($proc);
-            @proc_close($proc);
-            throw new \RuntimeException("EvilPeer $name: forked peer did not report an address");
-        }
-        $this->evilPeerAddr[$name] = $addr;
-        $this->evilPeerProcs[$name] = ['proc' => $proc, 'pipes' => $pipes];
     }
 
     public function defineThreadChannel(string $name, int $capacity): void {
@@ -467,71 +386,10 @@ final class Context {
             await_all($seeders);
         }
 
-        // EvilPeer setup: bind each in-process peer's listening socket
-        // synchronously so $evilPeerAddr is known before any client coroutine
-        // runs, then spawn one accept-and-serve coroutine per peer. The
-        // coroutine is awaited like a user coroutine — it returns once it has
-        // served (or failed to serve) one connection.
-        $peerCoros = [];
-        foreach ($this->evilPeerDefs as $name => $spec) {
-            // A forked peer runs in its own OS process — no in-process socket
-            // or accept coroutine; proc_open binds and serves it externally.
-            if (!empty($spec['forked'])) {
-                $this->startForkedPeer($name, $spec);
-                continue;
-            }
-            $server = @stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
-            if ($server === false) {
-                throw new \RuntimeException("EvilPeer $name: cannot listen: $errstr");
-            }
-            $this->evilPeerServers[$name] = $server;
-            $this->evilPeerAddr[$name] = stream_socket_get_name($server, false);
-            $peerCoros[] = spawn(function() use ($self, $name, $server, $spec) {
-                $self->inc("evil_peer_accept_attempts_$name");
-                $conn = @stream_socket_accept($server, 5);
-                if ($conn === false) {
-                    $self->inc("evil_peer_accept_failed_$name");
-                    return;
-                }
-                $self->inc("evil_peer_served_$name");
-                match ($spec['mode'] ?? 'serve') {
-                    'consume' => EvilPeer::consume($conn, $spec, $self, $name),
-                    'http'    => EvilPeer::serveHttp($conn, $spec, $self, $name),
-                    default   => EvilPeer::serve($conn, $spec, $self, $name),
-                };
-            });
-        }
-
-        // Toxiproxy fronting: for every peer marked `is fronted by Toxiproxy`,
-        // create a proxy whose upstream is the peer's real listening socket,
-        // attach the declared toxics, and rewrite $evilPeerAddr to the proxy's
-        // listen address. The client then connects through Toxiproxy without
-        // knowing it — the peer-address indirection makes this transparent.
-        // Generated .phpt for these scenarios carry a Toxiproxy --SKIPIF--
-        // probe, so by the time we get here Toxiproxy is known to be up.
-        foreach ($this->evilPeerDefs as $name => $spec) {
-            if (empty($spec['toxiproxy'])) {
-                continue;
-            }
-            $this->toxiproxy ??= new ToxiproxyClient();
-            $upstream  = $this->evilPeerAddr[$name];
-            $proxyName = sprintf('chaos_%d_%s_%s', getmypid(), bin2hex(random_bytes(3)), $name);
-            $listen    = $this->toxiproxy->createProxy($proxyName, '127.0.0.1:0', $upstream);
-            $this->toxiproxyProxies[] = $proxyName;
-            $defaultStream = ($spec['mode'] ?? 'serve') === 'consume' ? 'upstream' : 'downstream';
-            foreach ($this->evilPeerToxics[$name] ?? [] as $i => $tox) {
-                $stream = $tox['stream'] === 'auto' ? $defaultStream : $tox['stream'];
-                $this->toxiproxy->addToxic(
-                    $proxyName, $proxyName . '_t' . $i,
-                    $tox['type'], $stream, $tox['attributes']);
-            }
-            // From here on the client connects through the proxy, not the peer.
-            $this->evilPeerAddr[$name] = $listen;
-            $this->events[] = sprintf(
-                'toxiproxy %s: proxy %s upstream=%s listen=%s toxics=%d',
-                $name, $proxyName, $upstream, $listen,
-                count($this->evilPeerToxics[$name] ?? []));
-        }
+        // Network-fixture prep: bind EvilPeers + spawn their serve coroutines,
+        // front the marked peers and every chaos database with Toxiproxy. The
+        // peer serve coroutines are awaited alongside the user coroutines.
+        $peerCoros = $this->net->setUp($this);
 
         // First pass: spawn every coroutine, populate handles. Coroutine bodies
         // do NOT run yet (spawn just queues), so by the time the first body
@@ -663,31 +521,9 @@ final class Context {
                 try { $pool->close(); } catch (\Throwable $e) { /* already closing */ }
             }
         }
-        // Close every EvilPeer listening socket left open.
-        foreach ($this->evilPeerServers as $server) {
-            if (is_resource($server)) {
-                @fclose($server);
-            }
-        }
-        // Reap forked peer processes — each exits on its own after serving
-        // one connection; terminate is a safety net for an unconnected peer.
-        foreach ($this->evilPeerProcs as $entry) {
-            foreach ([1, 2] as $fd) {
-                if (isset($entry['pipes'][$fd]) && is_resource($entry['pipes'][$fd])) {
-                    @fclose($entry['pipes'][$fd]);
-                }
-            }
-            if (is_resource($entry['proc'])) {
-                @proc_terminate($entry['proc']);
-                @proc_close($entry['proc']);
-            }
-        }
-        // Delete every Toxiproxy proxy created for this scenario.
-        if ($this->toxiproxy !== null) {
-            foreach ($this->toxiproxyProxies as $proxyName) {
-                $this->toxiproxy->deleteProxy($proxyName);
-            }
-        }
+        // Network-fixture teardown: drop pooled PDO handles, close peer
+        // sockets, reap forked peer processes, delete every Toxiproxy proxy.
+        $this->net->tearDown();
 
         // Suppress "Future was never used" warnings for futures that no
         // coroutine got around to awaiting (await_any only consumes one).
