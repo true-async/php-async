@@ -35,6 +35,11 @@
  *   hold    : int     — ms to keep a never-read (slice==0) connection open
  *                       before closing it
  *
+ * One key applies to both modes:
+ *   hardReset : bool  — arm SO_LINGER{l_onoff:1,l_linger:0} before close so it
+ *                       is a guaranteed RST (immediate, buffers discarded)
+ *                       rather than a graceful FIN. Needs ext/sockets.
+ *
  * serve()/consume() record the exact low-level sequence they played out into
  * the Context event log, so a failing combined-chaos test shows precisely
  * which toxics fired, with which (seeded-random-resolved) parameters.
@@ -52,10 +57,11 @@ final class EvilPeer {
      * @param string       $name peer name, used in the log line
      */
     public static function serve($conn, array $spec, ?Context $ctx = null, string $name = 'peer'): void {
-        $payload = $spec['payload'] ?? '';
-        $slice   = $spec['slice']   ?? 0;
-        $delay   = $spec['delay']   ?? 0;
-        $reset   = $spec['reset']   ?? -1;
+        $payload   = $spec['payload']   ?? '';
+        $slice     = $spec['slice']     ?? 0;
+        $delay     = $spec['delay']     ?? 0;
+        $reset     = $spec['reset']     ?? -1;
+        $hardReset = $spec['hardReset'] ?? false;
 
         // A reset toxic caps delivery at `reset` bytes; otherwise deliver all.
         $len = strlen($payload);
@@ -80,15 +86,35 @@ final class EvilPeer {
         // Close the connection. With a reset toxic this happens mid-stream —
         // the client must observe a clean truncation (its bytes are a prefix
         // of the payload) and terminate, never hang waiting for the rest.
+        // A hard-reset toxic forces an RST instead of a graceful FIN.
+        $resetSock = $hardReset ? self::armHardReset($conn) : null;
         @fclose($conn);
         $closedAt = ($reset >= 0 && $reset < strlen($payload)) ? "reset@$len" : "close@$len";
-        $trace[] = $closedAt;
+        $trace[] = $hardReset ? "hard-$closedAt" : $closedAt;
 
         if ($ctx !== null) {
             $ctx->events[] = sprintf(
-                'evil-peer %s: payload=%dB slice=%d delay=%d reset=%d | %s',
-                $name, strlen($payload), $slice, $delay, $reset, implode(' ', $trace));
+                'evil-peer %s: payload=%dB slice=%d delay=%d reset=%d hardReset=%d | %s',
+                $name, strlen($payload), $slice, $delay, $reset, (int) $hardReset, implode(' ', $trace));
         }
+    }
+
+    /**
+     * Arm SO_LINGER{l_onoff:1,l_linger:0} on an accepted connection so the
+     * next close() emits an immediate RST instead of a graceful FIN. The
+     * returned Socket shares the underlying fd — the caller must keep it
+     * referenced until after the close so the option stays applied.
+     *
+     * @param resource $conn
+     * @return \Socket|null
+     */
+    private static function armHardReset($conn): ?\Socket {
+        $sock = @socket_import_stream($conn);
+        if ($sock instanceof \Socket) {
+            @socket_set_option($sock, SOL_SOCKET, SO_LINGER, ['l_onoff' => 1, 'l_linger' => 0]);
+            return $sock;
+        }
+        return null;
     }
 
     /**
@@ -102,10 +128,11 @@ final class EvilPeer {
      * @param string       $name peer name, used in the log line
      */
     public static function consume($conn, array $spec, ?Context $ctx = null, string $name = 'peer'): void {
-        $rate  = $spec['slice'] ?? 0;
-        $delay = $spec['delay'] ?? 0;
-        $reset = $spec['reset'] ?? -1;
-        $hold  = $spec['hold']  ?? 0;
+        $rate      = $spec['slice']     ?? 0;
+        $delay     = $spec['delay']     ?? 0;
+        $reset     = $spec['reset']     ?? -1;
+        $hold      = $spec['hold']      ?? 0;
+        $hardReset = $spec['hardReset'] ?? false;
 
         $trace = [];
         $total = 0;
@@ -145,14 +172,16 @@ final class EvilPeer {
             }
         }
 
+        // A hard-reset toxic forces an RST instead of a graceful FIN.
+        $resetSock = $hardReset ? self::armHardReset($conn) : null;
         @fclose($conn);
-        $trace[] = 'close';
+        $trace[] = $hardReset ? 'hard-close' : 'close';
 
         if ($ctx !== null) {
             $ctx->inc("evil_peer_read_bytes_$name", $total);
             $ctx->events[] = sprintf(
-                'evil-peer %s [consume]: rate=%d delay=%d reset=%d hold=%d read=%dB | %s',
-                $name, $rate, $delay, $reset, $hold, $total, implode(' ', $trace));
+                'evil-peer %s [consume]: rate=%d delay=%d reset=%d hold=%d hardReset=%d read=%dB | %s',
+                $name, $rate, $delay, $reset, $hold, (int) $hardReset, $total, implode(' ', $trace));
         }
     }
 }

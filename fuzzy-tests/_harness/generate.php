@@ -185,6 +185,7 @@ function findFeatures(string $root): array {
 const SKIP_RULES = [
     'unix-sockets' => 'if (PHP_OS_FAMILY === "Windows") { echo "skip unix-domain sockets not supported"; exit; }',
     'tcp'          => '/* TCP loopback is portable; no skip */',
+    'sockets'      => 'if (!function_exists("socket_import_stream")) { echo "skip ext/sockets required"; exit; }',
     'fork'         => 'if (!function_exists("pcntl_fork")) { echo "skip fork() not available"; exit; }',
     'tty'          => 'if (PHP_OS_FAMILY === "Windows") { echo "skip TTY semantics differ on Windows"; exit; }',
     'zts'          => 'if (!ZEND_THREAD_SAFE) { echo "skip requires Thread-Safe (ZTS) PHP build"; exit; }',

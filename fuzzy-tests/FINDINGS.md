@@ -45,3 +45,24 @@ Fixed in `async_poll_notify_proxies`: a disconnect or error is terminal for
 the descriptor — every proxy on it is now released, reader or writer, not
 only those whose mask requested `DISCONNECT`. Regression test:
 `tests/stream/046-write_wakes_on_peer_reset.phpt`.
+
+## Concurrent async writes to one descriptor corrupt the heap (real bug — fixed)
+
+Adding a hard-reset (`SO_LINGER`) toxic for `io/hard_reset.feature` needed
+`socket_import_stream()` — which looked like it corrupted the heap. It did
+not: narrowing the repro to four coroutines doing nothing but concurrent
+`fwrite(STDERR, …)` — no sockets at all — still crashed 12/12 (ASAN: SEGV in
+`uv__async_io` calling a NULL callback).
+
+Root cause in the async file/pipe I/O layer. A `zend_async_io_req_t` is a
+plain result struct; the only awaitable event lives on the *handle*
+(`io->base.event`). Every coroutine writing one descriptor parks on that one
+shared event, so a single write's completion `NOTIFY`'d them all.
+`php_stdiop_write()` did not re-check `req->completed` after waking, so a
+spuriously woken coroutine disposed its own request while that request's
+`uv_write` was still in flight — libuv then wrote into freed memory.
+
+Fixed in `php_stdiop_write()` / `php_stdiop_read()`: re-suspend until *this*
+request completed. Regression test `tests/io/083-concurrent_async_write.phpt`.
+The structural fix — per-request completion events instead of the broadcast —
+is tracked in true-async/php-async#130.

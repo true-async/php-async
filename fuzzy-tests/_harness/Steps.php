@@ -281,6 +281,17 @@ final class StandardSteps {
                 $ctx->evilPeerDefs[$name]['hold'] = (int)$ctx->resolver->resolve($nExpr);
             });
 
+        // Given evil peer "EP" uses a hard reset
+        // Toxic modifier: arms SO_LINGER{l_onoff:1,l_linger:0} so the peer's
+        // close emits an immediate RST instead of a graceful FIN — the client
+        // faces a real ECONNRESET, not a clean EOF.
+        $r->on('/^evil peer "([^"]+)" uses a hard reset$/',
+            function(Context $ctx, string $name) {
+                $ctx->defineEvilPeer($name);
+                $ctx->evilPeerDefs[$name]['hardReset'] = true;
+            })
+            ->requires('sockets');
+
         // ---- When: actions inside a coroutine ----
 
         // When coroutine "X" downloads from peer "EP"
@@ -2945,6 +2956,10 @@ final class StandardSteps {
      */
     public static function ioDownload(Context $ctx, string $coro, string $peer, int $readSize): void {
         $ctx->inc("io_download_attempts_$coro");
+        // Define the received-bytes slot up front so a clean-prefix assertion
+        // stays valid even when the download never gets past connect — a hard
+        // RST can reset the connection before stream_socket_client() returns.
+        $ctx->ioData[$coro] = '';
         $addr = $ctx->evilPeerAddr[$peer] ?? null;
         if ($addr === null) {
             $ctx->inc("io_download_no_peer_$coro");

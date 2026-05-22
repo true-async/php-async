@@ -98,7 +98,7 @@ final class Context {
      * strategies referenced for the scenario's lifetime */
     public array $poolStrategies = [];
 
-    /** @var array<string, array{payload:string,slice:int,delay:int,reset:int,hold:int,mode:string,forked:bool}>
+    /** @var array<string, array{payload:string,slice:int,delay:int,reset:int,hold:int,hardReset:bool,mode:string,forked:bool}>
      * EvilPeer fault tables, keyed by peer name. */
     public array $evilPeerDefs = [];
 
@@ -211,7 +211,7 @@ final class Context {
         if (!isset($this->evilPeerDefs[$name])) {
             $this->evilPeerDefs[$name] = [
                 'payload' => '', 'slice' => 0, 'delay' => 0, 'reset' => -1,
-                'hold' => 0, 'mode' => 'serve', 'forked' => false,
+                'hold' => 0, 'hardReset' => false, 'mode' => 'serve', 'forked' => false,
             ];
         }
     }
