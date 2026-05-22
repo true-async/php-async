@@ -187,7 +187,79 @@ final class StandardSteps {
                 $ctx->definePool($name, 1, 10, true);
             });
 
+        // Given an evil peer "EP" serving "payload"
+        // Declares an EvilPeer that, on its single accepted connection,
+        // delivers the given payload. Later "evil peer" Given steps layer
+        // toxics (slicing, delay) onto this fault table.
+        $r->on('/^an evil peer "([^"]+)" serving "([^"]*)"$/',
+            function(Context $ctx, string $name, string $payload) {
+                $ctx->defineEvilPeer($name);
+                $ctx->evilPeerDefs[$name]['payload'] = $payload;
+            });
+
+        // Given an evil peer "EP" serving N bytes
+        // Same, but the payload is N deterministic bytes (a repeating
+        // pattern) — convenient for large-payload slicing scenarios.
+        $r->on('/^an evil peer "([^"]+)" serving (\S+) bytes$/',
+            function(Context $ctx, string $name, string $nExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->defineEvilPeer($name);
+                $payload = '';
+                for ($i = 0; $i < $n; $i++) {
+                    $payload .= chr(33 + ($i % 94)); // printable ASCII cycle
+                }
+                $ctx->evilPeerDefs[$name]['payload'] = $payload;
+            });
+
+        // Given evil peer "EP" slices output into N-byte chunks
+        $r->on('/^evil peer "([^"]+)" slices output into (\S+)-byte chunks$/',
+            function(Context $ctx, string $name, string $nExpr) {
+                $ctx->defineEvilPeer($name);
+                $ctx->evilPeerDefs[$name]['slice'] = (int)$ctx->resolver->resolve($nExpr);
+            });
+
+        // Given evil peer "EP" delays N ms between chunks
+        $r->on('/^evil peer "([^"]+)" delays (\S+) ms between chunks$/',
+            function(Context $ctx, string $name, string $nExpr) {
+                $ctx->defineEvilPeer($name);
+                $ctx->evilPeerDefs[$name]['delay'] = (int)$ctx->resolver->resolve($nExpr);
+            });
+
+        // Given evil peer "EP" closes abruptly after N bytes
+        // The peer drops the connection mid-stream once N bytes are out — the
+        // client must see a clean truncation, not a hang or a corrupt buffer.
+        $r->on('/^evil peer "([^"]+)" closes abruptly after (\S+) bytes$/',
+            function(Context $ctx, string $name, string $nExpr) {
+                $ctx->defineEvilPeer($name);
+                $ctx->evilPeerDefs[$name]['reset'] = (int)$ctx->resolver->resolve($nExpr);
+            });
+
         // ---- When: actions inside a coroutine ----
+
+        // When coroutine "X" downloads from peer "EP"
+        // Connects and reads until EOF in 8 KiB reads. Cancellation-aware: a
+        // cancel mid-download lands in io_download_cancelled with the partial
+        // bytes preserved. The liveness invariant
+        //   io_download_ok + io_download_cancelled + io_download_failed
+        //     + io_download_connect_failed + io_download_no_peer == attempts
+        // therefore holds for every interleaving.
+        $r->on('/^coroutine "([^"]+)" downloads from peer "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $peer) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $peer) {
+                    StandardSteps::ioDownload($ctx, $coro, $peer, 8192);
+                });
+            });
+
+        // When coroutine "X" downloads from peer "EP" byte by byte
+        // Same, but one byte per read — hammers the reactor's read path and
+        // the partial-read reassembly far harder. A logic-chaos alternative
+        // to the bulk download above.
+        $r->on('/^coroutine "([^"]+)" downloads from peer "([^"]+)" byte by byte$/',
+            function(Context $ctx, string $coro, string $peer) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $peer) {
+                    StandardSteps::ioDownload($ctx, $coro, $peer, 1);
+                });
+            });
 
         // When coroutine "A" sends N messages to "ch"
         // Increments three counters: send_attempts_$ch (always), then either
@@ -2472,6 +2544,31 @@ final class StandardSteps {
                 }
             });
 
+        // Then coroutine "X" was cancelled or finished cleanly
+        // Interleaving-safe invariant for a cancel race: a short-bodied
+        // coroutine may finish before the cancel lands. Either outcome is
+        // valid — assert only that it terminated consistently.
+        $r->on('/^coroutine "([^"]+)" was cancelled or finished cleanly$/',
+            function(Context $ctx, string $name) {
+                if (!isset($ctx->coroutineHandles[$name])) {
+                    throw new \RuntimeException("coroutine $name not defined");
+                }
+                $h = $ctx->coroutineHandles[$name];
+                if (!$h->isCompleted()) {
+                    throw new \RuntimeException("coroutine $name expected isCompleted=true");
+                }
+                $e = $h->getException();
+                $isCancel = $e instanceof \Async\AsyncCancellation;
+                if ($e !== null && !$isCancel) {
+                    throw new \RuntimeException(
+                        "coroutine $name terminated with unexpected " . get_class($e));
+                }
+                if ($h->isCancelled() !== $isCancel) {
+                    throw new \RuntimeException(
+                        "coroutine $name: isCancelled / getException disagree");
+                }
+            });
+
         // Then coroutine "X" is completed
         // After Context::run() every planned coroutine has terminated.
         // isCompleted must be true; isRunning/isSuspended must be false.
@@ -2620,6 +2717,53 @@ final class StandardSteps {
                 }
             });
 
+        // Then coroutine "X" received the payload of peer "EP" intact
+        // Whatever toxics the peer applied (slicing, drip delay), a correct
+        // reactor reassembles the byte stream exactly — the received bytes
+        // must equal the peer's declared payload, byte for byte.
+        $r->on('/^coroutine "([^"]+)" received the payload of peer "([^"]+)" intact$/',
+            function(Context $ctx, string $coro, string $peer) {
+                if (!isset($ctx->evilPeerDefs[$peer])) {
+                    throw new \RuntimeException("evil peer $peer not defined");
+                }
+                $expected = $ctx->evilPeerDefs[$peer]['payload'];
+                $got = $ctx->ioData[$coro] ?? null;
+                if ($got === null) {
+                    throw new \RuntimeException("coroutine $coro received nothing from peer $peer");
+                }
+                if ($got !== $expected) {
+                    throw new \RuntimeException(sprintf(
+                        "coroutine %s payload mismatch: expected %d bytes, got %d bytes",
+                        $coro, strlen($expected), strlen($got)));
+                }
+            });
+
+        // Then coroutine "X" received a clean prefix of peer "EP"
+        // After an abrupt mid-stream close the client gets fewer bytes than
+        // the full payload — but those bytes must be an exact prefix of it
+        // (correct partial data, no corruption), and non-empty up to the
+        // payload length.
+        $r->on('/^coroutine "([^"]+)" received a clean prefix of peer "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $peer) {
+                if (!isset($ctx->evilPeerDefs[$peer])) {
+                    throw new \RuntimeException("evil peer $peer not defined");
+                }
+                $payload = $ctx->evilPeerDefs[$peer]['payload'];
+                $got = $ctx->ioData[$coro] ?? null;
+                if ($got === null) {
+                    throw new \RuntimeException("coroutine $coro received nothing from peer $peer");
+                }
+                if (strlen($got) > strlen($payload)) {
+                    throw new \RuntimeException(sprintf(
+                        "coroutine %s got %d bytes — more than the %d-byte payload",
+                        $coro, strlen($got), strlen($payload)));
+                }
+                if ($got !== substr($payload, 0, strlen($got))) {
+                    throw new \RuntimeException(
+                        "coroutine $coro received bytes are not a prefix of peer $peer's payload");
+                }
+            });
+
         // Then group "G" is finished
         $r->on('/^group "([^"]+)" is finished$/',
             function(Context $ctx, string $name) {
@@ -2712,5 +2856,60 @@ final class StandardSteps {
             });
 
         return $r;
+    }
+
+    /**
+     * Shared EvilPeer download routine used by the "downloads from peer" steps.
+     * Connects to the peer, reads until EOF in `$readSize`-byte reads, and
+     * records the outcome into per-coroutine counters + $ctx->ioData.
+     *
+     * Cancellation-aware: a cancel mid-read is caught, the partial bytes are
+     * still stashed, and the outcome is bucketed — so liveness/safety
+     * invariants hold across the transport × logic × scheduler cross-product.
+     */
+    public static function ioDownload(Context $ctx, string $coro, string $peer, int $readSize): void {
+        $ctx->inc("io_download_attempts_$coro");
+        $addr = $ctx->evilPeerAddr[$peer] ?? null;
+        if ($addr === null) {
+            $ctx->inc("io_download_no_peer_$coro");
+            return;
+        }
+        $sock = @stream_socket_client('tcp://' . $addr, $errno, $errstr, 5);
+        if ($sock === false) {
+            $ctx->inc("io_download_connect_failed_$coro");
+            return;
+        }
+        $buf = '';
+        $reads = 0;
+        $outcome = 'ok';
+        try {
+            while (!feof($sock)) {
+                $chunk = @fread($sock, $readSize);
+                if ($chunk === false || $chunk === '') {
+                    break;
+                }
+                $buf .= $chunk;
+                $reads++;
+                $ctx->inc("io_read_calls_$coro");
+            }
+            $ctx->inc("io_download_ok_$coro");
+        } catch (\Async\AsyncCancellation $e) {
+            $outcome = 'cancelled';
+            $ctx->inc("io_download_cancelled_$coro");
+        } catch (\Throwable $e) {
+            $outcome = 'failed';
+            $ctx->inc("io_download_failed_$coro");
+        } finally {
+            if (is_resource($sock)) {
+                @fclose($sock);
+            }
+            // Stash whatever was reassembled — partial on cancel/failure.
+            $ctx->ioData[$coro] = $buf;
+            $ctx->inc("io_recv_bytes_$coro", strlen($buf));
+            // Record the low-level client sequence for the chaos event log.
+            $ctx->events[] = sprintf(
+                'client %s: peer=%s readsize=%d reads=%d recv=%dB outcome=%s',
+                $coro, $peer, $readSize, $reads, strlen($buf), $outcome);
+        }
     }
 }

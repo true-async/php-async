@@ -27,6 +27,8 @@ use function Async\spawn;
 use function Async\await_all;
 use function Async\suspend;
 
+require_once __DIR__ . '/../_peers/EvilPeer.php';
+
 final class Context {
     public Rng $rng;
     public ValueResolver $resolver;
@@ -95,6 +97,19 @@ final class Context {
     /** @var array<string, \Async\CircuitBreakerStrategy> keeps attached
      * strategies referenced for the scenario's lifetime */
     public array $poolStrategies = [];
+
+    /** @var array<string, array{payload:string,slice:int,delay:int,reset:int,forked:bool}>
+     * EvilPeer fault tables, keyed by peer name. */
+    public array $evilPeerDefs = [];
+
+    /** @var array<string, string> peer name => "host:port" — populated by run() */
+    public array $evilPeerAddr = [];
+
+    /** @var array<string, resource> peer name => listening socket */
+    public array $evilPeerServers = [];
+
+    /** @var array<string, string> coroutine name => bytes it received over I/O */
+    public array $ioData = [];
 
     /** @var array<string, int> name => capacity */
     public array $threadChannelDefs = [];
@@ -189,6 +204,14 @@ final class Context {
 
     public function definePool(string $name, int $min = 0, int $max = 10, bool $rejectRelease = false): void {
         $this->poolDefs[$name] = ['min' => $min, 'max' => $max, 'rejectRelease' => $rejectRelease];
+    }
+
+    /** Define an EvilPeer; idempotent. Toxics are layered on by later steps. */
+    public function defineEvilPeer(string $name): void {
+        if (!isset($this->evilPeerDefs[$name])) {
+            $this->evilPeerDefs[$name] =
+                ['payload' => '', 'slice' => 0, 'delay' => 0, 'reset' => -1, 'forked' => false];
+        }
     }
 
     public function defineThreadChannel(string $name, int $capacity): void {
@@ -376,6 +399,32 @@ final class Context {
         if ($seeders) {
             await_all($seeders);
         }
+
+        // EvilPeer setup: bind each in-process peer's listening socket
+        // synchronously so $evilPeerAddr is known before any client coroutine
+        // runs, then spawn one accept-and-serve coroutine per peer. The
+        // coroutine is awaited like a user coroutine — it returns once it has
+        // served (or failed to serve) one connection.
+        $peerCoros = [];
+        foreach ($this->evilPeerDefs as $name => $spec) {
+            $server = @stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
+            if ($server === false) {
+                throw new \RuntimeException("EvilPeer $name: cannot listen: $errstr");
+            }
+            $this->evilPeerServers[$name] = $server;
+            $this->evilPeerAddr[$name] = stream_socket_get_name($server, false);
+            $peerCoros[] = spawn(function() use ($self, $name, $server, $spec) {
+                $self->inc("evil_peer_accept_attempts_$name");
+                $conn = @stream_socket_accept($server, 5);
+                if ($conn === false) {
+                    $self->inc("evil_peer_accept_failed_$name");
+                    return;
+                }
+                $self->inc("evil_peer_served_$name");
+                EvilPeer::serve($conn, $spec, $self, $name);
+            });
+        }
+
         // First pass: spawn every coroutine, populate handles. Coroutine bodies
         // do NOT run yet (spawn just queues), so by the time the first body
         // begins all $coroutineHandles entries are visible to it.
@@ -410,6 +459,9 @@ final class Context {
                     $awaitable[] = $self->coroutineHandles[$coroName];
                 }
             }
+        }
+        if ($peerCoros) {
+            $awaitable = array_merge($awaitable, $peerCoros);
         }
         if ($awaitable) {
             await_all($awaitable);
@@ -501,6 +553,12 @@ final class Context {
         foreach ($this->pools as $pool) {
             if (!$pool->isClosed()) {
                 try { $pool->close(); } catch (\Throwable $e) { /* already closing */ }
+            }
+        }
+        // Close every EvilPeer listening socket left open.
+        foreach ($this->evilPeerServers as $server) {
+            if (is_resource($server)) {
+                @fclose($server);
             }
         }
 

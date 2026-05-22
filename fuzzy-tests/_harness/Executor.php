@@ -79,7 +79,17 @@ final class Executor {
             }
             return [true, ''];
         } catch (\Throwable $e) {
-            return [false, $e->getMessage()];
+            // On failure, attach the low-level chaos event log (EvilPeer
+            // toxic sequences, client I/O traces) so the exact sequence that
+            // produced the failure is visible without a re-run.
+            $msg = $e->getMessage();
+            if ($ctx->events) {
+                $msg .= "\n   chaos-log:";
+                foreach ($ctx->events as $ev) {
+                    $msg .= "\n     · " . $ev;
+                }
+            }
+            return [false, $msg];
         }
     }
 

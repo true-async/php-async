@@ -139,3 +139,55 @@ scheduler RNG (`TRUE_ASYNC_SCHED=random:N`).
 
 Iterating both gives you a `(program × schedule)` matrix. Failing seeds are
 reproducible by replaying the same pair.
+
+## I/O chaos — crossing low-level faults with logic chaos
+
+The `io/` topic adds a third axis: **transport chaos**. An `EvilPeer`
+(`_peers/EvilPeer.php`) is a deliberately misbehaving network peer driven
+by a declarative fault table — toxics such as payload slicing, inter-chunk
+drip delay and abrupt mid-stream close. Toxic parameters accept the fuzz
+syntax above (`random:N`, `1|5`), so they are seeded by `CHAOS_GEN_SEED`.
+
+The point is to **cross** the axes around a *fixed* data oracle:
+
+| Plane          | State  | Knob                                    |
+|----------------|--------|-----------------------------------------|
+| data / protocol | FIXED  | the EvilPeer payload — the known answer |
+| transport       | chaos  | EvilPeer toxics (mutation blocks)       |
+| logic / program | chaos  | `One of:` / `Any of:` mutation blocks   |
+| scheduler       | chaos  | `TRUE_ASYNC_SCHED`                      |
+
+Because the payload is fixed the invariant stays decidable over the whole
+`transport × logic × schedule` product. When all axes are crossed, assert
+only **universal** invariants — liveness (the coroutine always finishes)
+and safety (received bytes are always a prefix of the payload). See
+`io/combined_chaos.feature`.
+
+## The chaos event log
+
+On a **failure** the executor prints a `chaos-log:` — the exact low-level
+sequence that produced it: each EvilPeer's resolved toxic parameters and
+delivery trace (`slice=33 delay=2 reset=-1 | w33 d2 w33 … close@256`) and
+every client's I/O trace. A failure is debuggable without a re-run.
+
+A failing run is fully specified by five recoverable coordinates:
+feature + scenario, the mutation combo (in the `.phpt` name, e.g.
+`__g0a0a1_g1o1`), `CHAOS_GEN_SEED`, `TRUE_ASYNC_SCHED`, and the resolved
+EvilPeer fault table (from the chaos-log).
+
+### Freezing a failure into a regression test
+
+A chaos failure is meant to be **frozen** into a deterministic, non-chaos
+test — the proper end of the workflow ("every found bug becomes a fixed
+scenario"). Remove all randomness:
+
+1. **flatten** the mutation blocks to the failing combo — one plain branch,
+   no `One of:` / `Any of:`;
+2. **resolve** `random:N` / `1|5` toxic values to the literals the
+   chaos-log reported (`slice 33`, `delay 2`);
+3. **pin** the scheduler — `fifo` (or a fixed `random:N`).
+
+The result is an ordinary deterministic `.feature` — or a hand-written
+`tests/io/NNN-*.phpt` regression test. Parameter-level freezing is enough
+for full determinism: slicing is deterministic given fixed parameters, and
+pinning the scheduler removes the only remaining source of variance.
