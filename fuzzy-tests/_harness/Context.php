@@ -421,7 +421,7 @@ final class Context {
                     return;
                 }
                 $self->inc("evil_peer_served_$name");
-                EvilPeer::serve($conn, $spec);
+                EvilPeer::serve($conn, $spec, $self, $name);
             });
         }
 

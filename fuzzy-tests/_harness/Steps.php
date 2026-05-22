@@ -237,37 +237,27 @@ final class StandardSteps {
         // ---- When: actions inside a coroutine ----
 
         // When coroutine "X" downloads from peer "EP"
-        // The coroutine connects to the EvilPeer and reads until EOF,
-        // reassembling whatever the peer dripped/sliced at it. The received
-        // bytes are stashed in $ctx->ioData so a Then-step can compare them
-        // to the peer's declared payload.
+        // Connects and reads until EOF in 8 KiB reads. Cancellation-aware: a
+        // cancel mid-download lands in io_download_cancelled with the partial
+        // bytes preserved. The liveness invariant
+        //   io_download_ok + io_download_cancelled + io_download_failed
+        //     + io_download_connect_failed + io_download_no_peer == attempts
+        // therefore holds for every interleaving.
         $r->on('/^coroutine "([^"]+)" downloads from peer "([^"]+)"$/',
             function(Context $ctx, string $coro, string $peer) {
                 $ctx->planAction($coro, function(Context $ctx) use ($coro, $peer) {
-                    $ctx->inc("io_download_attempts_$coro");
-                    $addr = $ctx->evilPeerAddr[$peer] ?? null;
-                    if ($addr === null) {
-                        $ctx->inc("io_download_no_peer_$coro");
-                        return;
-                    }
-                    $sock = @stream_socket_client('tcp://' . $addr, $errno, $errstr, 5);
-                    if ($sock === false) {
-                        $ctx->inc("io_download_connect_failed_$coro");
-                        return;
-                    }
-                    $buf = '';
-                    while (!feof($sock)) {
-                        $chunk = @fread($sock, 8192);
-                        if ($chunk === false || $chunk === '') {
-                            break;
-                        }
-                        $buf .= $chunk;
-                        $ctx->inc("io_read_calls_$coro");
-                    }
-                    @fclose($sock);
-                    $ctx->ioData[$coro] = $buf;
-                    $ctx->inc("io_recv_bytes_$coro", strlen($buf));
-                    $ctx->inc("io_download_ok_$coro");
+                    StandardSteps::ioDownload($ctx, $coro, $peer, 8192);
+                });
+            });
+
+        // When coroutine "X" downloads from peer "EP" byte by byte
+        // Same, but one byte per read — hammers the reactor's read path and
+        // the partial-read reassembly far harder. A logic-chaos alternative
+        // to the bulk download above.
+        $r->on('/^coroutine "([^"]+)" downloads from peer "([^"]+)" byte by byte$/',
+            function(Context $ctx, string $coro, string $peer) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $peer) {
+                    StandardSteps::ioDownload($ctx, $coro, $peer, 1);
                 });
             });
 
@@ -2841,5 +2831,60 @@ final class StandardSteps {
             });
 
         return $r;
+    }
+
+    /**
+     * Shared EvilPeer download routine used by the "downloads from peer" steps.
+     * Connects to the peer, reads until EOF in `$readSize`-byte reads, and
+     * records the outcome into per-coroutine counters + $ctx->ioData.
+     *
+     * Cancellation-aware: a cancel mid-read is caught, the partial bytes are
+     * still stashed, and the outcome is bucketed — so liveness/safety
+     * invariants hold across the transport × logic × scheduler cross-product.
+     */
+    public static function ioDownload(Context $ctx, string $coro, string $peer, int $readSize): void {
+        $ctx->inc("io_download_attempts_$coro");
+        $addr = $ctx->evilPeerAddr[$peer] ?? null;
+        if ($addr === null) {
+            $ctx->inc("io_download_no_peer_$coro");
+            return;
+        }
+        $sock = @stream_socket_client('tcp://' . $addr, $errno, $errstr, 5);
+        if ($sock === false) {
+            $ctx->inc("io_download_connect_failed_$coro");
+            return;
+        }
+        $buf = '';
+        $reads = 0;
+        $outcome = 'ok';
+        try {
+            while (!feof($sock)) {
+                $chunk = @fread($sock, $readSize);
+                if ($chunk === false || $chunk === '') {
+                    break;
+                }
+                $buf .= $chunk;
+                $reads++;
+                $ctx->inc("io_read_calls_$coro");
+            }
+            $ctx->inc("io_download_ok_$coro");
+        } catch (\Async\AsyncCancellation $e) {
+            $outcome = 'cancelled';
+            $ctx->inc("io_download_cancelled_$coro");
+        } catch (\Throwable $e) {
+            $outcome = 'failed';
+            $ctx->inc("io_download_failed_$coro");
+        } finally {
+            if (is_resource($sock)) {
+                @fclose($sock);
+            }
+            // Stash whatever was reassembled — partial on cancel/failure.
+            $ctx->ioData[$coro] = $buf;
+            $ctx->inc("io_recv_bytes_$coro", strlen($buf));
+            // Record the low-level client sequence for the chaos event log.
+            $ctx->events[] = sprintf(
+                'client %s: peer=%s readsize=%d reads=%d recv=%dB outcome=%s',
+                $coro, $peer, $readSize, $reads, strlen($buf), $outcome);
+        }
     }
 }
