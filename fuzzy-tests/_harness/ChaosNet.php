@@ -160,6 +160,28 @@ final class ChaosNet {
     }
 
     /**
+     * Open a mysqli connection to a fronted database, through its Toxiproxy
+     * proxy. mysqli has no connection pool, so every chaos query opens (and
+     * closes) its own connection. Same environment-driven parameters as
+     * openDbConnection(); MYSQLI_REPORT_ERROR|STRICT makes connect/query
+     * failures throw mysqli_sql_exception, so the chaos steps can bucket them.
+     */
+    public function openMysqliConnection(string $db): \mysqli {
+        $addr  = $this->evilDbAddr[$db] ?? '';
+        $colon = strrpos($addr, ':');
+        $host  = $colon === false ? $addr : substr($addr, 0, $colon);
+        $port  = $colon === false ? 3306  : (int) substr($addr, $colon + 1);
+        $user  = getenv('CHAOS_MYSQL_USER') ?: 'test';
+        $pass  = getenv('CHAOS_MYSQL_PASS') ?: 'test';
+        $name  = getenv('CHAOS_MYSQL_DB')   ?: 'chaos_test';
+        \mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+        // @ silences mysqlnd's raw E_WARNING when the connect fails under a
+        // toxic — MYSQLI_REPORT_STRICT still raises mysqli_sql_exception,
+        // which the chaos client routine catches and buckets.
+        return @new \mysqli($host, $user, $pass, $name, $port);
+    }
+
+    /**
      * Prep phase: bind every in-process peer's listening socket synchronously
      * (so the client address is known before any client coroutine runs), spawn
      * one accept-and-serve coroutine per peer, then front the marked peers and

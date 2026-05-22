@@ -203,6 +203,7 @@ if ($ts === false) { echo "skip Toxiproxy not running at $tp (set CHAOS_TOXIPROX
 fclose($ts);
 PROBE,
     'pdo_mysql'    => 'if (!extension_loaded("pdo_mysql")) { echo "skip ext/pdo_mysql required"; exit; }',
+    'mysqli'       => 'if (!extension_loaded("mysqli")) { echo "skip ext/mysqli required"; exit; }',
     // A reachable MySQL server is opt-in, like Toxiproxy: the database chaos
     // tests run only where one answers and skip everywhere else. The probe is
     // a plain TCP connect — the upstream the Toxiproxy proxy will point at.

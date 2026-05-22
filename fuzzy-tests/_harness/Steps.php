@@ -512,7 +512,7 @@ final class StandardSteps {
                 $lat = (int)$ctx->resolver->resolve($latExpr);
                 $ctx->net->addEvilDbToxic($name, 'latency', ['latency' => $lat]);
             })
-            ->requires('toxiproxy', 'pdo_mysql', 'mysql-server');
+            ->requires('toxiproxy', 'mysql-server');
 
         // Given Toxiproxy throttles database "DB" to N KB/s
         $r->on('/^Toxiproxy throttles database "([^"]+)" to (\S+) KB\/s$/',
@@ -520,7 +520,7 @@ final class StandardSteps {
                 $rate = (int)$ctx->resolver->resolve($rateExpr);
                 $ctx->net->addEvilDbToxic($name, 'bandwidth', ['rate' => $rate]);
             })
-            ->requires('toxiproxy', 'pdo_mysql', 'mysql-server');
+            ->requires('toxiproxy', 'mysql-server');
 
         // Given Toxiproxy slices database "DB" into N-byte TCP segments
         $r->on('/^Toxiproxy slices database "([^"]+)" into (\S+)-byte TCP segments$/',
@@ -532,7 +532,7 @@ final class StandardSteps {
                     'delay'          => 0,
                 ]);
             })
-            ->requires('toxiproxy', 'pdo_mysql', 'mysql-server');
+            ->requires('toxiproxy', 'mysql-server');
 
         // Given Toxiproxy resets database "DB" after N ms
         // reset_peer toxic — a TCP RST N ms into the connection; lands
@@ -542,7 +542,18 @@ final class StandardSteps {
                 $ms = (int)$ctx->resolver->resolve($msExpr);
                 $ctx->net->addEvilDbToxic($name, 'reset_peer', ['timeout' => $ms]);
             })
-            ->requires('toxiproxy', 'pdo_mysql', 'mysql-server');
+            ->requires('toxiproxy', 'mysql-server');
+
+        // Given a MySQLi database "DB"
+        // The same Toxiproxy-fronted MySQL server, reached through the mysqli
+        // extension instead of PDO. mysqli has no connection pool, so every
+        // query opens its own connection. The Toxiproxy toxic steps above are
+        // driver-agnostic and apply to a MySQLi database too.
+        $r->on('/^a MySQLi database "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                $ctx->net->defineEvilDb($name, 'mysqli');
+            })
+            ->requires('toxiproxy', 'mysqli', 'mysql-server');
 
         // ---- When: actions inside a coroutine ----
 
@@ -630,6 +641,40 @@ final class StandardSteps {
                 });
             })
             ->requires('toxiproxy', 'pdo_mysql', 'mysql-server');
+
+        // When coroutine "X" queries via mysqli "DB"
+        // Same SELECT as the PDO query step, but over the mysqli extension —
+        // connect + query I/O go through the libuv reactor. Liveness invariant
+        //   mysqli_query_ok + cancelled + failed + no_db == mysqli_query_attempts.
+        $r->on('/^coroutine "([^"]+)" queries via mysqli "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $db) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $db) {
+                    StandardSteps::mysqliRun($ctx, $coro, $db,
+                        'SELECT id, label, n FROM items WHERE id <= 5 ORDER BY id', 'query');
+                });
+            })
+            ->requires('toxiproxy', 'mysqli', 'mysql-server');
+
+        // When coroutine "X" runs a slow query via mysqli "DB"
+        // SELECT SLEEP(2) over mysqli — parks the coroutine in the reactor on
+        // the DB socket for a killer to cancel or a reset_peer toxic to hit.
+        $r->on('/^coroutine "([^"]+)" runs a slow query via mysqli "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $db) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $db) {
+                    StandardSteps::mysqliRun($ctx, $coro, $db, 'SELECT SLEEP(2)', 'slow_query');
+                });
+            })
+            ->requires('toxiproxy', 'mysqli', 'mysql-server');
+
+        // When coroutine "X" runs a transaction via mysqli "DB"
+        // begin_transaction → prepared INSERT → commit over mysqli.
+        $r->on('/^coroutine "([^"]+)" runs a transaction via mysqli "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $db) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $db) {
+                    StandardSteps::mysqliTransaction($ctx, $coro, $db);
+                });
+            })
+            ->requires('toxiproxy', 'mysqli', 'mysql-server');
 
         // When coroutine "X" uploads N bytes to peer "EP"
         // Connects and writes N bytes in a single fwrite(). Against a slow or
@@ -3592,6 +3637,94 @@ final class StandardSteps {
             $ctx->events[] = sprintf(
                 'db-txn %s: db=%s pool=%d outcome=%s',
                 $coro, $db, (int) $spec['pool'], $outcome);
+        }
+    }
+
+    /**
+     * Shared async-mysqli routine used by the "queries / runs a slow query
+     * via mysqli" steps. mysqli has no connection pool, so each call opens
+     * (and closes) its own connection through the Toxiproxy proxy. Outcome
+     * buckets mirror dbRun():
+     *   mysqli_<verb>_ok / _cancelled / _failed / _no_db sum to
+     *   mysqli_<verb>_attempts; mysqli_<verb>_rows records rows drained.
+     */
+    public static function mysqliRun(Context $ctx, string $coro, string $db, string $sql, string $verb): void {
+        $ctx->inc("mysqli_{$verb}_attempts_$coro");
+        if (!isset($ctx->net->evilDbDefs[$db]) || !isset($ctx->net->evilDbAddr[$db])) {
+            $ctx->inc("mysqli_{$verb}_no_db_$coro");
+            return;
+        }
+        $outcome = 'ok';
+        $rows    = 0;
+        $my      = null;
+        try {
+            $my  = $ctx->net->openMysqliConnection($db);
+            // @ silences mysqlnd's raw E_WARNING on a dropped connection —
+            // the mysqli_sql_exception still propagates to the catch blocks.
+            $res = @$my->query($sql);
+            if ($res instanceof \mysqli_result) {
+                while (@$res->fetch_row() !== null) {
+                    $rows++;
+                }
+                $res->free();
+            }
+            $ctx->inc("mysqli_{$verb}_ok_$coro");
+        } catch (\Async\AsyncCancellation $e) {
+            $outcome = 'cancelled';
+            $ctx->inc("mysqli_{$verb}_cancelled_$coro");
+        } catch (\Throwable $e) {
+            $outcome = 'failed';
+            $ctx->inc("mysqli_{$verb}_failed_$coro");
+        } finally {
+            $ctx->inc("mysqli_{$verb}_rows_$coro", $rows);
+            if ($my instanceof \mysqli) {
+                @$my->close();
+            }
+            $ctx->events[] = sprintf(
+                'mysqli %s: db=%s verb=%s rows=%d outcome=%s',
+                $coro, $db, $verb, $rows, $outcome);
+        }
+    }
+
+    /**
+     * Shared async-mysqli routine for the "runs a transaction via mysqli"
+     * step: begin_transaction → prepared INSERT → commit. A connection fault
+     * mid-transaction must surface as a clean mysqli_sql_exception; the
+     * coroutine completes and nothing is left wedged. Outcome buckets:
+     *   mysqli_txn_ok / _cancelled / _failed / _no_db sum to
+     *   mysqli_txn_attempts; mysqli_txn_committed counts acknowledged COMMITs.
+     */
+    public static function mysqliTransaction(Context $ctx, string $coro, string $db): void {
+        $ctx->inc("mysqli_txn_attempts_$coro");
+        if (!isset($ctx->net->evilDbDefs[$db]) || !isset($ctx->net->evilDbAddr[$db])) {
+            $ctx->inc("mysqli_txn_no_db_$coro");
+            return;
+        }
+        $outcome = 'ok';
+        $my      = null;
+        try {
+            $my = $ctx->net->openMysqliConnection($db);
+            @$my->begin_transaction();
+            $stmt  = @$my->prepare('INSERT INTO items (label, n) VALUES (?, ?)');
+            $label = "mtxn-$coro";
+            $n     = 0;
+            @$stmt->bind_param('si', $label, $n);
+            @$stmt->execute();
+            @$my->commit();
+            $ctx->inc("mysqli_txn_committed_$coro");
+            $ctx->inc("mysqli_txn_ok_$coro");
+        } catch (\Async\AsyncCancellation $e) {
+            $outcome = 'cancelled';
+            $ctx->inc("mysqli_txn_cancelled_$coro");
+        } catch (\Throwable $e) {
+            $outcome = 'failed';
+            $ctx->inc("mysqli_txn_failed_$coro");
+        } finally {
+            if ($my instanceof \mysqli) {
+                @$my->close();
+            }
+            $ctx->events[] = sprintf(
+                'mysqli-txn %s: db=%s outcome=%s', $coro, $db, $outcome);
         }
     }
 }
