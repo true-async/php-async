@@ -380,6 +380,7 @@ static bool channel_wake_receiver(async_channel_t *channel)
 			zval_ptr_dtor(&channel->rendezvous_value);
 			ZVAL_UNDEF(&channel->rendezvous_value);
 			channel->rendezvous_has_value = false;
+			channel->rendezvous_committed = false;
 		}
 		ZEND_FUTURE_COMPLETE(waiter->future, &value);
 		zval_ptr_dtor(&value);
@@ -444,6 +445,16 @@ static void channel_close(async_channel_t *channel, channel_close_reason_t reaso
 	zend_object *ex = make_channel_exception(reason);
 	channel_wake_all(channel, ex);
 	OBJ_RELEASE(ex);
+
+	/* Roll back an uncommitted rendezvous value: a parked send() that never
+	 * matched a receiver was just failed above, so its value must not survive
+	 * for a later recv() (split-brain). A committed rendezvous — receiver
+	 * already woken — is left for that receiver to complete. */
+	if (channel->rendezvous_has_value && !channel->rendezvous_committed) {
+		zval_ptr_dtor(&channel->rendezvous_value);
+		ZVAL_UNDEF(&channel->rendezvous_value);
+		channel->rendezvous_has_value = false;
+	}
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -675,6 +686,7 @@ static zend_object *async_channel_create_object(zend_class_entry *ce)
 	channel->capacity = 0;
 	ZVAL_UNDEF(&channel->rendezvous_value);
 	channel->rendezvous_has_value = false;
+	channel->rendezvous_committed = false;
 
 	channel->no_producer_timeout_ms = 0;
 	channel->no_consumer_timeout_ms = 0;
@@ -771,6 +783,7 @@ retry:
 			zval_ptr_dtor(&channel->rendezvous_value);
 			ZVAL_UNDEF(&channel->rendezvous_value);
 			channel->rendezvous_has_value = false;
+			channel->rendezvous_committed = false;
 		}
 		channel_wake_sender(channel);
 		iterator->valid = true;
@@ -909,8 +922,12 @@ retry:
 		if (!channel->rendezvous_has_value) {
 			ZVAL_COPY(&channel->rendezvous_value, value);
 			channel->rendezvous_has_value = true;
+			channel->rendezvous_committed = false;
 
 			if (channel_wake_receiver(channel)) {
+				/* A receiver was matched & woken: the rendezvous is committed
+				 * even though the value is still in the slot until recv() runs. */
+				channel->rendezvous_committed = channel->rendezvous_has_value;
 				return;
 			}
 
@@ -970,7 +987,10 @@ METHOD(sendAsync)
 
 	ZVAL_COPY(&channel->rendezvous_value, value);
 	channel->rendezvous_has_value = true;
-	channel_wake_receiver(channel);
+	channel->rendezvous_committed = false;
+	if (channel_wake_receiver(channel)) {
+		channel->rendezvous_committed = channel->rendezvous_has_value;
+	}
 	RETURN_TRUE;
 }
 
@@ -997,6 +1017,7 @@ retry:
 			zval_ptr_dtor(&channel->rendezvous_value);
 			ZVAL_UNDEF(&channel->rendezvous_value);
 			channel->rendezvous_has_value = false;
+			channel->rendezvous_committed = false;
 		}
 		channel_wake_sender(channel);
 		return;
@@ -1041,6 +1062,7 @@ METHOD(recvAsync)
 			zval_ptr_dtor(&channel->rendezvous_value);
 			ZVAL_UNDEF(&channel->rendezvous_value);
 			channel->rendezvous_has_value = false;
+			channel->rendezvous_committed = false;
 		}
 		channel_wake_sender(channel);
 		ZEND_FUTURE_COMPLETE(future, &result);

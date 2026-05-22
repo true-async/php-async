@@ -2544,6 +2544,31 @@ final class StandardSteps {
                 }
             });
 
+        // Then coroutine "X" was cancelled or finished cleanly
+        // Interleaving-safe invariant for a cancel race: a short-bodied
+        // coroutine may finish before the cancel lands. Either outcome is
+        // valid — assert only that it terminated consistently.
+        $r->on('/^coroutine "([^"]+)" was cancelled or finished cleanly$/',
+            function(Context $ctx, string $name) {
+                if (!isset($ctx->coroutineHandles[$name])) {
+                    throw new \RuntimeException("coroutine $name not defined");
+                }
+                $h = $ctx->coroutineHandles[$name];
+                if (!$h->isCompleted()) {
+                    throw new \RuntimeException("coroutine $name expected isCompleted=true");
+                }
+                $e = $h->getException();
+                $isCancel = $e instanceof \Async\AsyncCancellation;
+                if ($e !== null && !$isCancel) {
+                    throw new \RuntimeException(
+                        "coroutine $name terminated with unexpected " . get_class($e));
+                }
+                if ($h->isCancelled() !== $isCancel) {
+                    throw new \RuntimeException(
+                        "coroutine $name: isCancelled / getException disagree");
+                }
+            });
+
         // Then coroutine "X" is completed
         // After Context::run() every planned coroutine has terminated.
         // isCompleted must be true; isRunning/isSuspended must be false.
