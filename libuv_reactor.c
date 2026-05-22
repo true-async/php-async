@@ -3871,6 +3871,7 @@ zend_async_trigger_event_t *libuv_new_trigger_event(size_t extra_size)
 
 static bool libuv_io_close(zend_async_io_t *io_base);
 static void io_close_cb(uv_handle_t *pipe_handle);
+static bool io_file_write_dispatch(async_io_t *io, async_io_req_t *req);
 
 /* {{{ IO event methods */
 static bool libuv_io_event_start(zend_async_event_t *event)
@@ -3946,6 +3947,21 @@ static bool libuv_io_event_dispose(zend_async_event_t *event)
 		}
 	}
 
+	/* Dispose any file-write requests still queued behind the writer. */
+	if (io->write_q_head != NULL) {
+		async_io_req_t *qreq = io->write_q_head;
+		io->write_q_head = NULL;
+		io->write_q_tail = NULL;
+		while (qreq != NULL) {
+			async_io_req_t *qnext = qreq->write_q_next;
+			qreq->write_q_next = NULL;
+			if (qreq->base.dispose != NULL) {
+				qreq->base.dispose(&qreq->base);
+			}
+			qreq = qnext;
+		}
+	}
+
 	if (event->loop_ref_count > 0) {
 		event->loop_ref_count = 1;
 		event->stop(event);
@@ -3964,6 +3980,31 @@ static bool libuv_io_event_dispose(zend_async_event_t *event)
 static void libuv_io_req_dispose(zend_async_io_req_t *base_req)
 {
 	async_io_req_t *req = (async_io_req_t *) base_req;
+
+	/* A file-write request still waiting its turn in the handle's pending
+	 * queue (its coroutine was cancelled before the write was dispatched)
+	 * — unlink it so the queue never dereferences this freed request. */
+	if (req->io != NULL && req->io->write_q_head != NULL) {
+		async_io_t *io = req->io;
+		if (io->write_q_head == req) {
+			io->write_q_head = req->write_q_next;
+			if (io->write_q_head == NULL) {
+				io->write_q_tail = NULL;
+			}
+		} else {
+			async_io_req_t *p = io->write_q_head;
+			while (p != NULL && p->write_q_next != req) {
+				p = p->write_q_next;
+			}
+			if (p != NULL) {
+				p->write_q_next = req->write_q_next;
+				if (io->write_q_tail == req) {
+					io->write_q_tail = p;
+				}
+			}
+		}
+		req->write_q_next = NULL;
+	}
 
 	/* Vectored fire-and-forget early-teardown path: writev request that never
 	 * reached io_pipe_writev_cb (submit-time error). Release every owned
@@ -4226,6 +4267,28 @@ static void io_file_write_cb(uv_fs_t *fs_request)
 	req->base.completed = true;
 	uv_fs_req_cleanup(fs_request);
 	ZEND_ASYNC_DECREASE_EVENT_COUNT(&io->base.event);
+
+	/* Hand off to the next queued file write so exactly one stays in
+	 * flight. A queued write that fails to even submit is completed with
+	 * its own exception and notified here; draining continues past it. */
+	bool dispatched = false;
+	while (io->write_q_head != NULL) {
+		async_io_req_t *next = io->write_q_head;
+		io->write_q_head = next->write_q_next;
+		if (io->write_q_head == NULL) {
+			io->write_q_tail = NULL;
+		}
+		next->write_q_next = NULL;
+		if (io_file_write_dispatch(io, next)) {
+			dispatched = true;
+			break;
+		}
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &next->base, next->base.exception);
+	}
+	if (!dispatched) {
+		io->file_write_in_flight = false;
+	}
+
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
 	IF_EXCEPTION_STOP_REACTOR;
 }
@@ -4766,6 +4829,52 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, char *buf, s
 
 /* }}} */
 
+/* {{{ io_file_write_dispatch
+ * Submit one queued/pending file-write request to libuv. Exactly one such
+ * request is in flight per handle at a time (io->file_write_in_flight), so
+ * the thread-pool writes never race the shared kernel file offset. Returns
+ * true when the write was submitted; false on a submit error, in which case
+ * the request is completed with an exception for its waiter to observe. */
+static bool io_file_write_dispatch(async_io_t *io, async_io_req_t *req)
+{
+	const size_t count = req->max_size;
+	const uv_buf_t write_buffer =
+			uv_buf_init((char *) req->base.buf, (unsigned int) (count > INT_MAX ? INT_MAX : count));
+	req->fs_req.data = req;
+
+	/* offset=-1 tells libuv to use write() instead of pwrite(), which
+	 * advances the kernel file offset — important for dup'd descriptors.
+	 * Serializing dispatch keeps that offset race-free across platforms.
+	 *
+	 * On Windows, WriteFile via libuv ignores CRT _O_APPEND, so we must
+	 * query the real EOF right before submitting the write request. This
+	 * is safe because the event loop is single-threaded. */
+#ifdef PHP_WIN32
+	int64_t offset = -1;
+	if (io->base.state & ZEND_ASYNC_IO_APPEND) {
+		const zend_off_t eof = zend_lseek(io->crt_fd, 0, SEEK_END);
+		offset = (eof >= 0) ? (int64_t) eof : (int64_t) io->handle.file.offset;
+	}
+#else
+	const int64_t offset = -1;
+#endif
+
+	const int error =
+			uv_fs_write(UVLOOP, &req->fs_req, io->crt_fd, &write_buffer, 1, offset, io_file_write_cb);
+
+	if (UNEXPECTED(error < 0)) {
+		req->base.transferred = -1;
+		req->base.completed   = true;
+		req->base.exception   = async_new_exception(
+				async_ce_input_output_exception, "Failed to start file write: %s", uv_strerror(error));
+		return false;
+	}
+
+	ZEND_ASYNC_INCREASE_EVENT_COUNT(&io->base.event);
+	return true;
+}
+/* }}} */
+
 /* {{{ libuv_io_write */
 static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char *buf, const size_t count,
                                            zend_async_io_write_free_cb_t free_cb)
@@ -4844,36 +4953,31 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 	}
 #endif
 
-	const uv_buf_t write_buffer = uv_buf_init((char *) buf, (unsigned int) (count > INT_MAX ? INT_MAX : count));
-	req->fs_req.data = req;
-
-	/* offset=-1 tells libuv to use write() instead of pwrite(), which
-	 * advances the kernel file offset — important for dup'd descriptors.
-	 *
-	 * On Windows, WriteFile via libuv ignores CRT _O_APPEND, so we must
-	 * query the real EOF right before submitting the write request.
-	 * This is safe because the event loop is single-threaded — no other
-	 * coroutine can interleave between lseek and uv_fs_write dispatch. */
-#ifdef PHP_WIN32
-	int64_t offset = -1;
-	if (io->base.state & ZEND_ASYNC_IO_APPEND) {
-		const zend_off_t eof = zend_lseek(io->crt_fd, 0, SEEK_END);
-		offset = (eof >= 0) ? (int64_t) eof : (int64_t) io->handle.file.offset;
-	}
-#else
-	const int64_t offset = -1;
-#endif
-
-	const int error =
-			uv_fs_write(UVLOOP, &req->fs_req, io->crt_fd, &write_buffer, 1, offset, io_file_write_cb);
-
-	if (UNEXPECTED(error < 0)) {
-		async_throw_error("Failed to start file write: %s", uv_strerror(error));
-		libuv_io_req_dispose(&req->base);
-		return NULL;
+	/* Serialize file writes: only one uv_fs_write may be in flight per
+	 * handle. Several concurrent thread-pool writes with offset=-1 race
+	 * the shared kernel file offset and silently lose data on platforms
+	 * that do not serialize them in-kernel (macOS, Windows). A write that
+	 * arrives while another is in flight waits in the FIFO and is
+	 * dispatched by io_file_write_cb when the current one completes. */
+	if (io->file_write_in_flight) {
+		req->write_q_next = NULL;
+		if (io->write_q_tail != NULL) {
+			io->write_q_tail->write_q_next = req;
+		} else {
+			io->write_q_head = req;
+		}
+		io->write_q_tail = req;
+		return &req->base;
 	}
 
-	ZEND_ASYNC_INCREASE_EVENT_COUNT(&io->base.event);
+	io->file_write_in_flight = true;
+	if (UNEXPECTED(!io_file_write_dispatch(io, req))) {
+		/* Submit failed: req is completed with its exception, and nothing
+		 * else is queued — clear the in-flight flag. The caller observes
+		 * the error through req->base.exception. */
+		io->file_write_in_flight = false;
+	}
+
 	return &req->base;
 }
 
