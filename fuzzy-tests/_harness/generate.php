@@ -185,9 +185,22 @@ function findFeatures(string $root): array {
 const SKIP_RULES = [
     'unix-sockets' => 'if (PHP_OS_FAMILY === "Windows") { echo "skip unix-domain sockets not supported"; exit; }',
     'tcp'          => '/* TCP loopback is portable; no skip */',
+    'sockets'      => 'if (!function_exists("socket_import_stream")) { echo "skip ext/sockets required"; exit; }',
     'fork'         => 'if (!function_exists("pcntl_fork")) { echo "skip fork() not available"; exit; }',
     'tty'          => 'if (PHP_OS_FAMILY === "Windows") { echo "skip TTY semantics differ on Windows"; exit; }',
     'zts'          => 'if (!ZEND_THREAD_SAFE) { echo "skip requires Thread-Safe (ZTS) PHP build"; exit; }',
+    // Toxiproxy is opt-in: the test runs only where a Toxiproxy admin
+    // endpoint actually answers, and skips everywhere else (dev machines,
+    // per-PR CI). The probe is a plain TCP connect to the admin port.
+    'toxiproxy'    => <<<'PROBE'
+$tp = getenv("CHAOS_TOXIPROXY") ?: "127.0.0.1:8474";
+$cp = strrpos($tp, ":");
+$th = $cp === false ? $tp : substr($tp, 0, $cp);
+$tport = $cp === false ? 8474 : (int)substr($tp, $cp + 1);
+$ts = @stream_socket_client("tcp://$th:$tport", $te, $tm, 2);
+if ($ts === false) { echo "skip Toxiproxy not running at $tp (set CHAOS_TOXIPROXY)"; exit; }
+fclose($ts);
+PROBE,
 ];
 
 function buildSkipIfBlock(array $requires): string {

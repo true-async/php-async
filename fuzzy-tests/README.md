@@ -47,6 +47,28 @@ To reproduce a specific failing case:
 make TESTS=ext/async/fuzzy-tests/_generated/channel_pair__01_...phpt test
 ```
 
+## Freezing a failure
+
+A chaos failure is only meaningful with *both* fuzz seeds — `CHAOS_GEN_SEED`
+(value fuzz) and `TRUE_ASYNC_SCHED` (scheduler fuzz). `_generated/` .phpt
+files pin the program but not the seeds, and `_generated/` is gitignored, so
+a caught failure would vanish on the next regenerate.
+
+`_harness/freeze.php` turns a failing run into a permanent, deterministic
+regression test: it copies the generated .phpt into `_frozen/<topic>/` with
+both seeds pinned in an `--ENV--` block. `_frozen/` **is** committed and runs
+in CI like any other test — no environment setup needed to reproduce.
+
+```sh
+# replay the env the failure was found with — both seeds are picked up
+TRUE_ASYNC_SCHED=random:42 CHAOS_GEN_SEED=7 \
+    php fuzzy-tests/_harness/freeze.php \
+        fuzzy-tests/_generated/io/backpressure__03_*.phpt
+# -> froze -> fuzzy-tests/_frozen/io/backpressure__03_...__sched-random42__gen-7.phpt
+```
+
+Commit the frozen file; it then reproduces the exact case on every run.
+
 ## Writing a scenario
 
 ```gherkin

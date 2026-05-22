@@ -1,0 +1,133 @@
+name: Nightly I/O chaos (Toxiproxy)
+
+# Item 6 of issue #129: the optional external-tool layer. Toxiproxy injects
+# transport-level faults a pure-PHP EvilPeer cannot reproduce precisely
+# (bandwidth throttling, latency+jitter, TCP-segment slicing, byte-counted
+# truncation). These tests are opt-in: their generated .phpt carry a
+# --SKIPIF-- probe and skip wherever no Toxiproxy admin endpoint answers, so
+# they never gate per-PR CI. This dedicated nightly job is the one place
+# Toxiproxy is actually up — so it is the one place they actually run.
+
+on:
+  schedule:
+    # 03:17 UTC daily — off the hour to avoid the cron rush.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  io-chaos-toxiproxy:
+    name: "IO_CHAOS_TOXIPROXY"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      # Where the harness and the --SKIPIF-- probe look for Toxiproxy.
+      CHAOS_TOXIPROXY: 127.0.0.1:8474
+      TOXIPROXY_VERSION: 2.12.0
+
+    steps:
+      - name: Checkout php-async repo
+        uses: actions/checkout@v4
+        with:
+          path: async
+
+      - name: Clone php-src (true-async-stable)
+        run: |
+          git clone --depth=1 --branch=true-async-stable https://github.com/true-async/php-src php-src
+
+      - name: Copy php-async extension into php-src
+        run: |
+          mkdir -p php-src/ext/async
+          cp -r async/* php-src/ext/async/
+
+      - name: Install build dependencies
+        run: |
+          set -x
+          sudo apt-get update -y
+          # ubuntu-24.04 ships libuv 1.48 and libcurl 8.5 — both new enough
+          # for TrueAsync, so no from-source builds are needed here (unlike
+          # the full build-linux.yml matrix).
+          sudo apt-get install -y \
+            autoconf bison build-essential re2c pkg-config \
+            libxml2-dev libssl-dev libsqlite3-dev libonig-dev \
+            libcurl4-openssl-dev libuv1-dev
+
+      - name: Install Toxiproxy
+        run: |
+          set -x
+          curl -sSL -o /tmp/toxiproxy-server \
+            "https://github.com/Shopify/toxiproxy/releases/download/v${TOXIPROXY_VERSION}/toxiproxy-server-linux-amd64"
+          sudo install -m 0755 /tmp/toxiproxy-server /usr/local/bin/toxiproxy-server
+          toxiproxy-server --version
+
+      - name: Start Toxiproxy
+        run: |
+          toxiproxy-server -host 127.0.0.1 -port 8474 >/tmp/toxiproxy.log 2>&1 &
+          # Wait for the admin endpoint to answer before the suite runs.
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8474/version >/dev/null; then
+              echo "Toxiproxy is up: $(curl -s http://127.0.0.1:8474/version)"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Toxiproxy did not come up"; cat /tmp/toxiproxy.log; exit 1
+
+      - name: Configure PHP
+        working-directory: php-src
+        run: |
+          set -x
+          ./buildconf --force
+          # Lean configure — only what the I/O chaos suite needs.
+          # --enable-async-fuzz compiles in the randomised-scheduler hook so
+          # the seed matrix below actually reorders coroutines.
+          ./configure \
+            --enable-option-checking=fatal \
+            --prefix=/usr/local \
+            --without-pear \
+            --with-openssl \
+            --with-curl \
+            --enable-sockets \
+            --enable-pcntl \
+            --enable-mbstring \
+            --enable-debug \
+            --enable-zts \
+            --enable-async \
+            --enable-async-fuzz
+
+      - name: Build PHP
+        working-directory: php-src
+        run: make -j$(nproc) >/dev/null
+
+      - name: Install PHP
+        working-directory: php-src
+        run: sudo make install
+
+      - name: Generate chaos tests
+        working-directory: php-src/ext/async
+        run: PHP_BIN=/usr/local/bin/php bash fuzzy-tests/regen.sh
+
+      - name: Run Toxiproxy I/O chaos suite (FIFO)
+        working-directory: php-src/ext/async
+        run: |
+          /usr/local/bin/php ../../run-tests.php \
+            -P -q -j$(nproc) \
+            -g FAIL,BORK,LEAK,XLEAK \
+            --no-progress --offline --show-diff --set-timeout 120 \
+            fuzzy-tests/_generated/io/toxiproxy__*.phpt
+
+      - name: Run Toxiproxy I/O chaos suite (randomised schedulers)
+        working-directory: php-src/ext/async
+        run: |
+          set -e
+          for sched in random:1 random:7 random:42 random:1337; do
+            echo "=== TRUE_ASYNC_SCHED=$sched ==="
+            TRUE_ASYNC_SCHED=$sched /usr/local/bin/php ../../run-tests.php \
+              -P -q -j$(nproc) \
+              -g FAIL,BORK,LEAK,XLEAK \
+              --no-progress --offline --show-diff --set-timeout 120 \
+              fuzzy-tests/_generated/io/toxiproxy__*.phpt
+
+      - name: Toxiproxy log
+        if: always()
+        run: cat /tmp/toxiproxy.log || true

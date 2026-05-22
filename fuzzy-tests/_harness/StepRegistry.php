@@ -86,7 +86,7 @@ final class StepRegistry {
     /**
      * Tag the most recently registered step with a platform requirement.
      * Used by the .phpt generator to emit per-scenario --SKIPIF-- blocks.
-     * Known tags: 'unix-sockets', 'tcp', 'pipe', 'fork', 'tty'.
+     * Known tags: 'unix-sockets', 'tcp', 'sockets', 'fork', 'tty', 'zts'.
      */
     public function requires(string ...$tags): self {
         if (empty($this->defs)) {
