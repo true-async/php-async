@@ -14,14 +14,23 @@ jobs:
         debug: [true, false]
         zts: [true, false]
         asan: [false, true]
+        fuzz: [false]
         exclude:
           # Only run ASAN on debug+zts build to reduce test matrix
           - asan: true
             debug: false
           - asan: true
             zts: false
-    
-    name: "LINUX_X64_${{ matrix.debug && 'DEBUG' || 'RELEASE' }}_${{ matrix.zts && 'ZTS' || 'NTS' }}${{ matrix.asan && '_ASAN' || ''}}"
+        include:
+          # Dedicated chaos build: --enable-async-fuzz compiles in the
+          # randomised-scheduler hook, so the fuzzy-tests seed matrix below
+          # actually reorders coroutines instead of running plain FIFO.
+          - debug: true
+            zts: true
+            asan: false
+            fuzz: true
+
+    name: "LINUX_X64_${{ matrix.debug && 'DEBUG' || 'RELEASE' }}_${{ matrix.zts && 'ZTS' || 'NTS' }}${{ matrix.asan && '_ASAN' || ''}}${{ matrix.fuzz && '_FUZZ' || '' }}"
     runs-on: ubuntu-22.04
     timeout-minutes: ${{ matrix.asan && 360 || 60 }}
 
@@ -173,7 +182,13 @@ jobs:
             CC="clang-14"
             CXX="clang++-14"
           fi
-          
+
+          # Chaos build: enable the randomised scheduler / I-O fuzz hooks.
+          FUZZ_FLAG=""
+          if [ "${{ matrix.fuzz }}" = "true" ]; then
+            FUZZ_FLAG="--enable-async-fuzz"
+          fi
+
           ./buildconf --force
           
           # Configure with async extension
@@ -232,7 +247,8 @@ jobs:
             --with-config-file-scan-dir=/etc/php.d \
             --${{ matrix.debug && 'enable' || 'disable' }}-debug \
             --${{ matrix.zts && 'enable' || 'disable' }}-zts \
-            --enable-async
+            --enable-async \
+            $FUZZ_FLAG
 
       - name: Build PHP
         working-directory: php-src
@@ -299,10 +315,10 @@ jobs:
         # their assertions must hold under every scheduler order. "Run basic
         # tests" above covered the deterministic FIFO scheduler; this step
         # replays the generated chaos suite under several random scheduler
-        # seeds (TRUE_ASYNC_SCHED=random:N). Gated to ZTS non-ASAN builds —
-        # ZTS because most chaos tests SKIPIF non-ZTS, non-ASAN to keep the
-        # already-long ASAN job bounded (it still runs the suite once on FIFO).
-        if: matrix.zts == true && matrix.asan == false
+        # seeds (TRUE_ASYNC_SCHED=random:N). Runs only on the _FUZZ build —
+        # the randomised-scheduler hook is compiled in only with
+        # --enable-async-fuzz; on any other build TRUE_ASYNC_SCHED is inert.
+        if: matrix.fuzz == true
         working-directory: php-src/ext/async
         run: |
           set -e
