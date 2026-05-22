@@ -302,6 +302,87 @@ final class StandardSteps {
                 $ctx->evilPeerDefs[$name]['forked'] = true;
             });
 
+        // ---- Toxiproxy: external transport-level fault injection ----
+        // These steps front an EvilPeer with a Toxiproxy proxy and apply
+        // transport toxics a pure-PHP peer cannot reproduce precisely (real
+        // bandwidth throttling, latency+jitter, TCP-segment slicing, byte-
+        // counted truncation). Every Toxiproxy step is tagged ->requires(
+        // 'toxiproxy'); the generator emits a --SKIPIF-- probe so the test
+        // skips wherever no Toxiproxy admin endpoint answers.
+
+        // Given evil peer "EP" is fronted by Toxiproxy
+        // Routes the client through a Toxiproxy proxy with no toxics — the
+        // pass-through baseline (the proxy must be transparent on its own).
+        $r->on('/^evil peer "([^"]+)" is fronted by Toxiproxy$/',
+            function(Context $ctx, string $name) {
+                $ctx->addEvilPeerToxic($name);
+            })
+            ->requires('toxiproxy');
+
+        // Given Toxiproxy throttles peer "EP" to N KB/s
+        // bandwidth toxic — caps real throughput; the payload still arrives
+        // intact, just slowly. This is the headline toxic PHP cannot do.
+        $r->on('/^Toxiproxy throttles peer "([^"]+)" to (\S+) KB\/s$/',
+            function(Context $ctx, string $name, string $rateExpr) {
+                $rate = (int)$ctx->resolver->resolve($rateExpr);
+                $ctx->addEvilPeerToxic($name, 'bandwidth', 'auto', ['rate' => $rate]);
+            })
+            ->requires('toxiproxy');
+
+        // Given Toxiproxy adds N ms latency with M ms jitter to peer "EP"
+        // latency toxic with jitter — random per-packet delay in [N-M, N+M].
+        $r->on('/^Toxiproxy adds (\S+) ms latency with (\S+) ms jitter to peer "([^"]+)"$/',
+            function(Context $ctx, string $latExpr, string $jitExpr, string $name) {
+                $lat = (int)$ctx->resolver->resolve($latExpr);
+                $jit = (int)$ctx->resolver->resolve($jitExpr);
+                $ctx->addEvilPeerToxic($name, 'latency', 'auto',
+                    ['latency' => $lat, 'jitter' => $jit]);
+            })
+            ->requires('toxiproxy');
+
+        // Given Toxiproxy adds N ms latency to peer "EP"
+        // latency toxic — fixed per-packet delay; payload arrives intact.
+        $r->on('/^Toxiproxy adds (\S+) ms latency to peer "([^"]+)"$/',
+            function(Context $ctx, string $latExpr, string $name) {
+                $lat = (int)$ctx->resolver->resolve($latExpr);
+                $ctx->addEvilPeerToxic($name, 'latency', 'auto', ['latency' => $lat]);
+            })
+            ->requires('toxiproxy');
+
+        // Given Toxiproxy slices peer "EP" into N-byte TCP segments
+        // slicer toxic — chops the TCP stream into ~N-byte packets at the
+        // transport level (distinct from EvilPeer's application-level slice).
+        $r->on('/^Toxiproxy slices peer "([^"]+)" into (\S+)-byte TCP segments$/',
+            function(Context $ctx, string $name, string $sizeExpr) {
+                $size = (int)$ctx->resolver->resolve($sizeExpr);
+                $ctx->addEvilPeerToxic($name, 'slicer', 'auto', [
+                    'average_size'   => $size,
+                    'size_variation' => intdiv($size, 4),
+                    'delay'          => 0,
+                ]);
+            })
+            ->requires('toxiproxy');
+
+        // Given Toxiproxy cuts peer "EP" off after N bytes
+        // limit_data toxic — closes the connection once exactly N bytes have
+        // passed; a deterministic truncation (decidable exact byte count).
+        $r->on('/^Toxiproxy cuts peer "([^"]+)" off after (\S+) bytes$/',
+            function(Context $ctx, string $name, string $nExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->addEvilPeerToxic($name, 'limit_data', 'auto', ['bytes' => $n]);
+            })
+            ->requires('toxiproxy');
+
+        // Given Toxiproxy resets peer "EP" after N ms
+        // reset_peer toxic — sends a TCP RST N ms into the connection; a
+        // time-based (non-deterministic byte count) truncation.
+        $r->on('/^Toxiproxy resets peer "([^"]+)" after (\S+) ms$/',
+            function(Context $ctx, string $name, string $msExpr) {
+                $ms = (int)$ctx->resolver->resolve($msExpr);
+                $ctx->addEvilPeerToxic($name, 'reset_peer', 'auto', ['timeout' => $ms]);
+            })
+            ->requires('toxiproxy');
+
         // ---- When: actions inside a coroutine ----
 
         // When coroutine "X" downloads from peer "EP"

@@ -28,6 +28,7 @@ use function Async\await_all;
 use function Async\suspend;
 
 require_once __DIR__ . '/../_peers/EvilPeer.php';
+require_once __DIR__ . '/../_peers/ToxiproxyClient.php';
 
 final class Context {
     public Rng $rng;
@@ -98,7 +99,7 @@ final class Context {
      * strategies referenced for the scenario's lifetime */
     public array $poolStrategies = [];
 
-    /** @var array<string, array{payload:string,slice:int,delay:int,reset:int,hold:int,hardReset:bool,mode:string,forked:bool}>
+    /** @var array<string, array{payload:string,slice:int,delay:int,reset:int,hold:int,hardReset:bool,mode:string,forked:bool,toxiproxy:bool}>
      * EvilPeer fault tables, keyed by peer name. */
     public array $evilPeerDefs = [];
 
@@ -111,6 +112,16 @@ final class Context {
     /** @var array<string, array{proc:resource,pipes:array}> peer name =>
      * forked peer process handle (only for peers run as a forked peer) */
     public array $evilPeerProcs = [];
+
+    /** @var array<string, array<int,array{type:string,stream:string,attributes:array}>>
+     * Toxiproxy toxics layered onto a fronted peer, keyed by peer name. */
+    public array $evilPeerToxics = [];
+
+    /** @var string[] Toxiproxy proxy names created in run(), torn down after. */
+    public array $toxiproxyProxies = [];
+
+    /** Toxiproxy admin client — constructed lazily when a peer is fronted. */
+    public ?ToxiproxyClient $toxiproxy = null;
 
     /** @var array<string, string> coroutine name => bytes it received over I/O */
     public array $ioData = [];
@@ -216,6 +227,27 @@ final class Context {
             $this->evilPeerDefs[$name] = [
                 'payload' => '', 'slice' => 0, 'delay' => 0, 'reset' => -1,
                 'hold' => 0, 'hardReset' => false, 'mode' => 'serve', 'forked' => false,
+                'toxiproxy' => false,
+            ];
+        }
+    }
+
+    /**
+     * Front an EvilPeer with Toxiproxy and, optionally, append one transport
+     * toxic. `stream` may be 'auto' — resolved at proxy-creation time to
+     * 'downstream' for a serve peer or 'upstream' for a consume peer.
+     */
+    public function addEvilPeerToxic(
+        string $name,
+        ?string $type = null,
+        string $stream = 'auto',
+        array $attributes = []
+    ): void {
+        $this->defineEvilPeer($name);
+        $this->evilPeerDefs[$name]['toxiproxy'] = true;
+        if ($type !== null) {
+            $this->evilPeerToxics[$name][] = [
+                'type' => $type, 'stream' => $stream, 'attributes' => $attributes,
             ];
         }
     }
@@ -468,6 +500,37 @@ final class Context {
             });
         }
 
+        // Toxiproxy fronting: for every peer marked `is fronted by Toxiproxy`,
+        // create a proxy whose upstream is the peer's real listening socket,
+        // attach the declared toxics, and rewrite $evilPeerAddr to the proxy's
+        // listen address. The client then connects through Toxiproxy without
+        // knowing it — the peer-address indirection makes this transparent.
+        // Generated .phpt for these scenarios carry a Toxiproxy --SKIPIF--
+        // probe, so by the time we get here Toxiproxy is known to be up.
+        foreach ($this->evilPeerDefs as $name => $spec) {
+            if (empty($spec['toxiproxy'])) {
+                continue;
+            }
+            $this->toxiproxy ??= new ToxiproxyClient();
+            $upstream  = $this->evilPeerAddr[$name];
+            $proxyName = sprintf('chaos_%d_%s_%s', getmypid(), bin2hex(random_bytes(3)), $name);
+            $listen    = $this->toxiproxy->createProxy($proxyName, '127.0.0.1:0', $upstream);
+            $this->toxiproxyProxies[] = $proxyName;
+            $defaultStream = ($spec['mode'] ?? 'serve') === 'consume' ? 'upstream' : 'downstream';
+            foreach ($this->evilPeerToxics[$name] ?? [] as $i => $tox) {
+                $stream = $tox['stream'] === 'auto' ? $defaultStream : $tox['stream'];
+                $this->toxiproxy->addToxic(
+                    $proxyName, $proxyName . '_t' . $i,
+                    $tox['type'], $stream, $tox['attributes']);
+            }
+            // From here on the client connects through the proxy, not the peer.
+            $this->evilPeerAddr[$name] = $listen;
+            $this->events[] = sprintf(
+                'toxiproxy %s: proxy %s upstream=%s listen=%s toxics=%d',
+                $name, $proxyName, $upstream, $listen,
+                count($this->evilPeerToxics[$name] ?? []));
+        }
+
         // First pass: spawn every coroutine, populate handles. Coroutine bodies
         // do NOT run yet (spawn just queues), so by the time the first body
         // begins all $coroutineHandles entries are visible to it.
@@ -615,6 +678,12 @@ final class Context {
             if (is_resource($entry['proc'])) {
                 @proc_terminate($entry['proc']);
                 @proc_close($entry['proc']);
+            }
+        }
+        // Delete every Toxiproxy proxy created for this scenario.
+        if ($this->toxiproxy !== null) {
+            foreach ($this->toxiproxyProxies as $proxyName) {
+                $this->toxiproxy->deleteProxy($proxyName);
             }
         }
 
