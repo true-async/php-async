@@ -7,6 +7,19 @@ the resulting POLLERR as UV_EBADF, which the reactor turns into a bare
 ASYNC_DISCONNECT. A write proxy's mask is ASYNC_WRITABLE only, so without
 treating a disconnect as terminal for every proxy the writer hangs forever.
 Found by the fuzzy-tests io/backpressure chaos suite.
+
+Skipped on Windows: the fix and this test target the POSIX poll/POLLERR
+path. On Windows (IOCP) the writer does not hang, but Winsock surfaces
+WSAECONNRESET to a write on a different schedule, so the "second fwrite
+fails" assertion does not hold. Whether Windows reliably signals the
+peer reset to a blocked writer needs separate verification — tracked in
+true-async/php-async#134.
+--SKIPIF--
+<?php
+if (PHP_OS_FAMILY === 'Windows') {
+    echo 'skip POSIX poll/POLLERR peer-reset path; Windows tracked in #134';
+}
+?>
 --FILE--
 <?php
 
