@@ -2975,15 +2975,20 @@ final class StandardSteps {
             $ctx->inc("io_download_no_peer_$coro");
             return;
         }
-        $sock = @stream_socket_client('tcp://' . $addr, $errno, $errstr, 5);
-        if ($sock === false) {
-            $ctx->inc("io_download_connect_failed_$coro");
-            return;
-        }
         $buf = '';
         $reads = 0;
         $outcome = 'ok';
+        $sock = null;
         try {
+            // connect() is itself a yield point — wrapping it in the try means
+            // a cancel landing during connect lands in io_download_cancelled
+            // rather than escaping uncaught.
+            $sock = @stream_socket_client('tcp://' . $addr, $errno, $errstr, 5);
+            if ($sock === false) {
+                $ctx->inc("io_download_connect_failed_$coro");
+                $outcome = 'connect_failed';
+                return;
+            }
             while (!feof($sock)) {
                 $chunk = @fread($sock, $readSize);
                 if ($chunk === false || $chunk === '') {
