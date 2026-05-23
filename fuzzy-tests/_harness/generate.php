@@ -186,6 +186,7 @@ const SKIP_RULES = [
     'unix-sockets' => 'if (PHP_OS_FAMILY === "Windows") { echo "skip unix-domain sockets not supported"; exit; }',
     'tcp'          => '/* TCP loopback is portable; no skip */',
     'sockets'      => 'if (!function_exists("socket_import_stream")) { echo "skip ext/sockets required"; exit; }',
+    'curl'         => 'if (!extension_loaded("curl")) { echo "skip ext/curl required"; exit; }',
     'fork'         => 'if (!function_exists("pcntl_fork")) { echo "skip fork() not available"; exit; }',
     'tty'          => 'if (PHP_OS_FAMILY === "Windows") { echo "skip TTY semantics differ on Windows"; exit; }',
     'zts'          => 'if (!ZEND_THREAD_SAFE) { echo "skip requires Thread-Safe (ZTS) PHP build"; exit; }',
@@ -200,6 +201,32 @@ $tport = $cp === false ? 8474 : (int)substr($tp, $cp + 1);
 $ts = @stream_socket_client("tcp://$th:$tport", $te, $tm, 2);
 if ($ts === false) { echo "skip Toxiproxy not running at $tp (set CHAOS_TOXIPROXY)"; exit; }
 fclose($ts);
+PROBE,
+    'pdo_mysql'    => 'if (!extension_loaded("pdo_mysql")) { echo "skip ext/pdo_mysql required"; exit; }',
+    'pdo_sqlite'   => 'if (!extension_loaded("pdo_sqlite")) { echo "skip ext/pdo_sqlite required"; exit; }',
+    'mysqli'       => 'if (!extension_loaded("mysqli")) { echo "skip ext/mysqli required"; exit; }',
+    'pdo_pgsql'    => 'if (!extension_loaded("pdo_pgsql")) { echo "skip ext/pdo_pgsql required"; exit; }',
+    // A reachable PostgreSQL server, opt-in like the MySQL one.
+    'pgsql-server' => <<<'PROBE'
+$ps = getenv("CHAOS_PGSQL") ?: "127.0.0.1:5432";
+$pp = strrpos($ps, ":");
+$ph = $pp === false ? $ps : substr($ps, 0, $pp);
+$pport = $pp === false ? 5432 : (int)substr($ps, $pp + 1);
+$psk = @stream_socket_client("tcp://$ph:$pport", $pe, $pm, 2);
+if ($psk === false) { echo "skip PostgreSQL not reachable at $ps (set CHAOS_PGSQL)"; exit; }
+fclose($psk);
+PROBE,
+    // A reachable MySQL server is opt-in, like Toxiproxy: the database chaos
+    // tests run only where one answers and skip everywhere else. The probe is
+    // a plain TCP connect — the upstream the Toxiproxy proxy will point at.
+    'mysql-server' => <<<'PROBE'
+$ms = getenv("CHAOS_MYSQL") ?: "127.0.0.1:3306";
+$mp = strrpos($ms, ":");
+$mh = $mp === false ? $ms : substr($ms, 0, $mp);
+$mport = $mp === false ? 3306 : (int)substr($ms, $mp + 1);
+$msk = @stream_socket_client("tcp://$mh:$mport", $me, $mm, 2);
+if ($msk === false) { echo "skip MySQL not reachable at $ms (set CHAOS_MYSQL)"; exit; }
+fclose($msk);
 PROBE,
 ];
 

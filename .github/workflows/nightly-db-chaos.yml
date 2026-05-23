@@ -1,0 +1,180 @@
+name: Nightly DB chaos (Toxiproxy + MySQL + PostgreSQL)
+
+# Database half of issue #136: async PDO MySQL / mysqli / PDO PgSQL / PDO
+# SQLite under Toxiproxy transport faults (latency, bandwidth, slicer,
+# reset_peer) + a separate concurrent.feature for transactions and
+# heterogeneous coroutine workloads. Opt-in like the I/O nightly: every
+# generated .phpt carries --SKIPIF-- probes (ext/pdo_*, ext/mysqli, real
+# server reachable, Toxiproxy admin endpoint) and skips wherever the env
+# does not satisfy them. This job is where the env is actually stood up.
+
+on:
+  schedule:
+    # 03:43 UTC daily — offset from nightly-io-chaos so the two do not
+    # contend for the same runner pool.
+    - cron: '43 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  db-chaos:
+    name: "DB_CHAOS"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    env:
+      CHAOS_TOXIPROXY: 127.0.0.1:8474
+      CHAOS_MYSQL: 127.0.0.1:3306
+      CHAOS_MYSQL_USER: test
+      CHAOS_MYSQL_PASS: test
+      CHAOS_MYSQL_DB: chaos_test
+      CHAOS_PGSQL: 127.0.0.1:5432
+      CHAOS_PGSQL_USER: test
+      CHAOS_PGSQL_PASS: test
+      CHAOS_PGSQL_DB: chaos_test
+      TOXIPROXY_VERSION: 2.12.0
+
+    steps:
+      - name: Checkout php-async repo
+        uses: actions/checkout@v4
+        with:
+          path: async
+
+      - name: Clone php-src (true-async-stable)
+        run: |
+          git clone --depth=1 --branch=true-async-stable https://github.com/true-async/php-src php-src
+
+      - name: Copy php-async extension into php-src
+        run: |
+          mkdir -p php-src/ext/async
+          cp -r async/* php-src/ext/async/
+
+      - name: Install build dependencies
+        run: |
+          set -x
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            autoconf bison build-essential re2c pkg-config \
+            libxml2-dev libssl-dev libsqlite3-dev libonig-dev \
+            libcurl4-openssl-dev libuv1-dev libpq-dev
+
+      - name: Start MySQL (preinstalled on ubuntu-24.04)
+        run: |
+          set -x
+          sudo service mysql start
+          for i in $(seq 1 20); do
+            if sudo mysqladmin ping --silent; then break; fi
+            sleep 1
+          done
+          sudo mysql -e "CREATE USER 'test'@'%' IDENTIFIED BY 'test';"
+          sudo mysql -e "CREATE DATABASE chaos_test;"
+          sudo mysql -e "GRANT ALL PRIVILEGES ON chaos_test.* TO 'test'@'%';"
+          mysql -h127.0.0.1 -utest -ptest chaos_test <<'SQL'
+            CREATE TABLE items (id INT PRIMARY KEY AUTO_INCREMENT, label VARCHAR(64), n INT);
+            INSERT INTO items (label, n) VALUES ('alpha',1),('beta',2),('gamma',3),('delta',4),('epsilon',5);
+          SQL
+
+      - name: Install and start PostgreSQL
+        run: |
+          set -x
+          sudo apt-get install -y postgresql
+          sudo service postgresql start
+          for i in $(seq 1 20); do
+            if sudo -u postgres pg_isready; then break; fi
+            sleep 1
+          done
+          sudo -u postgres psql -c "CREATE USER test WITH PASSWORD 'test';"
+          sudo -u postgres psql -c "CREATE DATABASE chaos_test OWNER test;"
+          # Allow TCP md5 from localhost for the test user (default ubuntu cluster).
+          PG_HBA=$(sudo -u postgres psql -tA -c "SHOW hba_file;")
+          echo "host chaos_test test 127.0.0.1/32 md5" | sudo tee -a "$PG_HBA"
+          sudo service postgresql reload
+          PGPASSWORD=test psql -h 127.0.0.1 -U test -d chaos_test <<'SQL'
+            CREATE TABLE items (id SERIAL PRIMARY KEY, label VARCHAR(64), n INT);
+            INSERT INTO items (label, n) VALUES ('alpha',1),('beta',2),('gamma',3),('delta',4),('epsilon',5);
+          SQL
+
+      - name: Install Toxiproxy
+        run: |
+          set -x
+          curl -sSL -o /tmp/toxiproxy-server \
+            "https://github.com/Shopify/toxiproxy/releases/download/v${TOXIPROXY_VERSION}/toxiproxy-server-linux-amd64"
+          sudo install -m 0755 /tmp/toxiproxy-server /usr/local/bin/toxiproxy-server
+          toxiproxy-server --version
+
+      - name: Start Toxiproxy
+        run: |
+          toxiproxy-server -host 127.0.0.1 -port 8474 >/tmp/toxiproxy.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8474/version >/dev/null; then
+              echo "Toxiproxy up: $(curl -s http://127.0.0.1:8474/version)"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Toxiproxy did not come up"; cat /tmp/toxiproxy.log; exit 1
+
+      - name: Configure PHP
+        working-directory: php-src
+        run: |
+          set -x
+          ./buildconf --force
+          ./configure \
+            --enable-option-checking=fatal \
+            --prefix=/usr/local \
+            --without-pear \
+            --with-openssl \
+            --with-curl \
+            --enable-sockets \
+            --enable-pcntl \
+            --enable-mbstring \
+            --enable-debug \
+            --enable-zts \
+            --enable-async \
+            --enable-async-fuzz \
+            --enable-pdo \
+            --with-pdo-mysql=mysqlnd \
+            --with-mysqli=mysqlnd \
+            --with-pdo-pgsql \
+            --with-pdo-sqlite
+
+      - name: Build PHP
+        working-directory: php-src
+        run: make -j$(nproc) >/dev/null
+
+      - name: Install PHP
+        working-directory: php-src
+        run: sudo make install
+
+      - name: Generate chaos tests
+        working-directory: php-src/ext/async
+        run: PHP_BIN=/usr/local/bin/php bash fuzzy-tests/regen.sh
+
+      - name: Run DB chaos suite (FIFO)
+        working-directory: php-src/ext/async
+        run: |
+          /usr/local/bin/php ../../run-tests.php \
+            -P -q -j$(nproc) \
+            -g FAIL,BORK,LEAK,XLEAK \
+            --no-progress --offline --show-diff --set-timeout 120 \
+            fuzzy-tests/_generated/db/
+
+      - name: Run DB chaos suite (randomised schedulers)
+        working-directory: php-src/ext/async
+        run: |
+          set -e
+          for sched in random:1 random:7 random:42 random:1337; do
+            echo "=== TRUE_ASYNC_SCHED=$sched ==="
+            TRUE_ASYNC_SCHED=$sched /usr/local/bin/php ../../run-tests.php \
+              -P -q -j$(nproc) \
+              -g FAIL,BORK,LEAK,XLEAK \
+              --no-progress --offline --show-diff --set-timeout 120 \
+              fuzzy-tests/_generated/db/
+          done
+
+      - name: Toxiproxy log
+        if: always()
+        run: cat /tmp/toxiproxy.log || true
+
+      - name: PostgreSQL log
+        if: always()
+        run: sudo tail -n 200 /var/log/postgresql/postgresql-*.log || true

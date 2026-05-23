@@ -193,8 +193,8 @@ final class StandardSteps {
         // toxics (slicing, delay) onto this fault table.
         $r->on('/^an evil peer "([^"]+)" serving "([^"]*)"$/',
             function(Context $ctx, string $name, string $payload) {
-                $ctx->defineEvilPeer($name);
-                $ctx->evilPeerDefs[$name]['payload'] = $payload;
+                $ctx->net->defineEvilPeer($name);
+                $ctx->net->evilPeerDefs[$name]['payload'] = $payload;
             });
 
         // Given an evil peer "EP" serving N bytes
@@ -203,26 +203,26 @@ final class StandardSteps {
         $r->on('/^an evil peer "([^"]+)" serving (\S+) bytes$/',
             function(Context $ctx, string $name, string $nExpr) {
                 $n = (int)$ctx->resolver->resolve($nExpr);
-                $ctx->defineEvilPeer($name);
+                $ctx->net->defineEvilPeer($name);
                 $payload = '';
                 for ($i = 0; $i < $n; $i++) {
                     $payload .= chr(33 + ($i % 94)); // printable ASCII cycle
                 }
-                $ctx->evilPeerDefs[$name]['payload'] = $payload;
+                $ctx->net->evilPeerDefs[$name]['payload'] = $payload;
             });
 
         // Given evil peer "EP" slices output into N-byte chunks
         $r->on('/^evil peer "([^"]+)" slices output into (\S+)-byte chunks$/',
             function(Context $ctx, string $name, string $nExpr) {
-                $ctx->defineEvilPeer($name);
-                $ctx->evilPeerDefs[$name]['slice'] = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->net->defineEvilPeer($name);
+                $ctx->net->evilPeerDefs[$name]['slice'] = (int)$ctx->resolver->resolve($nExpr);
             });
 
         // Given evil peer "EP" delays N ms between chunks
         $r->on('/^evil peer "([^"]+)" delays (\S+) ms between chunks$/',
             function(Context $ctx, string $name, string $nExpr) {
-                $ctx->defineEvilPeer($name);
-                $ctx->evilPeerDefs[$name]['delay'] = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->net->defineEvilPeer($name);
+                $ctx->net->evilPeerDefs[$name]['delay'] = (int)$ctx->resolver->resolve($nExpr);
             });
 
         // Given evil peer "EP" closes abruptly after N bytes
@@ -230,8 +230,8 @@ final class StandardSteps {
         // client must see a clean truncation, not a hang or a corrupt buffer.
         $r->on('/^evil peer "([^"]+)" closes abruptly after (\S+) bytes$/',
             function(Context $ctx, string $name, string $nExpr) {
-                $ctx->defineEvilPeer($name);
-                $ctx->evilPeerDefs[$name]['reset'] = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->net->defineEvilPeer($name);
+                $ctx->net->evilPeerDefs[$name]['reset'] = (int)$ctx->resolver->resolve($nExpr);
             });
 
         // Given an evil peer "EP" that never reads
@@ -240,9 +240,9 @@ final class StandardSteps {
         // suspends on the reactor's write-wait hook — the back-pressure path.
         $r->on('/^an evil peer "([^"]+)" that never reads$/',
             function(Context $ctx, string $name) {
-                $ctx->defineEvilPeer($name);
-                $ctx->evilPeerDefs[$name]['mode']  = 'consume';
-                $ctx->evilPeerDefs[$name]['slice'] = 0;
+                $ctx->net->defineEvilPeer($name);
+                $ctx->net->evilPeerDefs[$name]['mode']  = 'consume';
+                $ctx->net->evilPeerDefs[$name]['slice'] = 0;
             });
 
         // Given an evil peer "EP" that reads N bytes at a time
@@ -251,16 +251,16 @@ final class StandardSteps {
         // the client's writer suspended for a while.
         $r->on('/^an evil peer "([^"]+)" that reads (\S+) bytes at a time$/',
             function(Context $ctx, string $name, string $nExpr) {
-                $ctx->defineEvilPeer($name);
-                $ctx->evilPeerDefs[$name]['mode']  = 'consume';
-                $ctx->evilPeerDefs[$name]['slice'] = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->net->defineEvilPeer($name);
+                $ctx->net->evilPeerDefs[$name]['mode']  = 'consume';
+                $ctx->net->evilPeerDefs[$name]['slice'] = (int)$ctx->resolver->resolve($nExpr);
             });
 
         // Given evil peer "EP" delays N ms between reads
         $r->on('/^evil peer "([^"]+)" delays (\S+) ms between reads$/',
             function(Context $ctx, string $name, string $nExpr) {
-                $ctx->defineEvilPeer($name);
-                $ctx->evilPeerDefs[$name]['delay'] = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->net->defineEvilPeer($name);
+                $ctx->net->evilPeerDefs[$name]['delay'] = (int)$ctx->resolver->resolve($nExpr);
             });
 
         // Given evil peer "EP" stops reading after N bytes
@@ -268,8 +268,8 @@ final class StandardSteps {
         // writer must see a clean broken-pipe failure, not a hang.
         $r->on('/^evil peer "([^"]+)" stops reading after (\S+) bytes$/',
             function(Context $ctx, string $name, string $nExpr) {
-                $ctx->defineEvilPeer($name);
-                $ctx->evilPeerDefs[$name]['reset'] = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->net->defineEvilPeer($name);
+                $ctx->net->evilPeerDefs[$name]['reset'] = (int)$ctx->resolver->resolve($nExpr);
             });
 
         // Given evil peer "EP" holds the connection for N ms
@@ -277,8 +277,8 @@ final class StandardSteps {
         // connection open before closing, i.e. the killer's window to cancel.
         $r->on('/^evil peer "([^"]+)" holds the connection for (\S+) ms$/',
             function(Context $ctx, string $name, string $nExpr) {
-                $ctx->defineEvilPeer($name);
-                $ctx->evilPeerDefs[$name]['hold'] = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->net->defineEvilPeer($name);
+                $ctx->net->evilPeerDefs[$name]['hold'] = (int)$ctx->resolver->resolve($nExpr);
             });
 
         // Given evil peer "EP" uses a hard reset
@@ -287,8 +287,8 @@ final class StandardSteps {
         // faces a real ECONNRESET, not a clean EOF.
         $r->on('/^evil peer "([^"]+)" uses a hard reset$/',
             function(Context $ctx, string $name) {
-                $ctx->defineEvilPeer($name);
-                $ctx->evilPeerDefs[$name]['hardReset'] = true;
+                $ctx->net->defineEvilPeer($name);
+                $ctx->net->evilPeerDefs[$name]['hardReset'] = true;
             })
             ->requires('sockets');
 
@@ -298,8 +298,8 @@ final class StandardSteps {
         // endpoint, no shared reactor. The same fault table applies.
         $r->on('/^evil peer "([^"]+)" runs as a forked peer$/',
             function(Context $ctx, string $name) {
-                $ctx->defineEvilPeer($name);
-                $ctx->evilPeerDefs[$name]['forked'] = true;
+                $ctx->net->defineEvilPeer($name);
+                $ctx->net->evilPeerDefs[$name]['forked'] = true;
             });
 
         // ---- Toxiproxy: external transport-level fault injection ----
@@ -315,7 +315,7 @@ final class StandardSteps {
         // pass-through baseline (the proxy must be transparent on its own).
         $r->on('/^evil peer "([^"]+)" is fronted by Toxiproxy$/',
             function(Context $ctx, string $name) {
-                $ctx->addEvilPeerToxic($name);
+                $ctx->net->addEvilPeerToxic($name);
             })
             ->requires('toxiproxy');
 
@@ -325,7 +325,7 @@ final class StandardSteps {
         $r->on('/^Toxiproxy throttles peer "([^"]+)" to (\S+) KB\/s$/',
             function(Context $ctx, string $name, string $rateExpr) {
                 $rate = (int)$ctx->resolver->resolve($rateExpr);
-                $ctx->addEvilPeerToxic($name, 'bandwidth', 'auto', ['rate' => $rate]);
+                $ctx->net->addEvilPeerToxic($name, 'bandwidth', 'auto', ['rate' => $rate]);
             })
             ->requires('toxiproxy');
 
@@ -335,7 +335,7 @@ final class StandardSteps {
             function(Context $ctx, string $latExpr, string $jitExpr, string $name) {
                 $lat = (int)$ctx->resolver->resolve($latExpr);
                 $jit = (int)$ctx->resolver->resolve($jitExpr);
-                $ctx->addEvilPeerToxic($name, 'latency', 'auto',
+                $ctx->net->addEvilPeerToxic($name, 'latency', 'auto',
                     ['latency' => $lat, 'jitter' => $jit]);
             })
             ->requires('toxiproxy');
@@ -345,7 +345,7 @@ final class StandardSteps {
         $r->on('/^Toxiproxy adds (\S+) ms latency to peer "([^"]+)"$/',
             function(Context $ctx, string $latExpr, string $name) {
                 $lat = (int)$ctx->resolver->resolve($latExpr);
-                $ctx->addEvilPeerToxic($name, 'latency', 'auto', ['latency' => $lat]);
+                $ctx->net->addEvilPeerToxic($name, 'latency', 'auto', ['latency' => $lat]);
             })
             ->requires('toxiproxy');
 
@@ -355,7 +355,7 @@ final class StandardSteps {
         $r->on('/^Toxiproxy slices peer "([^"]+)" into (\S+)-byte TCP segments$/',
             function(Context $ctx, string $name, string $sizeExpr) {
                 $size = (int)$ctx->resolver->resolve($sizeExpr);
-                $ctx->addEvilPeerToxic($name, 'slicer', 'auto', [
+                $ctx->net->addEvilPeerToxic($name, 'slicer', 'auto', [
                     'average_size'   => $size,
                     'size_variation' => intdiv($size, 4),
                     'delay'          => 0,
@@ -369,7 +369,7 @@ final class StandardSteps {
         $r->on('/^Toxiproxy cuts peer "([^"]+)" off after (\S+) bytes$/',
             function(Context $ctx, string $name, string $nExpr) {
                 $n = (int)$ctx->resolver->resolve($nExpr);
-                $ctx->addEvilPeerToxic($name, 'limit_data', 'auto', ['bytes' => $n]);
+                $ctx->net->addEvilPeerToxic($name, 'limit_data', 'auto', ['bytes' => $n]);
             })
             ->requires('toxiproxy');
 
@@ -379,9 +379,232 @@ final class StandardSteps {
         $r->on('/^Toxiproxy resets peer "([^"]+)" after (\S+) ms$/',
             function(Context $ctx, string $name, string $msExpr) {
                 $ms = (int)$ctx->resolver->resolve($msExpr);
-                $ctx->addEvilPeerToxic($name, 'reset_peer', 'auto', ['timeout' => $ms]);
+                $ctx->net->addEvilPeerToxic($name, 'reset_peer', 'auto', ['timeout' => $ms]);
             })
             ->requires('toxiproxy');
+
+        // ---- Evil HTTP peer: an EvilPeer that speaks HTTP/1.1 ----
+        // The peer drains one HTTP request, then writes back a response. The
+        // body-level toxics ("slices output", "delays ms between chunks",
+        // "closes abruptly after N bytes", "uses a hard reset", "runs as a
+        // forked peer", every Toxiproxy step) all reuse the serve-mode steps
+        // above — they only set keys, mode-agnostic. The steps below add the
+        // HTTP-specific framing and toxics. An async ext/curl client driven by
+        // the reactor faces this peer.
+
+        // Given an evil HTTP peer "EP" serving N bytes
+        $r->on('/^an evil HTTP peer "([^"]+)" serving (\S+) bytes$/',
+            function(Context $ctx, string $name, string $nExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->net->defineEvilPeer($name);
+                $ctx->net->evilPeerDefs[$name]['mode'] = 'http';
+                $payload = '';
+                for ($i = 0; $i < $n; $i++) {
+                    $payload .= chr(33 + ($i % 94)); // printable ASCII cycle
+                }
+                $ctx->net->evilPeerDefs[$name]['payload'] = $payload;
+            })
+            ->requires('curl');
+
+        // Given an evil HTTP peer "EP" serving "body"
+        $r->on('/^an evil HTTP peer "([^"]+)" serving "([^"]*)"$/',
+            function(Context $ctx, string $name, string $body) {
+                $ctx->net->defineEvilPeer($name);
+                $ctx->net->evilPeerDefs[$name]['mode']    = 'http';
+                $ctx->net->evilPeerDefs[$name]['payload'] = $body;
+            })
+            ->requires('curl');
+
+        // Given evil HTTP peer "EP" responds with status N
+        // The peer answers with an arbitrary HTTP status. curl still completes
+        // the transaction successfully (errno 0) — a 4xx/5xx is a valid HTTP
+        // response, not a transport error.
+        $r->on('/^evil HTTP peer "([^"]+)" responds with status (\S+)$/',
+            function(Context $ctx, string $name, string $sExpr) {
+                $ctx->net->defineEvilPeer($name);
+                $ctx->net->evilPeerDefs[$name]['mode']       = 'http';
+                $ctx->net->evilPeerDefs[$name]['httpStatus'] = (int)$ctx->resolver->resolve($sExpr);
+            })
+            ->requires('curl');
+
+        // Given evil HTTP peer "EP" uses chunked transfer encoding
+        // The body arrives Transfer-Encoding: chunked; curl must de-chunk it
+        // back to the exact byte stream regardless of how it was framed.
+        $r->on('/^evil HTTP peer "([^"]+)" uses chunked transfer encoding$/',
+            function(Context $ctx, string $name) {
+                $ctx->net->defineEvilPeer($name);
+                $ctx->net->evilPeerDefs[$name]['mode']        = 'http';
+                $ctx->net->evilPeerDefs[$name]['httpChunked'] = true;
+            })
+            ->requires('curl');
+
+        // Given evil HTTP peer "EP" overstates Content-Length by N bytes
+        // A mendacious header — the peer promises more than it delivers. curl
+        // waits for bytes that never come and must report CURLE_PARTIAL_FILE,
+        // never hang.
+        $r->on('/^evil HTTP peer "([^"]+)" overstates Content-Length by (\S+) bytes$/',
+            function(Context $ctx, string $name, string $nExpr) {
+                $ctx->net->defineEvilPeer($name);
+                $ctx->net->evilPeerDefs[$name]['mode']        = 'http';
+                $ctx->net->evilPeerDefs[$name]['httpClenLie'] = (int)$ctx->resolver->resolve($nExpr);
+            })
+            ->requires('curl');
+
+        // Given evil HTTP peer "EP" understates Content-Length by N bytes
+        // The peer promises fewer bytes than it sends; curl stops reading at
+        // the advertised length, so the client sees a clean prefix.
+        $r->on('/^evil HTTP peer "([^"]+)" understates Content-Length by (\S+) bytes$/',
+            function(Context $ctx, string $name, string $nExpr) {
+                $ctx->net->defineEvilPeer($name);
+                $ctx->net->evilPeerDefs[$name]['mode']        = 'http';
+                $ctx->net->evilPeerDefs[$name]['httpClenLie'] = -(int)$ctx->resolver->resolve($nExpr);
+            })
+            ->requires('curl');
+
+        // Given evil HTTP peer "EP" delays N ms mid-headers
+        // Slow-headers toxic: the response status line and headers dribble in
+        // over two TCP writes with a pause between. curl's header parser must
+        // stay interruptible and reassemble them correctly.
+        $r->on('/^evil HTTP peer "([^"]+)" delays (\S+) ms mid-headers$/',
+            function(Context $ctx, string $name, string $nExpr) {
+                $ctx->net->defineEvilPeer($name);
+                $ctx->net->evilPeerDefs[$name]['mode']            = 'http';
+                $ctx->net->evilPeerDefs[$name]['httpHeaderDelay'] = (int)$ctx->resolver->resolve($nExpr);
+            })
+            ->requires('curl');
+
+        // ---- Database under chaos: a real DB server fronted by Toxiproxy ----
+        // A DB driver speaks a binary wire protocol, so a pure-PHP mock is not
+        // worth it — the chaos lands at the transport level instead: Toxiproxy
+        // sits between the async PDO client and a real MySQL server, injecting
+        // latency / bandwidth caps / RST mid-query. Every DB step is tagged
+        // ->requires('toxiproxy','pdo_mysql','mysql-server'); the generator
+        // emits a --SKIPIF-- probe so the test runs only where all three are
+        // present (the nightly job) and skips everywhere else.
+
+        // Given a MySQL database "DB"
+        // A non-pooled database: each query opens its own PDO connection.
+        $r->on('/^a MySQL database "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                $ctx->net->defineEvilDb($name, 'mysql');
+            })
+            ->requires('toxiproxy', 'pdo_mysql', 'mysql-server');
+
+        // Given a pooled MySQL database "DB"
+        // A pool-enabled database: one shared PDO handle, per-coroutine slots.
+        $r->on('/^a pooled MySQL database "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                $ctx->net->defineEvilDb($name, 'mysql', true);
+            })
+            ->requires('toxiproxy', 'pdo_mysql', 'mysql-server');
+
+        // Given a pooled MySQL database "DB" with N connections
+        $r->on('/^a pooled MySQL database "([^"]+)" with (\S+) connections$/',
+            function(Context $ctx, string $name, string $nExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->net->defineEvilDb($name, 'mysql', true, $n > 0 ? $n : 1);
+            })
+            ->requires('toxiproxy', 'pdo_mysql', 'mysql-server');
+
+        // Given Toxiproxy adds N ms latency to database "DB"
+        $r->on('/^Toxiproxy adds (\S+) ms latency to database "([^"]+)"$/',
+            function(Context $ctx, string $latExpr, string $name) {
+                $lat = (int)$ctx->resolver->resolve($latExpr);
+                $ctx->net->addEvilDbToxic($name, 'latency', ['latency' => $lat]);
+            })
+            ->requires('toxiproxy');
+
+        // Given Toxiproxy throttles database "DB" to N KB/s
+        $r->on('/^Toxiproxy throttles database "([^"]+)" to (\S+) KB\/s$/',
+            function(Context $ctx, string $name, string $rateExpr) {
+                $rate = (int)$ctx->resolver->resolve($rateExpr);
+                $ctx->net->addEvilDbToxic($name, 'bandwidth', ['rate' => $rate]);
+            })
+            ->requires('toxiproxy');
+
+        // Given Toxiproxy slices database "DB" into N-byte TCP segments
+        $r->on('/^Toxiproxy slices database "([^"]+)" into (\S+)-byte TCP segments$/',
+            function(Context $ctx, string $name, string $sizeExpr) {
+                $size = (int)$ctx->resolver->resolve($sizeExpr);
+                $ctx->net->addEvilDbToxic($name, 'slicer', [
+                    'average_size'   => $size,
+                    'size_variation' => intdiv($size, 4),
+                    'delay'          => 0,
+                ]);
+            })
+            ->requires('toxiproxy');
+
+        // Given Toxiproxy resets database "DB" after N ms
+        // reset_peer toxic — a TCP RST N ms into the connection; lands
+        // mid-query for any query that runs longer than N ms.
+        $r->on('/^Toxiproxy resets database "([^"]+)" after (\S+) ms$/',
+            function(Context $ctx, string $name, string $msExpr) {
+                $ms = (int)$ctx->resolver->resolve($msExpr);
+                $ctx->net->addEvilDbToxic($name, 'reset_peer', ['timeout' => $ms]);
+            })
+            ->requires('toxiproxy');
+
+        // Given a MySQLi database "DB"
+        // The same Toxiproxy-fronted MySQL server, reached through the mysqli
+        // extension instead of PDO. mysqli has no connection pool, so every
+        // query opens its own connection. The Toxiproxy toxic steps above are
+        // driver-agnostic and apply to a MySQLi database too.
+        $r->on('/^a MySQLi database "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                $ctx->net->defineEvilDb($name, 'mysqli');
+            })
+            ->requires('toxiproxy', 'mysqli', 'mysql-server');
+
+        // Given a PgSQL database "DB"
+        // A PostgreSQL server, fronted by Toxiproxy exactly like the MySQL
+        // one. The Toxiproxy toxic steps and the `queries / runs a slow query
+        // on / runs a transaction on database` client steps are all
+        // driver-agnostic — dbRun()/dbTransaction() build a pgsql: DSN when
+        // the database's driver is pgsql.
+        $r->on('/^a PgSQL database "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                $ctx->net->defineEvilDb($name, 'pgsql');
+            })
+            ->requires('toxiproxy', 'pdo_pgsql', 'pgsql-server');
+
+        // Given a pooled PgSQL database "DB"
+        $r->on('/^a pooled PgSQL database "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                $ctx->net->defineEvilDb($name, 'pgsql', true);
+            })
+            ->requires('toxiproxy', 'pdo_pgsql', 'pgsql-server');
+
+        // Given a pooled PgSQL database "DB" with N connections
+        $r->on('/^a pooled PgSQL database "([^"]+)" with (\S+) connections$/',
+            function(Context $ctx, string $name, string $nExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->net->defineEvilDb($name, 'pgsql', true, $n > 0 ? $n : 1);
+            })
+            ->requires('toxiproxy', 'pdo_pgsql', 'pgsql-server');
+
+        // Given a [pooled] SQLite database "DB"
+        // SQLite is a local file — no Toxiproxy, no network toxics. The chaos
+        // surface is the PDO pool itself: per-coroutine sqlite3* slots over one
+        // shared file, with the same client steps (queries / runs a transaction
+        // on database) as the network drivers.
+        $r->on('/^a SQLite database "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                $ctx->net->defineEvilDb($name, 'sqlite');
+            })
+            ->requires('pdo_sqlite');
+
+        $r->on('/^a pooled SQLite database "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                $ctx->net->defineEvilDb($name, 'sqlite', true);
+            })
+            ->requires('pdo_sqlite');
+
+        $r->on('/^a pooled SQLite database "([^"]+)" with (\S+) connections$/',
+            function(Context $ctx, string $name, string $nExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->net->defineEvilDb($name, 'sqlite', true, $n > 0 ? $n : 1);
+            })
+            ->requires('pdo_sqlite');
 
         // ---- When: actions inside a coroutine ----
 
@@ -409,6 +632,103 @@ final class StandardSteps {
                     StandardSteps::ioDownload($ctx, $coro, $peer, 1);
                 });
             });
+
+        // When coroutine "X" fetches peer "EP" over HTTP
+        // Runs an async ext/curl GET against the evil HTTP peer. The body is
+        // captured incrementally through CURLOPT_WRITEFUNCTION, so a truncated
+        // or cancelled transfer still leaves the prefix that did arrive.
+        // Cancellation-aware: a cancel mid-request lands in curl_get_cancelled.
+        // The liveness invariant
+        //   curl_get_ok + curl_get_cancelled + curl_get_failed
+        //     + curl_get_no_peer == curl_get_attempts
+        // therefore holds for every interleaving.
+        $r->on('/^coroutine "([^"]+)" fetches peer "([^"]+)" over HTTP$/',
+            function(Context $ctx, string $coro, string $peer) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $peer) {
+                    StandardSteps::curlGet($ctx, $coro, $peer);
+                });
+            })
+            ->requires('curl');
+
+        // When coroutine "X" queries database "DB"
+        // Runs a SELECT over the async PDO MySQL driver — connect + query I/O
+        // go through the libuv reactor. The query reads the five seed rows
+        // (ids 1..5), stable regardless of what transaction scenarios append.
+        // Cancellation-aware; the liveness invariant
+        //   db_query_ok + db_query_cancelled + db_query_failed
+        //     + db_query_no_db == db_query_attempts
+        // holds for every interleaving.
+        $r->on('/^coroutine "([^"]+)" queries database "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $db) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $db) {
+                    StandardSteps::dbRun($ctx, $coro, $db,
+                        'SELECT id, label, n FROM items WHERE id <= 5 ORDER BY id', 'query');
+                });
+            })
+            ->requires('toxiproxy');
+
+        // When coroutine "X" runs a slow query on database "DB"
+        // A ~2 s server-side sleep — keeps the coroutine parked in the reactor
+        // on the DB socket long enough for a killer to cancel it or a
+        // reset_peer toxic to land mid-query. The sleep SQL is driver-specific
+        // (MySQL SLEEP() vs PostgreSQL pg_sleep()), resolved when the action
+        // runs — by then the database's driver is known.
+        $r->on('/^coroutine "([^"]+)" runs a slow query on database "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $db) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $db) {
+                    $driver = $ctx->net->evilDbDefs[$db]['driver'] ?? 'mysql';
+                    $sql = $driver === 'pgsql' ? 'SELECT pg_sleep(2)' : 'SELECT SLEEP(2)';
+                    StandardSteps::dbRun($ctx, $coro, $db, $sql, 'slow_query');
+                });
+            })
+            ->requires('toxiproxy');
+
+        // When coroutine "X" runs a transaction on database "DB"
+        // BEGIN → INSERT → COMMIT. A connection fault mid-transaction must
+        // surface as a clean error and leave neither the connection nor the
+        // pool slot wedged; the server rolls the transaction back on the
+        // dropped connection.
+        $r->on('/^coroutine "([^"]+)" runs a transaction on database "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $db) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $db) {
+                    StandardSteps::dbTransaction($ctx, $coro, $db);
+                });
+            })
+            ->requires('toxiproxy');
+
+        // When coroutine "X" queries via mysqli "DB"
+        // Same SELECT as the PDO query step, but over the mysqli extension —
+        // connect + query I/O go through the libuv reactor. Liveness invariant
+        //   mysqli_query_ok + cancelled + failed + no_db == mysqli_query_attempts.
+        $r->on('/^coroutine "([^"]+)" queries via mysqli "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $db) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $db) {
+                    StandardSteps::mysqliRun($ctx, $coro, $db,
+                        'SELECT id, label, n FROM items WHERE id <= 5 ORDER BY id', 'query');
+                });
+            })
+            ->requires('toxiproxy', 'mysqli', 'mysql-server');
+
+        // When coroutine "X" runs a slow query via mysqli "DB"
+        // SELECT SLEEP(2) over mysqli — parks the coroutine in the reactor on
+        // the DB socket for a killer to cancel or a reset_peer toxic to hit.
+        $r->on('/^coroutine "([^"]+)" runs a slow query via mysqli "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $db) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $db) {
+                    StandardSteps::mysqliRun($ctx, $coro, $db, 'SELECT SLEEP(2)', 'slow_query');
+                });
+            })
+            ->requires('toxiproxy', 'mysqli', 'mysql-server');
+
+        // When coroutine "X" runs a transaction via mysqli "DB"
+        // begin_transaction → prepared INSERT → commit over mysqli.
+        $r->on('/^coroutine "([^"]+)" runs a transaction via mysqli "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $db) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $db) {
+                    StandardSteps::mysqliTransaction($ctx, $coro, $db);
+                });
+            })
+            ->requires('toxiproxy', 'mysqli', 'mysql-server');
 
         // When coroutine "X" uploads N bytes to peer "EP"
         // Connects and writes N bytes in a single fwrite(). Against a slow or
@@ -2901,10 +3221,10 @@ final class StandardSteps {
         // must equal the peer's declared payload, byte for byte.
         $r->on('/^coroutine "([^"]+)" received the payload of peer "([^"]+)" intact$/',
             function(Context $ctx, string $coro, string $peer) {
-                if (!isset($ctx->evilPeerDefs[$peer])) {
+                if (!isset($ctx->net->evilPeerDefs[$peer])) {
                     throw new \RuntimeException("evil peer $peer not defined");
                 }
-                $expected = $ctx->evilPeerDefs[$peer]['payload'];
+                $expected = $ctx->net->evilPeerDefs[$peer]['payload'];
                 $got = $ctx->ioData[$coro] ?? null;
                 if ($got === null) {
                     throw new \RuntimeException("coroutine $coro received nothing from peer $peer");
@@ -2923,10 +3243,10 @@ final class StandardSteps {
         // payload length.
         $r->on('/^coroutine "([^"]+)" received a clean prefix of peer "([^"]+)"$/',
             function(Context $ctx, string $coro, string $peer) {
-                if (!isset($ctx->evilPeerDefs[$peer])) {
+                if (!isset($ctx->net->evilPeerDefs[$peer])) {
                     throw new \RuntimeException("evil peer $peer not defined");
                 }
-                $payload = $ctx->evilPeerDefs[$peer]['payload'];
+                $payload = $ctx->net->evilPeerDefs[$peer]['payload'];
                 $got = $ctx->ioData[$coro] ?? null;
                 if ($got === null) {
                     throw new \RuntimeException("coroutine $coro received nothing from peer $peer");
@@ -2939,6 +3259,20 @@ final class StandardSteps {
                 if ($got !== substr($payload, 0, strlen($got))) {
                     throw new \RuntimeException(
                         "coroutine $coro received bytes are not a prefix of peer $peer's payload");
+                }
+            });
+
+        // Then coroutine "X" received HTTP status N
+        // The curl client stashes the response status code into the
+        // curl_http_code_$coro counter; a 4xx/5xx is a valid response, so this
+        // is decidable independently of the transport-level outcome bucket.
+        $r->on('/^coroutine "([^"]+)" received HTTP status (\S+)$/',
+            function(Context $ctx, string $coro, string $sExpr) {
+                $want = (int)$ctx->resolver->resolve($sExpr);
+                $got  = $ctx->counters["curl_http_code_$coro"] ?? 0;
+                if ($got !== $want) {
+                    throw new \RuntimeException(sprintf(
+                        "coroutine %s expected HTTP status %d, got %d", $coro, $want, $got));
                 }
             });
 
@@ -3051,7 +3385,7 @@ final class StandardSteps {
         // stays valid even when the download never gets past connect — a hard
         // RST can reset the connection before stream_socket_client() returns.
         $ctx->ioData[$coro] = '';
-        $addr = $ctx->evilPeerAddr[$peer] ?? null;
+        $addr = $ctx->net->evilPeerAddr[$peer] ?? null;
         if ($addr === null) {
             $ctx->inc("io_download_no_peer_$coro");
             return;
@@ -3115,7 +3449,7 @@ final class StandardSteps {
      */
     public static function ioUpload(Context $ctx, string $coro, string $peer, int $bytes, int $writeSize): void {
         $ctx->inc("io_upload_attempts_$coro");
-        $addr = $ctx->evilPeerAddr[$peer] ?? null;
+        $addr = $ctx->net->evilPeerAddr[$peer] ?? null;
         if ($addr === null) {
             $ctx->inc("io_upload_no_peer_$coro");
             return;
@@ -3167,6 +3501,291 @@ final class StandardSteps {
             $ctx->events[] = sprintf(
                 'client %s: peer=%s upload=%dB writesize=%d writes=%d sent=%dB outcome=%s',
                 $coro, $peer, $bytes, $writeSize, $writes, $sent, $outcome);
+        }
+    }
+
+    /**
+     * Shared async-curl routine used by the "fetches peer over HTTP" step.
+     * Runs one ext/curl GET against an evil HTTP peer; ext/async drives the
+     * transfer through the libuv reactor, so the coroutine yields for the
+     * duration and a concurrent killer can cancel it mid-request.
+     *
+     * The body is captured incrementally via CURLOPT_WRITEFUNCTION into
+     * $ctx->ioData so a truncated / cancelled transfer still leaves the prefix
+     * that arrived — the same clean-prefix invariant the raw-socket download
+     * uses. The outcome is bucketed into exactly one counter:
+     *   curl_get_ok          — curl_errno() == 0 (a 4xx/5xx still counts)
+     *   curl_get_cancelled   — AsyncCancellation delivered into the transfer
+     *   curl_get_failed      — any curl error / other throwable
+     *   curl_get_no_peer     — peer address never resolved
+     * so curl_get_ok + cancelled + failed + no_peer == curl_get_attempts for
+     * every interleaving. The response status is stashed separately into
+     * curl_http_code_$coro.
+     */
+    public static function curlGet(Context $ctx, string $coro, string $peer): void {
+        $ctx->inc("curl_get_attempts_$coro");
+        // Define the body slot up front so a clean-prefix assertion stays valid
+        // even when the request never produces a byte.
+        $ctx->ioData[$coro] = '';
+        $addr = $ctx->net->evilPeerAddr[$peer] ?? null;
+        if ($addr === null) {
+            $ctx->inc("curl_get_no_peer_$coro");
+            return;
+        }
+        $buf      = '';
+        $outcome  = 'ok';
+        $errno    = 0;
+        $httpCode = 0;
+        $ch       = null;
+        try {
+            $ch = curl_init();
+            curl_setopt($ch, CURLOPT_URL, 'http://' . $addr . '/');
+            curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+            curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
+            // Append every delivered chunk; returning a short count would make
+            // curl abort, so always report the full length back.
+            curl_setopt($ch, CURLOPT_WRITEFUNCTION,
+                function($ch, string $data) use (&$buf) {
+                    $buf .= $data;
+                    return strlen($data);
+                });
+            curl_exec($ch);
+            $errno    = curl_errno($ch);
+            $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            if ($errno === 0) {
+                $ctx->inc("curl_get_ok_$coro");
+            } else {
+                $outcome = 'failed';
+                $ctx->inc("curl_get_failed_$coro");
+            }
+        } catch (\Async\AsyncCancellation $e) {
+            $outcome = 'cancelled';
+            $ctx->inc("curl_get_cancelled_$coro");
+        } catch (\Throwable $e) {
+            $outcome = 'failed';
+            $ctx->inc("curl_get_failed_$coro");
+        } finally {
+            if ($ch instanceof \CurlHandle) {
+                @curl_close($ch);
+            }
+            $ctx->ioData[$coro] = $buf;
+            $ctx->inc("curl_recv_bytes_$coro", strlen($buf));
+            $ctx->counters["curl_http_code_$coro"] = $httpCode;
+            $ctx->events[] = sprintf(
+                'curl %s: peer=%s http=%d errno=%d recv=%dB outcome=%s',
+                $coro, $peer, $httpCode, $errno, strlen($buf), $outcome);
+        }
+    }
+
+    /**
+     * Shared async-PDO routine used by the "queries / runs a slow query"
+     * database steps. Connects (pooled: reuses the shared handle; non-pooled:
+     * opens a private one), runs $sql, drains the result set, and buckets the
+     * outcome into per-coroutine counters keyed by $verb:
+     *   db_<verb>_ok        — query completed, rows drained
+     *   db_<verb>_cancelled — AsyncCancellation delivered into the query wait
+     *   db_<verb>_failed    — PDOException / other throwable (e.g. RST)
+     *   db_<verb>_no_db     — database fixture never resolved
+     * so the four buckets sum to db_<verb>_attempts for every interleaving.
+     * db_<verb>_rows_<coro> records how many rows were drained.
+     *
+     * The PDO connect and the query both go through the libuv reactor, so a
+     * concurrent killer can cancel the coroutine mid-connect or mid-query, and
+     * a Toxiproxy reset_peer toxic can drop the connection mid-result.
+     */
+    public static function dbRun(Context $ctx, string $coro, string $db, string $sql, string $verb): void {
+        $ctx->inc("db_{$verb}_attempts_$coro");
+        $spec = $ctx->net->evilDbDefs[$db] ?? null;
+        if ($spec === null || !isset($ctx->net->evilDbAddr[$db])) {
+            $ctx->inc("db_{$verb}_no_db_$coro");
+            return;
+        }
+        $outcome = 'ok';
+        $rows    = 0;
+        $pdo     = null;
+        try {
+            // Pooled: one shared handle, the pool hands out a per-coroutine
+            // slot. Non-pooled: a private connection opened (and dropped) here.
+            $pdo = $spec['pool']
+                ? $ctx->net->evilDbPool[$db]
+                : $ctx->net->openDbConnection($db, false);
+            // A dropped connection is the expected outcome under the toxics —
+            // mysqlnd emits a raw E_WARNING for it on top of the PDOException;
+            // @ silences that expected noise (the exception is still caught).
+            $stmt = @$pdo->query($sql);
+            while (@$stmt->fetch(\PDO::FETCH_NUM) !== false) {
+                $rows++;
+            }
+            $ctx->inc("db_{$verb}_ok_$coro");
+        } catch (\Async\AsyncCancellation $e) {
+            $outcome = 'cancelled';
+            $ctx->inc("db_{$verb}_cancelled_$coro");
+        } catch (\Throwable $e) {
+            $outcome = 'failed';
+            $ctx->inc("db_{$verb}_failed_$coro");
+        } finally {
+            $ctx->inc("db_{$verb}_rows_$coro", $rows);
+            // Non-pooled: drop this coroutine's private connection now.
+            if (!$spec['pool']) {
+                $pdo = null;
+            }
+            $ctx->events[] = sprintf(
+                'db %s: db=%s verb=%s pool=%d rows=%d outcome=%s',
+                $coro, $db, $verb, (int) $spec['pool'], $rows, $outcome);
+        }
+    }
+
+    /**
+     * Shared async-PDO routine for the "runs a transaction" database step:
+     * BEGIN → INSERT → read-back SELECT → COMMIT. The multi-statement body
+     * means several reactor round-trips inside one transaction, so a random
+     * scheduler can interleave a sibling coroutine's work between any two of
+     * them. A connection fault mid-transaction must surface as a clean error —
+     * the coroutine terminates, the connection (or pool slot) is not left
+     * wedged, and the server rolls the transaction back on the dropped
+     * connection. Outcome buckets mirror dbRun():
+     *   db_txn_ok / db_txn_cancelled / db_txn_failed / db_txn_no_db sum to
+     *   db_txn_attempts; db_txn_committed counts the transactions that COMMIT
+     *   actually acknowledged.
+     */
+    public static function dbTransaction(Context $ctx, string $coro, string $db): void {
+        $ctx->inc("db_txn_attempts_$coro");
+        $spec = $ctx->net->evilDbDefs[$db] ?? null;
+        if ($spec === null || !isset($ctx->net->evilDbAddr[$db])) {
+            $ctx->inc("db_txn_no_db_$coro");
+            return;
+        }
+        $outcome = 'ok';
+        $pdo     = null;
+        try {
+            $pdo = $spec['pool']
+                ? $ctx->net->evilDbPool[$db]
+                : $ctx->net->openDbConnection($db, false);
+            // @ silences mysqlnd's raw E_WARNING on a dropped connection —
+            // the expected outcome under the toxics; the PDOException still
+            // propagates to the catch blocks below.
+            @$pdo->beginTransaction();
+            $stmt = @$pdo->prepare('INSERT INTO items (label, n) VALUES (?, ?)');
+            @$stmt->execute(["txn-$coro", 0]);
+            // Read-back inside the transaction — another reactor round-trip a
+            // sibling coroutine can be scheduled across.
+            $check = @$pdo->query('SELECT COUNT(*) FROM items WHERE id <= 5');
+            @$check->fetch(\PDO::FETCH_NUM);
+            @$pdo->commit();
+            $ctx->inc("db_txn_committed_$coro");
+            $ctx->inc("db_txn_ok_$coro");
+        } catch (\Async\AsyncCancellation $e) {
+            $outcome = 'cancelled';
+            $ctx->inc("db_txn_cancelled_$coro");
+        } catch (\Throwable $e) {
+            $outcome = 'failed';
+            $ctx->inc("db_txn_failed_$coro");
+        } finally {
+            // Best-effort rollback so a pooled slot is not left mid-transaction
+            // for the next coroutine — harmless if the connection already died.
+            if ($pdo !== null) {
+                try {
+                    if (@$pdo->inTransaction()) {
+                        @$pdo->rollBack();
+                    }
+                } catch (\Throwable $e) {
+                    /* connection already gone — the server rolled back for us */
+                }
+            }
+            if (!$spec['pool']) {
+                $pdo = null;
+            }
+            $ctx->events[] = sprintf(
+                'db-txn %s: db=%s pool=%d outcome=%s',
+                $coro, $db, (int) $spec['pool'], $outcome);
+        }
+    }
+
+    /**
+     * Shared async-mysqli routine used by the "queries / runs a slow query
+     * via mysqli" steps. mysqli has no connection pool, so each call opens
+     * (and closes) its own connection through the Toxiproxy proxy. Outcome
+     * buckets mirror dbRun():
+     *   mysqli_<verb>_ok / _cancelled / _failed / _no_db sum to
+     *   mysqli_<verb>_attempts; mysqli_<verb>_rows records rows drained.
+     */
+    public static function mysqliRun(Context $ctx, string $coro, string $db, string $sql, string $verb): void {
+        $ctx->inc("mysqli_{$verb}_attempts_$coro");
+        if (!isset($ctx->net->evilDbDefs[$db]) || !isset($ctx->net->evilDbAddr[$db])) {
+            $ctx->inc("mysqli_{$verb}_no_db_$coro");
+            return;
+        }
+        $outcome = 'ok';
+        $rows    = 0;
+        $my      = null;
+        try {
+            $my  = $ctx->net->openMysqliConnection($db);
+            // @ silences mysqlnd's raw E_WARNING on a dropped connection —
+            // the mysqli_sql_exception still propagates to the catch blocks.
+            $res = @$my->query($sql);
+            if ($res instanceof \mysqli_result) {
+                while (@$res->fetch_row() !== null) {
+                    $rows++;
+                }
+                $res->free();
+            }
+            $ctx->inc("mysqli_{$verb}_ok_$coro");
+        } catch (\Async\AsyncCancellation $e) {
+            $outcome = 'cancelled';
+            $ctx->inc("mysqli_{$verb}_cancelled_$coro");
+        } catch (\Throwable $e) {
+            $outcome = 'failed';
+            $ctx->inc("mysqli_{$verb}_failed_$coro");
+        } finally {
+            $ctx->inc("mysqli_{$verb}_rows_$coro", $rows);
+            if ($my instanceof \mysqli) {
+                @$my->close();
+            }
+            $ctx->events[] = sprintf(
+                'mysqli %s: db=%s verb=%s rows=%d outcome=%s',
+                $coro, $db, $verb, $rows, $outcome);
+        }
+    }
+
+    /**
+     * Shared async-mysqli routine for the "runs a transaction via mysqli"
+     * step: begin_transaction → prepared INSERT → commit. A connection fault
+     * mid-transaction must surface as a clean mysqli_sql_exception; the
+     * coroutine completes and nothing is left wedged. Outcome buckets:
+     *   mysqli_txn_ok / _cancelled / _failed / _no_db sum to
+     *   mysqli_txn_attempts; mysqli_txn_committed counts acknowledged COMMITs.
+     */
+    public static function mysqliTransaction(Context $ctx, string $coro, string $db): void {
+        $ctx->inc("mysqli_txn_attempts_$coro");
+        if (!isset($ctx->net->evilDbDefs[$db]) || !isset($ctx->net->evilDbAddr[$db])) {
+            $ctx->inc("mysqli_txn_no_db_$coro");
+            return;
+        }
+        $outcome = 'ok';
+        $my      = null;
+        try {
+            $my = $ctx->net->openMysqliConnection($db);
+            @$my->begin_transaction();
+            $stmt  = @$my->prepare('INSERT INTO items (label, n) VALUES (?, ?)');
+            $label = "mtxn-$coro";
+            $n     = 0;
+            @$stmt->bind_param('si', $label, $n);
+            @$stmt->execute();
+            @$my->commit();
+            $ctx->inc("mysqli_txn_committed_$coro");
+            $ctx->inc("mysqli_txn_ok_$coro");
+        } catch (\Async\AsyncCancellation $e) {
+            $outcome = 'cancelled';
+            $ctx->inc("mysqli_txn_cancelled_$coro");
+        } catch (\Throwable $e) {
+            $outcome = 'failed';
+            $ctx->inc("mysqli_txn_failed_$coro");
+        } finally {
+            if ($my instanceof \mysqli) {
+                @$my->close();
+            }
+            $ctx->events[] = sprintf(
+                'mysqli-txn %s: db=%s outcome=%s', $coro, $db, $outcome);
         }
     }
 }
