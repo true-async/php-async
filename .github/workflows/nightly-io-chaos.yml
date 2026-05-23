@@ -127,6 +127,7 @@ jobs:
               -g FAIL,BORK,LEAK,XLEAK \
               --no-progress --offline --show-diff --set-timeout 120 \
               fuzzy-tests/_generated/io/toxiproxy__*.phpt
+          done
 
       - name: Toxiproxy log
         if: always()
