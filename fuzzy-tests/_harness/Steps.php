@@ -582,6 +582,30 @@ final class StandardSteps {
             })
             ->requires('toxiproxy', 'pdo_pgsql', 'pgsql-server');
 
+        // Given a [pooled] SQLite database "DB"
+        // SQLite is a local file — no Toxiproxy, no network toxics. The chaos
+        // surface is the PDO pool itself: per-coroutine sqlite3* slots over one
+        // shared file, with the same client steps (queries / runs a transaction
+        // on database) as the network drivers.
+        $r->on('/^a SQLite database "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                $ctx->net->defineEvilDb($name, 'sqlite');
+            })
+            ->requires('pdo_sqlite');
+
+        $r->on('/^a pooled SQLite database "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                $ctx->net->defineEvilDb($name, 'sqlite', true);
+            })
+            ->requires('pdo_sqlite');
+
+        $r->on('/^a pooled SQLite database "([^"]+)" with (\S+) connections$/',
+            function(Context $ctx, string $name, string $nExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->net->defineEvilDb($name, 'sqlite', true, $n > 0 ? $n : 1);
+            })
+            ->requires('pdo_sqlite');
+
         // ---- When: actions inside a coroutine ----
 
         // When coroutine "X" downloads from peer "EP"

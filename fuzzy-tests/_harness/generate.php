@@ -203,6 +203,7 @@ if ($ts === false) { echo "skip Toxiproxy not running at $tp (set CHAOS_TOXIPROX
 fclose($ts);
 PROBE,
     'pdo_mysql'    => 'if (!extension_loaded("pdo_mysql")) { echo "skip ext/pdo_mysql required"; exit; }',
+    'pdo_sqlite'   => 'if (!extension_loaded("pdo_sqlite")) { echo "skip ext/pdo_sqlite required"; exit; }',
     'mysqli'       => 'if (!extension_loaded("mysqli")) { echo "skip ext/mysqli required"; exit; }',
     'pdo_pgsql'    => 'if (!extension_loaded("pdo_pgsql")) { echo "skip ext/pdo_pgsql required"; exit; }',
     // A reachable PostgreSQL server, opt-in like the MySQL one.

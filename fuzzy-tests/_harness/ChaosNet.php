@@ -148,6 +148,18 @@ final class ChaosNet {
      */
     public function openDbConnection(string $db, bool $pool): \PDO {
         $driver = $this->evilDbDefs[$db]['driver'] ?? 'mysql';
+        $opts   = [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION];
+
+        if ($pool) {
+            $opts[\PDO::ATTR_POOL_ENABLED] = true;
+            $opts[\PDO::ATTR_POOL_MIN]     = 0;
+            $opts[\PDO::ATTR_POOL_MAX]     = $this->evilDbDefs[$db]['poolMax'] ?? 4;
+        }
+
+        if ($driver === 'sqlite') {
+            return new \PDO('sqlite:' . $this->evilDbAddr[$db], null, null, $opts);
+        }
+
         $addr   = $this->evilDbAddr[$db] ?? '';
         $colon  = strrpos($addr, ':');
         $pgsql  = $driver === 'pgsql';
@@ -159,15 +171,9 @@ final class ChaosNet {
         $name   = getenv("{$envPfx}_DB")   ?: 'chaos_test';
         $dsn    = sprintf('%s:host=%s;port=%d;dbname=%s',
             $pgsql ? 'pgsql' : 'mysql', $host, $port, $name);
-        $opts   = [
-            \PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION,
-            \PDO::ATTR_TIMEOUT => 5,
-        ];
-        if ($pool) {
-            $opts[\PDO::ATTR_POOL_ENABLED] = true;
-            $opts[\PDO::ATTR_POOL_MIN]     = 0;
-            $opts[\PDO::ATTR_POOL_MAX]     = $this->evilDbDefs[$db]['poolMax'] ?? 4;
-        }
+
+        $opts[\PDO::ATTR_TIMEOUT] = 5;
+
         return new \PDO($dsn, $user, $pass, $opts);
     }
 
@@ -272,8 +278,26 @@ final class ChaosNet {
         // the driver's wire I/O — latency / bandwidth / RST mid-query. A
         // pool-enabled DB also gets its one shared PDO handle built here.
         foreach ($this->evilDbDefs as $name => $spec) {
+            $driver = $spec['driver'] ?? 'mysql';
+
+            if ($driver === 'sqlite') {
+                $path = sprintf('%s/chaos_sqlite_%d_%s.db', sys_get_temp_dir(), getmypid(), $name);
+                @unlink($path);
+                $seed = new \PDO('sqlite:' . $path);
+                $seed->exec('CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT, n INT)');
+                $seed->exec("INSERT INTO items (label, n) VALUES ('alpha',1),('beta',2),('gamma',3),('delta',4),('epsilon',5)");
+                $seed = null;
+                $this->evilDbAddr[$name] = $path;
+
+                if ($spec['pool']) {
+                    $this->evilDbPool[$name] = $this->openDbConnection($name, true);
+                }
+
+                continue;
+            }
+
             $this->toxiproxy ??= new ToxiproxyClient();
-            $upstream  = $this->dbUpstream($spec['driver'] ?? 'mysql');
+            $upstream  = $this->dbUpstream($driver);
             $proxyName = sprintf('chaosdb_%d_%s_%s', getmypid(), bin2hex(random_bytes(3)), $name);
             $listen    = $this->toxiproxy->createProxy($proxyName, '127.0.0.1:0', $upstream);
             $this->toxiproxyProxies[] = $proxyName;
@@ -308,6 +332,13 @@ final class ChaosNet {
         // Drop shared pool-enabled PDO handles — the PDO pool destructor
         // releases every per-coroutine connection it still holds.
         $this->evilDbPool = [];
+
+        // Delete per-scenario SQLite files.
+        foreach ($this->evilDbDefs as $name => $spec) {
+            if (($spec['driver'] ?? '') === 'sqlite' && isset($this->evilDbAddr[$name])) {
+                @unlink($this->evilDbAddr[$name]);
+            }
+        }
 
         // Close every EvilPeer listening socket left open.
         foreach ($this->evilPeerServers as $server) {
