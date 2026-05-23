@@ -204,6 +204,17 @@ fclose($ts);
 PROBE,
     'pdo_mysql'    => 'if (!extension_loaded("pdo_mysql")) { echo "skip ext/pdo_mysql required"; exit; }',
     'mysqli'       => 'if (!extension_loaded("mysqli")) { echo "skip ext/mysqli required"; exit; }',
+    'pdo_pgsql'    => 'if (!extension_loaded("pdo_pgsql")) { echo "skip ext/pdo_pgsql required"; exit; }',
+    // A reachable PostgreSQL server, opt-in like the MySQL one.
+    'pgsql-server' => <<<'PROBE'
+$ps = getenv("CHAOS_PGSQL") ?: "127.0.0.1:5432";
+$pp = strrpos($ps, ":");
+$ph = $pp === false ? $ps : substr($ps, 0, $pp);
+$pport = $pp === false ? 5432 : (int)substr($ps, $pp + 1);
+$psk = @stream_socket_client("tcp://$ph:$pport", $pe, $pm, 2);
+if ($psk === false) { echo "skip PostgreSQL not reachable at $ps (set CHAOS_PGSQL)"; exit; }
+fclose($psk);
+PROBE,
     // A reachable MySQL server is opt-in, like Toxiproxy: the database chaos
     // tests run only where one answers and skip everywhere else. The probe is
     // a plain TCP connect — the upstream the Toxiproxy proxy will point at.

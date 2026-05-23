@@ -130,24 +130,36 @@ final class ChaosNet {
     }
 
     /**
+     * The real DB-server address a driver's chaos databases are fronted onto.
+     * Comes from the environment so the suite adapts to whatever the CI / dev
+     * box exposes; chaos-friendly defaults match the local setup.
+     */
+    public function dbUpstream(string $driver): string {
+        return $driver === 'pgsql'
+            ? (getenv('CHAOS_PGSQL') ?: '127.0.0.1:5432')
+            : (getenv('CHAOS_MYSQL') ?: '127.0.0.1:3306');
+    }
+
+    /**
      * Open a PDO connection to a fronted database, through its Toxiproxy proxy.
-     * Connection parameters come from the environment (so the suite adapts to
-     * whatever DB the CI / dev box exposes) with chaos-friendly defaults:
-     *   CHAOS_MYSQL (host:port) · CHAOS_MYSQL_USER · CHAOS_MYSQL_PASS ·
-     *   CHAOS_MYSQL_DB.
-     * A pool-enabled handle is created with POOL_MIN 0, so the constructor
-     * itself opens no socket — it neither yields nor needs a coroutine.
+     * Driver-aware (mysql / pgsql); connection parameters come from the
+     * environment — CHAOS_{MYSQL,PGSQL}[_USER|_PASS|_DB]. A pool-enabled handle
+     * is created with POOL_MIN 0, so the constructor opens no socket eagerly.
      */
     public function openDbConnection(string $db, bool $pool): \PDO {
-        $addr  = $this->evilDbAddr[$db] ?? '';
-        $colon = strrpos($addr, ':');
-        $host  = $colon === false ? $addr : substr($addr, 0, $colon);
-        $port  = $colon === false ? 3306  : (int) substr($addr, $colon + 1);
-        $user  = getenv('CHAOS_MYSQL_USER') ?: 'test';
-        $pass  = getenv('CHAOS_MYSQL_PASS') ?: 'test';
-        $name  = getenv('CHAOS_MYSQL_DB')   ?: 'chaos_test';
-        $dsn   = "mysql:host=$host;port=$port;dbname=$name";
-        $opts  = [
+        $driver = $this->evilDbDefs[$db]['driver'] ?? 'mysql';
+        $addr   = $this->evilDbAddr[$db] ?? '';
+        $colon  = strrpos($addr, ':');
+        $pgsql  = $driver === 'pgsql';
+        $host   = $colon === false ? $addr : substr($addr, 0, $colon);
+        $port   = $colon === false ? ($pgsql ? 5432 : 3306) : (int) substr($addr, $colon + 1);
+        $envPfx = $pgsql ? 'CHAOS_PGSQL' : 'CHAOS_MYSQL';
+        $user   = getenv("{$envPfx}_USER") ?: 'test';
+        $pass   = getenv("{$envPfx}_PASS") ?: 'test';
+        $name   = getenv("{$envPfx}_DB")   ?: 'chaos_test';
+        $dsn    = sprintf('%s:host=%s;port=%d;dbname=%s',
+            $pgsql ? 'pgsql' : 'mysql', $host, $port, $name);
+        $opts   = [
             \PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION,
             \PDO::ATTR_TIMEOUT => 5,
         ];
@@ -261,7 +273,7 @@ final class ChaosNet {
         // pool-enabled DB also gets its one shared PDO handle built here.
         foreach ($this->evilDbDefs as $name => $spec) {
             $this->toxiproxy ??= new ToxiproxyClient();
-            $upstream  = getenv('CHAOS_MYSQL') ?: '127.0.0.1:3306';
+            $upstream  = $this->dbUpstream($spec['driver'] ?? 'mysql');
             $proxyName = sprintf('chaosdb_%d_%s_%s', getmypid(), bin2hex(random_bytes(3)), $name);
             $listen    = $this->toxiproxy->createProxy($proxyName, '127.0.0.1:0', $upstream);
             $this->toxiproxyProxies[] = $proxyName;

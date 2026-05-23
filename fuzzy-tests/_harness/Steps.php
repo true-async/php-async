@@ -512,7 +512,7 @@ final class StandardSteps {
                 $lat = (int)$ctx->resolver->resolve($latExpr);
                 $ctx->net->addEvilDbToxic($name, 'latency', ['latency' => $lat]);
             })
-            ->requires('toxiproxy', 'mysql-server');
+            ->requires('toxiproxy');
 
         // Given Toxiproxy throttles database "DB" to N KB/s
         $r->on('/^Toxiproxy throttles database "([^"]+)" to (\S+) KB\/s$/',
@@ -520,7 +520,7 @@ final class StandardSteps {
                 $rate = (int)$ctx->resolver->resolve($rateExpr);
                 $ctx->net->addEvilDbToxic($name, 'bandwidth', ['rate' => $rate]);
             })
-            ->requires('toxiproxy', 'mysql-server');
+            ->requires('toxiproxy');
 
         // Given Toxiproxy slices database "DB" into N-byte TCP segments
         $r->on('/^Toxiproxy slices database "([^"]+)" into (\S+)-byte TCP segments$/',
@@ -532,7 +532,7 @@ final class StandardSteps {
                     'delay'          => 0,
                 ]);
             })
-            ->requires('toxiproxy', 'mysql-server');
+            ->requires('toxiproxy');
 
         // Given Toxiproxy resets database "DB" after N ms
         // reset_peer toxic — a TCP RST N ms into the connection; lands
@@ -542,7 +542,7 @@ final class StandardSteps {
                 $ms = (int)$ctx->resolver->resolve($msExpr);
                 $ctx->net->addEvilDbToxic($name, 'reset_peer', ['timeout' => $ms]);
             })
-            ->requires('toxiproxy', 'mysql-server');
+            ->requires('toxiproxy');
 
         // Given a MySQLi database "DB"
         // The same Toxiproxy-fronted MySQL server, reached through the mysqli
@@ -554,6 +554,33 @@ final class StandardSteps {
                 $ctx->net->defineEvilDb($name, 'mysqli');
             })
             ->requires('toxiproxy', 'mysqli', 'mysql-server');
+
+        // Given a PgSQL database "DB"
+        // A PostgreSQL server, fronted by Toxiproxy exactly like the MySQL
+        // one. The Toxiproxy toxic steps and the `queries / runs a slow query
+        // on / runs a transaction on database` client steps are all
+        // driver-agnostic — dbRun()/dbTransaction() build a pgsql: DSN when
+        // the database's driver is pgsql.
+        $r->on('/^a PgSQL database "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                $ctx->net->defineEvilDb($name, 'pgsql');
+            })
+            ->requires('toxiproxy', 'pdo_pgsql', 'pgsql-server');
+
+        // Given a pooled PgSQL database "DB"
+        $r->on('/^a pooled PgSQL database "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                $ctx->net->defineEvilDb($name, 'pgsql', true);
+            })
+            ->requires('toxiproxy', 'pdo_pgsql', 'pgsql-server');
+
+        // Given a pooled PgSQL database "DB" with N connections
+        $r->on('/^a pooled PgSQL database "([^"]+)" with (\S+) connections$/',
+            function(Context $ctx, string $name, string $nExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->net->defineEvilDb($name, 'pgsql', true, $n > 0 ? $n : 1);
+            })
+            ->requires('toxiproxy', 'pdo_pgsql', 'pgsql-server');
 
         // ---- When: actions inside a coroutine ----
 
@@ -614,20 +641,23 @@ final class StandardSteps {
                         'SELECT id, label, n FROM items WHERE id <= 5 ORDER BY id', 'query');
                 });
             })
-            ->requires('toxiproxy', 'pdo_mysql', 'mysql-server');
+            ->requires('toxiproxy');
 
         // When coroutine "X" runs a slow query on database "DB"
-        // SELECT SLEEP(2) — keeps the coroutine parked in the reactor on the
-        // DB socket long enough for a killer to cancel it or a reset_peer
-        // toxic to land mid-query.
+        // A ~2 s server-side sleep — keeps the coroutine parked in the reactor
+        // on the DB socket long enough for a killer to cancel it or a
+        // reset_peer toxic to land mid-query. The sleep SQL is driver-specific
+        // (MySQL SLEEP() vs PostgreSQL pg_sleep()), resolved when the action
+        // runs — by then the database's driver is known.
         $r->on('/^coroutine "([^"]+)" runs a slow query on database "([^"]+)"$/',
             function(Context $ctx, string $coro, string $db) {
                 $ctx->planAction($coro, function(Context $ctx) use ($coro, $db) {
-                    StandardSteps::dbRun($ctx, $coro, $db,
-                        'SELECT SLEEP(2)', 'slow_query');
+                    $driver = $ctx->net->evilDbDefs[$db]['driver'] ?? 'mysql';
+                    $sql = $driver === 'pgsql' ? 'SELECT pg_sleep(2)' : 'SELECT SLEEP(2)';
+                    StandardSteps::dbRun($ctx, $coro, $db, $sql, 'slow_query');
                 });
             })
-            ->requires('toxiproxy', 'pdo_mysql', 'mysql-server');
+            ->requires('toxiproxy');
 
         // When coroutine "X" runs a transaction on database "DB"
         // BEGIN → INSERT → COMMIT. A connection fault mid-transaction must
@@ -640,7 +670,7 @@ final class StandardSteps {
                     StandardSteps::dbTransaction($ctx, $coro, $db);
                 });
             })
-            ->requires('toxiproxy', 'pdo_mysql', 'mysql-server');
+            ->requires('toxiproxy');
 
         // When coroutine "X" queries via mysqli "DB"
         // Same SELECT as the PDO query step, but over the mysqli extension —
@@ -3583,10 +3613,13 @@ final class StandardSteps {
 
     /**
      * Shared async-PDO routine for the "runs a transaction" database step:
-     * BEGIN → INSERT → COMMIT. A connection fault mid-transaction must surface
-     * as a clean error — the coroutine terminates, the connection (or pool
-     * slot) is not left wedged, and the server rolls the transaction back on
-     * the dropped connection. Outcome buckets mirror dbRun():
+     * BEGIN → INSERT → read-back SELECT → COMMIT. The multi-statement body
+     * means several reactor round-trips inside one transaction, so a random
+     * scheduler can interleave a sibling coroutine's work between any two of
+     * them. A connection fault mid-transaction must surface as a clean error —
+     * the coroutine terminates, the connection (or pool slot) is not left
+     * wedged, and the server rolls the transaction back on the dropped
+     * connection. Outcome buckets mirror dbRun():
      *   db_txn_ok / db_txn_cancelled / db_txn_failed / db_txn_no_db sum to
      *   db_txn_attempts; db_txn_committed counts the transactions that COMMIT
      *   actually acknowledged.
@@ -3610,6 +3643,10 @@ final class StandardSteps {
             @$pdo->beginTransaction();
             $stmt = @$pdo->prepare('INSERT INTO items (label, n) VALUES (?, ?)');
             @$stmt->execute(["txn-$coro", 0]);
+            // Read-back inside the transaction — another reactor round-trip a
+            // sibling coroutine can be scheduled across.
+            $check = @$pdo->query('SELECT COUNT(*) FROM items WHERE id <= 5');
+            @$check->fetch(\PDO::FETCH_NUM);
             @$pdo->commit();
             $ctx->inc("db_txn_committed_$coro");
             $ctx->inc("db_txn_ok_$coro");
