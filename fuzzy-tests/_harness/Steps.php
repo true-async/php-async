@@ -1991,20 +1991,27 @@ final class StandardSteps {
                 $ms = (int)$ctx->resolver->resolve($msExpr);
                 $ctx->planAction($coro, function(Context $ctx) use ($coro, $srvName, $ms) {
                     $ctx->inc("io_tls_attempts_$coro");
-                    if (!isset($ctx->tlsServers[$srvName])) {
-                        $ctx->inc("io_tls_no_server_$coro");
-                        return;
-                    }
-                    $addr = $ctx->tlsServers[$srvName]['addr'];
-                    $sec  = $ms / 1000.0;
-                    $cctx = stream_context_create(['ssl' => [
-                        'verify_peer'       => false,
-                        'verify_peer_name'  => false,
-                        'allow_self_signed' => true,
-                        'crypto_method'     => STREAM_CRYPTO_METHOD_TLS_CLIENT,
-                    ]]);
                     $sock = null;
+                    // Whole body in one try so an AsyncCancellation
+                    // landing in any setup step (stream_context_create
+                    // is sync but cancellation may be delivered at the
+                    // first interrupt-check point inside it) still
+                    // buckets cleanly — invariant must hold across
+                    // every interleaving including aggressive cancel
+                    // windows on debug-ZTS-FUZZ builds.
                     try {
+                        if (!isset($ctx->tlsServers[$srvName])) {
+                            $ctx->inc("io_tls_no_server_$coro");
+                            return;
+                        }
+                        $addr = $ctx->tlsServers[$srvName]['addr'];
+                        $sec  = $ms / 1000.0;
+                        $cctx = stream_context_create(['ssl' => [
+                            'verify_peer'       => false,
+                            'verify_peer_name'  => false,
+                            'allow_self_signed' => true,
+                            'crypto_method'     => STREAM_CRYPTO_METHOD_TLS_CLIENT,
+                        ]]);
                         $sock = @stream_socket_client(
                             'ssl://' . $addr, $errno, $errstr, $sec,
                             STREAM_CLIENT_CONNECT, $cctx);

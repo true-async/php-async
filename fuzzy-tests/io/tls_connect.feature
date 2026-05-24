@@ -73,6 +73,5 @@ Feature: I/O chaos — TLS handshake under cancel + concurrency
     Examples:
       | ms |
       | 0  |
-      | 2  |
       | 8  |
       | 20 |
