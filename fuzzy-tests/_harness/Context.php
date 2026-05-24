@@ -125,6 +125,12 @@ final class Context {
      * is where senders aim. Socket is @fclose'd in run() teardown. */
     public array $udpEndpoints = [];
 
+    /** @var array<string, array{proc:resource,pipes:array<int,resource>}>
+     * child process name => [proc-resource, fd-map]. Pipes are pipe('w')
+     * for stdin / pipe('r') for stdout / stderr. proc_open() runs synchronously
+     * in the Given step so reader / killer coroutines see the same handle. */
+    public array $processes = [];
+
     /** @var array<string, array{server:resource,addr:string}> TLS
      * server name => bound server socket + ssl:// address. The server
      * socket is bound synchronously in the Given step so the address
@@ -585,6 +591,21 @@ final class Context {
             if (is_resource($entry['sock'])) @fclose($entry['sock']);
         }
         $this->udpEndpoints = [];
+
+        // Child-process teardown: a scenario may have closed the proc
+        // already (proc_close) or left it open after only reading/cancelling.
+        // proc_terminate is safe on a reaped handle; proc_close blocks until
+        // the child exits, so terminate first to bound the wait.
+        foreach ($this->processes as $entry) {
+            foreach ($entry['pipes'] as $fd) {
+                if (is_resource($fd)) @fclose($fd);
+            }
+            if (is_resource($entry['proc'])) {
+                @proc_terminate($entry['proc']);
+                @proc_close($entry['proc']);
+            }
+        }
+        $this->processes = [];
 
         // TLS-server teardown: close the listen socket. Accept-loop
         // coroutines exit naturally when the socket closes or the

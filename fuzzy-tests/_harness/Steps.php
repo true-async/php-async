@@ -1698,6 +1698,170 @@ final class StandardSteps {
             })
             ->requires('tcp', 'dns-async-engages');
 
+        // Given a long-lived child process "C" sleeping N ms
+        // proc_open()s the test PHP binary running a sleep loop on stdout-
+        // open-but-silent. The child stdout pipe stays open for the parked
+        // fread() reader — no data ever arrives during the wait window, so
+        // the reader is guaranteed to be in the reactor's pipe-poll at the
+        // moment the killer fires. Pipes + proc handle are stashed on
+        // Context::$processes; teardown @proc_terminate+@proc_close.
+        //
+        // The "<ms> ms" is the child's wall-clock budget; the chaos window
+        // (killer sleeps + race surface) must comfortably fit inside it.
+        $r->on('/^a long-lived child process "([^"]+)" sleeping (\S+) ms$/',
+            function(Context $ctx, string $name, string $msExpr) {
+                if (isset($ctx->processes[$name])) return; // idempotent
+                $php = getenv('TEST_PHP_EXECUTABLE');
+                if ($php === false) {
+                    throw new \RuntimeException(
+                        "child process $name: TEST_PHP_EXECUTABLE not set");
+                }
+                $ms   = (int)$ctx->resolver->resolve($msExpr);
+                $code = 'usleep(' . ($ms * 1000) . ');';
+                $proc = @proc_open(
+                    [$php, '-r', $code],
+                    [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+                    $pipes);
+                if (!is_resource($proc)) {
+                    throw new \RuntimeException(
+                        "child process $name: proc_open failed");
+                }
+                // Non-blocking writes; reads stay default (blocking → reactor).
+                @stream_set_blocking($pipes[0], false);
+                $ctx->processes[$name] = ['proc' => $proc, 'pipes' => $pipes];
+            })
+            ->requires('proc-open');
+
+        // When coroutine "X" reads stdout of child process "C"
+        // Parks on fread() of the child's stdout pipe. Outcome family
+        // proc_read_*: ok / eof / cancelled / failed sum to attempts.
+        $r->on('/^coroutine "([^"]+)" reads stdout of child process "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $proc) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $proc) {
+                    if (!isset($ctx->processes[$proc])) {
+                        $ctx->inc("proc_read_setup_failed_$coro");
+                        return;
+                    }
+                    $stdout = $ctx->processes[$proc]['pipes'][1] ?? null;
+                    if (!is_resource($stdout)) {
+                        $ctx->inc("proc_read_setup_failed_$coro");
+                        return;
+                    }
+                    try {
+                        $ctx->inc("proc_read_attempts_$coro");
+                        $data = @fread($stdout, 4096); /* blocks via reactor */
+                        if ($data === false || $data === '') {
+                            $ctx->inc("proc_read_eof_$coro");
+                        } else {
+                            $ctx->inc("proc_read_ok_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("proc_read_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("proc_read_failed_$coro");
+                    }
+                });
+            })
+            ->requires('proc-open');
+
+        // When coroutine "X" closes child process "C"
+        // proc_terminate(SIGTERM) + proc_close to reap. We deliberately
+        // do NOT fclose() the pipes here: a parked reader on stdout owns
+        // the same stream resource and closing it from a sibling
+        // coroutine is the user-error / UAF path that
+        // stream_close_during_read.feature documents as out-of-scope
+        // pending php-async#130. Killing the child causes the kernel to
+        // close the child's stdout end; the parked fread() returns ""
+        // (EOF). Pipes are dropped in Context::run() teardown.
+        // Race target for the libuv process_event release path
+        // (tests/exec/011-proc_open_handle_reuse_uaf).
+        $r->on('/^coroutine "([^"]+)" closes child process "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $proc) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $proc) {
+                    if (!isset($ctx->processes[$proc])) {
+                        $ctx->inc("proc_close_setup_failed_$coro");
+                        return;
+                    }
+                    $ctx->inc("proc_close_attempts_$coro");
+                    $entry = &$ctx->processes[$proc];
+                    if (is_resource($entry['proc'])) {
+                        @proc_terminate($entry['proc'], 15);
+                        @proc_close($entry['proc']);
+                        $entry['proc'] = null;
+                    }
+                    unset($entry);
+                    $ctx->inc("proc_close_ok_$coro");
+                });
+            })
+            ->requires('proc-open');
+
+        // When coroutine "X" sends SIGTERM to child process "C"
+        // proc_terminate(SIGTERM). The child exits, kernel closes its end
+        // of the stdout pipe, and a parked reader gets EOF. Does NOT close
+        // the handle — that's the killer step's job, kept separate so
+        // scenarios can interleave terminate/close ordering.
+        $r->on('/^coroutine "([^"]+)" sends SIGTERM to child process "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $proc) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $proc) {
+                    if (!isset($ctx->processes[$proc])) {
+                        $ctx->inc("proc_term_setup_failed_$coro");
+                        return;
+                    }
+                    $ctx->inc("proc_term_attempts_$coro");
+                    $p = $ctx->processes[$proc]['proc'] ?? null;
+                    if (is_resource($p) && @proc_terminate($p, 15)) {
+                        $ctx->inc("proc_term_ok_$coro");
+                    } else {
+                        $ctx->inc("proc_term_failed_$coro");
+                    }
+                });
+            })
+            ->requires('proc-open');
+
+        // When coroutine "X" runs proc_open + proc_close N times
+        // Rapid open/close storm — backstop for the UAF in
+        // tests/exec/011-proc_open_handle_reuse_uaf. Each iteration spawns
+        // a short-lived child (exit(0);), closes its pipes, proc_close()s,
+        // and yields via Async\suspend() so the reactor's process-event
+        // dispose path runs interleaved with peer coroutines doing the
+        // same. Counter family proc_storm_*.
+        $r->on('/^coroutine "([^"]+)" runs proc_open \+ proc_close (\S+) times$/',
+            function(Context $ctx, string $coro, string $nExpr) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $nExpr) {
+                    $php = getenv('TEST_PHP_EXECUTABLE');
+                    if ($php === false) {
+                        $ctx->inc("proc_storm_setup_failed_$coro");
+                        return;
+                    }
+                    $n = (int)$ctx->resolver->resolve($nExpr);
+                    for ($i = 0; $i < $n; $i++) {
+                        $ctx->inc("proc_storm_attempts_$coro");
+                        try {
+                            $p = @proc_open(
+                                [$php, '-r', 'exit(0);'],
+                                [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+                                $pipes);
+                            if (!is_resource($p)) {
+                                $ctx->inc("proc_storm_failed_$coro");
+                                continue;
+                            }
+                            foreach ($pipes as $fd) {
+                                if (is_resource($fd)) @fclose($fd);
+                            }
+                            @proc_close($p);
+                            $ctx->inc("proc_storm_ok_$coro");
+                            \Async\suspend();
+                        } catch (\Async\AsyncCancellation $e) {
+                            $ctx->inc("proc_storm_cancelled_$coro");
+                            return;
+                        } catch (\Throwable $e) {
+                            $ctx->inc("proc_storm_failed_$coro");
+                        }
+                    }
+                });
+            })
+            ->requires('proc-open');
+
         // Given a filesystem watcher "W" on a fresh temp directory
         // Creates an empty tmpdir and an Async\FileSystemWatcher on it
         // (recursive=false, coalesce=true — the default coalesce mode).

@@ -4,6 +4,25 @@ Observations surfaced by the `fuzzy-tests/` chaos suite while chasing
 invariant violations. Each entry records what was seen, what it turned out
 to be, and how the suite was adjusted.
 
+## Missing wakeup of parked fread() on a terminated child's pipe — real bug, filed (#144)
+
+While drafting `exec/proc_open_chaos.feature` (#143) the simplest scenario
+deadlocked deterministically: a reader coroutine parked in `fread()` on a
+child's stdout pipe, a killer coroutine ran `proc_terminate` + `proc_close`,
+and the reader never woke. The deadlock detector aborted the request.
+
+Reproduced outside the harness with ~25 lines — the bug is real and not
+specific to chaos infrastructure (filed as **#144**). The mirror dance with
+`stream_socket_pair` + `fclose(write_end)` (`stream_close_during_read`)
+works correctly, so the gap is on the `proc_open` pipe(2)-backed reactor
+path — likely a `uv_pipe`/`uv_poll` POLLHUP mismatch or proc-event cleanup
+not notifying the per-pipe poll watcher.
+
+The chaos feature ships only the rapid-storm scenario (no parked reader →
+not affected). The cancel-vs-close scenarios are kept in the feature file
+as commented-out blocks under `Blocked: #144`; reinstate them after the
+fix lands.
+
 ## Safe-scope zombie coroutines (not a leak)
 
 A `disposeAfterTimeout` chaos scenario tripped the "no orphan coroutines"

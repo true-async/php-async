@@ -134,18 +134,55 @@ documented in `cross_topic/cancel_during_io.feature`).
 
 ## Coverage gap relative to hand-written phpt
 
+Updated after #127/#129/#138 closed Layer 1+2 IO. Remaining gaps tracked
+under umbrella issue **#143**.
+
 | Subsystem | Hand-written | Chaos |
 |-----------|--------------|-------|
 | TCP accept | 016, 045 | partial (`cancel_during_io`) |
-| TCP connect | 007, 031, 039 | TODO |
-| TCP read/write under cancel | none | TODO |
-| pipe read | 007 (io), 044 | partial (`cancel_during_io`) |
-| pipe write under back-pressure | none | TODO |
-| stream_select | 005, 010, 017–023, 032–037 | TODO |
-| SSL accept/connect | 025–027 | TODO (Layer 2 territory) |
-| UDP | 028–030 | TODO |
-| File IO concurrent | 049, 056, 060, 069 | TODO |
-| feof semantics | 038–044 | TODO |
+| TCP connect | 007, 031, 039 | ✓ #138 (`cancel_during_connect`, `connect_with_timeout`, `connect_v6`) |
+| TCP read/write under cancel | none | ✓ #127 (`stream_close_during_read`, `backpressure`, `hard_reset`) |
+| pipe read | 007 (io), 044 | ✓ #127 (`concurrent_readers`) |
+| pipe write under back-pressure | none | ✓ #129 (`backpressure`) |
+| stream_select | 005, 010, 017–023, 032–037 | ✓ #138 (`stream_select_chaos`) |
+| SSL connect (client) | 025–026 | ✓ #138 (`tls_connect`) |
+| SSL accept (server) | 027 | **TODO — #143** |
+| UDP | 028–030 | ✓ #138 (`udp_chaos`) |
+| File IO concurrent | 049, 056, 060, 069, 083 | ✓ #138 (`file_concurrent_writes`) |
+| feof semantics | 038–044 | **TODO — #143** |
+| flock under reactor | 081 | **TODO — #143** |
+| proc_open / exec / shell_exec | exec/001–024 | **TODO — #143** (whole subsystem, UAF class proven in `011`) |
+| curl_multi | curl/003, 010 | **TODO — #143** (single-handle covered by #136) |
+| socket ext (POSIX sockets) | socket/001–004 | **TODO — #143** (separate path from streams) |
+| DNS | dns/001–015 | ✓ #138 (`dns_slow`) |
+| signals | signal/* | ✓ #138 (`signal_chaos`) |
+| FileSystemWatcher | fs_watcher/* | ✓ #138 (`fs_watcher_chaos`) |
+
+## Layer 3 — process / subprocess chaos (#143)
+
+`proc_open`/`exec` were skipped through Layers 1–2 because they need a
+real child process. They're the next white zone:
+
+- **`exec/proc_open_chaos.feature`** — `proc_close()` races a parked
+  `fread()` on the child's stdout (mirrors `io/stream_close_during_read`
+  but with a real OS pipe to a real process). Killer cancels the reader
+  or closes the proc handle. Invariant: no UAF on the process handle
+  (regression backstop for `tests/exec/011`).
+- **`exec/proc_concurrent.feature`** — N coroutines `proc_open` concurrent
+  children + collect output. Cancel half. Reactor must reap every child
+  without zombies.
+- **`exec/proc_signal.feature`** — coroutine reads stdout, another sends
+  SIGTERM. Read must surface EOF cleanly, exit-code via `proc_close`.
+
+## Layer 3 — curl_multi chaos (#143)
+
+`http_chaos.feature` (#136) drove `curl_exec` (single handle). The
+`curl_multi_*` reactor path (`ext/curl/curl_async.c` — same file as the
+#136 chunked-bug fix) is untouched.
+
+- **`curl/curl_multi_chaos.feature`** — N parallel transfers through
+  EvilPeer toxics; cancel mid-`curl_multi_select`; close one handle
+  mid-flight; mix slow / fast peers.
 
 ## Tier strategy (recommended once Layer 1 is filled)
 
