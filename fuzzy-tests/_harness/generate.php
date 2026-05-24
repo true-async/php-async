@@ -215,6 +215,17 @@ PROBE,
     'sockets'      => 'if (!function_exists("socket_import_stream")) { echo "skip ext/sockets required"; exit; }',
     'curl'         => 'if (!extension_loaded("curl")) { echo "skip ext/curl required"; exit; }',
     'openssl'      => 'if (!extension_loaded("openssl")) { echo "skip ext/openssl required"; exit; }',
+    // DNS chaos needs the async getaddrinfo path to genuinely
+    // suspend. On hosts where NXDOMAIN is cached or returned in
+    // microseconds (some musl resolvers, fully-cached NSS) the cancel
+    // window never opens and the chaos value is zero. Probe a random
+    // .invalid hostname; if it returns in <20ms, skip.
+    'dns-async-engages' => <<<'PROBE'
+$dns_t0 = microtime(true);
+@stream_socket_client("tcp://probe-" . getmypid() . "-" . random_int(1, 1<<30) . ".invalid:80", $dns_e, $dns_m, 0.5);
+$dns_dt = (microtime(true) - $dns_t0) * 1000;
+if ($dns_dt < 20) { printf("skip .invalid resolution returned in %.1fms (no async DNS engagement)", $dns_dt); exit; }
+PROBE,
     'fork'         => 'if (!function_exists("pcntl_fork")) { echo "skip fork() not available"; exit; }',
     // Async\signal() chaos tests need posix_kill() to raise signals into
     // the running process. Windows has no SIGUSR1/SIGUSR2 — skip.

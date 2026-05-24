@@ -1571,6 +1571,52 @@ final class StandardSteps {
                 }
             });
 
+        // When coroutine "X" resolves nonexistent hostname "H" with timeout N ms
+        // stream_socket_client('tcp://H:80') against an .invalid hostname
+        // drives the async getaddrinfo path (php_network_getaddrinfo_async,
+        // libuv worker thread). The hostname always NXDOMAINs — so the
+        // dominant outcome with no cancel is dns_failed. The chaos value
+        // is the cancel-during-async-resolve path: AsyncCancellation
+        // must release the DNS request without leaking the libuv work
+        // handle. tcp-blackhole-style sync paths don't apply: by the
+        // time DNS returns, no connect is attempted.
+        //
+        // Outcomes (exactly one per attempt):
+        //   dns_ok        — surprise success (host briefly resolved on a
+        //                   misconfigured resolver; tolerated)
+        //   dns_failed    — NXDOMAIN / other resolver error returned
+        //   dns_cancelled — AsyncCancellation injected during resolve
+        //   dns_timeout   — explicit timeout fired (rare; .invalid is
+        //                   usually fast-NXDOMAIN past the probe gate)
+        $r->on('/^coroutine "([^"]+)" resolves nonexistent hostname "([^"]+)" with timeout (\S+) ms$/',
+            function(Context $ctx, string $coro, string $host, string $msExpr) {
+                $ms = (int)$ctx->resolver->resolve($msExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $host, $ms) {
+                    $ctx->inc("dns_attempts_$coro");
+                    $sock = null;
+                    $sec  = $ms / 1000.0;
+                    try {
+                        $sock = @stream_socket_client(
+                            'tcp://' . $host . ':80', $errno, $errstr, $sec);
+                        if ($sock !== false) {
+                            $ctx->inc("dns_ok_$coro");
+                        } elseif (stripos((string)$errstr, 'timed out') !== false
+                                || stripos((string)$errstr, 'timeout') !== false) {
+                            $ctx->inc("dns_timeout_$coro");
+                        } else {
+                            $ctx->inc("dns_failed_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("dns_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("dns_failed_$coro");
+                    } finally {
+                        if (is_resource($sock)) @fclose($sock);
+                    }
+                });
+            })
+            ->requires('tcp', 'dns-async-engages');
+
         // Given a filesystem watcher "W" on a fresh temp directory
         // Creates an empty tmpdir and an Async\FileSystemWatcher on it
         // (recursive=false, coalesce=true — the default coalesce mode).
