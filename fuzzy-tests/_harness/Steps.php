@@ -731,6 +731,22 @@ final class StandardSteps {
             })
             ->requires('curl');
 
+        // When coroutine "X" fetches peers "EP1","EP2",... via curl_multi
+        // Builds one curl_multi handle, attaches one easy handle per named
+        // peer, then runs the standard exec/select loop. The
+        // curl_multi_select() call is where the reactor parks the coroutine
+        // — that's the cancel surface and the same code path covered by
+        // tests/curl/003 and 010 deterministically. Outcome family
+        // curl_multi_*; per-handle outcomes are bumped via CURLMSG_DONE.
+        $r->on('/^coroutine "([^"]+)" fetches peers "([^"]+(?:"\s*,\s*"[^"]+)*)" via curl_multi$/',
+            function(Context $ctx, string $coro, string $peerList) {
+                $peers = preg_split('/"\s*,\s*"/', $peerList);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $peers) {
+                    StandardSteps::curlMulti($ctx, $coro, $peers);
+                });
+            })
+            ->requires('curl');
+
         // When coroutine "X" queries database "DB"
         // Runs a SELECT over the async PDO MySQL driver — connect + query I/O
         // go through the libuv reactor. The query reads the five seed rows
@@ -4590,6 +4606,85 @@ final class StandardSteps {
             $ctx->events[] = sprintf(
                 'curl %s: peer=%s http=%d errno=%d recv=%dB outcome=%s',
                 $coro, $peer, $httpCode, $errno, strlen($buf), $outcome);
+        }
+    }
+
+    /**
+     * Shared async curl_multi routine used by the "fetches peers via
+     * curl_multi" step. One curl_multi handle, one easy handle per named
+     * peer, standard exec/select loop — the curl_multi_select() call is
+     * where the reactor parks and the cancel/timeout surface lives.
+     *
+     * Per-handle CURLMSG_DONE messages are drained into curl_multi_handles_done
+     * (CURLE_OK) / curl_multi_handles_failed (any other). The coroutine-level
+     * outcome is bucketed exactly once:
+     *   curl_multi_ok        — loop exited normally with active==0
+     *   curl_multi_cancelled — AsyncCancellation delivered into curl_multi_select
+     *   curl_multi_failed    — curl_multi_exec returned !CURLM_OK or other throw
+     *   curl_multi_no_peer   — any named peer's address never resolved
+     * so the four sum to curl_multi_attempts.
+     */
+    public static function curlMulti(Context $ctx, string $coro, array $peers): void {
+        $ctx->inc("curl_multi_attempts_$coro");
+        $addrs = [];
+        foreach ($peers as $peer) {
+            $addr = $ctx->net->evilPeerAddr[$peer] ?? null;
+            if ($addr === null) {
+                $ctx->inc("curl_multi_no_peer_$coro");
+                return;
+            }
+            $addrs[] = $addr;
+        }
+        $mh   = null;
+        $easy = [];
+        try {
+            $mh = curl_multi_init();
+            foreach ($addrs as $addr) {
+                $ch = curl_init();
+                curl_setopt($ch, CURLOPT_URL, 'http://' . $addr . '/');
+                curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+                curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
+                // Drain bodies but discard — only the outcome matters here.
+                curl_setopt($ch, CURLOPT_WRITEFUNCTION,
+                    static fn($ch, string $d) => strlen($d));
+                curl_multi_add_handle($mh, $ch);
+                $easy[] = $ch;
+            }
+            $active = null;
+            do {
+                $status = curl_multi_exec($mh, $active);
+                if ($status !== CURLM_OK) {
+                    $ctx->inc("curl_multi_failed_$coro");
+                    return;
+                }
+                // Drain done messages as they arrive — the order in which
+                // handles finish is non-deterministic under chaos peers.
+                while (($msg = curl_multi_info_read($mh)) !== false) {
+                    if ($msg['msg'] === CURLMSG_DONE) {
+                        if ((int)$msg['result'] === CURLE_OK) {
+                            $ctx->inc("curl_multi_handles_done_$coro");
+                        } else {
+                            $ctx->inc("curl_multi_handles_failed_$coro");
+                        }
+                    }
+                }
+                if ($active > 0) {
+                    curl_multi_select($mh, 1.0);  /* reactor yield */
+                }
+            } while ($active > 0);
+            $ctx->inc("curl_multi_ok_$coro");
+        } catch (\Async\AsyncCancellation $e) {
+            $ctx->inc("curl_multi_cancelled_$coro");
+        } catch (\Throwable $e) {
+            $ctx->inc("curl_multi_failed_$coro");
+        } finally {
+            if ($mh !== null) {
+                foreach ($easy as $ch) {
+                    @curl_multi_remove_handle($mh, $ch);
+                    @curl_close($ch);
+                }
+                @curl_multi_close($mh);
+            }
         }
     }
 

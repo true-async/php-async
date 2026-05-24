@@ -4,6 +4,26 @@ Observations surfaced by the `fuzzy-tests/` chaos suite while chasing
 invariant violations. Each entry records what was seen, what it turned out
 to be, and how the suite was adjusted.
 
+## Heap corruption when AsyncCancellation interrupts curl_multi_select() — real bug, filed (#145)
+
+Drafting `curl/curl_multi_chaos.feature` (#143) — the cancel-mid-multi-select
+scenarios SEGV with `zend_mm_heap corrupted`, preceded by a runtime warning
+`Attempt to finalize a coroutine that is still in the queue`. The user-level
+`catch (AsyncCancellation)` block in the fetcher does fire — the corruption
+hits the next coroutine the scheduler picks up, which crashes in
+`zend_mm_alloc_small` trying to BIND_STATIC.
+
+Reproduced in ~50 lines outside the harness on the ASAN-ZTS build. Suspected
+locus: `ext/curl/curl_async.c` (same file as the chunked-body bug fixed in
+#136). The "still in the queue" warning hints at a curl-multi cancel
+handler that completes the coroutine while it's still in the runqueue,
+overwriting allocator metadata.
+
+The three planned cancel scenarios stay commented in the feature under
+`# Blocked: #145`; reinstate by uncomment after the fix lands. The three
+no-cancel scenarios (clean fetch, per-handle failure, two coroutines each
+owning a multi) are shipped.
+
 ## Missing wakeup of parked fread() on a terminated child's pipe — real bug, filed (#144)
 
 While drafting `exec/proc_open_chaos.feature` (#143) the simplest scenario

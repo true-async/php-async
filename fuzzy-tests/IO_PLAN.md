@@ -152,7 +152,7 @@ under umbrella issue **#143**.
 | feof semantics | 038–044 | **TODO — #143** |
 | flock under reactor | 081 | **TODO — #143** |
 | proc_open / exec / shell_exec | exec/001–024 | **TODO — #143** (whole subsystem, UAF class proven in `011`) |
-| curl_multi | curl/003, 010 | **TODO — #143** (single-handle covered by #136) |
+| curl_multi | curl/003, 010 | ✓ #143 (`curl_multi_chaos`, 3 scenarios; cancel-mid-select blocked on #145) |
 | socket ext (POSIX sockets) | socket/001–004 | **TODO — #143** (separate path from streams) |
 | DNS | dns/001–015 | ✓ #138 (`dns_slow`) |
 | signals | signal/* | ✓ #138 (`signal_chaos`) |
@@ -181,8 +181,9 @@ real child process. They're the next white zone:
 #136 chunked-bug fix) is untouched.
 
 - **`curl/curl_multi_chaos.feature`** — N parallel transfers through
-  EvilPeer toxics; cancel mid-`curl_multi_select`; close one handle
-  mid-flight; mix slow / fast peers.
+  EvilPeer toxics; clean fetch, per-handle failure, two coroutines each
+  owning their own multi. Cancel-mid-`curl_multi_select` scenarios
+  drafted but blocked on #145 (heap corruption); reinstate after fix.
 
 ## Tier strategy (recommended once Layer 1 is filled)
 
