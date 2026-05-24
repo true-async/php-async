@@ -5103,6 +5103,18 @@ static bool libuv_io_close(zend_async_io_t *io_base)
 	}
 
 	if (ZEND_ASYNC_IO_IS_STREAM(io->base.type)) {
+		/* Wake any parked reader with EOF — uv_read_stop drops the
+		 * read watcher silently and would otherwise leave the
+		 * coroutine waiting on an event that no longer fires. */
+		async_io_req_t *parked = io->active_req;
+		if (parked != NULL) {
+			io->active_req = NULL;
+			parked->base.transferred = 0;
+			parked->base.completed = true;
+			io->base.state |= ZEND_ASYNC_IO_EOF;
+			ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &parked->base, NULL);
+		}
+
 		uv_read_stop(&io->handle.stream);
 		io->handle.stream.data = io;
 		ZEND_ASYNC_EVENT_ADD_REF(&io->base.event);
