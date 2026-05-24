@@ -120,7 +120,7 @@ void async_waker_destroy(zend_coroutine_t *coroutine)
 
 	zval_ptr_dtor(&waker->result);
 	ZVAL_UNDEF(&waker->result);
-	zend_hash_clean(&waker->events);
+	ZEND_ASYNC_WAKER_CLEAN_EVENTS(waker);
 }
 
 static zend_object *coroutine_object_create(zend_class_entry *class_entry)
