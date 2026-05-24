@@ -1026,6 +1026,8 @@ static zend_always_inline void start_waker_events(zend_async_waker_t *waker)
 {
 	ZEND_ASSERT(waker != NULL && "Waker is NULL in async_scheduler_start_waker_events");
 
+	waker->events_stopped = 0;
+
 	zend_async_waker_trigger_t *trigger;
 	ZEND_HASH_FOREACH_PTR(&waker->events, trigger)
 	{
@@ -1062,10 +1064,17 @@ static zend_always_inline void stop_waker_events(zend_async_waker_t *waker)
 {
 	ZEND_ASSERT(waker != NULL && "Waker is NULL in async_scheduler_stop_waker_events");
 
+	if (waker->events_stopped) {
+		return;
+	}
+	waker->events_stopped = 1;
+
 	zend_async_waker_trigger_t *trigger;
 	ZEND_HASH_FOREACH_PTR(&waker->events, trigger)
 	{
-		trigger->event->stop(trigger->event);
+		if (trigger->event != NULL) {
+			trigger->event->stop(trigger->event);
+		}
 	}
 	ZEND_HASH_FOREACH_END();
 }
