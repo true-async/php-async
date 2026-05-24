@@ -149,7 +149,7 @@ under umbrella issue **#143**.
 | SSL accept (server) | 027 | **TODO — #143** |
 | UDP | 028–030 | ✓ #138 (`udp_chaos`) |
 | File IO concurrent | 049, 056, 060, 069, 083 | ✓ #138 (`file_concurrent_writes`) |
-| feof semantics | 038–044 | **TODO — #143** |
+| feof semantics | 038–044 | ✓ #143 (`feof_chaos`, 4 scenarios) |
 | flock under reactor | 081 | **TODO — #143** |
 | proc_open / exec / shell_exec | exec/001–024 | **TODO — #143** (whole subsystem, UAF class proven in `011`) |
 | curl_multi | curl/003, 010 | ✓ #143 (`curl_multi_chaos`, 3 scenarios; cancel-mid-select blocked on #145) |

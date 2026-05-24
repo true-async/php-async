@@ -1555,6 +1555,74 @@ final class StandardSteps {
             })
             ->requires('unix-sockets');
 
+        // When coroutine "X" drains shared pipe "P" with feof loop
+        // Canonical `while (!feof) fread` drain — reads the reader end of
+        // the shared pipe in 4096-byte chunks until feof() reports true.
+        // Counters: feof_drain_attempts (once), feof_drain_done (clean
+        // exit), feof_drain_cancelled, feof_drain_failed, feof_drain_bytes
+        // (total bytes received before feof / cancel). Sums hold for any
+        // interleaving: done+cancelled+failed == attempts.
+        $r->on('/^coroutine "([^"]+)" drains shared pipe "([^"]+)" with feof loop$/',
+            function(Context $ctx, string $coro, string $pipe) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $pipe) {
+                    if (!isset($ctx->pipes[$pipe])) {
+                        $ctx->inc("feof_drain_setup_failed_$coro");
+                        return;
+                    }
+                    [$reader,] = $ctx->pipes[$pipe];
+                    $ctx->inc("feof_drain_attempts_$coro");
+                    $bytes = 0;
+                    try {
+                        while (is_resource($reader) && !@feof($reader)) {
+                            $chunk = @fread($reader, 4096);
+                            if ($chunk === false) break;
+                            $bytes += strlen($chunk);
+                            if ($chunk === '' && @feof($reader)) break;
+                        }
+                        $ctx->inc("feof_drain_done_$coro");
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("feof_drain_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("feof_drain_failed_$coro");
+                    } finally {
+                        $ctx->inc("feof_drain_bytes_$coro", $bytes);
+                    }
+                });
+            })
+            ->requires('unix-sockets');
+
+        // When coroutine "X" polls feof of shared pipe "P" N times
+        // Spams feof() against the reader end of the shared pipe from a
+        // sibling coroutine context. Yields via Async\suspend() between
+        // polls so other coroutines interleave. The feof_poll_true /
+        // _false split is informational; the invariant is that
+        // poll_true + poll_false == attempts.
+        $r->on('/^coroutine "([^"]+)" polls feof of shared pipe "([^"]+)" (\S+) times$/',
+            function(Context $ctx, string $coro, string $pipe, string $nExpr) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $pipe, $nExpr) {
+                    if (!isset($ctx->pipes[$pipe])) {
+                        $ctx->inc("feof_poll_setup_failed_$coro");
+                        return;
+                    }
+                    [$reader,] = $ctx->pipes[$pipe];
+                    $n = (int)$ctx->resolver->resolve($nExpr);
+                    for ($i = 0; $i < $n; $i++) {
+                        $ctx->inc("feof_poll_attempts_$coro");
+                        if (!is_resource($reader)) {
+                            $ctx->inc("feof_poll_failed_$coro");
+                            continue;
+                        }
+                        if (@feof($reader)) {
+                            $ctx->inc("feof_poll_true_$coro");
+                        } else {
+                            $ctx->inc("feof_poll_false_$coro");
+                        }
+                        \Async\suspend();
+                    }
+                });
+            })
+            ->requires('unix-sockets');
+
         // Given a shared file "F"
         // Opens a fresh tmp file in write mode and stashes [handle, path]
         // on the Context — many coroutines write the SAME $handle so they
