@@ -198,6 +198,20 @@ $bh_dt = (microtime(true) - $bh_t0) * 1000;
 if ($bh_s !== false) { fclose($bh_s); echo "skip 192.0.2.1:81 unexpectedly reachable"; exit; }
 if ($bh_dt < 50) { printf("skip blackhole connect returned synchronously in %.1fms (no connect-watcher engagement)", $bh_dt); exit; }
 PROBE,
+    // Same idea, IPv6 family. The address [::ffff:192.0.2.1] is the v4-
+    // mapped form of TEST-NET-1: it forces a real AF_INET6 socket and
+    // exercises the v6 branch in xp_socket open, but routes through the
+    // v4 stack so the SYN actually goes out and parks. Pure-v6
+    // documentation prefixes (2001:db8::/32) commonly hit ENETUNREACH
+    // synchronously on hosts without v6 egress (WSL2, many CI images),
+    // which would silently fake coverage.
+    'tcp-blackhole-v6'=> <<<'PROBE'
+$bh6_t0 = microtime(true);
+$bh6_s  = @stream_socket_client("tcp://[::ffff:192.0.2.1]:81", $bh6_e, $bh6_m, 0.1);
+$bh6_dt = (microtime(true) - $bh6_t0) * 1000;
+if ($bh6_s !== false) { fclose($bh6_s); echo "skip v4-mapped v6 blackhole unexpectedly reachable"; exit; }
+if ($bh6_dt < 50) { printf("skip v6 blackhole connect returned synchronously in %.1fms (no v6 connect-watcher engagement)", $bh6_dt); exit; }
+PROBE,
     'sockets'      => 'if (!function_exists("socket_import_stream")) { echo "skip ext/sockets required"; exit; }',
     'curl'         => 'if (!extension_loaded("curl")) { echo "skip ext/curl required"; exit; }',
     'fork'         => 'if (!function_exists("pcntl_fork")) { echo "skip fork() not available"; exit; }',

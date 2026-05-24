@@ -1504,6 +1504,42 @@ final class StandardSteps {
             })
             ->requires('tcp', 'tcp-blackhole');
 
+        // When coroutine "X" connects to IPv6 blackhole "ADDR" with timeout N ms
+        // Identical semantics to the IPv4 step, but uses an AF_INET6 socket
+        // (ADDR must be a bracketed v6 literal, e.g. [::ffff:192.0.2.1]:81).
+        // Exercises the v6 branch in xp_socket open + the same shared
+        // network_async_await_stream_socket() connect-watcher. SKIPIF tag
+        // tcp-blackhole-v6 guarantees the v6 connect actually parks on this
+        // host — see the rationale in generate.php.
+        $r->on('/^coroutine "([^"]+)" connects to IPv6 blackhole "([^"]+)" with timeout (\S+) ms$/',
+            function(Context $ctx, string $coro, string $addr, string $msExpr) {
+                $ms = (int)$ctx->resolver->resolve($msExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $addr, $ms) {
+                    $ctx->inc("io_connect_attempts_$coro");
+                    $sock = null;
+                    $sec = $ms / 1000.0;
+                    try {
+                        $sock = @stream_socket_client(
+                            'tcp://' . $addr, $errno, $errstr, $sec);
+                        if ($sock !== false) {
+                            $ctx->inc("io_connect_ok_$coro");
+                        } elseif (stripos((string)$errstr, 'timed out') !== false
+                                || stripos((string)$errstr, 'timeout') !== false) {
+                            $ctx->inc("io_connect_timeout_$coro");
+                        } else {
+                            $ctx->inc("io_connect_failed_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("io_connect_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("io_connect_failed_$coro");
+                    } finally {
+                        if (is_resource($sock)) @fclose($sock);
+                    }
+                });
+            })
+            ->requires('tcp', 'tcp-blackhole-v6');
+
         // When coroutine "X" inspects state of coroutine "Y"
         // Calls every is*() predicate on Y at the moment of the call. Each call
         // bumps a per-state counter; the union covers all observable states.
