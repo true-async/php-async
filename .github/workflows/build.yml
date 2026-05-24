@@ -106,7 +106,7 @@ jobs:
             sudo apt-get install -y libuv1-dev
           else
             echo "Installing LibUV 1.45.0 from source"
-            wget https://github.com/libuv/libuv/archive/v1.45.0.tar.gz
+            wget --tries=5 --waitretry=10 --retry-connrefused --retry-on-http-error=429,500,502,503,504 https://github.com/libuv/libuv/archive/v1.45.0.tar.gz
             tar -xzf v1.45.0.tar.gz
             cd libuv-1.45.0
             mkdir build && cd build

@@ -846,9 +846,22 @@ retry:
 			return true;
 		}
 		pool->active_count--;
+
+		/* Factory failed — wake one parked waiter so it gets a chance to retry
+		 * (and propagate its own failure). Without this, waiters that entered
+		 * while we held the slot reservation deadlock: no idle, no release,
+		 * nothing to wake them. Each wakeup cascades to the next on failure. */
+		pool_wake_waiter(pool);
+
 		if (UNEXPECTED(EG(exception))) {
 			return false;
 		}
+
+		/* Factory returned false without setting an exception — synthesize one
+		 * so the caller fails fast instead of falling through to wait forever
+		 * (nothing in flight will wake us either). */
+		zend_throw_exception(async_ce_pool_exception, "Failed to create pool resource", 0);
+		return false;
 	}
 
 	/* 4. Wait - like channel */
@@ -915,6 +928,11 @@ void zend_async_pool_release(async_pool_t *pool, zval *resource)
 		/* Report failure to strategy */
 		pool_strategy_report_failure(pool, NULL);
 		pool_destroy_resource(pool, resource);
+		/* Slot is now free (total dropped) but no idle resource was returned.
+		 * Wake one waiter so it can try to create a fresh resource instead of
+		 * parking forever — without this the pool deadlocks when every
+		 * connection in flight fails (e.g. backend is permanently down). */
+		pool_wake_waiter(pool);
 		return;
 	}
 
