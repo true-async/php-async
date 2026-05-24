@@ -24,6 +24,7 @@ final class Runner {
      */
     public static function runScenario(string $featureFile, string $scenarioName, ?array $row = null, ?array $mutationSelection = null, ?int $genSeed = null): void {
         $genSeed ??= (int)(getenv('CHAOS_GEN_SEED') ?: 1);
+        self::installSignalSafetyNet();
 
         $source = @file_get_contents($featureFile);
         if ($source === false) {
@@ -73,6 +74,7 @@ final class Runner {
 
     public static function runFeature(string $featureFile, ?int $genSeed = null): void {
         $genSeed ??= (int)(getenv('CHAOS_GEN_SEED') ?: 1);
+        self::installSignalSafetyNet();
 
         $source = file_get_contents($featureFile);
         if ($source === false) {
@@ -99,5 +101,21 @@ final class Runner {
                 echo " - $r\n";
             }
         }
+    }
+
+    /**
+     * Catch stray SIGUSR1/SIGUSR2 when no Async\signal() waiter is
+     * currently registered (e.g. signal-chaos scenarios where the only
+     * waiter was cancelled before the raiser fired). Without this the
+     * raise would default-terminate the test process. Async\signal()
+     * registration overrides SIG_IGN while it's active, so the IGN here
+     * is a pure safety net — verified compatible.
+     */
+    private static function installSignalSafetyNet(): void {
+        if (PHP_OS_FAMILY === 'Windows' || !function_exists('pcntl_signal')) {
+            return;
+        }
+        @pcntl_signal(SIGUSR1, SIG_IGN);
+        @pcntl_signal(SIGUSR2, SIG_IGN);
     }
 }

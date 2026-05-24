@@ -1571,6 +1571,49 @@ final class StandardSteps {
                 }
             });
 
+        // When coroutine "X" awaits signal SIGUSR1|SIGUSR2
+        // Wraps Async\signal(Signal::SIG…) in an await. Counters per
+        // coroutine: signal_attempts / signal_received / signal_cancelled /
+        // signal_failed. The signal must be raised by a sibling coroutine
+        // via the "raises signal …" step. Backstop for php-async #109
+        // (multi-thread race in zend_signal_activate, fixed by the
+        // ZEND_ASYNC_REACTOR_IS_ENABLED skip — chaos exercises the
+        // post-fix code path under random scheduling).
+        $r->on('/^coroutine "([^"]+)" awaits signal (SIGUSR1|SIGUSR2)$/',
+            function(Context $ctx, string $coro, string $sigName) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $sigName) {
+                    $sig = constant("Async\\Signal::$sigName"); // enum case
+                    $ctx->inc("signal_attempts_$coro");
+                    try {
+                        \Async\await(\Async\signal($sig));
+                        $ctx->inc("signal_received_$coro");
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("signal_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("signal_failed_$coro");
+                    }
+                });
+            })
+            ->requires('signal');
+
+        // When coroutine "X" raises signal SIGUSR1|SIGUSR2
+        // posix_kill(getmypid(), $sig). All Async\signal() waiters parked
+        // on that signal wake up; pcntl_signal handlers (if installed)
+        // also fire. The raise is fire-and-forget — no per-waiter ack.
+        $r->on('/^coroutine "([^"]+)" raises signal (SIGUSR1|SIGUSR2)$/',
+            function(Context $ctx, string $coro, string $sigName) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $sigName) {
+                    $sig = constant($sigName); // global int (e.g. SIGUSR1)
+                    $ctx->inc("signal_raise_attempts_$coro");
+                    if (@posix_kill(posix_getpid(), $sig)) {
+                        $ctx->inc("signal_raise_ok_$coro");
+                    } else {
+                        $ctx->inc("signal_raise_failed_$coro");
+                    }
+                });
+            })
+            ->requires('signal');
+
         // When coroutine "X" connects to TCP blackhole "ADDR" with timeout N ms
         // stream_socket_client() against an RFC 5737 TEST-NET-1 address that
         // routes nowhere — the SYN goes out, no response comes back, so the

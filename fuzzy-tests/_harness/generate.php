@@ -215,6 +215,9 @@ PROBE,
     'sockets'      => 'if (!function_exists("socket_import_stream")) { echo "skip ext/sockets required"; exit; }',
     'curl'         => 'if (!extension_loaded("curl")) { echo "skip ext/curl required"; exit; }',
     'fork'         => 'if (!function_exists("pcntl_fork")) { echo "skip fork() not available"; exit; }',
+    // Async\signal() chaos tests need posix_kill() to raise signals into
+    // the running process. Windows has no SIGUSR1/SIGUSR2 — skip.
+    'signal'       => 'if (PHP_OS_FAMILY === "Windows") { echo "skip POSIX signals not available on Windows"; exit; } if (!function_exists("posix_kill")) { echo "skip posix extension required"; exit; }',
     'tty'          => 'if (PHP_OS_FAMILY === "Windows") { echo "skip TTY semantics differ on Windows"; exit; }',
     'zts'          => 'if (!ZEND_THREAD_SAFE) { echo "skip requires Thread-Safe (ZTS) PHP build"; exit; }',
     // Toxiproxy is opt-in: the test runs only where a Toxiproxy admin
