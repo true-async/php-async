@@ -101,6 +101,11 @@ final class Context {
     /** @var array<string, string> coroutine name => bytes it received over I/O */
     public array $ioData = [];
 
+    /** @var array<string, array{0:resource,1:resource}> shared pipe name =>
+     * [reader, writer]. Cross-coroutine: created once in a Given step, read /
+     * closed from any coroutine. Cleaned up at end of run(). */
+    public array $pipes = [];
+
     /** @var array<string, int> name => capacity */
     public array $threadChannelDefs = [];
 
@@ -524,6 +529,17 @@ final class Context {
         // Network-fixture teardown: drop pooled PDO handles, close peer
         // sockets, reap forked peer processes, delete every Toxiproxy proxy.
         $this->net->tearDown();
+
+        // Shared-pipe teardown: scenarios may have closed one or both ends
+        // already; @-suppress and continue.
+        foreach ($this->pipes as $pair) {
+            foreach ($pair as $fd) {
+                if (is_resource($fd)) {
+                    @fclose($fd);
+                }
+            }
+        }
+        $this->pipes = [];
 
         // Suppress "Future was never used" warnings for futures that no
         // coroutine got around to awaiting (await_any only consumes one).

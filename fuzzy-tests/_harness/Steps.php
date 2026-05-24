@@ -1323,6 +1323,141 @@ final class StandardSteps {
             })
             ->requires('unix-sockets');
 
+        // Given a shared pipe "P"
+        // Creates a stream_socket_pair stored on the Context — both ends
+        // outlive any one coroutine, so a reader / writer / closer can be
+        // distributed across coroutines. Pair is created synchronously at
+        // step-eval time so reader and closer coroutines see the same fds.
+        // Cleanup is best-effort in Context::run() teardown.
+        $r->on('/^a shared pipe "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                if (isset($ctx->pipes[$name])) {
+                    return; // idempotent
+                }
+                $pair = @stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+                if ($pair === false) {
+                    throw new \RuntimeException("shared pipe $name: stream_socket_pair failed");
+                }
+                $ctx->pipes[$name] = $pair;
+            })
+            ->requires('unix-sockets');
+
+        // When coroutine "X" reads from shared pipe "P"
+        // Blocks on fread() of the shared pair's reader. Distinct counter
+        // family (io_pread_*) so concurrent readers / cross-coro close paths
+        // don't collide with the local-pipe step's io_read_* counters.
+        $r->on('/^coroutine "([^"]+)" reads from shared pipe "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $pipe) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $pipe) {
+                    if (!isset($ctx->pipes[$pipe])) {
+                        $ctx->inc("io_pread_setup_failed_$coro");
+                        return;
+                    }
+                    [$reader,] = $ctx->pipes[$pipe];
+                    try {
+                        $ctx->inc("io_pread_attempts_$coro");
+                        $data = @fread($reader, 4096); /* blocks */
+                        if ($data === false || $data === '') {
+                            $ctx->inc("io_pread_eof_$coro");
+                        } else {
+                            $ctx->inc("io_pread_ok_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("io_pread_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("io_pread_failed_$coro");
+                    }
+                });
+            })
+            ->requires('unix-sockets');
+
+        // When coroutine "X" writes "<msg>" to shared pipe "P"
+        // Pushes a bounded payload into the shared writer end. Used to wake
+        // readers in the concurrent-readers scenarios. Counter family
+        // io_pwrite_*.
+        $r->on('/^coroutine "([^"]+)" writes "([^"]*)" to shared pipe "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $payload, string $pipe) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $pipe, $payload) {
+                    if (!isset($ctx->pipes[$pipe])) {
+                        $ctx->inc("io_pwrite_setup_failed_$coro");
+                        return;
+                    }
+                    [, $writer] = $ctx->pipes[$pipe];
+                    try {
+                        $ctx->inc("io_pwrite_attempts_$coro");
+                        $n = @fwrite($writer, $payload);
+                        if ($n === false || $n === 0) {
+                            $ctx->inc("io_pwrite_failed_$coro");
+                        } else {
+                            $ctx->inc("io_pwrite_ok_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("io_pwrite_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("io_pwrite_failed_$coro");
+                    }
+                });
+            })
+            ->requires('unix-sockets');
+
+        // When coroutine "X" closes shared pipe "P"
+        // fclose() on both ends of the shared pair from inside a coroutine.
+        // Race target: a parked reader on this same pair must be released by
+        // the reactor without UAF / leaked watcher. Tolerates a peer that has
+        // already closed one side. Counter io_pclose_*.
+        $r->on('/^coroutine "([^"]+)" closes shared pipe "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $pipe) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $pipe) {
+                    if (!isset($ctx->pipes[$pipe])) {
+                        $ctx->inc("io_pclose_setup_failed_$coro");
+                        return;
+                    }
+                    $ctx->inc("io_pclose_attempts_$coro");
+                    [$reader, $writer] = $ctx->pipes[$pipe];
+                    if (is_resource($writer)) @fclose($writer);
+                    if (is_resource($reader)) @fclose($reader);
+                    $ctx->inc("io_pclose_ok_$coro");
+                });
+            })
+            ->requires('unix-sockets');
+
+        // When coroutine "X" closes the read end of shared pipe "P"
+        // Closes only the reader. The parked fread() on that fd must wake —
+        // not the writer half — and the reactor request list must stay
+        // consistent.
+        $r->on('/^coroutine "([^"]+)" closes the read end of shared pipe "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $pipe) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $pipe) {
+                    if (!isset($ctx->pipes[$pipe])) {
+                        $ctx->inc("io_pclose_setup_failed_$coro");
+                        return;
+                    }
+                    $ctx->inc("io_pclose_attempts_$coro");
+                    [$reader,] = $ctx->pipes[$pipe];
+                    if (is_resource($reader)) @fclose($reader);
+                    $ctx->inc("io_pclose_ok_$coro");
+                });
+            })
+            ->requires('unix-sockets');
+
+        // When coroutine "X" closes the write end of shared pipe "P"
+        // Closes only the writer. Parked readers must observe EOF (clean
+        // fread() == "") rather than hang.
+        $r->on('/^coroutine "([^"]+)" closes the write end of shared pipe "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $pipe) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $pipe) {
+                    if (!isset($ctx->pipes[$pipe])) {
+                        $ctx->inc("io_pclose_setup_failed_$coro");
+                        return;
+                    }
+                    $ctx->inc("io_pclose_attempts_$coro");
+                    [, $writer] = $ctx->pipes[$pipe];
+                    if (is_resource($writer)) @fclose($writer);
+                    $ctx->inc("io_pclose_ok_$coro");
+                });
+            })
+            ->requires('unix-sockets');
+
         // When coroutine "X" inspects state of coroutine "Y"
         // Calls every is*() predicate on Y at the moment of the call. Each call
         // bumps a per-state counter; the union covers all observable states.

@@ -114,3 +114,35 @@ ERRMODE_EXCEPTION the pool's internal connect (`pdo_pool_acquire_conn` →
 `db_handle_factory`) should suppress the low-level mysqlnd warning the way
 the direct constructor path does. Not a correctness bug; tracked as a
 loose end, not fixed here.
+
+## Double `event->stop()` on shared poll proxies (real bug — fixed)
+
+While prototyping `io/concurrent_readers.feature` (issue #138) the variant
+"four readers on one `stream_socket_pair`, cancel two, then writer
+writes+closes" deterministically timed out: the cancellations of R2 / R4
+left the survivors R1 / R3 parked forever. Reproduces under fifo and
+under seeded chaos.
+
+Root cause in the waker layer, not the reactor's broadcast structure. PHP
+streams cache an `ASYNC_READABLE` proxy on the netstream (`xp_socket.c` /
+`network_async.c`), so N coroutines reading the same stream all subscribe
+to the same poll proxy and each `start_waker_events()` increments the
+proxy's `loop_ref_count`. Cancellation went through
+`async_scheduler_coroutine_enqueue` → `stop_waker_events()` (preemptive
+bulk stop) **and** the subsequent `zend_hash_clean(&waker->events)` →
+`waker_events_dtor` called `event->stop()` a second time. Harmless when
+each coroutine owns its proxy (the prologue early-returns at
+`loop_ref==0`), but for the shared proxy the second decrement consumed a
+sibling's reference; the last cancel drove the count to 1 and ran the
+LAST-stop body, removing the proxy from `poll->proxies` and re-arming
+`uv_poll` with mask=0 — survivors stayed parked forever.
+
+Fixed in php-src `Zend/zend_async_API.{c,h}` and `ext/async/scheduler.c`:
+the waker now carries an `events_stopped:1` bit set by
+`stop_waker_events` (before the bulk stop) and reset by
+`start_waker_events`; `waker_events_dtor` skips `event->stop()` when the
+bit is set, so the bulk stop and the dtor never double-decrement. Each
+trigger gained a back-pointer to its waker so the dtor can find the bit
+in O(1). ABI bumped to v0.18.0. Regression covered by
+`io/concurrent_readers.feature` (3-reader / 4-reader-cancel-half / mixed
+delay scenarios) and `io/stream_close_during_read.feature`.
