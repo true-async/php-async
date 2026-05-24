@@ -1458,6 +1458,52 @@ final class StandardSteps {
             })
             ->requires('unix-sockets');
 
+        // When coroutine "X" connects to TCP blackhole "ADDR" with timeout N ms
+        // stream_socket_client() against an RFC 5737 TEST-NET-1 address that
+        // routes nowhere — the SYN goes out, no response comes back, so the
+        // kernel returns EINPROGRESS and the connect suspends in
+        // network_async_await_stream_socket() (the connect-watcher). This is
+        // the precise reactor surface this step exists to chaos-test: a
+        // killer cancel or the explicit timeout must release the connect
+        // request without UAF or leaked poll watcher.
+        //
+        // Outcomes (exactly one per attempt):
+        //   io_connect_ok        — connect succeeded (race: address briefly
+        //                          routable from a CI box; tolerated)
+        //   io_connect_timeout   — stream_socket_client returned false with
+        //                          ETIMEDOUT / explicit timeout fired
+        //   io_connect_cancelled — AsyncCancellation injected mid-wait
+        //   io_connect_failed    — any other failure (ENETUNREACH from a
+        //                          synchronous ICMP, etc.)
+        $r->on('/^coroutine "([^"]+)" connects to TCP blackhole "([^"]+)" with timeout (\S+) ms$/',
+            function(Context $ctx, string $coro, string $addr, string $msExpr) {
+                $ms = (int)$ctx->resolver->resolve($msExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $addr, $ms) {
+                    $ctx->inc("io_connect_attempts_$coro");
+                    $sock = null;
+                    $sec = $ms / 1000.0;
+                    try {
+                        $sock = @stream_socket_client(
+                            'tcp://' . $addr, $errno, $errstr, $sec);
+                        if ($sock !== false) {
+                            $ctx->inc("io_connect_ok_$coro");
+                        } elseif (stripos((string)$errstr, 'timed out') !== false
+                                || stripos((string)$errstr, 'timeout') !== false) {
+                            $ctx->inc("io_connect_timeout_$coro");
+                        } else {
+                            $ctx->inc("io_connect_failed_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("io_connect_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("io_connect_failed_$coro");
+                    } finally {
+                        if (is_resource($sock)) @fclose($sock);
+                    }
+                });
+            })
+            ->requires('tcp', 'tcp-blackhole');
+
         // When coroutine "X" inspects state of coroutine "Y"
         // Calls every is*() predicate on Y at the moment of the call. Each call
         // bumps a per-state counter; the union covers all observable states.
@@ -3084,6 +3130,18 @@ final class StandardSteps {
                 $v = $ctx->counter($name);
                 if ($v > (int)$bound) {
                     throw new \RuntimeException("counter $name = $v exceeds bound $bound");
+                }
+            });
+
+        // Then counter "X" is at least N
+        // Turns a sum-only invariant into a dominant-bucket check: lets a
+        // feature assert that a specific code path was actually taken on
+        // every interleaving, not just that the outcomes summed.
+        $r->on('/^counter "([^"]+)" is at least (\d+)$/',
+            function(Context $ctx, string $name, string $bound) {
+                $v = $ctx->counter($name);
+                if ($v < (int)$bound) {
+                    throw new \RuntimeException("counter $name = $v below bound $bound");
                 }
             });
 

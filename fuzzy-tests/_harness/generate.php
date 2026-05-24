@@ -185,6 +185,19 @@ function findFeatures(string $root): array {
 const SKIP_RULES = [
     'unix-sockets' => 'if (PHP_OS_FAMILY === "Windows") { echo "skip unix-domain sockets not supported"; exit; }',
     'tcp'          => '/* TCP loopback is portable; no skip */',
+    // Connect-watcher chaos tests need the connect to actually suspend in
+    // the reactor's poll — not fail synchronously with ENETUNREACH. Probe
+    // a TEST-NET-1 address with a 100ms timeout: if the call returns in
+    // under 50ms, the host has no default route for it (Alpine docker,
+    // CI without egress) and the connect-watcher would never engage —
+    // skip to avoid false-green coverage.
+    'tcp-blackhole'=> <<<'PROBE'
+$bh_t0 = microtime(true);
+$bh_s  = @stream_socket_client("tcp://192.0.2.1:81", $bh_e, $bh_m, 0.1);
+$bh_dt = (microtime(true) - $bh_t0) * 1000;
+if ($bh_s !== false) { fclose($bh_s); echo "skip 192.0.2.1:81 unexpectedly reachable"; exit; }
+if ($bh_dt < 50) { printf("skip blackhole connect returned synchronously in %.1fms (no connect-watcher engagement)", $bh_dt); exit; }
+PROBE,
     'sockets'      => 'if (!function_exists("socket_import_stream")) { echo "skip ext/sockets required"; exit; }',
     'curl'         => 'if (!extension_loaded("curl")) { echo "skip ext/curl required"; exit; }',
     'fork'         => 'if (!function_exists("pcntl_fork")) { echo "skip fork() not available"; exit; }',
