@@ -1571,6 +1571,54 @@ final class StandardSteps {
                 }
             });
 
+        // When coroutine "X" stream_selects on shared pipes "P1","P2",... for N ms
+        // Calls stream_select() on the read ends of the named shared pipes
+        // with $tv = N/1000.0 seconds. Drives the reactor's
+        // network_async_stream_select() (a multi-fd poll watcher). Counters:
+        //   select_attempts_$coro — bumped before the call
+        //   select_woke_$coro     — stream_select returned > 0 (≥1 fd ready)
+        //   select_timeout_$coro  — returned 0 (tv elapsed, no fd ready)
+        //   select_cancelled_$coro — AsyncCancellation injected mid-wait
+        //   select_failed_$coro   — false / other error
+        // The watcher must be released cleanly on cancel/timeout — a leaked
+        // multi-fd poll handle would surface as orphan-coroutine / abrupt-
+        // exit failures on subsequent scenarios.
+        $r->on('/^coroutine "([^"]+)" stream_selects on shared pipes "([^"]+(?:"\s*,\s*"[^"]+)*)" for (\S+) ms$/',
+            function(Context $ctx, string $coro, string $pipesList, string $msExpr) {
+                $ms = (int)$ctx->resolver->resolve($msExpr);
+                preg_match_all('/"([^"]+)"/', '"' . $pipesList . '"', $m);
+                $pipeNames = $m[1];
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $pipeNames, $ms) {
+                    $ctx->inc("select_attempts_$coro");
+                    $read = [];
+                    foreach ($pipeNames as $pn) {
+                        if (!isset($ctx->pipes[$pn])) {
+                            $ctx->inc("select_setup_failed_$coro");
+                            return;
+                        }
+                        $read[] = $ctx->pipes[$pn][0]; // reader end
+                    }
+                    $write = $except = null;
+                    $sec   = intdiv($ms, 1000);
+                    $usec  = ($ms % 1000) * 1000;
+                    try {
+                        $n = @stream_select($read, $write, $except, $sec, $usec);
+                        if ($n === false) {
+                            $ctx->inc("select_failed_$coro");
+                        } elseif ($n === 0) {
+                            $ctx->inc("select_timeout_$coro");
+                        } else {
+                            $ctx->inc("select_woke_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("select_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("select_failed_$coro");
+                    }
+                });
+            })
+            ->requires('unix-sockets');
+
         // Given TLS server "S" listening on "SRV" accepting up to N clients
         // Binds an ssl:// listener synchronously (so the address is known
         // for any client step that follows) using the openssl test cert
