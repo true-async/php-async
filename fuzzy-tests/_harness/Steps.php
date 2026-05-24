@@ -1555,6 +1555,114 @@ final class StandardSteps {
             })
             ->requires('unix-sockets');
 
+        // When coroutine "X" socket_connects to TCP blackhole "ADDR"
+        // ext/sockets API: socket_create + socket_connect to a routable
+        // but unreachable address (RFC 5737 TEST-NET-1 by convention).
+        // Goes through xp_socket.c connect-watcher just like the streams
+        // version, but exercises the ext/sockets entry point. Outcome
+        // family sock_connect_*.
+        $r->on('/^coroutine "([^"]+)" socket_connects to TCP blackhole "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $addr) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $addr) {
+                    [$host, $port] = explode(':', $addr, 2);
+                    $ctx->inc("sock_connect_attempts_$coro");
+                    $s = null;
+                    try {
+                        $s = @socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
+                        if (!$s) {
+                            $ctx->inc("sock_connect_failed_$coro");
+                            return;
+                        }
+                        if (@socket_connect($s, $host, (int)$port)) {
+                            $ctx->inc("sock_connect_ok_$coro");
+                        } else {
+                            $ctx->inc("sock_connect_failed_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("sock_connect_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("sock_connect_failed_$coro");
+                    } finally {
+                        if ($s !== null && $s !== false) {
+                            @socket_close($s);
+                        }
+                    }
+                });
+            })
+            ->requires('sockets', 'tcp-blackhole');
+
+        // When coroutine "X" socket_recvfroms on a fresh UDP socket
+        // Bind ephemeral UDP socket, park in socket_recvfrom. Outcome
+        // family sock_recv_*.
+        $r->on('/^coroutine "([^"]+)" socket_recvfroms on a fresh UDP socket$/',
+            function(Context $ctx, string $coro) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro) {
+                    $ctx->inc("sock_recv_attempts_$coro");
+                    $s = null;
+                    try {
+                        $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
+                        if (!$s || !@socket_bind($s, '127.0.0.1', 0)) {
+                            $ctx->inc("sock_recv_failed_$coro");
+                            return;
+                        }
+                        $buf = '';
+                        $from = '';
+                        $fromPort = 0;
+                        $n = @socket_recvfrom($s, $buf, 4096, 0, $from, $fromPort);
+                        if ($n === false) {
+                            $ctx->inc("sock_recv_failed_$coro");
+                        } else {
+                            $ctx->inc("sock_recv_ok_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("sock_recv_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("sock_recv_failed_$coro");
+                    } finally {
+                        if ($s !== null && $s !== false) {
+                            @socket_close($s);
+                        }
+                    }
+                });
+            })
+            ->requires('sockets');
+
+        // When coroutine "X" socket_accepts on a fresh TCP listener
+        // Bind ephemeral TCP listener via ext/sockets, park in socket_accept.
+        // Outcome family sock_accept_*.
+        $r->on('/^coroutine "([^"]+)" socket_accepts on a fresh TCP listener$/',
+            function(Context $ctx, string $coro) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro) {
+                    $ctx->inc("sock_accept_attempts_$coro");
+                    $s = null;
+                    try {
+                        $s = @socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
+                        if (!$s
+                            || !@socket_bind($s, '127.0.0.1', 0)
+                            || !@socket_listen($s, 8)) {
+                            $ctx->inc("sock_accept_failed_$coro");
+                            return;
+                        }
+                        $c = @socket_accept($s);
+                        if ($c === false) {
+                            $ctx->inc("sock_accept_failed_$coro");
+                        } else {
+                            $ctx->inc("sock_accept_ok_$coro");
+                            @socket_close($c);
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("sock_accept_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("sock_accept_failed_$coro");
+                    } finally {
+                        if ($s !== null && $s !== false) {
+                            @socket_close($s);
+                        }
+                    }
+                });
+            })
+            ->requires('sockets');
+
         // Given a shared lock file "L"
         // Creates a fresh tempfile and stashes its path on
         // Context::$lockFiles. Each coroutine opens its OWN fd to that

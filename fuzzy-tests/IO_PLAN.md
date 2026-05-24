@@ -153,7 +153,7 @@ under umbrella issue **#143**.
 | flock under reactor | 081 | ✓ #143 (`flock_chaos`, 2 scenarios; cancel blocked on #146) |
 | proc_open / exec / shell_exec | exec/001–024 | **TODO — #143** (whole subsystem, UAF class proven in `011`) |
 | curl_multi | curl/003, 010 | ✓ #143 (`curl_multi_chaos`, 3 scenarios; cancel-mid-select blocked on #145) |
-| socket ext (POSIX sockets) | socket/001–004 | **TODO — #143** (separate path from streams) |
+| socket ext (POSIX sockets) | socket/001–004 | ✓ #143 (`socket_ext_chaos`, 4 scenarios) |
 | DNS | dns/001–015 | ✓ #138 (`dns_slow`) |
 | signals | signal/* | ✓ #138 (`signal_chaos`) |
 | FileSystemWatcher | fs_watcher/* | ✓ #138 (`fs_watcher_chaos`) |
