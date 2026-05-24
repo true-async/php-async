@@ -106,6 +106,12 @@ final class Context {
      * closed from any coroutine. Cleaned up at end of run(). */
     public array $pipes = [];
 
+    /** @var array<string, array{0:resource,1:string}> shared file name =>
+     * [handle, path]. Many coroutines park on the SAME handle's async-IO
+     * event — that's the spurious-wakeup surface (#129 / #133). Handle is
+     * @fclose'd and path @unlink'd in run() teardown. */
+    public array $files = [];
+
     /** @var array<string, int> name => capacity */
     public array $threadChannelDefs = [];
 
@@ -541,10 +547,27 @@ final class Context {
         }
         $this->pipes = [];
 
+        // Shared-file teardown: flush+close handles, but keep the
+        // [null, $path] entries so Then assertions can still filesize()
+        // the path. Actual unlink happens in __destruct().
+        foreach ($this->files as $name => [$fh, $path]) {
+            if (is_resource($fh)) { @fflush($fh); @fclose($fh); }
+            $this->files[$name] = [null, $path];
+        }
+
         // Suppress "Future was never used" warnings for futures that no
         // coroutine got around to awaiting (await_any only consumes one).
         foreach ($this->futures as $f) {
             $f->ignore();
+        }
+    }
+
+    public function __destruct() {
+        // Shared-file tempfile unlink: Then-phase assertions need the
+        // path alive past run() teardown, so deletion is deferred until
+        // the Context itself goes out of scope (end of scenario).
+        foreach ($this->files as [, $path]) {
+            if (is_string($path) && $path !== '') @unlink($path);
         }
     }
 }

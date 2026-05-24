@@ -1458,6 +1458,119 @@ final class StandardSteps {
             })
             ->requires('unix-sockets');
 
+        // Given a shared file "F"
+        // Opens a fresh tmp file in write mode and stashes [handle, path]
+        // on the Context — many coroutines write the SAME $handle so they
+        // park on its single shared async-IO event. That's exactly the
+        // spurious-wakeup race that #129 / #133 fixed (php_stdiop_write
+        // must re-suspend until its OWN request completed; otherwise a
+        // libuv write in flight is disposed and writes into freed memory
+        // → bytes silently lost or heap corruption).
+        $r->on('/^a shared file "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                if (isset($ctx->files[$name])) {
+                    return; // idempotent
+                }
+                $path = tempnam(sys_get_temp_dir(), 'fuzzy_sf_');
+                $fh   = @fopen($path, 'w');
+                if (!$fh) {
+                    throw new \RuntimeException("shared file $name: fopen failed");
+                }
+                $ctx->files[$name] = [$fh, $path];
+            });
+
+        // When coroutine "X" writes N chunks of M bytes to shared file "F"
+        // Each chunk is a fixed-size deterministic payload (per-coroutine
+        // letter repeated). Counters per coroutine:
+        //   io_fwrite_attempts — bumped once per fwrite() call
+        //   io_fwrite_ok       — full-size chunk written (fwrite() == M)
+        //   io_fwrite_short    — short write (0 < returned < M)
+        //   io_fwrite_failed   — fwrite returned false / 0
+        //   io_fwrite_bytes    — total bytes the coroutine got past fwrite
+        // The cross-coroutine invariant — sum(io_fwrite_bytes_*) ==
+        // filesize(path) — is the #129/#133 backstop: under the spurious-
+        // wakeup bug, writes are silently dropped and the file ends up
+        // smaller than the bytes everyone "successfully" wrote.
+        $r->on('/^coroutine "([^"]+)" writes (\S+) chunks of (\S+) bytes to shared file "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $nExpr, string $mExpr, string $name) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $m = (int)$ctx->resolver->resolve($mExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $n, $m, $name) {
+                    if (!isset($ctx->files[$name])) {
+                        $ctx->inc("io_fwrite_setup_failed_$coro");
+                        return;
+                    }
+                    [$fh,] = $ctx->files[$name];
+                    // Deterministic per-coroutine payload — first char of
+                    // $coro repeated, so each chunk is uniquely attributable
+                    // when debugging a corrupted file.
+                    $payload = str_repeat($coro[0] ?? 'X', $m);
+                    for ($i = 0; $i < $n; $i++) {
+                        try {
+                            $ctx->inc("io_fwrite_attempts_$coro");
+                            $w = @fwrite($fh, $payload);
+                            if ($w === false || $w === 0) {
+                                $ctx->inc("io_fwrite_failed_$coro");
+                                return; // handle bad — stop
+                            }
+                            $ctx->inc("io_fwrite_bytes_$coro", $w);
+                            if ($w === $m) {
+                                $ctx->inc("io_fwrite_ok_$coro");
+                            } else {
+                                $ctx->inc("io_fwrite_short_$coro");
+                            }
+                        } catch (\Async\AsyncCancellation $e) {
+                            $ctx->inc("io_fwrite_cancelled_$coro");
+                            return;
+                        } catch (\Throwable $e) {
+                            $ctx->inc("io_fwrite_failed_$coro");
+                            return;
+                        }
+                    }
+                });
+            });
+
+        // When coroutine "X" closes shared file "F"
+        // Drives an fclose() from inside a coroutine — typically chained
+        // after all writers have completed (sequenced via sleeps in the
+        // feature). The handle is also closed in teardown; this step
+        // exists for scenarios that need a clean fclose before the file-
+        // size assertion runs.
+        $r->on('/^coroutine "([^"]+)" closes shared file "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $name) {
+                $ctx->planAction($coro, function(Context $ctx) use ($name) {
+                    if (!isset($ctx->files[$name])) return;
+                    [$fh, $path] = $ctx->files[$name];
+                    if (is_resource($fh)) @fclose($fh);
+                    $ctx->files[$name] = [null, $path];
+                });
+            });
+
+        // Then shared file "F" byte size equals counter "A" plus counter "B"
+        // ... plus counter "N" — variadic sum invariant. The point is to
+        // assert that the kernel-observed file size matches the sum of
+        // bytes every coroutine claims fwrite() accepted. If they diverge,
+        // the spurious-wakeup bug ate someone's write.
+        $r->on('/^shared file "([^"]+)" byte size equals counter "([^"]+)"((?: plus counter "[^"]+")+)$/',
+            function(Context $ctx, string $name, string $first, string $rest) {
+                if (!isset($ctx->files[$name])) {
+                    throw new \RuntimeException("shared file $name not defined");
+                }
+                [$fh, $path] = $ctx->files[$name];
+                if (is_resource($fh)) @fflush($fh);
+                clearstatcache(true, $path);
+                $actual = (int)@filesize($path);
+                $sum = $ctx->counter($first);
+                preg_match_all('/counter "([^"]+)"/', $rest, $m);
+                $names = [$first];
+                foreach ($m[1] as $cn) { $sum += $ctx->counter($cn); $names[] = $cn; }
+                if ($actual !== $sum) {
+                    throw new \RuntimeException(
+                        "shared file $name byte size = $actual, sum of " .
+                        implode('+', $names) . " = $sum (data loss)");
+                }
+            });
+
         // When coroutine "X" connects to TCP blackhole "ADDR" with timeout N ms
         // stream_socket_client() against an RFC 5737 TEST-NET-1 address that
         // routes nowhere — the SYN goes out, no response comes back, so the
