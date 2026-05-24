@@ -125,6 +125,12 @@ final class Context {
      * is where senders aim. Socket is @fclose'd in run() teardown. */
     public array $udpEndpoints = [];
 
+    /** @var array<string, string> shared lock file name => tempfile path.
+     * Each coroutine fopen()s its own fd to that path so flock() sees
+     * cross-coroutine (cross-fd) contention. Path is unlinked in
+     * Context::__destruct(). */
+    public array $lockFiles = [];
+
     /** @var array<string, array{proc:resource,pipes:array<int,resource>}>
      * child process name => [proc-resource, fd-map]. Pipes are pipe('w')
      * for stdin / pipe('r') for stdout / stderr. proc_open() runs synchronously
@@ -635,6 +641,9 @@ final class Context {
         // path alive past run() teardown, so deletion is deferred until
         // the Context itself goes out of scope (end of scenario).
         foreach ($this->files as [, $path]) {
+            if (is_string($path) && $path !== '') @unlink($path);
+        }
+        foreach ($this->lockFiles as $path) {
             if (is_string($path) && $path !== '') @unlink($path);
         }
         // Filesystem-watcher tmpdir cleanup — remove any files left in

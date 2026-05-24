@@ -4,6 +4,19 @@ Observations surfaced by the `fuzzy-tests/` chaos suite while chasing
 invariant violations. Each entry records what was seen, what it turned out
 to be, and how the suite was adjusted.
 
+## Stack-use-after-return in flock() when coroutine is cancelled — real bug, filed (#146)
+
+Drafting `io/flock_chaos.feature` (#143) — the cancel-mid-flock scenarios
+SEGV instantly. ASAN-ZTS pins it precisely: `main/streams/plain_wrapper.c:1192`
+puts the flock task struct on the caller's stack; the libuv worker thread
+keeps writing to `flock_data->result` after the coroutine unwinds on
+cancel.
+
+Fix is straightforward (heap-allocate the task data, free via task dispose
+hook). Filed as #146. The two non-cancel scenarios (contention, holder +
+waiters) shipped; the cancel scenarios stay commented under `# Blocked:
+#146`.
+
 ## Heap corruption when AsyncCancellation interrupts curl_multi_select() — real bug, filed (#145)
 
 Drafting `curl/curl_multi_chaos.feature` (#143) — the cancel-mid-multi-select

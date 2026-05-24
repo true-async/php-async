@@ -1555,6 +1555,70 @@ final class StandardSteps {
             })
             ->requires('unix-sockets');
 
+        // Given a shared lock file "L"
+        // Creates a fresh tempfile and stashes its path on
+        // Context::$lockFiles. Each coroutine opens its OWN fd to that
+        // path so flock() sees cross-fd contention (LOCK_EX is per-fd
+        // under POSIX fcntl/flock semantics). Tempfile is unlinked in
+        // Context::__destruct().
+        $r->on('/^a shared lock file "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                if (isset($ctx->lockFiles[$name])) return;
+                $path = tempnam(sys_get_temp_dir(), 'fuzzy_flock_');
+                if ($path === false) {
+                    throw new \RuntimeException("shared lock file $name: tempnam failed");
+                }
+                $ctx->lockFiles[$name] = $path;
+            })
+            ->requires('unix-sockets'); // POSIX flock — reuse the unix-sockets skip on Windows
+
+        // When coroutine "X" acquires LOCK_EX on "L" then releases after N ms
+        // Opens a fresh fd, takes LOCK_EX (blocking — the reactor parks
+        // the coroutine on the flock thread-pool worker), holds for N ms,
+        // unlocks, closes. Counter family:
+        //   flock_attempts — once per coroutine
+        //   flock_ok       — lock acquired and released cleanly
+        //   flock_cancelled — AsyncCancellation delivered during the wait
+        //   flock_failed   — any other throwable / flock() returned false
+        // Sum holds for every interleaving.
+        $r->on('/^coroutine "([^"]+)" acquires LOCK_EX on "([^"]+)" then releases after (\S+) ms$/',
+            function(Context $ctx, string $coro, string $lock, string $msExpr) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $lock, $msExpr) {
+                    if (!isset($ctx->lockFiles[$lock])) {
+                        $ctx->inc("flock_setup_failed_$coro");
+                        return;
+                    }
+                    $path = $ctx->lockFiles[$lock];
+                    $ms   = (int)$ctx->resolver->resolve($msExpr);
+                    $ctx->inc("flock_attempts_$coro");
+                    $fp = null;
+                    try {
+                        $fp = @fopen($path, 'r');
+                        if (!$fp) {
+                            $ctx->inc("flock_failed_$coro");
+                            return;
+                        }
+                        if (!@flock($fp, LOCK_EX)) {
+                            $ctx->inc("flock_failed_$coro");
+                            return;
+                        }
+                        \Async\delay($ms);
+                        @flock($fp, LOCK_UN);
+                        $ctx->inc("flock_ok_$coro");
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("flock_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("flock_failed_$coro");
+                    } finally {
+                        if (is_resource($fp)) {
+                            @flock($fp, LOCK_UN);
+                            @fclose($fp);
+                        }
+                    }
+                });
+            })
+            ->requires('unix-sockets');
+
         // When coroutine "X" drains shared pipe "P" with feof loop
         // Canonical `while (!feof) fread` drain — reads the reader end of
         // the shared pipe in 4096-byte chunks until feof() reports true.
