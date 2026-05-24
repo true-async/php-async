@@ -1571,6 +1571,93 @@ final class StandardSteps {
                 }
             });
 
+        // Given a UDP endpoint "U"
+        // Binds an ephemeral UDP socket on 127.0.0.1 and stashes
+        // [socket, "127.0.0.1:port"] on Context::$udpEndpoints. UDP is
+        // connectionless, so the same socket is used both for recvfrom
+        // (by a receiver coroutine) and as the destination address by
+        // sender coroutines.
+        $r->on('/^a UDP endpoint "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                if (isset($ctx->udpEndpoints[$name])) return;
+                $sock = @stream_socket_server(
+                    'udp://127.0.0.1:0', $errno, $errstr, STREAM_SERVER_BIND);
+                if (!$sock) {
+                    throw new \RuntimeException(
+                        "UDP endpoint $name bind failed: $errstr ($errno)");
+                }
+                $addr = stream_socket_get_name($sock, false);
+                $ctx->udpEndpoints[$name] = ['sock' => $sock, 'addr' => $addr];
+            })
+            ->requires('tcp'); // any IP socket capability — UDP loopback is portable
+
+        // When coroutine "X" recvs from UDP endpoint "U"
+        // Blocking stream_socket_recvfrom on the bound socket; suspends
+        // in the reactor's sock_async_poll(PHP_POLLREADABLE). Counters:
+        //   udp_recv_attempts / udp_recv_ok / udp_recv_cancelled / udp_recv_failed.
+        // Buffer is 1500 (typical MTU); peer address is recorded but
+        // not asserted on (loopback ephemeral port varies).
+        $r->on('/^coroutine "([^"]+)" recvs from UDP endpoint "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $name) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $name) {
+                    if (!isset($ctx->udpEndpoints[$name])) {
+                        $ctx->inc("udp_recv_setup_failed_$coro");
+                        return;
+                    }
+                    $sock = $ctx->udpEndpoints[$name]['sock'];
+                    $ctx->inc("udp_recv_attempts_$coro");
+                    try {
+                        $peer = '';
+                        $data = @stream_socket_recvfrom($sock, 1500, 0, $peer);
+                        if ($data === false || $data === '') {
+                            $ctx->inc("udp_recv_failed_$coro");
+                        } else {
+                            $ctx->inc("udp_recv_ok_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("udp_recv_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("udp_recv_failed_$coro");
+                    }
+                });
+            })
+            ->requires('tcp');
+
+        // When coroutine "X" sends "PAYLOAD" to UDP endpoint "U"
+        // Opens a separate udp client socket and stream_socket_sendto's
+        // the payload. Fire-and-forget — UDP has no ack. Counters:
+        //   udp_send_attempts / udp_send_ok / udp_send_failed.
+        $r->on('/^coroutine "([^"]+)" sends "([^"]*)" to UDP endpoint "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $payload, string $name) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $payload, $name) {
+                    if (!isset($ctx->udpEndpoints[$name])) {
+                        $ctx->inc("udp_send_setup_failed_$coro");
+                        return;
+                    }
+                    $addr = $ctx->udpEndpoints[$name]['addr'];
+                    $ctx->inc("udp_send_attempts_$coro");
+                    $client = @stream_socket_client(
+                        'udp://' . $addr, $errno, $errstr);
+                    if (!$client) {
+                        $ctx->inc("udp_send_failed_$coro");
+                        return;
+                    }
+                    try {
+                        $n = @stream_socket_sendto($client, $payload);
+                        if ($n === strlen($payload)) {
+                            $ctx->inc("udp_send_ok_$coro");
+                        } else {
+                            $ctx->inc("udp_send_failed_$coro");
+                        }
+                    } catch (\Throwable $e) {
+                        $ctx->inc("udp_send_failed_$coro");
+                    } finally {
+                        if (is_resource($client)) @fclose($client);
+                    }
+                });
+            })
+            ->requires('tcp');
+
         // When coroutine "X" stream_selects on shared pipes "P1","P2",... for N ms
         // Calls stream_select() on the read ends of the named shared pipes
         // with $tv = N/1000.0 seconds. Drives the reactor's

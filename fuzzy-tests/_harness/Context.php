@@ -112,6 +112,12 @@ final class Context {
      * @fclose'd and path @unlink'd in run() teardown. */
     public array $files = [];
 
+    /** @var array<string, array{sock:resource,addr:string}> UDP
+     * endpoint name => [bound socket, host:port]. UDP is connectionless,
+     * so the socket doubles as receive-from and the recorded address
+     * is where senders aim. Socket is @fclose'd in run() teardown. */
+    public array $udpEndpoints = [];
+
     /** @var array<string, array{server:resource,addr:string}> TLS
      * server name => bound server socket + ssl:// address. The server
      * socket is bound synchronously in the Given step so the address
@@ -554,6 +560,13 @@ final class Context {
             }
         }
         $this->pipes = [];
+
+        // UDP-endpoint teardown: close the bound socket. Any parked
+        // recvfrom on this socket will wake with EBADF / clean failure.
+        foreach ($this->udpEndpoints as $entry) {
+            if (is_resource($entry['sock'])) @fclose($entry['sock']);
+        }
+        $this->udpEndpoints = [];
 
         // TLS-server teardown: close the listen socket. Accept-loop
         // coroutines exit naturally when the socket closes or the
