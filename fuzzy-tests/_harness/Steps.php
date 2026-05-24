@@ -1571,6 +1571,117 @@ final class StandardSteps {
                 }
             });
 
+        // Given TLS server "S" listening on "SRV" accepting up to N clients
+        // Binds an ssl:// listener synchronously (so the address is known
+        // for any client step that follows) using the openssl test cert
+        // from ext/async/tests/stream/. Spawns the accept loop as the
+        // body of the named coroutine SRV. Each accepted connection does
+        // the server-side TLS handshake, sends a short "ok" payload, and
+        // closes. Counters: tls_accept_attempts_$srv, tls_accept_ok_$srv,
+        // tls_accept_failed_$srv. SRV terminates after N accepts OR when
+        // the listen socket is closed in teardown — whichever comes first.
+        $r->on('/^TLS server "([^"]+)" listening on "([^"]+)" accepting up to (\S+) clients$/',
+            function(Context $ctx, string $srvName, string $coro, string $nExpr) {
+                if (isset($ctx->tlsServers[$srvName])) {
+                    // Already bound; just (re)install the accept loop.
+                    $entry = $ctx->tlsServers[$srvName];
+                } else {
+                    $certDir = __DIR__ . '/../../tests/stream';
+                    $sctx = stream_context_create(['ssl' => [
+                        'local_cert'        => $certDir . '/ssl_test_cert.pem',
+                        'local_pk'          => $certDir . '/ssl_test_key.pem',
+                        'verify_peer'       => false,
+                        'allow_self_signed' => true,
+                        'crypto_method'     => STREAM_CRYPTO_METHOD_TLS_SERVER,
+                    ]]);
+                    $server = @stream_socket_server(
+                        'ssl://127.0.0.1:0', $errno, $errstr,
+                        STREAM_SERVER_BIND | STREAM_SERVER_LISTEN, $sctx);
+                    if (!$server) {
+                        throw new \RuntimeException(
+                            "TLS server $srvName bind failed: $errstr ($errno)");
+                    }
+                    $addr  = stream_socket_get_name($server, false);
+                    $entry = ['server' => $server, 'addr' => $addr];
+                    $ctx->tlsServers[$srvName] = $entry;
+                }
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($srvName, $n) {
+                    if (!isset($ctx->tlsServers[$srvName])) return;
+                    $server = $ctx->tlsServers[$srvName]['server'];
+                    for ($i = 0; $i < $n; $i++) {
+                        if (!is_resource($server)) break;
+                        try {
+                            $ctx->inc("tls_accept_attempts_$srvName");
+                            $client = @stream_socket_accept($server, 5);
+                            if ($client) {
+                                $ctx->inc("tls_accept_ok_$srvName");
+                                @fwrite($client, "ok");
+                                @fclose($client);
+                            } else {
+                                $ctx->inc("tls_accept_failed_$srvName");
+                            }
+                        } catch (\Async\AsyncCancellation $e) {
+                            $ctx->inc("tls_accept_cancelled_$srvName");
+                            return;
+                        } catch (\Throwable $e) {
+                            $ctx->inc("tls_accept_failed_$srvName");
+                        }
+                    }
+                });
+            })
+            ->requires('tcp', 'openssl');
+
+        // When coroutine "X" connects via TLS to server "S" with timeout N ms
+        // stream_socket_client('ssl://...') drives the full TCP connect +
+        // TLS handshake. Both phases yield to the reactor; a cancel or
+        // timeout must release the connect-watcher AND any crypto-retry
+        // poll state without leaking watchers.
+        $r->on('/^coroutine "([^"]+)" connects via TLS to server "([^"]+)" with timeout (\S+) ms$/',
+            function(Context $ctx, string $coro, string $srvName, string $msExpr) {
+                $ms = (int)$ctx->resolver->resolve($msExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $srvName, $ms) {
+                    $ctx->inc("io_tls_attempts_$coro");
+                    if (!isset($ctx->tlsServers[$srvName])) {
+                        $ctx->inc("io_tls_no_server_$coro");
+                        return;
+                    }
+                    $addr = $ctx->tlsServers[$srvName]['addr'];
+                    $sec  = $ms / 1000.0;
+                    $cctx = stream_context_create(['ssl' => [
+                        'verify_peer'       => false,
+                        'verify_peer_name'  => false,
+                        'allow_self_signed' => true,
+                        'crypto_method'     => STREAM_CRYPTO_METHOD_TLS_CLIENT,
+                    ]]);
+                    $sock = null;
+                    try {
+                        $sock = @stream_socket_client(
+                            'ssl://' . $addr, $errno, $errstr, $sec,
+                            STREAM_CLIENT_CONNECT, $cctx);
+                        if ($sock !== false) {
+                            // Read the short server reply so the handshake
+                            // and one record-layer roundtrip are both fully
+                            // exercised before close.
+                            @fread($sock, 16);
+                            $ctx->inc("io_tls_ok_$coro");
+                        } elseif (stripos((string)$errstr, 'timed out') !== false
+                                || stripos((string)$errstr, 'timeout') !== false) {
+                            $ctx->inc("io_tls_timeout_$coro");
+                        } else {
+                            $ctx->inc("io_tls_failed_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("io_tls_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("io_tls_failed_$coro");
+                    } finally {
+                        if (is_resource($sock)) @fclose($sock);
+                    }
+                });
+            })
+            ->requires('tcp', 'openssl');
+
         // When coroutine "X" awaits signal SIGUSR1|SIGUSR2
         // Wraps Async\signal(Signal::SIG…) in an await. Counters per
         // coroutine: signal_attempts / signal_received / signal_cancelled /

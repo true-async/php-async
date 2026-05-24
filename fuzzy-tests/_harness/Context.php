@@ -112,6 +112,14 @@ final class Context {
      * @fclose'd and path @unlink'd in run() teardown. */
     public array $files = [];
 
+    /** @var array<string, array{server:resource,addr:string}> TLS
+     * server name => bound server socket + ssl:// address. The server
+     * socket is bound synchronously in the Given step so the address
+     * is available immediately for client steps; the accept loop runs
+     * inside a user-named coroutine. Server socket is @fclose'd in
+     * run() teardown. */
+    public array $tlsServers = [];
+
     /** @var array<string, int> name => capacity */
     public array $threadChannelDefs = [];
 
@@ -546,6 +554,14 @@ final class Context {
             }
         }
         $this->pipes = [];
+
+        // TLS-server teardown: close the listen socket. Accept-loop
+        // coroutines exit naturally when the socket closes or the
+        // accept count is exhausted.
+        foreach ($this->tlsServers as $entry) {
+            if (is_resource($entry['server'])) @fclose($entry['server']);
+        }
+        $this->tlsServers = [];
 
         // Shared-file teardown: flush+close handles, but keep the
         // [null, $path] entries so Then assertions can still filesize()

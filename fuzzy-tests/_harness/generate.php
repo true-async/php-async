@@ -214,6 +214,7 @@ if ($bh6_dt < 50) { printf("skip v6 blackhole connect returned synchronously in 
 PROBE,
     'sockets'      => 'if (!function_exists("socket_import_stream")) { echo "skip ext/sockets required"; exit; }',
     'curl'         => 'if (!extension_loaded("curl")) { echo "skip ext/curl required"; exit; }',
+    'openssl'      => 'if (!extension_loaded("openssl")) { echo "skip ext/openssl required"; exit; }',
     'fork'         => 'if (!function_exists("pcntl_fork")) { echo "skip fork() not available"; exit; }',
     // Async\signal() chaos tests need posix_kill() to raise signals into
     // the running process. Windows has no SIGUSR1/SIGUSR2 — skip.
