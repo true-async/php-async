@@ -109,6 +109,11 @@ final class ChaosNet {
 
     /** Declare a database-under-chaos; idempotent. Toxics are layered on by
      * later steps; setUp() fronts it with a Toxiproxy proxy. */
+    public function setEvilDbStmtCache(string $name, int $size): void {
+        $this->defineEvilDb($name);
+        $this->evilDbDefs[$name]['stmtCache'] = $size;
+    }
+
     public function defineEvilDb(string $name, string $driver = 'mysql', bool $pool = false, int $poolMax = 4): void {
         if (!isset($this->evilDbDefs[$name])) {
             $this->evilDbDefs[$name] = ['driver' => $driver, 'pool' => false, 'poolMax' => $poolMax];
@@ -154,6 +159,10 @@ final class ChaosNet {
             $opts[\PDO::ATTR_POOL_ENABLED] = true;
             $opts[\PDO::ATTR_POOL_MIN]     = 0;
             $opts[\PDO::ATTR_POOL_MAX]     = $this->evilDbDefs[$db]['poolMax'] ?? 4;
+            $cacheSize = $this->evilDbDefs[$db]['stmtCache'] ?? 0;
+            if ($cacheSize > 0 && defined('PDO::ATTR_POOL_STMT_CACHE_SIZE')) {
+                $opts[\PDO::ATTR_POOL_STMT_CACHE_SIZE] = $cacheSize;
+            }
         }
 
         if ($driver === 'sqlite') {

@@ -606,6 +606,87 @@ final class StandardSteps {
             })
             ->requires('pdo_sqlite');
 
+        // Given a pooled SQLite database "DB" with N connections and stmt cache C
+        // Adds the per-physical-connection prepared-statement LRU cache
+        // capacity (PDO::ATTR_POOL_STMT_CACHE_SIZE). C distinct SQL
+        // strings stay cached; cache-storm scenarios exceed C to drive
+        // LRU eviction. Backstop for the recent stmt cache feature —
+        // chaos cancel-mid-prepare must not corrupt the LRU state.
+        $r->on('/^a pooled SQLite database "([^"]+)" with (\S+) connections and stmt cache (\S+)$/',
+            function(Context $ctx, string $name, string $nExpr, string $cExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $c = (int)$ctx->resolver->resolve($cExpr);
+                $ctx->net->defineEvilDb($name, 'sqlite', true, $n > 0 ? $n : 1);
+                $ctx->net->setEvilDbStmtCache($name, $c);
+            })
+            ->requires('pdo_sqlite');
+
+        // When coroutine "X" runs cache-storm of N statements on database "DB"
+        // Prepares + executes N distinct SQL strings against the
+        // database, each with a unique constant comment so the
+        // server-side normalised SQL hashes differently and the stmt
+        // cache treats them as distinct entries. If the cache capacity
+        // < N (the typical scenario), this forces LRU eviction every
+        // iteration past capacity — exactly the surface the cache's
+        // release path is most likely to break under.
+        //
+        // Counters per coroutine:
+        //   db_storm_attempts — bumped per prepare attempt
+        //   db_storm_ok       — prepare + execute + fetch returned cleanly
+        //   db_storm_cancelled — AsyncCancellation caught mid-storm
+        //   db_storm_failed   — any other throwable (counts the offending one)
+        //   db_storm_rows     — total rows seen across all executes
+        $r->on('/^coroutine "([^"]+)" runs cache-storm of (\S+) statements on database "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $nExpr, string $db) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $n, $db) {
+                    $spec = $ctx->net->evilDbDefs[$db] ?? null;
+                    if ($spec === null || !isset($ctx->net->evilDbAddr[$db])) {
+                        $ctx->inc("db_storm_no_db_$coro");
+                        return;
+                    }
+                    $pdo = $spec['pool']
+                        ? $ctx->net->evilDbPool[$db]
+                        : $ctx->net->openDbConnection($db, false);
+                    $rows = 0;
+                    for ($i = 0; $i < $n; $i++) {
+                        try {
+                            $ctx->inc("db_storm_attempts_$coro");
+                            // Yield once per iteration so the scheduler
+                            // can deliver cancellation (drivers like
+                            // SQLite have no internal yield points; without
+                            // this, a cancel scheduled mid-storm wouldn't
+                            // land until the whole loop finished).
+                            \Async\delay(1);
+                            // Unique-per-i comment + id parameter so the
+                            // server caches distinct prepared statements
+                            // (post-normalisation the comment is
+                            // significant enough to give a distinct hash
+                            // in the PDO stmt cache implementation).
+                            $sql  = "SELECT id, label FROM items WHERE id = ? /* cs_" . $coro . '_' . $i . " */";
+                            $stmt = @$pdo->prepare($sql);
+                            if ($stmt === false) {
+                                $ctx->inc("db_storm_failed_$coro");
+                                continue;
+                            }
+                            @$stmt->execute([1 + ($i % 5)]);
+                            while (@$stmt->fetch(\PDO::FETCH_NUM) !== false) {
+                                $rows++;
+                            }
+                            $ctx->inc("db_storm_ok_$coro");
+                        } catch (\Async\AsyncCancellation $e) {
+                            $ctx->inc("db_storm_cancelled_$coro");
+                            $ctx->inc("db_storm_rows_$coro", $rows);
+                            return;
+                        } catch (\Throwable $e) {
+                            $ctx->inc("db_storm_failed_$coro");
+                        }
+                    }
+                    $ctx->inc("db_storm_rows_$coro", $rows);
+                });
+            });
+
+
         // ---- When: actions inside a coroutine ----
 
         // When coroutine "X" downloads from peer "EP"
