@@ -185,9 +185,51 @@ function findFeatures(string $root): array {
 const SKIP_RULES = [
     'unix-sockets' => 'if (PHP_OS_FAMILY === "Windows") { echo "skip unix-domain sockets not supported"; exit; }',
     'tcp'          => '/* TCP loopback is portable; no skip */',
+    // Connect-watcher chaos tests need the connect to actually suspend in
+    // the reactor's poll — not fail synchronously with ENETUNREACH. Probe
+    // a TEST-NET-1 address with a 100ms timeout: if the call returns in
+    // under 50ms, the host has no default route for it (Alpine docker,
+    // CI without egress) and the connect-watcher would never engage —
+    // skip to avoid false-green coverage.
+    'tcp-blackhole'=> <<<'PROBE'
+$bh_t0 = microtime(true);
+$bh_s  = @stream_socket_client("tcp://192.0.2.1:81", $bh_e, $bh_m, 0.1);
+$bh_dt = (microtime(true) - $bh_t0) * 1000;
+if ($bh_s !== false) { fclose($bh_s); echo "skip 192.0.2.1:81 unexpectedly reachable"; exit; }
+if ($bh_dt < 50) { printf("skip blackhole connect returned synchronously in %.1fms (no connect-watcher engagement)", $bh_dt); exit; }
+PROBE,
+    // Same idea, IPv6 family. The address [::ffff:192.0.2.1] is the v4-
+    // mapped form of TEST-NET-1: it forces a real AF_INET6 socket and
+    // exercises the v6 branch in xp_socket open, but routes through the
+    // v4 stack so the SYN actually goes out and parks. Pure-v6
+    // documentation prefixes (2001:db8::/32) commonly hit ENETUNREACH
+    // synchronously on hosts without v6 egress (WSL2, many CI images),
+    // which would silently fake coverage.
+    'tcp-blackhole-v6'=> <<<'PROBE'
+$bh6_t0 = microtime(true);
+$bh6_s  = @stream_socket_client("tcp://[::ffff:192.0.2.1]:81", $bh6_e, $bh6_m, 0.1);
+$bh6_dt = (microtime(true) - $bh6_t0) * 1000;
+if ($bh6_s !== false) { fclose($bh6_s); echo "skip v4-mapped v6 blackhole unexpectedly reachable"; exit; }
+if ($bh6_dt < 50) { printf("skip v6 blackhole connect returned synchronously in %.1fms (no v6 connect-watcher engagement)", $bh6_dt); exit; }
+PROBE,
     'sockets'      => 'if (!function_exists("socket_import_stream")) { echo "skip ext/sockets required"; exit; }',
     'curl'         => 'if (!extension_loaded("curl")) { echo "skip ext/curl required"; exit; }',
+    'openssl'      => 'if (!extension_loaded("openssl")) { echo "skip ext/openssl required"; exit; }',
+    // DNS chaos needs the async getaddrinfo path to genuinely
+    // suspend. On hosts where NXDOMAIN is cached or returned in
+    // microseconds (some musl resolvers, fully-cached NSS) the cancel
+    // window never opens and the chaos value is zero. Probe a random
+    // .invalid hostname; if it returns in <20ms, skip.
+    'dns-async-engages' => <<<'PROBE'
+$dns_t0 = microtime(true);
+@stream_socket_client("tcp://probe-" . getmypid() . "-" . random_int(1, 1<<30) . ".invalid:80", $dns_e, $dns_m, 0.5);
+$dns_dt = (microtime(true) - $dns_t0) * 1000;
+if ($dns_dt < 20) { printf("skip .invalid resolution returned in %.1fms (no async DNS engagement)", $dns_dt); exit; }
+PROBE,
     'fork'         => 'if (!function_exists("pcntl_fork")) { echo "skip fork() not available"; exit; }',
+    // Async\signal() chaos tests need posix_kill() to raise signals into
+    // the running process. Windows has no SIGUSR1/SIGUSR2 — skip.
+    'signal'       => 'if (PHP_OS_FAMILY === "Windows") { echo "skip POSIX signals not available on Windows"; exit; } if (!function_exists("posix_kill")) { echo "skip posix extension required"; exit; }',
     'tty'          => 'if (PHP_OS_FAMILY === "Windows") { echo "skip TTY semantics differ on Windows"; exit; }',
     'zts'          => 'if (!ZEND_THREAD_SAFE) { echo "skip requires Thread-Safe (ZTS) PHP build"; exit; }',
     // Toxiproxy is opt-in: the test runs only where a Toxiproxy admin

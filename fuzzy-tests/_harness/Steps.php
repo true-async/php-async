@@ -606,6 +606,87 @@ final class StandardSteps {
             })
             ->requires('pdo_sqlite');
 
+        // Given a pooled SQLite database "DB" with N connections and stmt cache C
+        // Adds the per-physical-connection prepared-statement LRU cache
+        // capacity (PDO::ATTR_POOL_STMT_CACHE_SIZE). C distinct SQL
+        // strings stay cached; cache-storm scenarios exceed C to drive
+        // LRU eviction. Backstop for the recent stmt cache feature —
+        // chaos cancel-mid-prepare must not corrupt the LRU state.
+        $r->on('/^a pooled SQLite database "([^"]+)" with (\S+) connections and stmt cache (\S+)$/',
+            function(Context $ctx, string $name, string $nExpr, string $cExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $c = (int)$ctx->resolver->resolve($cExpr);
+                $ctx->net->defineEvilDb($name, 'sqlite', true, $n > 0 ? $n : 1);
+                $ctx->net->setEvilDbStmtCache($name, $c);
+            })
+            ->requires('pdo_sqlite');
+
+        // When coroutine "X" runs cache-storm of N statements on database "DB"
+        // Prepares + executes N distinct SQL strings against the
+        // database, each with a unique constant comment so the
+        // server-side normalised SQL hashes differently and the stmt
+        // cache treats them as distinct entries. If the cache capacity
+        // < N (the typical scenario), this forces LRU eviction every
+        // iteration past capacity — exactly the surface the cache's
+        // release path is most likely to break under.
+        //
+        // Counters per coroutine:
+        //   db_storm_attempts — bumped per prepare attempt
+        //   db_storm_ok       — prepare + execute + fetch returned cleanly
+        //   db_storm_cancelled — AsyncCancellation caught mid-storm
+        //   db_storm_failed   — any other throwable (counts the offending one)
+        //   db_storm_rows     — total rows seen across all executes
+        $r->on('/^coroutine "([^"]+)" runs cache-storm of (\S+) statements on database "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $nExpr, string $db) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $n, $db) {
+                    $spec = $ctx->net->evilDbDefs[$db] ?? null;
+                    if ($spec === null || !isset($ctx->net->evilDbAddr[$db])) {
+                        $ctx->inc("db_storm_no_db_$coro");
+                        return;
+                    }
+                    $pdo = $spec['pool']
+                        ? $ctx->net->evilDbPool[$db]
+                        : $ctx->net->openDbConnection($db, false);
+                    $rows = 0;
+                    for ($i = 0; $i < $n; $i++) {
+                        try {
+                            $ctx->inc("db_storm_attempts_$coro");
+                            // Yield once per iteration so the scheduler
+                            // can deliver cancellation (drivers like
+                            // SQLite have no internal yield points; without
+                            // this, a cancel scheduled mid-storm wouldn't
+                            // land until the whole loop finished).
+                            \Async\delay(1);
+                            // Unique-per-i comment + id parameter so the
+                            // server caches distinct prepared statements
+                            // (post-normalisation the comment is
+                            // significant enough to give a distinct hash
+                            // in the PDO stmt cache implementation).
+                            $sql  = "SELECT id, label FROM items WHERE id = ? /* cs_" . $coro . '_' . $i . " */";
+                            $stmt = @$pdo->prepare($sql);
+                            if ($stmt === false) {
+                                $ctx->inc("db_storm_failed_$coro");
+                                continue;
+                            }
+                            @$stmt->execute([1 + ($i % 5)]);
+                            while (@$stmt->fetch(\PDO::FETCH_NUM) !== false) {
+                                $rows++;
+                            }
+                            $ctx->inc("db_storm_ok_$coro");
+                        } catch (\Async\AsyncCancellation $e) {
+                            $ctx->inc("db_storm_cancelled_$coro");
+                            $ctx->inc("db_storm_rows_$coro", $rows);
+                            return;
+                        } catch (\Throwable $e) {
+                            $ctx->inc("db_storm_failed_$coro");
+                        }
+                    }
+                    $ctx->inc("db_storm_rows_$coro", $rows);
+                });
+            });
+
+
         // ---- When: actions inside a coroutine ----
 
         // When coroutine "X" downloads from peer "EP"
@@ -1322,6 +1403,765 @@ final class StandardSteps {
                 });
             })
             ->requires('unix-sockets');
+
+        // Given a shared pipe "P"
+        // Creates a stream_socket_pair stored on the Context — both ends
+        // outlive any one coroutine, so a reader / writer / closer can be
+        // distributed across coroutines. Pair is created synchronously at
+        // step-eval time so reader and closer coroutines see the same fds.
+        // Cleanup is best-effort in Context::run() teardown.
+        $r->on('/^a shared pipe "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                if (isset($ctx->pipes[$name])) {
+                    return; // idempotent
+                }
+                $pair = @stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+                if ($pair === false) {
+                    throw new \RuntimeException("shared pipe $name: stream_socket_pair failed");
+                }
+                $ctx->pipes[$name] = $pair;
+            })
+            ->requires('unix-sockets');
+
+        // When coroutine "X" reads from shared pipe "P"
+        // Blocks on fread() of the shared pair's reader. Distinct counter
+        // family (io_pread_*) so concurrent readers / cross-coro close paths
+        // don't collide with the local-pipe step's io_read_* counters.
+        $r->on('/^coroutine "([^"]+)" reads from shared pipe "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $pipe) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $pipe) {
+                    if (!isset($ctx->pipes[$pipe])) {
+                        $ctx->inc("io_pread_setup_failed_$coro");
+                        return;
+                    }
+                    [$reader,] = $ctx->pipes[$pipe];
+                    try {
+                        $ctx->inc("io_pread_attempts_$coro");
+                        $data = @fread($reader, 4096); /* blocks */
+                        if ($data === false || $data === '') {
+                            $ctx->inc("io_pread_eof_$coro");
+                        } else {
+                            $ctx->inc("io_pread_ok_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("io_pread_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("io_pread_failed_$coro");
+                    }
+                });
+            })
+            ->requires('unix-sockets');
+
+        // When coroutine "X" writes "<msg>" to shared pipe "P"
+        // Pushes a bounded payload into the shared writer end. Used to wake
+        // readers in the concurrent-readers scenarios. Counter family
+        // io_pwrite_*.
+        $r->on('/^coroutine "([^"]+)" writes "([^"]*)" to shared pipe "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $payload, string $pipe) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $pipe, $payload) {
+                    if (!isset($ctx->pipes[$pipe])) {
+                        $ctx->inc("io_pwrite_setup_failed_$coro");
+                        return;
+                    }
+                    [, $writer] = $ctx->pipes[$pipe];
+                    try {
+                        $ctx->inc("io_pwrite_attempts_$coro");
+                        $n = @fwrite($writer, $payload);
+                        if ($n === false || $n === 0) {
+                            $ctx->inc("io_pwrite_failed_$coro");
+                        } else {
+                            $ctx->inc("io_pwrite_ok_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("io_pwrite_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("io_pwrite_failed_$coro");
+                    }
+                });
+            })
+            ->requires('unix-sockets');
+
+        // When coroutine "X" closes shared pipe "P"
+        // fclose() on both ends of the shared pair from inside a coroutine.
+        // Race target: a parked reader on this same pair must be released by
+        // the reactor without UAF / leaked watcher. Tolerates a peer that has
+        // already closed one side. Counter io_pclose_*.
+        $r->on('/^coroutine "([^"]+)" closes shared pipe "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $pipe) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $pipe) {
+                    if (!isset($ctx->pipes[$pipe])) {
+                        $ctx->inc("io_pclose_setup_failed_$coro");
+                        return;
+                    }
+                    $ctx->inc("io_pclose_attempts_$coro");
+                    [$reader, $writer] = $ctx->pipes[$pipe];
+                    if (is_resource($writer)) @fclose($writer);
+                    if (is_resource($reader)) @fclose($reader);
+                    $ctx->inc("io_pclose_ok_$coro");
+                });
+            })
+            ->requires('unix-sockets');
+
+        // When coroutine "X" closes the read end of shared pipe "P"
+        // Closes only the reader. The parked fread() on that fd must wake —
+        // not the writer half — and the reactor request list must stay
+        // consistent.
+        $r->on('/^coroutine "([^"]+)" closes the read end of shared pipe "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $pipe) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $pipe) {
+                    if (!isset($ctx->pipes[$pipe])) {
+                        $ctx->inc("io_pclose_setup_failed_$coro");
+                        return;
+                    }
+                    $ctx->inc("io_pclose_attempts_$coro");
+                    [$reader,] = $ctx->pipes[$pipe];
+                    if (is_resource($reader)) @fclose($reader);
+                    $ctx->inc("io_pclose_ok_$coro");
+                });
+            })
+            ->requires('unix-sockets');
+
+        // When coroutine "X" closes the write end of shared pipe "P"
+        // Closes only the writer. Parked readers must observe EOF (clean
+        // fread() == "") rather than hang.
+        $r->on('/^coroutine "([^"]+)" closes the write end of shared pipe "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $pipe) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $pipe) {
+                    if (!isset($ctx->pipes[$pipe])) {
+                        $ctx->inc("io_pclose_setup_failed_$coro");
+                        return;
+                    }
+                    $ctx->inc("io_pclose_attempts_$coro");
+                    [, $writer] = $ctx->pipes[$pipe];
+                    if (is_resource($writer)) @fclose($writer);
+                    $ctx->inc("io_pclose_ok_$coro");
+                });
+            })
+            ->requires('unix-sockets');
+
+        // Given a shared file "F"
+        // Opens a fresh tmp file in write mode and stashes [handle, path]
+        // on the Context — many coroutines write the SAME $handle so they
+        // park on its single shared async-IO event. That's exactly the
+        // spurious-wakeup race that #129 / #133 fixed (php_stdiop_write
+        // must re-suspend until its OWN request completed; otherwise a
+        // libuv write in flight is disposed and writes into freed memory
+        // → bytes silently lost or heap corruption).
+        $r->on('/^a shared file "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                if (isset($ctx->files[$name])) {
+                    return; // idempotent
+                }
+                $path = tempnam(sys_get_temp_dir(), 'fuzzy_sf_');
+                $fh   = @fopen($path, 'w');
+                if (!$fh) {
+                    throw new \RuntimeException("shared file $name: fopen failed");
+                }
+                $ctx->files[$name] = [$fh, $path];
+            });
+
+        // When coroutine "X" writes N chunks of M bytes to shared file "F"
+        // Each chunk is a fixed-size deterministic payload (per-coroutine
+        // letter repeated). Counters per coroutine:
+        //   io_fwrite_attempts — bumped once per fwrite() call
+        //   io_fwrite_ok       — full-size chunk written (fwrite() == M)
+        //   io_fwrite_short    — short write (0 < returned < M)
+        //   io_fwrite_failed   — fwrite returned false / 0
+        //   io_fwrite_bytes    — total bytes the coroutine got past fwrite
+        // The cross-coroutine invariant — sum(io_fwrite_bytes_*) ==
+        // filesize(path) — is the #129/#133 backstop: under the spurious-
+        // wakeup bug, writes are silently dropped and the file ends up
+        // smaller than the bytes everyone "successfully" wrote.
+        $r->on('/^coroutine "([^"]+)" writes (\S+) chunks of (\S+) bytes to shared file "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $nExpr, string $mExpr, string $name) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $m = (int)$ctx->resolver->resolve($mExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $n, $m, $name) {
+                    if (!isset($ctx->files[$name])) {
+                        $ctx->inc("io_fwrite_setup_failed_$coro");
+                        return;
+                    }
+                    [$fh,] = $ctx->files[$name];
+                    // Deterministic per-coroutine payload — first char of
+                    // $coro repeated, so each chunk is uniquely attributable
+                    // when debugging a corrupted file.
+                    $payload = str_repeat($coro[0] ?? 'X', $m);
+                    for ($i = 0; $i < $n; $i++) {
+                        try {
+                            $ctx->inc("io_fwrite_attempts_$coro");
+                            $w = @fwrite($fh, $payload);
+                            if ($w === false || $w === 0) {
+                                $ctx->inc("io_fwrite_failed_$coro");
+                                return; // handle bad — stop
+                            }
+                            $ctx->inc("io_fwrite_bytes_$coro", $w);
+                            if ($w === $m) {
+                                $ctx->inc("io_fwrite_ok_$coro");
+                            } else {
+                                $ctx->inc("io_fwrite_short_$coro");
+                            }
+                        } catch (\Async\AsyncCancellation $e) {
+                            $ctx->inc("io_fwrite_cancelled_$coro");
+                            return;
+                        } catch (\Throwable $e) {
+                            $ctx->inc("io_fwrite_failed_$coro");
+                            return;
+                        }
+                    }
+                });
+            });
+
+        // When coroutine "X" closes shared file "F"
+        // Drives an fclose() from inside a coroutine — typically chained
+        // after all writers have completed (sequenced via sleeps in the
+        // feature). The handle is also closed in teardown; this step
+        // exists for scenarios that need a clean fclose before the file-
+        // size assertion runs.
+        $r->on('/^coroutine "([^"]+)" closes shared file "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $name) {
+                $ctx->planAction($coro, function(Context $ctx) use ($name) {
+                    if (!isset($ctx->files[$name])) return;
+                    [$fh, $path] = $ctx->files[$name];
+                    if (is_resource($fh)) @fclose($fh);
+                    $ctx->files[$name] = [null, $path];
+                });
+            });
+
+        // Then shared file "F" byte size equals counter "A" plus counter "B"
+        // ... plus counter "N" — variadic sum invariant. The point is to
+        // assert that the kernel-observed file size matches the sum of
+        // bytes every coroutine claims fwrite() accepted. If they diverge,
+        // the spurious-wakeup bug ate someone's write.
+        $r->on('/^shared file "([^"]+)" byte size equals counter "([^"]+)"((?: plus counter "[^"]+")+)$/',
+            function(Context $ctx, string $name, string $first, string $rest) {
+                if (!isset($ctx->files[$name])) {
+                    throw new \RuntimeException("shared file $name not defined");
+                }
+                [$fh, $path] = $ctx->files[$name];
+                if (is_resource($fh)) @fflush($fh);
+                clearstatcache(true, $path);
+                $actual = (int)@filesize($path);
+                $sum = $ctx->counter($first);
+                preg_match_all('/counter "([^"]+)"/', $rest, $m);
+                $names = [$first];
+                foreach ($m[1] as $cn) { $sum += $ctx->counter($cn); $names[] = $cn; }
+                if ($actual !== $sum) {
+                    throw new \RuntimeException(
+                        "shared file $name byte size = $actual, sum of " .
+                        implode('+', $names) . " = $sum (data loss)");
+                }
+            });
+
+        // When coroutine "X" resolves nonexistent hostname "H" with timeout N ms
+        // stream_socket_client('tcp://H:80') against an .invalid hostname
+        // drives the async getaddrinfo path (php_network_getaddrinfo_async,
+        // libuv worker thread). The hostname always NXDOMAINs — so the
+        // dominant outcome with no cancel is dns_failed. The chaos value
+        // is the cancel-during-async-resolve path: AsyncCancellation
+        // must release the DNS request without leaking the libuv work
+        // handle. tcp-blackhole-style sync paths don't apply: by the
+        // time DNS returns, no connect is attempted.
+        //
+        // Outcomes (exactly one per attempt):
+        //   dns_ok        — surprise success (host briefly resolved on a
+        //                   misconfigured resolver; tolerated)
+        //   dns_failed    — NXDOMAIN / other resolver error returned
+        //   dns_cancelled — AsyncCancellation injected during resolve
+        //   dns_timeout   — explicit timeout fired (rare; .invalid is
+        //                   usually fast-NXDOMAIN past the probe gate)
+        $r->on('/^coroutine "([^"]+)" resolves nonexistent hostname "([^"]+)" with timeout (\S+) ms$/',
+            function(Context $ctx, string $coro, string $host, string $msExpr) {
+                $ms = (int)$ctx->resolver->resolve($msExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $host, $ms) {
+                    $ctx->inc("dns_attempts_$coro");
+                    $sock = null;
+                    $sec  = $ms / 1000.0;
+                    try {
+                        $sock = @stream_socket_client(
+                            'tcp://' . $host . ':80', $errno, $errstr, $sec);
+                        if ($sock !== false) {
+                            $ctx->inc("dns_ok_$coro");
+                        } elseif (stripos((string)$errstr, 'timed out') !== false
+                                || stripos((string)$errstr, 'timeout') !== false) {
+                            $ctx->inc("dns_timeout_$coro");
+                        } else {
+                            $ctx->inc("dns_failed_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("dns_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("dns_failed_$coro");
+                    } finally {
+                        if (is_resource($sock)) @fclose($sock);
+                    }
+                });
+            })
+            ->requires('tcp', 'dns-async-engages');
+
+        // Given a filesystem watcher "W" on a fresh temp directory
+        // Creates an empty tmpdir and an Async\FileSystemWatcher on it
+        // (recursive=false, coalesce=true — the default coalesce mode).
+        // Stashes both on Context::$fsWatchers. The watcher is
+        // constructed synchronously so iterator coroutines see it
+        // ready in their planned action.
+        $r->on('/^a filesystem watcher "([^"]+)" on a fresh temp directory$/',
+            function(Context $ctx, string $name) {
+                if (isset($ctx->fsWatchers[$name])) return;
+                $dir = sys_get_temp_dir() . '/fuzzy_fsw_' . getmypid() . '_' . bin2hex(random_bytes(4));
+                if (!@mkdir($dir, 0777, true) && !is_dir($dir)) {
+                    throw new \RuntimeException("fs watcher $name: mkdir failed: $dir");
+                }
+                $watcher = new \Async\FileSystemWatcher($dir);
+                $ctx->fsWatchers[$name] = ['watcher' => $watcher, 'dir' => $dir];
+            });
+
+        // When coroutine "X" iterates filesystem watcher "W"
+        // foreach loop — counts every FileSystemEvent until the watcher
+        // is closed by another coroutine (or until the iteration is
+        // cancelled). Counters per coroutine: fsw_iter_attempts,
+        // fsw_events (count of events seen), fsw_iter_done (clean exit),
+        // fsw_iter_cancelled, fsw_iter_failed.
+        $r->on('/^coroutine "([^"]+)" iterates filesystem watcher "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $name) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $name) {
+                    if (!isset($ctx->fsWatchers[$name])
+                        || !is_object($ctx->fsWatchers[$name]['watcher'])) {
+                        $ctx->inc("fsw_iter_setup_failed_$coro");
+                        return;
+                    }
+                    $w = $ctx->fsWatchers[$name]['watcher'];
+                    $ctx->inc("fsw_iter_attempts_$coro");
+                    try {
+                        foreach ($w as $event) {
+                            $ctx->inc("fsw_events_$coro");
+                            // Sanity: every event is a FileSystemEvent
+                            // with at least one flag set. A regression
+                            // here would corrupt the event count.
+                            if (!($event instanceof \Async\FileSystemEvent)
+                                || !($event->renamed || $event->changed)) {
+                                $ctx->inc("fsw_bad_event_$coro");
+                            }
+                        }
+                        $ctx->inc("fsw_iter_done_$coro");
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("fsw_iter_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("fsw_iter_failed_$coro");
+                    }
+                });
+            });
+
+        // When coroutine "X" touches file "F" in filesystem watcher "W" directory
+        // file_put_contents into the watched dir — should produce a
+        // FileSystemEvent for the iterator. Counter fsw_touch_*.
+        $r->on('/^coroutine "([^"]+)" touches file "([^"]+)" in filesystem watcher "([^"]+)" directory$/',
+            function(Context $ctx, string $coro, string $file, string $name) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $file, $name) {
+                    if (!isset($ctx->fsWatchers[$name])) {
+                        $ctx->inc("fsw_touch_setup_failed_$coro");
+                        return;
+                    }
+                    $dir = $ctx->fsWatchers[$name]['dir'];
+                    $ctx->inc("fsw_touch_attempts_$coro");
+                    if (@file_put_contents($dir . '/' . $file, 'x') !== false) {
+                        $ctx->inc("fsw_touch_ok_$coro");
+                    } else {
+                        $ctx->inc("fsw_touch_failed_$coro");
+                    }
+                });
+            });
+
+        // When coroutine "X" closes filesystem watcher "W"
+        // Idempotent close(). The iterator coroutine's foreach must
+        // exit cleanly on close — release path lives in fs_watcher.c.
+        $r->on('/^coroutine "([^"]+)" closes filesystem watcher "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $name) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $name) {
+                    if (!isset($ctx->fsWatchers[$name])) return;
+                    $w = $ctx->fsWatchers[$name]['watcher'];
+                    if (is_object($w) && !$w->isClosed()) {
+                        try { $w->close(); } catch (\Throwable $e) {}
+                    }
+                });
+            });
+
+        // Given a UDP endpoint "U"
+        // Binds an ephemeral UDP socket on 127.0.0.1 and stashes
+        // [socket, "127.0.0.1:port"] on Context::$udpEndpoints. UDP is
+        // connectionless, so the same socket is used both for recvfrom
+        // (by a receiver coroutine) and as the destination address by
+        // sender coroutines.
+        $r->on('/^a UDP endpoint "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                if (isset($ctx->udpEndpoints[$name])) return;
+                $sock = @stream_socket_server(
+                    'udp://127.0.0.1:0', $errno, $errstr, STREAM_SERVER_BIND);
+                if (!$sock) {
+                    throw new \RuntimeException(
+                        "UDP endpoint $name bind failed: $errstr ($errno)");
+                }
+                $addr = stream_socket_get_name($sock, false);
+                $ctx->udpEndpoints[$name] = ['sock' => $sock, 'addr' => $addr];
+            })
+            ->requires('tcp'); // any IP socket capability — UDP loopback is portable
+
+        // When coroutine "X" recvs from UDP endpoint "U"
+        // Blocking stream_socket_recvfrom on the bound socket; suspends
+        // in the reactor's sock_async_poll(PHP_POLLREADABLE). Counters:
+        //   udp_recv_attempts / udp_recv_ok / udp_recv_cancelled / udp_recv_failed.
+        // Buffer is 1500 (typical MTU); peer address is recorded but
+        // not asserted on (loopback ephemeral port varies).
+        $r->on('/^coroutine "([^"]+)" recvs from UDP endpoint "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $name) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $name) {
+                    if (!isset($ctx->udpEndpoints[$name])) {
+                        $ctx->inc("udp_recv_setup_failed_$coro");
+                        return;
+                    }
+                    $sock = $ctx->udpEndpoints[$name]['sock'];
+                    $ctx->inc("udp_recv_attempts_$coro");
+                    try {
+                        $peer = '';
+                        $data = @stream_socket_recvfrom($sock, 1500, 0, $peer);
+                        if ($data === false || $data === '') {
+                            $ctx->inc("udp_recv_failed_$coro");
+                        } else {
+                            $ctx->inc("udp_recv_ok_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("udp_recv_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("udp_recv_failed_$coro");
+                    }
+                });
+            })
+            ->requires('tcp');
+
+        // When coroutine "X" sends "PAYLOAD" to UDP endpoint "U"
+        // Opens a separate udp client socket and stream_socket_sendto's
+        // the payload. Fire-and-forget — UDP has no ack. Counters:
+        //   udp_send_attempts / udp_send_ok / udp_send_failed.
+        $r->on('/^coroutine "([^"]+)" sends "([^"]*)" to UDP endpoint "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $payload, string $name) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $payload, $name) {
+                    if (!isset($ctx->udpEndpoints[$name])) {
+                        $ctx->inc("udp_send_setup_failed_$coro");
+                        return;
+                    }
+                    $addr = $ctx->udpEndpoints[$name]['addr'];
+                    $ctx->inc("udp_send_attempts_$coro");
+                    $client = @stream_socket_client(
+                        'udp://' . $addr, $errno, $errstr);
+                    if (!$client) {
+                        $ctx->inc("udp_send_failed_$coro");
+                        return;
+                    }
+                    try {
+                        $n = @stream_socket_sendto($client, $payload);
+                        if ($n === strlen($payload)) {
+                            $ctx->inc("udp_send_ok_$coro");
+                        } else {
+                            $ctx->inc("udp_send_failed_$coro");
+                        }
+                    } catch (\Throwable $e) {
+                        $ctx->inc("udp_send_failed_$coro");
+                    } finally {
+                        if (is_resource($client)) @fclose($client);
+                    }
+                });
+            })
+            ->requires('tcp');
+
+        // When coroutine "X" stream_selects on shared pipes "P1","P2",... for N ms
+        // Calls stream_select() on the read ends of the named shared pipes
+        // with $tv = N/1000.0 seconds. Drives the reactor's
+        // network_async_stream_select() (a multi-fd poll watcher). Counters:
+        //   select_attempts_$coro — bumped before the call
+        //   select_woke_$coro     — stream_select returned > 0 (≥1 fd ready)
+        //   select_timeout_$coro  — returned 0 (tv elapsed, no fd ready)
+        //   select_cancelled_$coro — AsyncCancellation injected mid-wait
+        //   select_failed_$coro   — false / other error
+        // The watcher must be released cleanly on cancel/timeout — a leaked
+        // multi-fd poll handle would surface as orphan-coroutine / abrupt-
+        // exit failures on subsequent scenarios.
+        $r->on('/^coroutine "([^"]+)" stream_selects on shared pipes "([^"]+(?:"\s*,\s*"[^"]+)*)" for (\S+) ms$/',
+            function(Context $ctx, string $coro, string $pipesList, string $msExpr) {
+                $ms = (int)$ctx->resolver->resolve($msExpr);
+                preg_match_all('/"([^"]+)"/', '"' . $pipesList . '"', $m);
+                $pipeNames = $m[1];
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $pipeNames, $ms) {
+                    $ctx->inc("select_attempts_$coro");
+                    $read = [];
+                    foreach ($pipeNames as $pn) {
+                        if (!isset($ctx->pipes[$pn])) {
+                            $ctx->inc("select_setup_failed_$coro");
+                            return;
+                        }
+                        $read[] = $ctx->pipes[$pn][0]; // reader end
+                    }
+                    $write = $except = null;
+                    $sec   = intdiv($ms, 1000);
+                    $usec  = ($ms % 1000) * 1000;
+                    try {
+                        $n = @stream_select($read, $write, $except, $sec, $usec);
+                        if ($n === false) {
+                            $ctx->inc("select_failed_$coro");
+                        } elseif ($n === 0) {
+                            $ctx->inc("select_timeout_$coro");
+                        } else {
+                            $ctx->inc("select_woke_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("select_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("select_failed_$coro");
+                    }
+                });
+            })
+            ->requires('unix-sockets');
+
+        // Given TLS server "S" listening on "SRV" accepting up to N clients
+        // Binds an ssl:// listener synchronously (so the address is known
+        // for any client step that follows) using the openssl test cert
+        // from ext/async/tests/stream/. Spawns the accept loop as the
+        // body of the named coroutine SRV. Each accepted connection does
+        // the server-side TLS handshake, sends a short "ok" payload, and
+        // closes. Counters: tls_accept_attempts_$srv, tls_accept_ok_$srv,
+        // tls_accept_failed_$srv. SRV terminates after N accepts OR when
+        // the listen socket is closed in teardown — whichever comes first.
+        $r->on('/^TLS server "([^"]+)" listening on "([^"]+)" accepting up to (\S+) clients$/',
+            function(Context $ctx, string $srvName, string $coro, string $nExpr) {
+                if (isset($ctx->tlsServers[$srvName])) {
+                    // Already bound; just (re)install the accept loop.
+                    $entry = $ctx->tlsServers[$srvName];
+                } else {
+                    $certDir = __DIR__ . '/../../tests/stream';
+                    $sctx = stream_context_create(['ssl' => [
+                        'local_cert'        => $certDir . '/ssl_test_cert.pem',
+                        'local_pk'          => $certDir . '/ssl_test_key.pem',
+                        'verify_peer'       => false,
+                        'allow_self_signed' => true,
+                        'crypto_method'     => STREAM_CRYPTO_METHOD_TLS_SERVER,
+                    ]]);
+                    $server = @stream_socket_server(
+                        'ssl://127.0.0.1:0', $errno, $errstr,
+                        STREAM_SERVER_BIND | STREAM_SERVER_LISTEN, $sctx);
+                    if (!$server) {
+                        throw new \RuntimeException(
+                            "TLS server $srvName bind failed: $errstr ($errno)");
+                    }
+                    $addr  = stream_socket_get_name($server, false);
+                    $entry = ['server' => $server, 'addr' => $addr];
+                    $ctx->tlsServers[$srvName] = $entry;
+                }
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($srvName, $n) {
+                    if (!isset($ctx->tlsServers[$srvName])) return;
+                    $server = $ctx->tlsServers[$srvName]['server'];
+                    for ($i = 0; $i < $n; $i++) {
+                        if (!is_resource($server)) break;
+                        try {
+                            $ctx->inc("tls_accept_attempts_$srvName");
+                            $client = @stream_socket_accept($server, 5);
+                            if ($client) {
+                                $ctx->inc("tls_accept_ok_$srvName");
+                                @fwrite($client, "ok");
+                                @fclose($client);
+                            } else {
+                                $ctx->inc("tls_accept_failed_$srvName");
+                            }
+                        } catch (\Async\AsyncCancellation $e) {
+                            $ctx->inc("tls_accept_cancelled_$srvName");
+                            return;
+                        } catch (\Throwable $e) {
+                            $ctx->inc("tls_accept_failed_$srvName");
+                        }
+                    }
+                });
+            })
+            ->requires('tcp', 'openssl');
+
+        // When coroutine "X" connects via TLS to server "S" with timeout N ms
+        // stream_socket_client('ssl://...') drives the full TCP connect +
+        // TLS handshake. Both phases yield to the reactor; a cancel or
+        // timeout must release the connect-watcher AND any crypto-retry
+        // poll state without leaking watchers.
+        $r->on('/^coroutine "([^"]+)" connects via TLS to server "([^"]+)" with timeout (\S+) ms$/',
+            function(Context $ctx, string $coro, string $srvName, string $msExpr) {
+                $ms = (int)$ctx->resolver->resolve($msExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $srvName, $ms) {
+                    $ctx->inc("io_tls_attempts_$coro");
+                    $sock = null;
+                    // Whole body in one try so an AsyncCancellation
+                    // landing in any setup step (stream_context_create
+                    // is sync but cancellation may be delivered at the
+                    // first interrupt-check point inside it) still
+                    // buckets cleanly — invariant must hold across
+                    // every interleaving including aggressive cancel
+                    // windows on debug-ZTS-FUZZ builds.
+                    try {
+                        if (!isset($ctx->tlsServers[$srvName])) {
+                            $ctx->inc("io_tls_no_server_$coro");
+                            return;
+                        }
+                        $addr = $ctx->tlsServers[$srvName]['addr'];
+                        $sec  = $ms / 1000.0;
+                        $cctx = stream_context_create(['ssl' => [
+                            'verify_peer'       => false,
+                            'verify_peer_name'  => false,
+                            'allow_self_signed' => true,
+                            'crypto_method'     => STREAM_CRYPTO_METHOD_TLS_CLIENT,
+                        ]]);
+                        $sock = @stream_socket_client(
+                            'ssl://' . $addr, $errno, $errstr, $sec,
+                            STREAM_CLIENT_CONNECT, $cctx);
+                        if ($sock !== false) {
+                            // Read the short server reply so the handshake
+                            // and one record-layer roundtrip are both fully
+                            // exercised before close.
+                            @fread($sock, 16);
+                            $ctx->inc("io_tls_ok_$coro");
+                        } elseif (stripos((string)$errstr, 'timed out') !== false
+                                || stripos((string)$errstr, 'timeout') !== false) {
+                            $ctx->inc("io_tls_timeout_$coro");
+                        } else {
+                            $ctx->inc("io_tls_failed_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("io_tls_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("io_tls_failed_$coro");
+                    } finally {
+                        if (is_resource($sock)) @fclose($sock);
+                    }
+                });
+            })
+            ->requires('tcp', 'openssl');
+
+        // When coroutine "X" awaits signal SIGUSR1|SIGUSR2
+        // Wraps Async\signal(Signal::SIG…) in an await. Counters per
+        // coroutine: signal_attempts / signal_received / signal_cancelled /
+        // signal_failed. The signal must be raised by a sibling coroutine
+        // via the "raises signal …" step. Backstop for php-async #109
+        // (multi-thread race in zend_signal_activate, fixed by the
+        // ZEND_ASYNC_REACTOR_IS_ENABLED skip — chaos exercises the
+        // post-fix code path under random scheduling).
+        $r->on('/^coroutine "([^"]+)" awaits signal (SIGUSR1|SIGUSR2)$/',
+            function(Context $ctx, string $coro, string $sigName) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $sigName) {
+                    $sig = constant("Async\\Signal::$sigName"); // enum case
+                    $ctx->inc("signal_attempts_$coro");
+                    try {
+                        \Async\await(\Async\signal($sig));
+                        $ctx->inc("signal_received_$coro");
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("signal_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("signal_failed_$coro");
+                    }
+                });
+            })
+            ->requires('signal');
+
+        // When coroutine "X" raises signal SIGUSR1|SIGUSR2
+        // posix_kill(getmypid(), $sig). All Async\signal() waiters parked
+        // on that signal wake up; pcntl_signal handlers (if installed)
+        // also fire. The raise is fire-and-forget — no per-waiter ack.
+        $r->on('/^coroutine "([^"]+)" raises signal (SIGUSR1|SIGUSR2)$/',
+            function(Context $ctx, string $coro, string $sigName) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $sigName) {
+                    $sig = constant($sigName); // global int (e.g. SIGUSR1)
+                    $ctx->inc("signal_raise_attempts_$coro");
+                    if (@posix_kill(posix_getpid(), $sig)) {
+                        $ctx->inc("signal_raise_ok_$coro");
+                    } else {
+                        $ctx->inc("signal_raise_failed_$coro");
+                    }
+                });
+            })
+            ->requires('signal');
+
+        // When coroutine "X" connects to TCP blackhole "ADDR" with timeout N ms
+        // stream_socket_client() against an RFC 5737 TEST-NET-1 address that
+        // routes nowhere — the SYN goes out, no response comes back, so the
+        // kernel returns EINPROGRESS and the connect suspends in
+        // network_async_await_stream_socket() (the connect-watcher). This is
+        // the precise reactor surface this step exists to chaos-test: a
+        // killer cancel or the explicit timeout must release the connect
+        // request without UAF or leaked poll watcher.
+        //
+        // Outcomes (exactly one per attempt):
+        //   io_connect_ok        — connect succeeded (race: address briefly
+        //                          routable from a CI box; tolerated)
+        //   io_connect_timeout   — stream_socket_client returned false with
+        //                          ETIMEDOUT / explicit timeout fired
+        //   io_connect_cancelled — AsyncCancellation injected mid-wait
+        //   io_connect_failed    — any other failure (ENETUNREACH from a
+        //                          synchronous ICMP, etc.)
+        $r->on('/^coroutine "([^"]+)" connects to TCP blackhole "([^"]+)" with timeout (\S+) ms$/',
+            function(Context $ctx, string $coro, string $addr, string $msExpr) {
+                $ms = (int)$ctx->resolver->resolve($msExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $addr, $ms) {
+                    $ctx->inc("io_connect_attempts_$coro");
+                    $sock = null;
+                    $sec = $ms / 1000.0;
+                    try {
+                        $sock = @stream_socket_client(
+                            'tcp://' . $addr, $errno, $errstr, $sec);
+                        if ($sock !== false) {
+                            $ctx->inc("io_connect_ok_$coro");
+                        } elseif (stripos((string)$errstr, 'timed out') !== false
+                                || stripos((string)$errstr, 'timeout') !== false) {
+                            $ctx->inc("io_connect_timeout_$coro");
+                        } else {
+                            $ctx->inc("io_connect_failed_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("io_connect_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("io_connect_failed_$coro");
+                    } finally {
+                        if (is_resource($sock)) @fclose($sock);
+                    }
+                });
+            })
+            ->requires('tcp', 'tcp-blackhole');
+
+        // When coroutine "X" connects to IPv6 blackhole "ADDR" with timeout N ms
+        // Identical semantics to the IPv4 step, but uses an AF_INET6 socket
+        // (ADDR must be a bracketed v6 literal, e.g. [::ffff:192.0.2.1]:81).
+        // Exercises the v6 branch in xp_socket open + the same shared
+        // network_async_await_stream_socket() connect-watcher. SKIPIF tag
+        // tcp-blackhole-v6 guarantees the v6 connect actually parks on this
+        // host — see the rationale in generate.php.
+        $r->on('/^coroutine "([^"]+)" connects to IPv6 blackhole "([^"]+)" with timeout (\S+) ms$/',
+            function(Context $ctx, string $coro, string $addr, string $msExpr) {
+                $ms = (int)$ctx->resolver->resolve($msExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $addr, $ms) {
+                    $ctx->inc("io_connect_attempts_$coro");
+                    $sock = null;
+                    $sec = $ms / 1000.0;
+                    try {
+                        $sock = @stream_socket_client(
+                            'tcp://' . $addr, $errno, $errstr, $sec);
+                        if ($sock !== false) {
+                            $ctx->inc("io_connect_ok_$coro");
+                        } elseif (stripos((string)$errstr, 'timed out') !== false
+                                || stripos((string)$errstr, 'timeout') !== false) {
+                            $ctx->inc("io_connect_timeout_$coro");
+                        } else {
+                            $ctx->inc("io_connect_failed_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("io_connect_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("io_connect_failed_$coro");
+                    } finally {
+                        if (is_resource($sock)) @fclose($sock);
+                    }
+                });
+            })
+            ->requires('tcp', 'tcp-blackhole-v6');
 
         // When coroutine "X" inspects state of coroutine "Y"
         // Calls every is*() predicate on Y at the moment of the call. Each call
@@ -2949,6 +3789,18 @@ final class StandardSteps {
                 $v = $ctx->counter($name);
                 if ($v > (int)$bound) {
                     throw new \RuntimeException("counter $name = $v exceeds bound $bound");
+                }
+            });
+
+        // Then counter "X" is at least N
+        // Turns a sum-only invariant into a dominant-bucket check: lets a
+        // feature assert that a specific code path was actually taken on
+        // every interleaving, not just that the outcomes summed.
+        $r->on('/^counter "([^"]+)" is at least (\d+)$/',
+            function(Context $ctx, string $name, string $bound) {
+                $v = $ctx->counter($name);
+                if ($v < (int)$bound) {
+                    throw new \RuntimeException("counter $name = $v below bound $bound");
                 }
             });
 

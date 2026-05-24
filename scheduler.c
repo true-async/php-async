@@ -1026,6 +1026,8 @@ static zend_always_inline void start_waker_events(zend_async_waker_t *waker)
 {
 	ZEND_ASSERT(waker != NULL && "Waker is NULL in async_scheduler_start_waker_events");
 
+	waker->events_stopped = 0;
+
 	zend_async_waker_trigger_t *trigger;
 	ZEND_HASH_FOREACH_PTR(&waker->events, trigger)
 	{
@@ -1061,13 +1063,7 @@ static zend_always_inline void start_waker_events(zend_async_waker_t *waker)
 static zend_always_inline void stop_waker_events(zend_async_waker_t *waker)
 {
 	ZEND_ASSERT(waker != NULL && "Waker is NULL in async_scheduler_stop_waker_events");
-
-	zend_async_waker_trigger_t *trigger;
-	ZEND_HASH_FOREACH_PTR(&waker->events, trigger)
-	{
-		trigger->event->stop(trigger->event);
-	}
-	ZEND_HASH_FOREACH_END();
+	zend_async_waker_stop_events(waker);
 }
 
 ///////////////////////////////////////////////////////////
@@ -1590,7 +1586,7 @@ bool async_scheduler_coroutine_suspend(void)
 
 		// Fast return path without placing the coroutine in the queue.
 		if (UNEXPECTED(waker->status == ZEND_ASYNC_WAKER_RESULT)) {
-			zend_hash_clean(&waker->events);
+			ZEND_ASYNC_WAKER_CLEAN_EVENTS(waker);
 
 			if (circular_buffer_is_not_empty(&ASYNC_G(resumed_coroutines))) {
 				process_resumed_coroutines();

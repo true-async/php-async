@@ -101,6 +101,38 @@ final class Context {
     /** @var array<string, string> coroutine name => bytes it received over I/O */
     public array $ioData = [];
 
+    /** @var array<string, array{0:resource,1:resource}> shared pipe name =>
+     * [reader, writer]. Cross-coroutine: created once in a Given step, read /
+     * closed from any coroutine. Cleaned up at end of run(). */
+    public array $pipes = [];
+
+    /** @var array<string, array{0:resource,1:string}> shared file name =>
+     * [handle, path]. Many coroutines park on the SAME handle's async-IO
+     * event — that's the spurious-wakeup surface (#129 / #133). Handle is
+     * @fclose'd and path @unlink'd in run() teardown. */
+    public array $files = [];
+
+    /** @var array<string, array{watcher:?object,dir:string}> filesystem
+     * watcher name => [Async\FileSystemWatcher | null after close, dir
+     * path]. Watcher is constructed synchronously in the Given step so
+     * an iterator coroutine can foreach it. Directory is recursively
+     * removed in __destruct(). */
+    public array $fsWatchers = [];
+
+    /** @var array<string, array{sock:resource,addr:string}> UDP
+     * endpoint name => [bound socket, host:port]. UDP is connectionless,
+     * so the socket doubles as receive-from and the recorded address
+     * is where senders aim. Socket is @fclose'd in run() teardown. */
+    public array $udpEndpoints = [];
+
+    /** @var array<string, array{server:resource,addr:string}> TLS
+     * server name => bound server socket + ssl:// address. The server
+     * socket is bound synchronously in the Given step so the address
+     * is available immediately for client steps; the accept loop runs
+     * inside a user-named coroutine. Server socket is @fclose'd in
+     * run() teardown. */
+    public array $tlsServers = [];
+
     /** @var array<string, int> name => capacity */
     public array $threadChannelDefs = [];
 
@@ -525,10 +557,75 @@ final class Context {
         // sockets, reap forked peer processes, delete every Toxiproxy proxy.
         $this->net->tearDown();
 
+        // Shared-pipe teardown: scenarios may have closed one or both ends
+        // already; @-suppress and continue.
+        foreach ($this->pipes as $pair) {
+            foreach ($pair as $fd) {
+                if (is_resource($fd)) {
+                    @fclose($fd);
+                }
+            }
+        }
+        $this->pipes = [];
+
+        // Filesystem-watcher teardown: close any still-open watcher so
+        // a parked iterator exits cleanly. Directory is dropped in
+        // __destruct() (after Then assertions have run).
+        foreach ($this->fsWatchers as $name => $entry) {
+            if (is_object($entry['watcher']) && method_exists($entry['watcher'], 'isClosed')
+                && !$entry['watcher']->isClosed()) {
+                try { $entry['watcher']->close(); } catch (\Throwable $e) {}
+            }
+            $this->fsWatchers[$name]['watcher'] = null;
+        }
+
+        // UDP-endpoint teardown: close the bound socket. Any parked
+        // recvfrom on this socket will wake with EBADF / clean failure.
+        foreach ($this->udpEndpoints as $entry) {
+            if (is_resource($entry['sock'])) @fclose($entry['sock']);
+        }
+        $this->udpEndpoints = [];
+
+        // TLS-server teardown: close the listen socket. Accept-loop
+        // coroutines exit naturally when the socket closes or the
+        // accept count is exhausted.
+        foreach ($this->tlsServers as $entry) {
+            if (is_resource($entry['server'])) @fclose($entry['server']);
+        }
+        $this->tlsServers = [];
+
+        // Shared-file teardown: flush+close handles, but keep the
+        // [null, $path] entries so Then assertions can still filesize()
+        // the path. Actual unlink happens in __destruct().
+        foreach ($this->files as $name => [$fh, $path]) {
+            if (is_resource($fh)) { @fflush($fh); @fclose($fh); }
+            $this->files[$name] = [null, $path];
+        }
+
         // Suppress "Future was never used" warnings for futures that no
         // coroutine got around to awaiting (await_any only consumes one).
         foreach ($this->futures as $f) {
             $f->ignore();
+        }
+    }
+
+    public function __destruct() {
+        // Shared-file tempfile unlink: Then-phase assertions need the
+        // path alive past run() teardown, so deletion is deferred until
+        // the Context itself goes out of scope (end of scenario).
+        foreach ($this->files as [, $path]) {
+            if (is_string($path) && $path !== '') @unlink($path);
+        }
+        // Filesystem-watcher tmpdir cleanup — remove any files left in
+        // each watched directory, then rmdir.
+        foreach ($this->fsWatchers as $entry) {
+            $dir = $entry['dir'] ?? null;
+            if (!is_string($dir) || $dir === '' || !is_dir($dir)) continue;
+            foreach (@scandir($dir) ?: [] as $f) {
+                if ($f === '.' || $f === '..') continue;
+                @unlink($dir . '/' . $f);
+            }
+            @rmdir($dir);
         }
     }
 }
