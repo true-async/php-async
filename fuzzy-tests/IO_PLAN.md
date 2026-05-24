@@ -146,7 +146,7 @@ under umbrella issue **#143**.
 | pipe write under back-pressure | none | ✓ #129 (`backpressure`) |
 | stream_select | 005, 010, 017–023, 032–037 | ✓ #138 (`stream_select_chaos`) |
 | SSL connect (client) | 025–026 | ✓ #138 (`tls_connect`) |
-| SSL accept (server) | 027 | **TODO — #143** |
+| SSL accept (server) | 027 | ✓ #143 (`ssl_accept_chaos`, 4 scenarios) |
 | UDP | 028–030 | ✓ #138 (`udp_chaos`) |
 | File IO concurrent | 049, 056, 060, 069, 083 | ✓ #138 (`file_concurrent_writes`) |
 | feof semantics | 038–044 | ✓ #143 (`feof_chaos`, 4 scenarios) |
