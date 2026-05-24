@@ -112,6 +112,13 @@ final class Context {
      * @fclose'd and path @unlink'd in run() teardown. */
     public array $files = [];
 
+    /** @var array<string, array{watcher:?object,dir:string}> filesystem
+     * watcher name => [Async\FileSystemWatcher | null after close, dir
+     * path]. Watcher is constructed synchronously in the Given step so
+     * an iterator coroutine can foreach it. Directory is recursively
+     * removed in __destruct(). */
+    public array $fsWatchers = [];
+
     /** @var array<string, array{sock:resource,addr:string}> UDP
      * endpoint name => [bound socket, host:port]. UDP is connectionless,
      * so the socket doubles as receive-from and the recorded address
@@ -561,6 +568,17 @@ final class Context {
         }
         $this->pipes = [];
 
+        // Filesystem-watcher teardown: close any still-open watcher so
+        // a parked iterator exits cleanly. Directory is dropped in
+        // __destruct() (after Then assertions have run).
+        foreach ($this->fsWatchers as $name => $entry) {
+            if (is_object($entry['watcher']) && method_exists($entry['watcher'], 'isClosed')
+                && !$entry['watcher']->isClosed()) {
+                try { $entry['watcher']->close(); } catch (\Throwable $e) {}
+            }
+            $this->fsWatchers[$name]['watcher'] = null;
+        }
+
         // UDP-endpoint teardown: close the bound socket. Any parked
         // recvfrom on this socket will wake with EBADF / clean failure.
         foreach ($this->udpEndpoints as $entry) {
@@ -597,6 +615,17 @@ final class Context {
         // the Context itself goes out of scope (end of scenario).
         foreach ($this->files as [, $path]) {
             if (is_string($path) && $path !== '') @unlink($path);
+        }
+        // Filesystem-watcher tmpdir cleanup — remove any files left in
+        // each watched directory, then rmdir.
+        foreach ($this->fsWatchers as $entry) {
+            $dir = $entry['dir'] ?? null;
+            if (!is_string($dir) || $dir === '' || !is_dir($dir)) continue;
+            foreach (@scandir($dir) ?: [] as $f) {
+                if ($f === '.' || $f === '..') continue;
+                @unlink($dir . '/' . $f);
+            }
+            @rmdir($dir);
         }
     }
 }

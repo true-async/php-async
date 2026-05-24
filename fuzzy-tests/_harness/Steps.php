@@ -1571,6 +1571,93 @@ final class StandardSteps {
                 }
             });
 
+        // Given a filesystem watcher "W" on a fresh temp directory
+        // Creates an empty tmpdir and an Async\FileSystemWatcher on it
+        // (recursive=false, coalesce=true — the default coalesce mode).
+        // Stashes both on Context::$fsWatchers. The watcher is
+        // constructed synchronously so iterator coroutines see it
+        // ready in their planned action.
+        $r->on('/^a filesystem watcher "([^"]+)" on a fresh temp directory$/',
+            function(Context $ctx, string $name) {
+                if (isset($ctx->fsWatchers[$name])) return;
+                $dir = sys_get_temp_dir() . '/fuzzy_fsw_' . getmypid() . '_' . bin2hex(random_bytes(4));
+                if (!@mkdir($dir, 0777, true) && !is_dir($dir)) {
+                    throw new \RuntimeException("fs watcher $name: mkdir failed: $dir");
+                }
+                $watcher = new \Async\FileSystemWatcher($dir);
+                $ctx->fsWatchers[$name] = ['watcher' => $watcher, 'dir' => $dir];
+            });
+
+        // When coroutine "X" iterates filesystem watcher "W"
+        // foreach loop — counts every FileSystemEvent until the watcher
+        // is closed by another coroutine (or until the iteration is
+        // cancelled). Counters per coroutine: fsw_iter_attempts,
+        // fsw_events (count of events seen), fsw_iter_done (clean exit),
+        // fsw_iter_cancelled, fsw_iter_failed.
+        $r->on('/^coroutine "([^"]+)" iterates filesystem watcher "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $name) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $name) {
+                    if (!isset($ctx->fsWatchers[$name])
+                        || !is_object($ctx->fsWatchers[$name]['watcher'])) {
+                        $ctx->inc("fsw_iter_setup_failed_$coro");
+                        return;
+                    }
+                    $w = $ctx->fsWatchers[$name]['watcher'];
+                    $ctx->inc("fsw_iter_attempts_$coro");
+                    try {
+                        foreach ($w as $event) {
+                            $ctx->inc("fsw_events_$coro");
+                            // Sanity: every event is a FileSystemEvent
+                            // with at least one flag set. A regression
+                            // here would corrupt the event count.
+                            if (!($event instanceof \Async\FileSystemEvent)
+                                || !($event->renamed || $event->changed)) {
+                                $ctx->inc("fsw_bad_event_$coro");
+                            }
+                        }
+                        $ctx->inc("fsw_iter_done_$coro");
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("fsw_iter_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("fsw_iter_failed_$coro");
+                    }
+                });
+            });
+
+        // When coroutine "X" touches file "F" in filesystem watcher "W" directory
+        // file_put_contents into the watched dir — should produce a
+        // FileSystemEvent for the iterator. Counter fsw_touch_*.
+        $r->on('/^coroutine "([^"]+)" touches file "([^"]+)" in filesystem watcher "([^"]+)" directory$/',
+            function(Context $ctx, string $coro, string $file, string $name) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $file, $name) {
+                    if (!isset($ctx->fsWatchers[$name])) {
+                        $ctx->inc("fsw_touch_setup_failed_$coro");
+                        return;
+                    }
+                    $dir = $ctx->fsWatchers[$name]['dir'];
+                    $ctx->inc("fsw_touch_attempts_$coro");
+                    if (@file_put_contents($dir . '/' . $file, 'x') !== false) {
+                        $ctx->inc("fsw_touch_ok_$coro");
+                    } else {
+                        $ctx->inc("fsw_touch_failed_$coro");
+                    }
+                });
+            });
+
+        // When coroutine "X" closes filesystem watcher "W"
+        // Idempotent close(). The iterator coroutine's foreach must
+        // exit cleanly on close — release path lives in fs_watcher.c.
+        $r->on('/^coroutine "([^"]+)" closes filesystem watcher "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $name) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $name) {
+                    if (!isset($ctx->fsWatchers[$name])) return;
+                    $w = $ctx->fsWatchers[$name]['watcher'];
+                    if (is_object($w) && !$w->isClosed()) {
+                        try { $w->close(); } catch (\Throwable $e) {}
+                    }
+                });
+            });
+
         // Given a UDP endpoint "U"
         // Binds an ephemeral UDP socket on 127.0.0.1 and stashes
         // [socket, "127.0.0.1:port"] on Context::$udpEndpoints. UDP is
