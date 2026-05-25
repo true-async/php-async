@@ -231,6 +231,15 @@ PROBE,
     // the running process. Windows has no SIGUSR1/SIGUSR2 — skip.
     'signal'       => 'if (PHP_OS_FAMILY === "Windows") { echo "skip POSIX signals not available on Windows"; exit; } if (!function_exists("posix_kill")) { echo "skip posix extension required"; exit; }',
     'tty'          => 'if (PHP_OS_FAMILY === "Windows") { echo "skip TTY semantics differ on Windows"; exit; }',
+    // proc_open chaos needs the PHP CLI binary to spawn a child + posix
+    // proc_terminate / SIGTERM semantics. Windows has different signal
+    // delivery and a different proc_open backend; skip there. The CLI
+    // executable is published by the test runner as TEST_PHP_EXECUTABLE.
+    'proc-open'    => <<<'PROBE'
+if (PHP_OS_FAMILY === "Windows") { echo "skip proc_open chaos POSIX-only for now"; exit; }
+if (!function_exists("proc_open")) { echo "skip proc_open() not available"; exit; }
+if (getenv("TEST_PHP_EXECUTABLE") === false) { echo "skip TEST_PHP_EXECUTABLE not set"; exit; }
+PROBE,
     'zts'          => 'if (!ZEND_THREAD_SAFE) { echo "skip requires Thread-Safe (ZTS) PHP build"; exit; }',
     // Toxiproxy is opt-in: the test runs only where a Toxiproxy admin
     // endpoint actually answers, and skips everywhere else (dev machines,

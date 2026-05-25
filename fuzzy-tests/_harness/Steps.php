@@ -731,6 +731,22 @@ final class StandardSteps {
             })
             ->requires('curl');
 
+        // When coroutine "X" fetches peers "EP1","EP2",... via curl_multi
+        // Builds one curl_multi handle, attaches one easy handle per named
+        // peer, then runs the standard exec/select loop. The
+        // curl_multi_select() call is where the reactor parks the coroutine
+        // — that's the cancel surface and the same code path covered by
+        // tests/curl/003 and 010 deterministically. Outcome family
+        // curl_multi_*; per-handle outcomes are bumped via CURLMSG_DONE.
+        $r->on('/^coroutine "([^"]+)" fetches peers "([^"]+(?:"\s*,\s*"[^"]+)*)" via curl_multi$/',
+            function(Context $ctx, string $coro, string $peerList) {
+                $peers = preg_split('/"\s*,\s*"/', $peerList);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $peers) {
+                    StandardSteps::curlMulti($ctx, $coro, $peers);
+                });
+            })
+            ->requires('curl');
+
         // When coroutine "X" queries database "DB"
         // Runs a SELECT over the async PDO MySQL driver — connect + query I/O
         // go through the libuv reactor. The query reads the five seed rows
@@ -1539,6 +1555,246 @@ final class StandardSteps {
             })
             ->requires('unix-sockets');
 
+        // When coroutine "X" socket_connects to TCP blackhole "ADDR"
+        // ext/sockets API: socket_create + socket_connect to a routable
+        // but unreachable address (RFC 5737 TEST-NET-1 by convention).
+        // Goes through xp_socket.c connect-watcher just like the streams
+        // version, but exercises the ext/sockets entry point. Outcome
+        // family sock_connect_*.
+        $r->on('/^coroutine "([^"]+)" socket_connects to TCP blackhole "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $addr) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $addr) {
+                    [$host, $port] = explode(':', $addr, 2);
+                    $ctx->inc("sock_connect_attempts_$coro");
+                    $s = null;
+                    try {
+                        $s = @socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
+                        if (!$s) {
+                            $ctx->inc("sock_connect_failed_$coro");
+                            return;
+                        }
+                        if (@socket_connect($s, $host, (int)$port)) {
+                            $ctx->inc("sock_connect_ok_$coro");
+                        } else {
+                            $ctx->inc("sock_connect_failed_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("sock_connect_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("sock_connect_failed_$coro");
+                    } finally {
+                        if ($s !== null && $s !== false) {
+                            @socket_close($s);
+                        }
+                    }
+                });
+            })
+            ->requires('sockets', 'tcp-blackhole');
+
+        // When coroutine "X" socket_recvfroms on a fresh UDP socket
+        // Bind ephemeral UDP socket, park in socket_recvfrom. Outcome
+        // family sock_recv_*.
+        $r->on('/^coroutine "([^"]+)" socket_recvfroms on a fresh UDP socket$/',
+            function(Context $ctx, string $coro) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro) {
+                    $ctx->inc("sock_recv_attempts_$coro");
+                    $s = null;
+                    try {
+                        $s = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
+                        if (!$s || !@socket_bind($s, '127.0.0.1', 0)) {
+                            $ctx->inc("sock_recv_failed_$coro");
+                            return;
+                        }
+                        $buf = '';
+                        $from = '';
+                        $fromPort = 0;
+                        $n = @socket_recvfrom($s, $buf, 4096, 0, $from, $fromPort);
+                        if ($n === false) {
+                            $ctx->inc("sock_recv_failed_$coro");
+                        } else {
+                            $ctx->inc("sock_recv_ok_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("sock_recv_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("sock_recv_failed_$coro");
+                    } finally {
+                        if ($s !== null && $s !== false) {
+                            @socket_close($s);
+                        }
+                    }
+                });
+            })
+            ->requires('sockets');
+
+        // When coroutine "X" socket_accepts on a fresh TCP listener
+        // Bind ephemeral TCP listener via ext/sockets, park in socket_accept.
+        // Outcome family sock_accept_*.
+        $r->on('/^coroutine "([^"]+)" socket_accepts on a fresh TCP listener$/',
+            function(Context $ctx, string $coro) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro) {
+                    $ctx->inc("sock_accept_attempts_$coro");
+                    $s = null;
+                    try {
+                        $s = @socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
+                        if (!$s
+                            || !@socket_bind($s, '127.0.0.1', 0)
+                            || !@socket_listen($s, 8)) {
+                            $ctx->inc("sock_accept_failed_$coro");
+                            return;
+                        }
+                        $c = @socket_accept($s);
+                        if ($c === false) {
+                            $ctx->inc("sock_accept_failed_$coro");
+                        } else {
+                            $ctx->inc("sock_accept_ok_$coro");
+                            @socket_close($c);
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("sock_accept_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("sock_accept_failed_$coro");
+                    } finally {
+                        if ($s !== null && $s !== false) {
+                            @socket_close($s);
+                        }
+                    }
+                });
+            })
+            ->requires('sockets');
+
+        // Given a shared lock file "L"
+        // Creates a fresh tempfile and stashes its path on
+        // Context::$lockFiles. Each coroutine opens its OWN fd to that
+        // path so flock() sees cross-fd contention (LOCK_EX is per-fd
+        // under POSIX fcntl/flock semantics). Tempfile is unlinked in
+        // Context::__destruct().
+        $r->on('/^a shared lock file "([^"]+)"$/',
+            function(Context $ctx, string $name) {
+                if (isset($ctx->lockFiles[$name])) return;
+                $path = tempnam(sys_get_temp_dir(), 'fuzzy_flock_');
+                if ($path === false) {
+                    throw new \RuntimeException("shared lock file $name: tempnam failed");
+                }
+                $ctx->lockFiles[$name] = $path;
+            })
+            ->requires('unix-sockets'); // POSIX flock — reuse the unix-sockets skip on Windows
+
+        // When coroutine "X" acquires LOCK_EX on "L" then releases after N ms
+        // Opens a fresh fd, takes LOCK_EX (blocking — the reactor parks
+        // the coroutine on the flock thread-pool worker), holds for N ms,
+        // unlocks, closes. Counter family:
+        //   flock_attempts — once per coroutine
+        //   flock_ok       — lock acquired and released cleanly
+        //   flock_cancelled — AsyncCancellation delivered during the wait
+        //   flock_failed   — any other throwable / flock() returned false
+        // Sum holds for every interleaving.
+        $r->on('/^coroutine "([^"]+)" acquires LOCK_EX on "([^"]+)" then releases after (\S+) ms$/',
+            function(Context $ctx, string $coro, string $lock, string $msExpr) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $lock, $msExpr) {
+                    if (!isset($ctx->lockFiles[$lock])) {
+                        $ctx->inc("flock_setup_failed_$coro");
+                        return;
+                    }
+                    $path = $ctx->lockFiles[$lock];
+                    $ms   = (int)$ctx->resolver->resolve($msExpr);
+                    $ctx->inc("flock_attempts_$coro");
+                    $fp = null;
+                    try {
+                        $fp = @fopen($path, 'r');
+                        if (!$fp) {
+                            $ctx->inc("flock_failed_$coro");
+                            return;
+                        }
+                        if (!@flock($fp, LOCK_EX)) {
+                            $ctx->inc("flock_failed_$coro");
+                            return;
+                        }
+                        \Async\delay($ms);
+                        @flock($fp, LOCK_UN);
+                        $ctx->inc("flock_ok_$coro");
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("flock_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("flock_failed_$coro");
+                    } finally {
+                        if (is_resource($fp)) {
+                            @flock($fp, LOCK_UN);
+                            @fclose($fp);
+                        }
+                    }
+                });
+            })
+            ->requires('unix-sockets');
+
+        // When coroutine "X" drains shared pipe "P" with feof loop
+        // Canonical `while (!feof) fread` drain — reads the reader end of
+        // the shared pipe in 4096-byte chunks until feof() reports true.
+        // Counters: feof_drain_attempts (once), feof_drain_done (clean
+        // exit), feof_drain_cancelled, feof_drain_failed, feof_drain_bytes
+        // (total bytes received before feof / cancel). Sums hold for any
+        // interleaving: done+cancelled+failed == attempts.
+        $r->on('/^coroutine "([^"]+)" drains shared pipe "([^"]+)" with feof loop$/',
+            function(Context $ctx, string $coro, string $pipe) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $pipe) {
+                    if (!isset($ctx->pipes[$pipe])) {
+                        $ctx->inc("feof_drain_setup_failed_$coro");
+                        return;
+                    }
+                    [$reader,] = $ctx->pipes[$pipe];
+                    $ctx->inc("feof_drain_attempts_$coro");
+                    $bytes = 0;
+                    try {
+                        while (is_resource($reader) && !@feof($reader)) {
+                            $chunk = @fread($reader, 4096);
+                            if ($chunk === false) break;
+                            $bytes += strlen($chunk);
+                            if ($chunk === '' && @feof($reader)) break;
+                        }
+                        $ctx->inc("feof_drain_done_$coro");
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("feof_drain_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("feof_drain_failed_$coro");
+                    } finally {
+                        $ctx->inc("feof_drain_bytes_$coro", $bytes);
+                    }
+                });
+            })
+            ->requires('unix-sockets');
+
+        // When coroutine "X" polls feof of shared pipe "P" N times
+        // Spams feof() against the reader end of the shared pipe from a
+        // sibling coroutine context. Yields via Async\suspend() between
+        // polls so other coroutines interleave. The feof_poll_true /
+        // _false split is informational; the invariant is that
+        // poll_true + poll_false == attempts.
+        $r->on('/^coroutine "([^"]+)" polls feof of shared pipe "([^"]+)" (\S+) times$/',
+            function(Context $ctx, string $coro, string $pipe, string $nExpr) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $pipe, $nExpr) {
+                    if (!isset($ctx->pipes[$pipe])) {
+                        $ctx->inc("feof_poll_setup_failed_$coro");
+                        return;
+                    }
+                    [$reader,] = $ctx->pipes[$pipe];
+                    $n = (int)$ctx->resolver->resolve($nExpr);
+                    for ($i = 0; $i < $n; $i++) {
+                        $ctx->inc("feof_poll_attempts_$coro");
+                        if (!is_resource($reader)) {
+                            $ctx->inc("feof_poll_failed_$coro");
+                            continue;
+                        }
+                        if (@feof($reader)) {
+                            $ctx->inc("feof_poll_true_$coro");
+                        } else {
+                            $ctx->inc("feof_poll_false_$coro");
+                        }
+                        \Async\suspend();
+                    }
+                });
+            })
+            ->requires('unix-sockets');
+
         // Given a shared file "F"
         // Opens a fresh tmp file in write mode and stashes [handle, path]
         // on the Context — many coroutines write the SAME $handle so they
@@ -1697,6 +1953,170 @@ final class StandardSteps {
                 });
             })
             ->requires('tcp', 'dns-async-engages');
+
+        // Given a long-lived child process "C" sleeping N ms
+        // proc_open()s the test PHP binary running a sleep loop on stdout-
+        // open-but-silent. The child stdout pipe stays open for the parked
+        // fread() reader — no data ever arrives during the wait window, so
+        // the reader is guaranteed to be in the reactor's pipe-poll at the
+        // moment the killer fires. Pipes + proc handle are stashed on
+        // Context::$processes; teardown @proc_terminate+@proc_close.
+        //
+        // The "<ms> ms" is the child's wall-clock budget; the chaos window
+        // (killer sleeps + race surface) must comfortably fit inside it.
+        $r->on('/^a long-lived child process "([^"]+)" sleeping (\S+) ms$/',
+            function(Context $ctx, string $name, string $msExpr) {
+                if (isset($ctx->processes[$name])) return; // idempotent
+                $php = getenv('TEST_PHP_EXECUTABLE');
+                if ($php === false) {
+                    throw new \RuntimeException(
+                        "child process $name: TEST_PHP_EXECUTABLE not set");
+                }
+                $ms   = (int)$ctx->resolver->resolve($msExpr);
+                $code = 'usleep(' . ($ms * 1000) . ');';
+                $proc = @proc_open(
+                    [$php, '-r', $code],
+                    [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+                    $pipes);
+                if (!is_resource($proc)) {
+                    throw new \RuntimeException(
+                        "child process $name: proc_open failed");
+                }
+                // Non-blocking writes; reads stay default (blocking → reactor).
+                @stream_set_blocking($pipes[0], false);
+                $ctx->processes[$name] = ['proc' => $proc, 'pipes' => $pipes];
+            })
+            ->requires('proc-open');
+
+        // When coroutine "X" reads stdout of child process "C"
+        // Parks on fread() of the child's stdout pipe. Outcome family
+        // proc_read_*: ok / eof / cancelled / failed sum to attempts.
+        $r->on('/^coroutine "([^"]+)" reads stdout of child process "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $proc) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $proc) {
+                    if (!isset($ctx->processes[$proc])) {
+                        $ctx->inc("proc_read_setup_failed_$coro");
+                        return;
+                    }
+                    $stdout = $ctx->processes[$proc]['pipes'][1] ?? null;
+                    if (!is_resource($stdout)) {
+                        $ctx->inc("proc_read_setup_failed_$coro");
+                        return;
+                    }
+                    try {
+                        $ctx->inc("proc_read_attempts_$coro");
+                        $data = @fread($stdout, 4096); /* blocks via reactor */
+                        if ($data === false || $data === '') {
+                            $ctx->inc("proc_read_eof_$coro");
+                        } else {
+                            $ctx->inc("proc_read_ok_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("proc_read_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("proc_read_failed_$coro");
+                    }
+                });
+            })
+            ->requires('proc-open');
+
+        // When coroutine "X" closes child process "C"
+        // proc_terminate(SIGTERM) + proc_close to reap. We deliberately
+        // do NOT fclose() the pipes here: a parked reader on stdout owns
+        // the same stream resource and closing it from a sibling
+        // coroutine is the user-error / UAF path that
+        // stream_close_during_read.feature documents as out-of-scope
+        // pending php-async#130. Killing the child causes the kernel to
+        // close the child's stdout end; the parked fread() returns ""
+        // (EOF). Pipes are dropped in Context::run() teardown.
+        // Race target for the libuv process_event release path
+        // (tests/exec/011-proc_open_handle_reuse_uaf).
+        $r->on('/^coroutine "([^"]+)" closes child process "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $proc) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $proc) {
+                    if (!isset($ctx->processes[$proc])) {
+                        $ctx->inc("proc_close_setup_failed_$coro");
+                        return;
+                    }
+                    $ctx->inc("proc_close_attempts_$coro");
+                    $entry = &$ctx->processes[$proc];
+                    if (is_resource($entry['proc'])) {
+                        @proc_terminate($entry['proc'], 15);
+                        @proc_close($entry['proc']);
+                        $entry['proc'] = null;
+                    }
+                    unset($entry);
+                    $ctx->inc("proc_close_ok_$coro");
+                });
+            })
+            ->requires('proc-open');
+
+        // When coroutine "X" sends SIGTERM to child process "C"
+        // proc_terminate(SIGTERM). The child exits, kernel closes its end
+        // of the stdout pipe, and a parked reader gets EOF. Does NOT close
+        // the handle — that's the killer step's job, kept separate so
+        // scenarios can interleave terminate/close ordering.
+        $r->on('/^coroutine "([^"]+)" sends SIGTERM to child process "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $proc) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $proc) {
+                    if (!isset($ctx->processes[$proc])) {
+                        $ctx->inc("proc_term_setup_failed_$coro");
+                        return;
+                    }
+                    $ctx->inc("proc_term_attempts_$coro");
+                    $p = $ctx->processes[$proc]['proc'] ?? null;
+                    if (is_resource($p) && @proc_terminate($p, 15)) {
+                        $ctx->inc("proc_term_ok_$coro");
+                    } else {
+                        $ctx->inc("proc_term_failed_$coro");
+                    }
+                });
+            })
+            ->requires('proc-open');
+
+        // When coroutine "X" runs proc_open + proc_close N times
+        // Rapid open/close storm — backstop for the UAF in
+        // tests/exec/011-proc_open_handle_reuse_uaf. Each iteration spawns
+        // a short-lived child (exit(0);), closes its pipes, proc_close()s,
+        // and yields via Async\suspend() so the reactor's process-event
+        // dispose path runs interleaved with peer coroutines doing the
+        // same. Counter family proc_storm_*.
+        $r->on('/^coroutine "([^"]+)" runs proc_open \+ proc_close (\S+) times$/',
+            function(Context $ctx, string $coro, string $nExpr) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $nExpr) {
+                    $php = getenv('TEST_PHP_EXECUTABLE');
+                    if ($php === false) {
+                        $ctx->inc("proc_storm_setup_failed_$coro");
+                        return;
+                    }
+                    $n = (int)$ctx->resolver->resolve($nExpr);
+                    for ($i = 0; $i < $n; $i++) {
+                        $ctx->inc("proc_storm_attempts_$coro");
+                        try {
+                            $p = @proc_open(
+                                [$php, '-r', 'exit(0);'],
+                                [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+                                $pipes);
+                            if (!is_resource($p)) {
+                                $ctx->inc("proc_storm_failed_$coro");
+                                continue;
+                            }
+                            foreach ($pipes as $fd) {
+                                if (is_resource($fd)) @fclose($fd);
+                            }
+                            @proc_close($p);
+                            $ctx->inc("proc_storm_ok_$coro");
+                            \Async\suspend();
+                        } catch (\Async\AsyncCancellation $e) {
+                            $ctx->inc("proc_storm_cancelled_$coro");
+                            return;
+                        } catch (\Throwable $e) {
+                            $ctx->inc("proc_storm_failed_$coro");
+                        }
+                    }
+                });
+            })
+            ->requires('proc-open');
 
         // Given a filesystem watcher "W" on a fresh temp directory
         // Creates an empty tmpdir and an Async\FileSystemWatcher on it
@@ -4426,6 +4846,85 @@ final class StandardSteps {
             $ctx->events[] = sprintf(
                 'curl %s: peer=%s http=%d errno=%d recv=%dB outcome=%s',
                 $coro, $peer, $httpCode, $errno, strlen($buf), $outcome);
+        }
+    }
+
+    /**
+     * Shared async curl_multi routine used by the "fetches peers via
+     * curl_multi" step. One curl_multi handle, one easy handle per named
+     * peer, standard exec/select loop — the curl_multi_select() call is
+     * where the reactor parks and the cancel/timeout surface lives.
+     *
+     * Per-handle CURLMSG_DONE messages are drained into curl_multi_handles_done
+     * (CURLE_OK) / curl_multi_handles_failed (any other). The coroutine-level
+     * outcome is bucketed exactly once:
+     *   curl_multi_ok        — loop exited normally with active==0
+     *   curl_multi_cancelled — AsyncCancellation delivered into curl_multi_select
+     *   curl_multi_failed    — curl_multi_exec returned !CURLM_OK or other throw
+     *   curl_multi_no_peer   — any named peer's address never resolved
+     * so the four sum to curl_multi_attempts.
+     */
+    public static function curlMulti(Context $ctx, string $coro, array $peers): void {
+        $ctx->inc("curl_multi_attempts_$coro");
+        $addrs = [];
+        foreach ($peers as $peer) {
+            $addr = $ctx->net->evilPeerAddr[$peer] ?? null;
+            if ($addr === null) {
+                $ctx->inc("curl_multi_no_peer_$coro");
+                return;
+            }
+            $addrs[] = $addr;
+        }
+        $mh   = null;
+        $easy = [];
+        try {
+            $mh = curl_multi_init();
+            foreach ($addrs as $addr) {
+                $ch = curl_init();
+                curl_setopt($ch, CURLOPT_URL, 'http://' . $addr . '/');
+                curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+                curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
+                // Drain bodies but discard — only the outcome matters here.
+                curl_setopt($ch, CURLOPT_WRITEFUNCTION,
+                    static fn($ch, string $d) => strlen($d));
+                curl_multi_add_handle($mh, $ch);
+                $easy[] = $ch;
+            }
+            $active = null;
+            do {
+                $status = curl_multi_exec($mh, $active);
+                if ($status !== CURLM_OK) {
+                    $ctx->inc("curl_multi_failed_$coro");
+                    return;
+                }
+                // Drain done messages as they arrive — the order in which
+                // handles finish is non-deterministic under chaos peers.
+                while (($msg = curl_multi_info_read($mh)) !== false) {
+                    if ($msg['msg'] === CURLMSG_DONE) {
+                        if ((int)$msg['result'] === CURLE_OK) {
+                            $ctx->inc("curl_multi_handles_done_$coro");
+                        } else {
+                            $ctx->inc("curl_multi_handles_failed_$coro");
+                        }
+                    }
+                }
+                if ($active > 0) {
+                    curl_multi_select($mh, 1.0);  /* reactor yield */
+                }
+            } while ($active > 0);
+            $ctx->inc("curl_multi_ok_$coro");
+        } catch (\Async\AsyncCancellation $e) {
+            $ctx->inc("curl_multi_cancelled_$coro");
+        } catch (\Throwable $e) {
+            $ctx->inc("curl_multi_failed_$coro");
+        } finally {
+            if ($mh !== null) {
+                foreach ($easy as $ch) {
+                    @curl_multi_remove_handle($mh, $ch);
+                    @curl_close($ch);
+                }
+                @curl_multi_close($mh);
+            }
         }
     }
 
