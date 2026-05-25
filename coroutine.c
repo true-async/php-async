@@ -566,17 +566,21 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 exit:
 
 	if (UNEXPECTED(should_start_graceful_shutdown)) {
-		zend_try
-		{
-			ZEND_ASYNC_SHUTDOWN();
+		/* OOM bailout: allocator is at limit; ZEND_ASYNC_SHUTDOWN() will hit
+		 * OOM again and surface a noisy second warning. Skip it. */
+		if (!zend_alloc_pop_is_oom()) {
+			zend_try
+			{
+				ZEND_ASYNC_SHUTDOWN();
+			}
+			zend_catch
+			{
+				zend_error(E_CORE_WARNING,
+						   "A critical error was detected during the initiation of the graceful shutdown mode.");
+				zend_bailout();
+			}
+			zend_end_try();
 		}
-		zend_catch
-		{
-			zend_error(E_CORE_WARNING,
-					   "A critical error was detected during the initiation of the graceful shutdown mode.");
-			zend_bailout();
-		}
-		zend_end_try();
 	}
 
 	if (is_bailout) {
