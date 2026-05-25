@@ -5102,6 +5102,30 @@ static bool libuv_io_close(zend_async_io_t *io_base)
 		goto close_orig_fd;
 	}
 
+	/* Wake parked subscribers — stream owner is about to free its abstract
+	 * state. Mark active_req io_closed so consumers skip stream-side access
+	 * after resume. See #144. */
+	if (io->base.event.callbacks.length > 0) {
+		zend_object *exc = async_new_exception(
+			async_ce_input_output_exception, "Stream was closed");
+		if (io->active_req != NULL) {
+			if (io->base.type == ZEND_ASYNC_IO_TYPE_UDP) {
+				async_udp_req_t *ureq = (async_udp_req_t *) io->active_req;
+				ureq->base.io_closed   = true;
+				ureq->base.completed   = true;
+				ureq->base.transferred = 0;
+			} else {
+				io->active_req->base.io_closed   = true;
+				io->active_req->base.completed   = true;
+				io->active_req->base.transferred = 0;
+			}
+			io->active_req = NULL;
+		}
+		io->base.state |= ZEND_ASYNC_IO_EOF;
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, NULL, exc);
+		OBJ_RELEASE(exc);
+	}
+
 	if (ZEND_ASYNC_IO_IS_STREAM(io->base.type)) {
 		uv_read_stop(&io->handle.stream);
 		io->handle.stream.data = io;
