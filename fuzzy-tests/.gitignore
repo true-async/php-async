@@ -1,1 +1,5 @@
 /_generated/
+
+# Top-level .gitignore ignores 'include' (for C include dirs); whitelist
+# this directory because it holds chaos .feature sources, not headers.
+!/include/

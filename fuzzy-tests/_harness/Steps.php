@@ -981,12 +981,670 @@ final class StandardSteps {
                 });
             });
 
+        // ---- Async\iterate() actions ----
+        //
+        // Drives Async\iterate(iterable, callable, concurrency, cancelPending).
+        // The reactor must respect the concurrency cap, settle every started
+        // callback (finish | cancel | throw), and never leave child coroutines
+        // orphaned. Counter family:
+        //   iter_attempts_$coro     -- iterate() entered
+        //   iter_done_$coro         -- iterate() returned normally
+        //   iter_cancelled_$coro    -- caught AsyncCancellation in caller
+        //   iter_failed_$coro       -- iterate() rethrew callback error
+        //   iter_cb_started_$coro   -- callback entered
+        //   iter_cb_finished_$coro  -- callback returned normally
+        //   iter_cb_cancelled_$coro -- callback caught AsyncCancellation
+        //   iter_cb_threw_$coro     -- callback threw user error
+        //   iter_child_*_$coro      -- callback-spawned children outcomes
+        // Liveness invariant (chaos-safe):
+        //   iter_attempts == iter_done + iter_cancelled + iter_failed
+        //   iter_cb_started == iter_cb_finished + iter_cb_cancelled + iter_cb_threw
+
+        // When coroutine "X" iterates N items with concurrency K via callback that suspends M times
+        $r->on('/^coroutine "([^"]+)" iterates (\S+) items with concurrency (\S+) via callback that suspends (\S+) times$/',
+            function(Context $ctx, string $coro, string $nE, string $kE, string $mE) {
+                $n = (int)$ctx->resolver->resolve($nE);
+                $k = (int)$ctx->resolver->resolve($kE);
+                $m = (int)$ctx->resolver->resolve($mE);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $n, $k, $m) {
+                    $items = range(1, $n);
+                    $ctx->inc("iter_attempts_$coro");
+                    try {
+                        \Async\iterate($items, function($v) use ($ctx, $coro, $m) {
+                            $ctx->inc("iter_cb_started_$coro");
+                            try {
+                                for ($i = 0; $i < $m; $i++) {
+                                    \Async\suspend();
+                                }
+                                $ctx->inc("iter_cb_finished_$coro");
+                            } catch (\Async\AsyncCancellation $e) {
+                                $ctx->inc("iter_cb_cancelled_$coro");
+                                throw $e;
+                            }
+                        }, concurrency: $k);
+                        $ctx->inc("iter_done_$coro");
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("iter_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("iter_failed_$coro");
+                    }
+                });
+            });
+
+        // When coroutine "X" iterates N items with concurrency K, callback throws at index I
+        $r->on('/^coroutine "([^"]+)" iterates (\S+) items with concurrency (\S+), callback throws at index (\S+)$/',
+            function(Context $ctx, string $coro, string $nE, string $kE, string $iE) {
+                $n   = (int)$ctx->resolver->resolve($nE);
+                $k   = (int)$ctx->resolver->resolve($kE);
+                $idx = (int)$ctx->resolver->resolve($iE);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $n, $k, $idx) {
+                    $items = range(0, $n - 1);
+                    $ctx->inc("iter_attempts_$coro");
+                    try {
+                        \Async\iterate($items, function($v) use ($ctx, $coro, $idx) {
+                            $ctx->inc("iter_cb_started_$coro");
+                            try {
+                                \Async\suspend();
+                                if ($v === $idx) {
+                                    $ctx->inc("iter_cb_threw_$coro");
+                                    throw new \RuntimeException("iter boom at $idx");
+                                }
+                                $ctx->inc("iter_cb_finished_$coro");
+                            } catch (\Async\AsyncCancellation $e) {
+                                $ctx->inc("iter_cb_cancelled_$coro");
+                                throw $e;
+                            }
+                        }, concurrency: $k);
+                        $ctx->inc("iter_done_$coro");
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("iter_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("iter_failed_$coro");
+                    }
+                });
+            });
+
+        // When coroutine "X" iterates N items with concurrency K, callback spawns child suspending M times, cancelPending true|false
+        // Drives the iterate() cleanup branch: the callback spawns a sibling
+        // coroutine that outlives the per-item callback; cancelPending=true
+        // cancels every still-pending child after iteration, =false awaits them.
+        $r->on('/^coroutine "([^"]+)" iterates (\S+) items with concurrency (\S+), callback spawns child suspending (\S+) times, cancelPending (true|false)$/',
+            function(Context $ctx, string $coro, string $nE, string $kE, string $mE, string $cp) {
+                $n = (int)$ctx->resolver->resolve($nE);
+                $k = (int)$ctx->resolver->resolve($kE);
+                $m = (int)$ctx->resolver->resolve($mE);
+                $cancelPending = $cp === 'true';
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $n, $k, $m, $cancelPending) {
+                    $items = range(1, $n);
+                    $ctx->inc("iter_attempts_$coro");
+                    try {
+                        \Async\iterate($items, function($v) use ($ctx, $coro, $m) {
+                            $ctx->inc("iter_cb_started_$coro");
+                            \Async\spawn(function() use ($ctx, $coro, $m) {
+                                $ctx->inc("iter_child_started_$coro");
+                                try {
+                                    for ($i = 0; $i < $m; $i++) {
+                                        \Async\suspend();
+                                    }
+                                    $ctx->inc("iter_child_finished_$coro");
+                                } catch (\Async\AsyncCancellation $e) {
+                                    $ctx->inc("iter_child_cancelled_$coro");
+                                }
+                            });
+                            $ctx->inc("iter_cb_finished_$coro");
+                        }, concurrency: $k, cancelPending: $cancelPending);
+                        $ctx->inc("iter_done_$coro");
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("iter_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("iter_failed_$coro");
+                    }
+                });
+            });
+
+        // When coroutine "X" iterates a generator of N items with concurrency K
+        // Drives the generator/Traversable branch of iterate(): the source is
+        // pulled lazily, so a cancel mid-iteration must stop pulling and unwind
+        // the generator cleanly.
+        $r->on('/^coroutine "([^"]+)" iterates a generator of (\S+) items with concurrency (\S+)$/',
+            function(Context $ctx, string $coro, string $nE, string $kE) {
+                $n = (int)$ctx->resolver->resolve($nE);
+                $k = (int)$ctx->resolver->resolve($kE);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $n, $k) {
+                    $gen = (function() use ($n) {
+                        for ($i = 0; $i < $n; $i++) {
+                            yield $i => "v$i";
+                        }
+                    })();
+                    $ctx->inc("iter_attempts_$coro");
+                    try {
+                        \Async\iterate($gen, function($v) use ($ctx, $coro) {
+                            $ctx->inc("iter_cb_started_$coro");
+                            try {
+                                \Async\suspend();
+                                \Async\suspend();
+                                $ctx->inc("iter_cb_finished_$coro");
+                            } catch (\Async\AsyncCancellation $e) {
+                                $ctx->inc("iter_cb_cancelled_$coro");
+                                throw $e;
+                            }
+                        }, concurrency: $k);
+                        $ctx->inc("iter_done_$coro");
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("iter_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("iter_failed_$coro");
+                    }
+                });
+            });
+
         // When coroutine "X" sleeps N ms
         $r->on('/^coroutine "([^"]+)" sleeps (\S+) ms$/',
             function(Context $ctx, string $coro, string $msExpr) {
                 $ms = (int)$ctx->resolver->resolve($msExpr);
                 $ctx->planAction($coro, function(Context $ctx) use ($ms) {
                     \Async\delay($ms);
+                });
+            });
+
+        // ---- output_buffer isolation actions ----
+        //
+        // Each coroutine pushes ob_start(), writes a known marker N times
+        // interleaved with suspend(), then reads ob_get_contents(). The
+        // captured buffer MUST contain exactly that coroutine's markers in
+        // order — proof that ext/async swaps the output-buffer stack on
+        // every coroutine switch.
+
+        // When coroutine "X" writes N chunks to its own output buffer
+        $r->on('/^coroutine "([^"]+)" writes (\S+) chunks to its own output buffer$/',
+            function(Context $ctx, string $coro, string $nExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $n) {
+                    $ctx->inc("ob_attempts_$coro");
+                    $started = false;
+                    try {
+                        \ob_start();
+                        $started = true;
+                        for ($i = 0; $i < $n; $i++) {
+                            echo "$coro:$i ";
+                            \Async\suspend();
+                        }
+                        $content = \ob_get_clean();
+                        $started = false;
+                        $expected = '';
+                        for ($i = 0; $i < $n; $i++) {
+                            $expected .= "$coro:$i ";
+                        }
+                        if ($content === $expected) {
+                            $ctx->inc("ob_clean_$coro");
+                        } else {
+                            $ctx->inc("ob_dirty_$coro");
+                            $ctx->events[] = "OB-MISMATCH $coro expected=" . json_encode($expected)
+                                . " got=" . json_encode($content);
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("ob_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("ob_failed_$coro");
+                    } finally {
+                        if ($started) {
+                            @\ob_end_clean();
+                        }
+                    }
+                });
+            });
+
+        // ---- include / require concurrency actions ----
+        //
+        // Every coroutine require_once()s the same .inc file at the same
+        // time; the symbol-table guard must let exactly one declaration win
+        // and the other coroutines get the cached symbol without
+        // redeclare-error.
+
+        // When coroutine "X" require_once includes the chaos test inc file
+        // The chaos test inc declares one function once and uses a
+        // function_exists guard — under random scheduling all coroutines must
+        // either receive the cached symbol or surface a single deterministic
+        // error, NEVER a redeclare-error from the include phase.
+        $r->on('/^coroutine "([^"]+)" require_once includes the chaos test inc file$/',
+            function(Context $ctx, string $coro) {
+                $path = __DIR__ . '/chaos_include.inc';
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $path) {
+                    $ctx->inc("inc_attempts_$coro");
+                    try {
+                        require_once $path;
+                        if (\function_exists('chaos_test_included_function')
+                            && \chaos_test_included_function() === 'included_ok') {
+                            $ctx->inc("inc_ok_$coro");
+                        } else {
+                            $ctx->inc("inc_missing_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("inc_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("inc_failed_$coro");
+                        $ctx->events[] = "INC-FAIL $coro " . $e->getMessage();
+                    }
+                });
+            });
+
+        // ---- edge_cases — DeadlockError detector chaos ----
+        //
+        // Two coroutines waiting on each other (A awaits B, B awaits A)
+        // create a deterministic deadlock; the runtime's detector must
+        // raise Async\DeadlockError instead of hanging. Under random
+        // scheduling the detector must still fire regardless of which
+        // coroutine reaches the await first.
+
+        // When coroutine "X" awaits coroutine "Y" (test-direct)
+        // Used to weave a cycle of awaits between two coroutines; "test-
+        // direct" tag so the regex doesn't collide with existing await
+        // steps that have richer outcome bookkeeping.
+        $r->on('/^coroutine "([^"]+)" awaits-test coroutine "([^"]+)"$/',
+            function(Context $ctx, string $caller, string $target) {
+                $ctx->planAction($caller, function(Context $ctx) use ($caller, $target) {
+                    $ctx->inc("dl_await_attempts_$caller");
+                    if (!isset($ctx->coroutineHandles[$target])) {
+                        $ctx->inc("dl_await_no_target_$caller");
+                        return;
+                    }
+                    try {
+                        \Async\await($ctx->coroutineHandles[$target]);
+                        $ctx->inc("dl_await_ok_$caller");
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("dl_await_cancelled_$caller");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("dl_await_failed_$caller");
+                    }
+                });
+            });
+
+        // ---- edge_cases — scope.awaitCompletion on a cancelled scope ----
+        //
+        // Backstop for tests/edge_cases/012: when a scope has been cancelled
+        // but not yet closed, awaitCompletion() must surface
+        // AsyncCancellation rather than block forever. Under random
+        // scheduling, the awaitCompletion call can race the cancel().
+
+        // When coroutine "X" awaits completion of scope "S"
+        $r->on('/^coroutine "([^"]+)" awaits completion of scope "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $scope) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $scope) {
+                    $ctx->inc("scope_awaitc_attempts_$coro");
+                    if (!isset($ctx->scopes[$scope])) {
+                        $ctx->inc("scope_awaitc_no_scope_$coro");
+                        return;
+                    }
+                    try {
+                        $ctx->scopes[$scope]->awaitCompletion(\Async\timeout(2000));
+                        $ctx->inc("scope_awaitc_ok_$coro");
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("scope_awaitc_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("scope_awaitc_failed_$coro");
+                    }
+                });
+            });
+
+        // When coroutine "X" spawns N busy children into scope "S"
+        $r->on('/^coroutine "([^"]+)" spawns (\S+) busy children into scope "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $nExpr, string $scope) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $scope, $n) {
+                    if (!isset($ctx->scopes[$scope])) {
+                        $ctx->inc("scope_spawn_no_scope_$coro");
+                        return;
+                    }
+                    for ($i = 0; $i < $n; $i++) {
+                        $ctx->inc("scope_busy_spawned_$scope");
+                        $ctx->scopes[$scope]->spawn(function() use ($ctx, $scope) {
+                            try {
+                                while (true) {
+                                    \Async\suspend();
+                                }
+                            } catch (\Async\AsyncCancellation $e) {
+                                $ctx->inc("scope_busy_cancelled_$scope");
+                            }
+                        });
+                    }
+                });
+            });
+
+        // ---- cleanup — global resources outside any coroutine ----
+        //
+        // ext/async's reactor must not interfere with curl/socket/file
+        // operations performed at request scope (outside spawn()). These
+        // actions touch each global from the harness's bootstrap thread.
+
+        // When the harness opens then closes N temp files
+        $r->on('/^the harness opens then closes (\S+) temp files$/',
+            function(Context $ctx, string $nExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction('__bootstrap__', function(Context $ctx) use ($n) {
+                    for ($i = 0; $i < $n; $i++) {
+                        $tmp = @tempnam(sys_get_temp_dir(), 'chaos-cleanup-');
+                        if ($tmp === false) { $ctx->inc('cleanup_tempnam_failed'); continue; }
+                        $fh = @fopen($tmp, 'wb');
+                        if (is_resource($fh)) {
+                            @fwrite($fh, "hello-$i");
+                            @fclose($fh);
+                            $ctx->inc('cleanup_file_ok');
+                        } else {
+                            $ctx->inc('cleanup_fopen_failed');
+                        }
+                        @unlink($tmp);
+                    }
+                });
+                if (!isset($ctx->plannedActions['__bootstrap__'])) {
+                    $ctx->defineCoroutine('__bootstrap__');
+                }
+            });
+
+        // ---- Async\protect() actions ----
+        //
+        // Drives Async\protect(closure): cancellation is suppressed for the
+        // duration of the closure; any pending cancel lands the instant the
+        // protect() call returns. Counter family (per caller coroutine):
+        //   protect_entered_X / protect_exited_X / protect_threw_X
+        //   protect_inner_started_X / protect_inner_finished_X
+        //   protect_after_X            (control reached the line after protect)
+        //   protect_caught_cancel_X    (try/catch around protect caught it)
+        //   protect_post_cancelled_X   (post-protect step caught cancel)
+
+        // When coroutine "X" runs protect with N inner suspends
+        $r->on('/^coroutine "([^"]+)" runs protect with (\S+) inner suspends$/',
+            function(Context $ctx, string $coro, string $nExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $n) {
+                    $ctx->inc("protect_entered_$coro");
+                    try {
+                        \Async\protect(function() use ($ctx, $coro, $n) {
+                            $ctx->inc("protect_inner_started_$coro");
+                            for ($i = 0; $i < $n; $i++) {
+                                \Async\suspend();
+                            }
+                            $ctx->inc("protect_inner_finished_$coro");
+                        });
+                        $ctx->inc("protect_exited_$coro");
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("protect_caught_cancel_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("protect_threw_$coro");
+                    }
+                });
+            });
+
+        // When coroutine "X" runs protect with N inner suspends then suspends once more
+        // The post-protect suspend is the line where a deferred cancel MUST
+        // be allowed to land (asymmetry probe: protect blocked it before, but
+        // not after).
+        $r->on('/^coroutine "([^"]+)" runs protect with (\S+) inner suspends then suspends once more$/',
+            function(Context $ctx, string $coro, string $nExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $n) {
+                    $ctx->inc("protect_entered_$coro");
+                    try {
+                        \Async\protect(function() use ($ctx, $coro, $n) {
+                            $ctx->inc("protect_inner_started_$coro");
+                            for ($i = 0; $i < $n; $i++) {
+                                \Async\suspend();
+                            }
+                            $ctx->inc("protect_inner_finished_$coro");
+                        });
+                        $ctx->inc("protect_exited_$coro");
+                        try {
+                            \Async\suspend();
+                            $ctx->inc("protect_after_$coro");
+                        } catch (\Async\AsyncCancellation $e) {
+                            $ctx->inc("protect_post_cancelled_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("protect_caught_cancel_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("protect_threw_$coro");
+                    }
+                });
+            });
+
+        // When coroutine "X" runs nested protect with N inner suspends
+        $r->on('/^coroutine "([^"]+)" runs nested protect with (\S+) inner suspends$/',
+            function(Context $ctx, string $coro, string $nExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $n) {
+                    $ctx->inc("protect_entered_$coro");
+                    try {
+                        \Async\protect(function() use ($ctx, $coro, $n) {
+                            $ctx->inc("protect_inner_started_$coro");
+                            \Async\protect(function() use ($ctx, $coro, $n) {
+                                for ($i = 0; $i < $n; $i++) {
+                                    \Async\suspend();
+                                }
+                                $ctx->inc("protect_nested_inner_$coro");
+                            });
+                            $ctx->inc("protect_inner_finished_$coro");
+                        });
+                        $ctx->inc("protect_exited_$coro");
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("protect_caught_cancel_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("protect_threw_$coro");
+                    }
+                });
+            });
+
+        // When coroutine "X" runs protect that throws
+        // The user closure throws a RuntimeException — protect must propagate
+        // it cleanly (caught by the surrounding try), independent of any
+        // racing cancel.
+        $r->on('/^coroutine "([^"]+)" runs protect that throws$/',
+            function(Context $ctx, string $coro) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro) {
+                    $ctx->inc("protect_entered_$coro");
+                    try {
+                        \Async\protect(function() use ($ctx, $coro) {
+                            $ctx->inc("protect_inner_started_$coro");
+                            \Async\suspend();
+                            throw new \RuntimeException("protect-boom");
+                        });
+                        $ctx->inc("protect_exited_$coro");
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("protect_caught_cancel_$coro");
+                    } catch (\RuntimeException $e) {
+                        $ctx->inc("protect_threw_$coro");
+                    }
+                });
+            });
+
+        // ---- Fiber + coroutine interop actions ----
+        //
+        // Drives the Fiber API from inside an Async\spawn() coroutine — the
+        // path that links zend_fiber.c with ext/async's coroutine bookkeeping
+        // (#118 was a tracing-JIT crash on this boundary).
+        // Counter family (per caller coroutine):
+        //   fib_started_X / fib_returned_X / fib_threw_X
+        //   fib_suspends_X        — Fiber::suspend() calls observed
+        //   fib_resumes_ok_X / fib_resumes_failed_X
+        //   fib_cancelled_X       — getCoroutine()->cancel() landed
+
+        // When coroutine "X" drives a fiber with N suspends
+        $r->on('/^coroutine "([^"]+)" drives a fiber with (\S+) suspends$/',
+            function(Context $ctx, string $coro, string $nExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $n) {
+                    $fiber = new \Fiber(function() use ($ctx, $coro, $n) {
+                        $ctx->inc("fib_started_$coro");
+                        for ($i = 0; $i < $n; $i++) {
+                            \Fiber::suspend();
+                            $ctx->inc("fib_suspends_$coro");
+                        }
+                        return "ok-$n";
+                    });
+                    try {
+                        $fiber->start();
+                        for ($i = 0; $i < $n; $i++) {
+                            \Async\suspend(); // yield reactor between resumes
+                            try {
+                                $fiber->resume();
+                                $ctx->inc("fib_resumes_ok_$coro");
+                            } catch (\Throwable $e) {
+                                $ctx->inc("fib_resumes_failed_$coro");
+                                break;
+                            }
+                        }
+                        if ($fiber->isTerminated()) {
+                            $ctx->inc("fib_returned_$coro");
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("fib_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("fib_threw_$coro");
+                    }
+                });
+            });
+
+        // When coroutine "X" drives M concurrent fibers each with N suspends
+        $r->on('/^coroutine "([^"]+)" drives (\S+) concurrent fibers each with (\S+) suspends$/',
+            function(Context $ctx, string $coro, string $mExpr, string $nExpr) {
+                $m = (int)$ctx->resolver->resolve($mExpr);
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $m, $n) {
+                    $fibers = [];
+                    try {
+                        for ($k = 0; $k < $m; $k++) {
+                            $fibers[$k] = new \Fiber(function() use ($ctx, $coro, $n) {
+                                $ctx->inc("fib_started_$coro");
+                                for ($i = 0; $i < $n; $i++) {
+                                    \Fiber::suspend();
+                                    $ctx->inc("fib_suspends_$coro");
+                                }
+                                return "done";
+                            });
+                            $fibers[$k]->start();
+                        }
+                        for ($i = 0; $i < $n; $i++) {
+                            \Async\suspend();
+                            foreach ($fibers as $f) {
+                                try {
+                                    if (!$f->isTerminated()) {
+                                        $f->resume();
+                                        $ctx->inc("fib_resumes_ok_$coro");
+                                    }
+                                } catch (\Throwable $e) {
+                                    $ctx->inc("fib_resumes_failed_$coro");
+                                }
+                            }
+                        }
+                        foreach ($fibers as $f) {
+                            if ($f->isTerminated()) {
+                                $ctx->inc("fib_returned_$coro");
+                            }
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("fib_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("fib_threw_$coro");
+                    }
+                });
+            });
+
+        // When coroutine "X" drives a fiber that throws on resume K
+        $r->on('/^coroutine "([^"]+)" drives a fiber that throws on resume (\S+)$/',
+            function(Context $ctx, string $coro, string $kExpr) {
+                $k = (int)$ctx->resolver->resolve($kExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $k) {
+                    $fiber = new \Fiber(function() use ($ctx, $coro, $k) {
+                        $ctx->inc("fib_started_$coro");
+                        for ($i = 0; $i < $k; $i++) {
+                            \Fiber::suspend();
+                            $ctx->inc("fib_suspends_$coro");
+                        }
+                        throw new \RuntimeException("fiber boom at $k");
+                    });
+                    try {
+                        $fiber->start();
+                        for ($i = 0; $i < $k + 2; $i++) {
+                            \Async\suspend();
+                            if ($fiber->isTerminated()) break;
+                            try {
+                                $fiber->resume();
+                                $ctx->inc("fib_resumes_ok_$coro");
+                            } catch (\RuntimeException $e) {
+                                $ctx->inc("fib_threw_$coro");
+                                break;
+                            }
+                        }
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("fib_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("fib_threw_$coro");
+                    }
+                });
+            });
+
+        // ---- GC destructor actions ----
+        //
+        // Drives __destruct() that calls suspend()/spawn() — the path that
+        // links the zend_objects_store dtor sweep with ext/async's reactor
+        // (tests/gc/001-014). Counter family (per caller coroutine):
+        //   gc_obj_created_X / gc_obj_destroyed_X
+        //   gc_dtor_suspends_X / gc_dtor_spawns_X
+        //   gc_dtor_spawn_child_finished_X / gc_dtor_spawn_child_cancelled_X
+        //   gc_dtor_threw_X
+        // The dtor uses static counters reachable from the caller's closure
+        // by capturing $ctx; PHP's GC may run during scheduler ticks so any
+        // bug in dtor-reentrancy surfaces under random scheduling.
+
+        // When coroutine "X" creates and unsets N objects with suspending destructor
+        $r->on('/^coroutine "([^"]+)" creates and unsets (\S+) objects with suspending destructor$/',
+            function(Context $ctx, string $coro, string $nExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $n) {
+                    $objs = [];
+                    for ($i = 0; $i < $n; $i++) {
+                        $objs[] = new ChaosDtorSuspend($ctx, $coro);
+                        $ctx->inc("gc_obj_created_$coro");
+                    }
+                    unset($objs);
+                    \gc_collect_cycles();
+                    \Async\suspend();
+                });
+            });
+
+        // When coroutine "X" creates and unsets N objects whose destructor spawns a coroutine
+        $r->on('/^coroutine "([^"]+)" creates and unsets (\S+) objects whose destructor spawns a coroutine$/',
+            function(Context $ctx, string $coro, string $nExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $n) {
+                    $objs = [];
+                    for ($i = 0; $i < $n; $i++) {
+                        $objs[] = new ChaosDtorSpawn($ctx, $coro);
+                        $ctx->inc("gc_obj_created_$coro");
+                    }
+                    unset($objs);
+                    \gc_collect_cycles();
+                    // Let any dtor-spawned children settle before this coroutine
+                    // finishes, so the "no orphan coroutines" invariant holds.
+                    for ($i = 0; $i < 4; $i++) {
+                        \Async\suspend();
+                    }
+                });
+            });
+
+        // When coroutine "X" creates and unsets N reference cycles with suspending destructor
+        $r->on('/^coroutine "([^"]+)" creates and unsets (\S+) reference cycles with suspending destructor$/',
+            function(Context $ctx, string $coro, string $nExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $n) {
+                    for ($i = 0; $i < $n; $i++) {
+                        $a = new ChaosDtorSuspend($ctx, $coro);
+                        $b = new ChaosDtorSuspend($ctx, $coro);
+                        $a->peer = $b;
+                        $b->peer = $a;
+                        $ctx->inc("gc_obj_created_$coro", 2);
+                        unset($a, $b);
+                    }
+                    \gc_collect_cycles();
+                    \Async\suspend();
                 });
             });
 
@@ -3208,6 +3866,228 @@ final class StandardSteps {
             })
             ->requires('zts');
 
+        // ---- Remote FutureState (cross-thread Future completion) ----
+        //
+        // Exercises Async\FutureState transferred from the main thread into a
+        // spawn_thread() worker. The worker either completes / errors / drops
+        // the state; main awaiters race the worker's complete(). After
+        // transfer the source thread loses write access; a second transfer of
+        // the same state throws.
+        //
+        // Hand-written backstops: ext/async/tests/remote_future/{001,002,005,
+        // 006,009,010,013}.phpt pin one deterministic shape each. This block
+        // crosses them into chaos by varying awaiter count, scheduler order,
+        // and overlaying transfer-policy violations.
+        //
+        // Counter family (keyed by remote future name F):
+        //   rf_xfer_attempts_F / rf_xfer_ok_F / rf_xfer_failed_F
+        //       — spawn_thread() called and FutureState passed through
+        //   rf_thread_completed_F / rf_thread_threw_F / rf_thread_silent_F
+        //       — worker outcome reported back via thread handle
+        //   rf_await_attempts_F / rf_await_ok_F / rf_await_failed_F /
+        //       rf_await_cancelled_F  — Future::await() outcome per call
+        //   rf_double_xfer_attempts_F / rf_double_xfer_blocked_F
+        //       — second transfer must throw
+        //   rf_main_complete_attempts_F / rf_main_complete_blocked_F
+        //       — main-thread complete() after transfer must throw
+        //   rf_ignore_F  — FutureState::ignore() called to release a
+        //       never-completed state cleanly
+
+        // When coroutine "X" runs a thread that completes remote future "F" with VAL
+        $r->on('/^coroutine "([^"]+)" runs a thread that completes remote future "([^"]+)" with (\S+)$/',
+            function(Context $ctx, string $coro, string $f, string $valExpr) {
+                $val = $ctx->resolver->resolve($valExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $f, $val) {
+                    if (!isset($ctx->futureStates[$f])) {
+                        $ctx->inc("rf_xfer_no_state_$f");
+                        return;
+                    }
+                    $state = $ctx->futureStates[$f];
+                    $ctx->inc("rf_xfer_attempts_$f");
+                    try {
+                        $h = \Async\spawn_thread(static function() use ($state, $val) {
+                            $state->complete($val);
+                        });
+                        $ctx->remoteFutureThreads[$f] = $h;
+                        $ctx->inc("rf_xfer_ok_$f");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("rf_xfer_failed_$f");
+                    }
+                });
+            })
+            ->requires('zts');
+
+        // When coroutine "X" runs a thread that errors remote future "F" with "msg"
+        $r->on('/^coroutine "([^"]+)" runs a thread that errors remote future "([^"]+)" with "([^"]*)"$/',
+            function(Context $ctx, string $coro, string $f, string $msg) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $f, $msg) {
+                    if (!isset($ctx->futureStates[$f])) {
+                        $ctx->inc("rf_xfer_no_state_$f");
+                        return;
+                    }
+                    $state = $ctx->futureStates[$f];
+                    $ctx->inc("rf_xfer_attempts_$f");
+                    try {
+                        $h = \Async\spawn_thread(static function() use ($state, $msg) {
+                            $state->error(new \RuntimeException($msg));
+                        });
+                        $ctx->remoteFutureThreads[$f] = $h;
+                        $ctx->inc("rf_xfer_ok_$f");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("rf_xfer_failed_$f");
+                    }
+                });
+            })
+            ->requires('zts');
+
+        // When coroutine "X" runs a thread that crashes after transferring remote future "F"
+        // The worker takes ownership of the FutureState but throws before
+        // completing it — exercises tests/remote_future/009. The state must
+        // remain uncompleted; awaiters either race the throw or stay parked
+        // (cleared by the harness via ignore()).
+        $r->on('/^coroutine "([^"]+)" runs a thread that crashes after transferring remote future "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $f) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $f) {
+                    if (!isset($ctx->futureStates[$f])) {
+                        $ctx->inc("rf_xfer_no_state_$f");
+                        return;
+                    }
+                    $state = $ctx->futureStates[$f];
+                    $ctx->inc("rf_xfer_attempts_$f");
+                    try {
+                        $h = \Async\spawn_thread(static function() use ($state) {
+                            throw new \RuntimeException("worker crashed before complete");
+                        });
+                        $ctx->remoteFutureThreads[$f] = $h;
+                        $ctx->inc("rf_xfer_ok_$f");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("rf_xfer_failed_$f");
+                    }
+                });
+            })
+            ->requires('zts');
+
+        // When coroutine "X" awaits the source thread of remote future "F"
+        // Joins the worker that received the transfer. A worker that threw
+        // surfaces as Async\RemoteException; a worker that returned counts as
+        // completed. Silent return (no complete + no throw) is also counted.
+        $r->on('/^coroutine "([^"]+)" awaits the source thread of remote future "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $f) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $f) {
+                    $h = $ctx->remoteFutureThreads[$f] ?? null;
+                    if ($h === null) {
+                        $ctx->inc("rf_thread_no_handle_$f");
+                        return;
+                    }
+                    try {
+                        \Async\await($h);
+                        // No throw — worker either ran complete() or returned
+                        // silently. Distinguish via futureState completion.
+                        if (isset($ctx->futureStates[$f])
+                            && $ctx->futureStates[$f]->isCompleted()) {
+                            $ctx->inc("rf_thread_completed_$f");
+                        } else {
+                            $ctx->inc("rf_thread_silent_$f");
+                        }
+                    } catch (\Async\RemoteException $e) {
+                        $ctx->inc("rf_thread_threw_$f");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("rf_thread_other_$f");
+                    }
+                });
+            })
+            ->requires('zts');
+
+        // When coroutine "X" awaits remote future "F"
+        $r->on('/^coroutine "([^"]+)" awaits remote future "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $f) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $f) {
+                    if (!isset($ctx->futures[$f])) {
+                        $ctx->inc("rf_await_no_future_$f");
+                        return;
+                    }
+                    $ctx->inc("rf_await_attempts_$f");
+                    try {
+                        \Async\await($ctx->futures[$f]);
+                        $ctx->inc("rf_await_ok_$f");
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("rf_await_cancelled_$f");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("rf_await_failed_$f");
+                    }
+                });
+            })
+            ->requires('zts');
+
+        // When coroutine "X" attempts a second transfer of remote future "F"
+        // After the first spawn_thread takes ownership of the state, any
+        // further spawn_thread that captures it must throw at transfer time.
+        $r->on('/^coroutine "([^"]+)" attempts a second transfer of remote future "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $f) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $f) {
+                    if (!isset($ctx->futureStates[$f])) {
+                        $ctx->inc("rf_double_xfer_no_state_$f");
+                        return;
+                    }
+                    $state = $ctx->futureStates[$f];
+                    $ctx->inc("rf_double_xfer_attempts_$f");
+                    try {
+                        $h2 = \Async\spawn_thread(static function() use ($state) {
+                            // unreachable if transfer is blocked
+                            try { $state->complete("dup"); } catch (\Throwable $e) {}
+                        });
+                        // Transfer was allowed — join the rogue so we don't leak it.
+                        try { \Async\await($h2); } catch (\Throwable $e) {}
+                        $ctx->inc("rf_double_xfer_allowed_$f");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("rf_double_xfer_blocked_$f");
+                    }
+                });
+            })
+            ->requires('zts');
+
+        // When coroutine "X" attempts main-thread completion of remote future "F" with VAL
+        // After transfer the main thread loses write access to the state;
+        // complete() must throw (tests/remote_future/005).
+        $r->on('/^coroutine "([^"]+)" attempts main-thread completion of remote future "([^"]+)" with (\S+)$/',
+            function(Context $ctx, string $coro, string $f, string $valExpr) {
+                $val = $ctx->resolver->resolve($valExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $f, $val) {
+                    if (!isset($ctx->futureStates[$f])) {
+                        $ctx->inc("rf_main_complete_no_state_$f");
+                        return;
+                    }
+                    $ctx->inc("rf_main_complete_attempts_$f");
+                    try {
+                        $ctx->futureStates[$f]->complete($val);
+                        $ctx->inc("rf_main_complete_allowed_$f");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("rf_main_complete_blocked_$f");
+                    }
+                });
+            })
+            ->requires('zts');
+
+        // When coroutine "X" ignores remote future "F"
+        // Releases a possibly-uncompleted FutureState (tests/remote_future/009-010).
+        // A double ignore() must not crash.
+        $r->on('/^coroutine "([^"]+)" ignores remote future "([^"]+)"$/',
+            function(Context $ctx, string $coro, string $f) {
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $f) {
+                    if (!isset($ctx->futureStates[$f])) {
+                        $ctx->inc("rf_ignore_no_state_$f");
+                        return;
+                    }
+                    try {
+                        $ctx->futureStates[$f]->ignore();
+                        $ctx->inc("rf_ignore_$f");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("rf_ignore_failed_$f");
+                    }
+                });
+            })
+            ->requires('zts');
+
         // ---- ThreadChannel cross-thread traffic ----
 
         // When coroutine "X" runs a thread that sends N to thread channel "tc"
@@ -5137,6 +6017,55 @@ final class StandardSteps {
             }
             $ctx->events[] = sprintf(
                 'mysqli-txn %s: db=%s outcome=%s', $coro, $db, $outcome);
+        }
+    }
+}
+
+/**
+ * Test object whose __destruct() suspends back to the scheduler. Used by
+ * the gc/ chaos feature to drive ext/async's destructor-from-GC path
+ * (tests/gc/001-014). Holds a $peer ref so it can also be wired into
+ * cycles (zend_gc roots → ext/async dtor sweep).
+ */
+final class ChaosDtorSuspend {
+    public ?self $peer = null;
+    public function __construct(private Context $ctx, private string $coro) {}
+    public function __destruct() {
+        try {
+            $this->ctx->inc("gc_dtor_suspends_$this->coro");
+            \Async\suspend();
+            $this->ctx->inc("gc_obj_destroyed_$this->coro");
+        } catch (\Throwable $e) {
+            $this->ctx->inc("gc_dtor_threw_$this->coro");
+        }
+    }
+}
+
+/**
+ * Test object whose __destruct() spawns a child coroutine. Used by the
+ * gc/ chaos feature to drive scheduler reentrancy from inside the GC
+ * sweep (tests/gc/002). The spawned child increments
+ * gc_dtor_spawn_child_finished_* / _cancelled_* so the no-orphans
+ * invariant can be checked.
+ */
+final class ChaosDtorSpawn {
+    public function __construct(private Context $ctx, private string $coro) {}
+    public function __destruct() {
+        $ctx  = $this->ctx;
+        $coro = $this->coro;
+        try {
+            $this->ctx->inc("gc_dtor_spawns_$coro");
+            \Async\spawn(function() use ($ctx, $coro) {
+                try {
+                    \Async\suspend();
+                    $ctx->inc("gc_dtor_spawn_child_finished_$coro");
+                } catch (\Async\AsyncCancellation $e) {
+                    $ctx->inc("gc_dtor_spawn_child_cancelled_$coro");
+                }
+            });
+            $this->ctx->inc("gc_obj_destroyed_$this->coro");
+        } catch (\Throwable $e) {
+            $this->ctx->inc("gc_dtor_threw_$this->coro");
         }
     }
 }

@@ -163,6 +163,13 @@ final class Context {
     /** @var array<string, mixed[]> thread handles from spawn_thread, keyed by group label */
     public array $threadHandles = [];
 
+    /** @var array<string, mixed> thread handle that received transfer of a
+     * remote FutureState, keyed by future name. Populated by the
+     * "runs a thread that ... remote future" steps; consumed by
+     * "awaits the source thread of remote future" so the worker can be
+     * joined cleanly (or its RemoteException inspected). */
+    public array $remoteFutureThreads = [];
+
     /** @var array<string, array<string,string>> scope name => seeded context
      * key/value pairs. Applied synchronously in run()'s prep-phase by a
      * creator coroutine spawned inside the scope, so every inherited-scope
