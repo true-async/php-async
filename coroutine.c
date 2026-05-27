@@ -217,11 +217,16 @@ static void coroutine_object_destroy(zend_object *object)
 	ZVAL_UNDEF(&coroutine->coroutine.result);
 
 	if (coroutine->coroutine.exception != NULL) {
-		// If the coroutine has an exception, we need to release it.
-
 		zend_object *exception = coroutine->coroutine.exception;
 		coroutine->coroutine.exception = NULL;
-		OBJ_RELEASE(exception);
+
+		if (EG(current_execute_data) != NULL &&
+			!ZEND_ASYNC_EVENT_WILL_EXC_CAUGHT(&coroutine->coroutine.event) &&
+			!instanceof_function(exception->ce, ZEND_ASYNC_GET_CE(ZEND_ASYNC_EXCEPTION_CANCELLATION))) {
+			async_rethrow_exception(exception);
+		} else {
+			OBJ_RELEASE(exception);
+		}
 	}
 
 	if (coroutine->deferred_cancellation != NULL) {
@@ -661,6 +666,11 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 		ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(&coroutine->coroutine.event);
 		ZEND_COROUTINE_CLR_EXCEPTION_HANDLED(&coroutine->coroutine);
 		ZEND_ASYNC_CALLBACKS_NOTIFY(&coroutine->coroutine.event, &coroutine->coroutine.result, exception);
+
+		if (exception != NULL && ZEND_COROUTINE_IS_EXCEPTION_HANDLED(&coroutine->coroutine)) {
+			ZEND_ASYNC_EVENT_SET_EXC_CAUGHT(&coroutine->coroutine.event);
+		}
+
 		zend_async_callbacks_free(&coroutine->coroutine.event);
 
 		if (coroutine->coroutine.internal_context != NULL) {
@@ -700,6 +710,7 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 								   exception,
 								   false,
 								   ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(coroutine->coroutine.scope))) {
+			ZEND_ASYNC_EVENT_SET_EXC_CAUGHT(&coroutine->coroutine.event);
 			OBJ_RELEASE(exception);
 			exception = NULL;
 		}
@@ -711,9 +722,16 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 			coroutine->coroutine.scope = NULL;
 		}
 
-		// Otherwise, we rethrow the exception.
-		if (exception != NULL) {
+		// No outside reference to the handle means no late await() can ever observe
+		// the exception, so surface it immediately as a fire-and-forget safety net.
+		// Otherwise the handle is alive and the exception waits for await() or dtor.
+		if (exception != NULL && (GC_REFCOUNT(&coroutine->std) <= 1 ||
+								  ZEND_COROUTINE_IS_MAIN(&coroutine->coroutine))) {
+			ZEND_ASYNC_EVENT_SET_EXC_CAUGHT(&coroutine->coroutine.event);
 			async_rethrow_exception(exception);
+		} else if (exception != NULL) {
+			OBJ_RELEASE(exception);
+			exception = NULL;
 		}
 	}
 	zend_catch
