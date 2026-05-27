@@ -712,9 +712,7 @@ PHP_FUNCTION(Async_available_parallelism)
 	RETURN_LONG((zend_long) ZEND_ASYNC_AVAILABLE_PARALLELISM());
 }
 
-/* Snapshot of scheduler counters. All fields are read without locks
- * — the call is observational, not a synchronisation point. Safe to
- * dial from a hot path (HTTP handler, benchmark probe). */
+/* Lock-free snapshot of scheduler counters. */
 PHP_FUNCTION(Async_runtime_stats)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
@@ -725,8 +723,8 @@ PHP_FUNCTION(Async_runtime_stats)
 	const circular_buffer_t *const resumed_q  = &ASYNC_G(resumed_coroutines);
 
 	const size_t pool_count      = circular_buffer_count(pool);
-	/* circular_buffer_capacity returns capacity-1; pre-scheduler-init the
-	 * raw capacity is 0, which underflows to SIZE_MAX. Clamp to 0. */
+	/* circular_buffer_capacity does capacity-1, underflows to SIZE_MAX
+	 * pre-init. Clamp. */
 	const size_t pool_capacity   = pool->capacity > 0
 	                                 ? circular_buffer_capacity(pool) : 0;
 	const size_t stack_size      = EG(fiber_stack_size);
