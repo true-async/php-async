@@ -32,10 +32,8 @@ $coroutine_with_finally = $scope->spawn(function() {
 
 // Spawn coroutine in child scope with finally handlers
 $child_scope = \Async\Scope::inherit($scope);
-$child_coroutine = $child_scope->spawn(function() {
+$child_scope->spawn(function() {
     echo "child coroutine started\n";
-
-    $coroutine = \Async\current_coroutine();
     some_function();
 });
 
