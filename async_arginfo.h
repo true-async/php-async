@@ -1,5 +1,5 @@
 /* This is a generated file, edit async.stub.php instead.
- * Stub hash: 4081c5c85f43cceb118fc39e827c4b8c46e6b3b1 */
+ * Stub hash: 4164d2d438cd19d3005883636e5bc68db35ac954 */
 
 ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_Async_spawn, 0, 1, Async\\Coroutine, 0)
 	ZEND_ARG_TYPE_INFO(0, task, IS_CALLABLE, 0)
@@ -66,8 +66,10 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_available_parallelism, 0, 0, IS_LONG, 0)
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_cpu_usage, 0, 0, IS_ARRAY, 0)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_runtime_stats, 0, 0, IS_ARRAY, 0)
 ZEND_END_ARG_INFO()
+
+#define arginfo_Async_cpu_usage arginfo_Async_runtime_stats
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_loadavg, 0, 0, IS_ARRAY, 1)
 ZEND_END_ARG_INFO()
@@ -89,7 +91,7 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_Async_request_context, 0, 0, Async\\Context, 1)
 ZEND_END_ARG_INFO()
 
-#define arginfo_Async_get_coroutines arginfo_Async_cpu_usage
+#define arginfo_Async_get_coroutines arginfo_Async_runtime_stats
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_Async_iterate, 0, 2, IS_VOID, 0)
 	ZEND_ARG_OBJ_TYPE_MASK(0, iterable, Traversable, MAY_BE_ARRAY, NULL)
@@ -169,6 +171,7 @@ ZEND_FUNCTION(Async_await_any_of_or_fail);
 ZEND_FUNCTION(Async_await_any_of);
 ZEND_FUNCTION(Async_delay);
 ZEND_FUNCTION(Async_available_parallelism);
+ZEND_FUNCTION(Async_runtime_stats);
 ZEND_FUNCTION(Async_cpu_usage);
 ZEND_FUNCTION(Async_loadavg);
 ZEND_FUNCTION(Async_timeout);
@@ -203,6 +206,7 @@ static const zend_function_entry ext_functions[] = {
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "await_any_of"), zif_Async_await_any_of, arginfo_Async_await_any_of, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "delay"), zif_Async_delay, arginfo_Async_delay, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "available_parallelism"), zif_Async_available_parallelism, arginfo_Async_available_parallelism, 0, NULL, NULL)
+	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "runtime_stats"), zif_Async_runtime_stats, arginfo_Async_runtime_stats, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "cpu_usage"), zif_Async_cpu_usage, arginfo_Async_cpu_usage, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "loadavg"), zif_Async_loadavg, arginfo_Async_loadavg, 0, NULL, NULL)
 	ZEND_RAW_FENTRY(ZEND_NS_NAME("Async", "timeout"), zif_Async_timeout, arginfo_Async_timeout, 0, NULL, NULL)

@@ -72,6 +72,36 @@ function delay(int $ms): void {}
 function available_parallelism(): int {}
 
 /**
+ * Runtime statistics for coroutines, fibers, and scheduler queues.
+ *
+ * Returns an associative array with snapshots of the scheduler's
+ * internal counters. Cheap (no allocations, no locks) — safe to call
+ * from a hot path or HTTP handler.
+ *
+ *  - `coroutines_total`        — coroutines in the active coroutine map
+ *                                (alive but possibly suspended)
+ *  - `coroutines_active`       — running + queued coroutines, decremented
+ *                                when a coroutine completes
+ *  - `microtasks_queue`        — pending microtasks (deferred-but-soon)
+ *  - `coroutine_queue`         — coroutines waiting for a free fiber
+ *  - `resumed_queue`           — coroutines resumed by I/O completion,
+ *                                pending scheduler pickup
+ *  - `fiber_pool_count`        — fibers currently parked in the reuse pool
+ *  - `fiber_pool_capacity`     — pool ring-buffer capacity (grows when
+ *                                queue demands more fibers than the pool
+ *                                holds)
+ *  - `fiber_pool_min`          — `ASYNC_FIBER_POOL_SIZE` — minimum slots
+ *                                kept warm regardless of demand
+ *  - `fiber_stack_size`        — default C stack reservation per fiber
+ *                                (`EG(fiber_stack_size)`); virtual bytes
+ *                                — only touched pages are resident
+ *  - `fiber_pool_virtual_bytes`— `fiber_pool_count * fiber_stack_size`,
+ *                                upper bound on virtual VM committed by
+ *                                pooled fibers
+ */
+function runtime_stats(): array {}
+
+/**
  * Immutable point-in-time snapshot of process and system CPU counters.
  *
  * All time-valued fields are monotonically growing nanosecond counters with an

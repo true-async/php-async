@@ -24,6 +24,8 @@
 #include "php_async.h"
 #include "ext/standard/info.h"
 #include "scheduler.h"
+#include "internal/circular_buffer.h"
+#include "Zend/zend_fibers.h"
 #include "exceptions.h"
 #include "scope.h"
 #include "context.h"
@@ -708,6 +710,47 @@ PHP_FUNCTION(Async_available_parallelism)
 	}
 
 	RETURN_LONG((zend_long) ZEND_ASYNC_AVAILABLE_PARALLELISM());
+}
+
+/* Snapshot of scheduler counters. All fields are read without locks
+ * — the call is observational, not a synchronisation point. Safe to
+ * dial from a hot path (HTTP handler, benchmark probe). */
+PHP_FUNCTION(Async_runtime_stats)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	const circular_buffer_t *const pool       = &ASYNC_G(fiber_context_pool);
+	const circular_buffer_t *const microtasks = &ASYNC_G(microtasks);
+	const circular_buffer_t *const coro_queue = &ASYNC_G(coroutine_queue);
+	const circular_buffer_t *const resumed_q  = &ASYNC_G(resumed_coroutines);
+
+	const size_t pool_count      = circular_buffer_count(pool);
+	/* circular_buffer_capacity returns capacity-1; pre-scheduler-init the
+	 * raw capacity is 0, which underflows to SIZE_MAX. Clamp to 0. */
+	const size_t pool_capacity   = pool->capacity > 0
+	                                 ? circular_buffer_capacity(pool) : 0;
+	const size_t stack_size      = EG(fiber_stack_size);
+
+	array_init(return_value);
+
+	add_assoc_long(return_value, "coroutines_total",
+	               (zend_long) zend_hash_num_elements(&ASYNC_G(coroutines)));
+	add_assoc_long(return_value, "coroutines_active",
+	               (zend_long) ZEND_ASYNC_ACTIVE_COROUTINE_COUNT);
+
+	add_assoc_long(return_value, "microtasks_queue",
+	               (zend_long) circular_buffer_count(microtasks));
+	add_assoc_long(return_value, "coroutine_queue",
+	               (zend_long) circular_buffer_count(coro_queue));
+	add_assoc_long(return_value, "resumed_queue",
+	               (zend_long) circular_buffer_count(resumed_q));
+
+	add_assoc_long(return_value, "fiber_pool_count",    (zend_long) pool_count);
+	add_assoc_long(return_value, "fiber_pool_capacity", (zend_long) pool_capacity);
+	add_assoc_long(return_value, "fiber_pool_min",      (zend_long) ASYNC_FIBER_POOL_SIZE);
+	add_assoc_long(return_value, "fiber_stack_size",    (zend_long) stack_size);
+	add_assoc_long(return_value, "fiber_pool_virtual_bytes",
+	               (zend_long) (pool_count * stack_size));
 }
 
 PHP_FUNCTION(Async_timeout)
