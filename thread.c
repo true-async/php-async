@@ -865,7 +865,7 @@ static zend_object *thread_transfer_object_default(
 	for (uint32_t i = 0; i < prop_count; i++) {
 		zval *prop = &dst->properties_table[i];
 		if (Z_TYPE_P(prop) != IS_UNDEF) {
-			zval transferred;
+			zval transferred = {0};
 			thread_transfer_zval_inner(ctx, &transferred, prop);
 			if (UNEXPECTED(ctx->error)) {
 				/* Mark remaining properties as UNDEF so release won't
@@ -1160,7 +1160,7 @@ static zend_object *thread_load_object_default(
 	for (uint32_t i = 0; i < prop_count; i++) {
 		const zval *prop = &src->properties_table[i];
 		if (Z_TYPE_P(prop) != IS_UNDEF) {
-			zval copy;
+			zval copy = {0};
 			thread_load_zval_inner(ctx, &copy, prop);
 			zval_ptr_dtor(&dst->properties_table[i]);
 			ZVAL_COPY_VALUE(&dst->properties_table[i], &copy);
