@@ -439,7 +439,7 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 		if (iterator->fcall != NULL) {
 			/* Call the userland function */
 			ZVAL_COPY(&fci.params[0], current);
-			ZVAL_COPY_VALUE(&fci.params[1], &key);
+			ZVAL_COPY(&fci.params[1], &key);
 			result = zend_call_function(&fci, &iterator->fcall->fci_cache);
 		} else {
 			/* Call the internal function */
@@ -467,6 +467,7 @@ static zend_always_inline void iterate(async_iterator_t *iterator)
 
 		if (iterator->fcall != NULL) {
 			zval_ptr_dtor(&fci.params[0]);
+			ZVAL_UNDEF(&fci.params[0]);
 
 			if (Z_TYPE(fci.params[1]) != IS_UNDEF) {
 				zval_ptr_dtor(&fci.params[1]);
