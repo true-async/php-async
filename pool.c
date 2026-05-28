@@ -1471,7 +1471,7 @@ void async_register_pool_ce(void)
 	async_ce_pool->create_object = async_pool_create_object;
 
 	memcpy(&async_pool_handlers, &std_object_handlers, sizeof(zend_object_handlers));
-	async_pool_handlers.offset = XtOffsetOf(async_pool_obj_t, std);
+	async_pool_handlers.offset = offsetof(async_pool_obj_t, std);
 	async_pool_handlers.get_gc = async_pool_get_gc;
 	async_pool_handlers.free_obj = async_pool_free_object;
 	async_pool_handlers.clone_obj = NULL;

@@ -218,7 +218,7 @@ void async_register_thread_ce(void);
 
 static zend_always_inline async_thread_object_t *async_thread_object_from_obj(zend_object *obj)
 {
-	return (async_thread_object_t *) ((char *) obj - XtOffsetOf(async_thread_object_t, std));
+	return (async_thread_object_t *) ((char *) obj - offsetof(async_thread_object_t, std));
 }
 
 #define Z_ASYNC_THREAD_P(zv) async_thread_object_from_obj(Z_OBJ_P(zv))

@@ -397,7 +397,7 @@ static void task_group_event_init(async_task_group_t *group)
 	memset(event, 0, sizeof(zend_async_event_t));
 
 	event->flags = ZEND_ASYNC_EVENT_F_ZEND_OBJ;
-	event->zend_object_offset = XtOffsetOf(async_task_group_t, std);
+	event->zend_object_offset = offsetof(async_task_group_t, std);
 	event->add_callback = task_group_add_callback;
 	event->del_callback = task_group_del_callback;
 	event->start = task_group_start;
@@ -1888,7 +1888,7 @@ void async_register_task_group_ce(void)
 	async_ce_task_group->get_iterator = task_group_get_iterator;
 
 	memcpy(&task_group_handlers, &std_object_handlers, sizeof(zend_object_handlers));
-	task_group_handlers.offset = XtOffsetOf(async_task_group_t, std);
+	task_group_handlers.offset = offsetof(async_task_group_t, std);
 	task_group_handlers.get_gc = task_group_get_gc;
 	task_group_handlers.dtor_obj = task_group_dtor_object;
 	task_group_handlers.free_obj = task_group_free_object;

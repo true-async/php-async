@@ -1222,7 +1222,7 @@ void async_register_thread_pool_ce(void)
 	async_ce_thread_pool->create_object = thread_pool_create_object;
 
 	memcpy(&thread_pool_handlers, &std_object_handlers, sizeof(zend_object_handlers));
-	thread_pool_handlers.offset = XtOffsetOf(thread_pool_object_t, std);
+	thread_pool_handlers.offset = offsetof(thread_pool_object_t, std);
 	thread_pool_handlers.free_obj = thread_pool_free_object;
 	async_ce_thread_pool->default_object_handlers = &thread_pool_handlers;
 

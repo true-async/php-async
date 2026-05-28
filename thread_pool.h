@@ -73,7 +73,7 @@ extern zend_class_entry *async_ce_thread_pool_exception;
 
 /* Convert zend_object to thread_pool_object_t */
 #define ASYNC_THREAD_POOL_FROM_OBJ(obj) \
-	((thread_pool_object_t *)((char *)(obj) - XtOffsetOf(thread_pool_object_t, std)))
+	((thread_pool_object_t *)((char *)(obj) - offsetof(thread_pool_object_t, std)))
 
 /* Factory — matches `zend_async_new_thread_pool_t`. Registered with
  * `zend_async_thread_pool_register` and invoked from PHP `__construct`.

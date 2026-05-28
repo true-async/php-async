@@ -191,7 +191,7 @@ static zend_object *fs_watcher_create_object(zend_class_entry *ce)
 	zend_object_std_init(&watcher->std, ce);
 	watcher->std.handlers = &fs_watcher_handlers;
 
-	ZEND_ASYNC_EVENT_REF_SET(watcher, XtOffsetOf(async_fs_watcher_t, std), NULL);
+	ZEND_ASYNC_EVENT_REF_SET(watcher, offsetof(async_fs_watcher_t, std), NULL);
 
 	watcher->fs_callback = NULL;
 	watcher->watcher_flags = 0;
@@ -460,7 +460,7 @@ void async_register_fs_watcher_ce(void)
 	async_ce_fs_watcher->get_iterator = fs_watcher_get_iterator;
 
 	memcpy(&fs_watcher_handlers, &std_object_handlers, sizeof(zend_object_handlers));
-	fs_watcher_handlers.offset = XtOffsetOf(async_fs_watcher_t, std);
+	fs_watcher_handlers.offset = offsetof(async_fs_watcher_t, std);
 	fs_watcher_handlers.get_gc = fs_watcher_get_gc;
 	fs_watcher_handlers.dtor_obj = fs_watcher_dtor_object;
 	fs_watcher_handlers.free_obj = fs_watcher_free_object;

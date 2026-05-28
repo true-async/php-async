@@ -206,7 +206,7 @@ PHP_FUNCTION(Async_spawn_thread)
 
 	/* Set event reference so ZEND_ASYNC_OBJECT_TO_EVENT() can resolve from this object */
 	ZEND_ASYNC_EVENT_REF_SET(thread_obj,
-		XtOffsetOf(async_thread_object_t, std), &thread_event->base);
+		offsetof(async_thread_object_t, std), &thread_event->base);
 
 	/* Record spawn location */
 	zend_apply_current_filename_and_line(&thread_event->filename, &thread_event->lineno);
@@ -1609,7 +1609,7 @@ static zend_object *async_timeout_create(const zend_ulong ms, const bool is_peri
 		return NULL;
 	}
 
-	ZEND_ASYNC_EVENT_REF_SET(object, XtOffsetOf(async_timeout_object_t, std), (zend_async_timer_event_t *) event);
+	ZEND_ASYNC_EVENT_REF_SET(object, offsetof(async_timeout_object_t, std), (zend_async_timer_event_t *) event);
 	// A special flag is set to indicate that the event will contain a reference to a Zend object.
 	ZEND_ASYNC_EVENT_WITH_OBJECT_REF(event);
 
@@ -1647,7 +1647,7 @@ void async_register_timeout_ce(void)
 
 	async_timeout_handlers = std_object_handlers;
 
-	async_timeout_handlers.offset = XtOffsetOf(async_timeout_object_t, std);
+	async_timeout_handlers.offset = offsetof(async_timeout_object_t, std);
 	async_timeout_handlers.dtor_obj = async_timeout_destroy_object;
 }
 

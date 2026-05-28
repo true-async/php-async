@@ -2734,7 +2734,7 @@ static zend_object *thread_object_create(zend_class_entry *class_entry)
 {
 	async_thread_object_t *thread = zend_object_alloc(sizeof(async_thread_object_t), class_entry);
 
-	ZEND_ASYNC_EVENT_REF_SET(thread, XtOffsetOf(async_thread_object_t, std), NULL);
+	ZEND_ASYNC_EVENT_REF_SET(thread, offsetof(async_thread_object_t, std), NULL);
 
 	thread->thread_event = NULL;
 	thread->parent_scope = NULL;
@@ -3113,7 +3113,7 @@ void async_register_thread_ce(void)
 	async_ce_thread->default_object_handlers = &thread_object_handlers;
 
 	thread_object_handlers = std_object_handlers;
-	thread_object_handlers.offset = XtOffsetOf(async_thread_object_t, std);
+	thread_object_handlers.offset = offsetof(async_thread_object_t, std);
 	thread_object_handlers.clone_obj = NULL;
 	thread_object_handlers.dtor_obj = thread_object_dtor;
 	thread_object_handlers.free_obj = thread_object_free;

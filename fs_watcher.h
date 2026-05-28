@@ -29,7 +29,7 @@
 
 /* Cast event* back to zend_async_filesystem_event_t* */
 #define ASYNC_FS_WATCHER_FS_EVENT(w) \
-	((zend_async_filesystem_event_t *) ((char *) (w)->event - XtOffsetOf(zend_async_filesystem_event_t, base)))
+	((zend_async_filesystem_event_t *) ((char *) (w)->event - offsetof(zend_async_filesystem_event_t, base)))
 
 typedef struct _async_fs_watcher_s async_fs_watcher_t;
 
@@ -52,7 +52,7 @@ struct _async_fs_watcher_s
 	/* Watcher state flags */
 	uint32_t watcher_flags;
 
-	/* PHP object (must be last — XtOffsetOf) */
+	/* PHP object (must be last — offsetof) */
 	zend_object std;
 };
 
@@ -71,7 +71,7 @@ extern zend_class_entry *async_ce_fs_watcher;
 extern zend_class_entry *async_ce_filesystem_event;
 
 /* Convert zend_object → async_fs_watcher_t */
-#define ASYNC_FS_WATCHER_FROM_OBJ(obj) ((async_fs_watcher_t *) ((char *) (obj) - XtOffsetOf(async_fs_watcher_t, std)))
+#define ASYNC_FS_WATCHER_FROM_OBJ(obj) ((async_fs_watcher_t *) ((char *) (obj) - offsetof(async_fs_watcher_t, std)))
 
 /* API */
 void async_register_fs_watcher_ce(void);

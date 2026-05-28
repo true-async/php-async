@@ -131,7 +131,7 @@ static zend_object *coroutine_object_create(zend_class_entry *class_entry)
 
 	ZEND_ASYNC_EVENT_SET_ZEND_OBJ(&coroutine->coroutine.event);
 	ZEND_ASYNC_EVENT_SET_NO_FREE_MEMORY(&coroutine->coroutine.event);
-	ZEND_ASYNC_EVENT_SET_ZEND_OBJ_OFFSET(&coroutine->coroutine.event, XtOffsetOf(async_coroutine_t, std));
+	ZEND_ASYNC_EVENT_SET_ZEND_OBJ_OFFSET(&coroutine->coroutine.event, offsetof(async_coroutine_t, std));
 
 	/* Initialize embedded waker */
 	coroutine->coroutine.waker = &coroutine->waker;
@@ -445,7 +445,7 @@ void async_register_coroutine_ce(void)
 	async_ce_coroutine->default_object_handlers = &coroutine_handlers;
 
 	coroutine_handlers = std_object_handlers;
-	coroutine_handlers.offset = XtOffsetOf(async_coroutine_t, std);
+	coroutine_handlers.offset = offsetof(async_coroutine_t, std);
 	coroutine_handlers.clone_obj = NULL;
 	coroutine_handlers.dtor_obj = coroutine_object_destroy;
 	coroutine_handlers.free_obj = coroutine_free;
@@ -724,9 +724,12 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 
 		// No outside reference to the handle means no late await() can ever observe
 		// the exception, so surface it immediately as a fire-and-forget safety net.
+		// Fiber-backed coroutines also surface eagerly: the fiber awaits via its
+		// yield_event, not the coroutine handle, so a late await() never arrives.
 		// Otherwise the handle is alive and the exception waits for await() or dtor.
 		if (exception != NULL && (GC_REFCOUNT(&coroutine->std) <= 1 ||
-								  ZEND_COROUTINE_IS_MAIN(&coroutine->coroutine))) {
+								  ZEND_COROUTINE_IS_MAIN(&coroutine->coroutine) ||
+								  ZEND_COROUTINE_IS_FIBER(&coroutine->coroutine))) {
 			ZEND_ASYNC_EVENT_SET_EXC_CAUGHT(&coroutine->coroutine.event);
 			async_rethrow_exception(exception);
 		} else if (exception != NULL) {

@@ -521,7 +521,7 @@ void async_register_thread_channel_ce(void)
 
 	memcpy(&async_thread_channel_handlers, &std_object_handlers, sizeof(zend_object_handlers));
 	async_ce_thread_channel->default_object_handlers = &async_thread_channel_handlers;
-	async_thread_channel_handlers.offset = XtOffsetOf(thread_channel_object_t, std);
+	async_thread_channel_handlers.offset = offsetof(thread_channel_object_t, std);
 	async_thread_channel_handlers.get_gc = async_thread_channel_get_gc;
 	async_thread_channel_handlers.dtor_obj = async_thread_channel_dtor_object;
 	async_thread_channel_handlers.free_obj = async_thread_channel_free_object;

@@ -101,7 +101,7 @@ extern zend_class_entry *async_ce_channel_exception;
 extern zend_class_entry *async_ce_channel_close_reason;
 
 /* Convert zend_object to async_channel_t */
-#define ASYNC_CHANNEL_FROM_OBJ(obj) ((async_channel_t *) ((char *) (obj) - XtOffsetOf(async_channel_t, std)))
+#define ASYNC_CHANNEL_FROM_OBJ(obj) ((async_channel_t *) ((char *) (obj) - offsetof(async_channel_t, std)))
 
 /* Convert zend_async_channel_t to async_channel_t */
 #define ASYNC_CHANNEL_FROM_ZEND(zend_channel) ((async_channel_t *) (zend_channel))

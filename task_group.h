@@ -82,7 +82,7 @@ struct _async_task_group_s
 	/* Auto-increment key counter */
 	uint32_t next_key;
 
-	/* PHP object (must be last — XtOffsetOf) */
+	/* PHP object (must be last — offsetof) */
 	zend_object std;
 };
 
@@ -103,7 +103,7 @@ extern zend_class_entry *async_ce_task_group;
 extern zend_class_entry *async_ce_task_set;
 
 /* Convert zend_object → async_task_group_t */
-#define ASYNC_TASK_GROUP_FROM_OBJ(obj) ((async_task_group_t *) ((char *) (obj) - XtOffsetOf(async_task_group_t, std)))
+#define ASYNC_TASK_GROUP_FROM_OBJ(obj) ((async_task_group_t *) ((char *) (obj) - offsetof(async_task_group_t, std)))
 
 /* Convert zend_async_event_t → async_task_group_t (event is first field) */
 #define ASYNC_TASK_GROUP_FROM_EVENT(ev) ((async_task_group_t *) (ev))

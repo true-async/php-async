@@ -179,7 +179,7 @@ async_context_t *async_context_new(void)
 	context->base.dispose = (zend_async_context_dispose_t) async_context_dispose;
 
 	// Initialize std object
-	context->base.offset = XtOffsetOf(async_context_t, std);
+	context->base.offset = offsetof(async_context_t, std);
 
 	zend_object_std_init(&context->std, async_ce_context);
 	object_properties_init(&context->std, async_ce_context);
@@ -369,7 +369,7 @@ void async_register_context_ce(void)
 	// Set up object handlers
 	static zend_object_handlers context_handlers;
 	context_handlers = std_object_handlers;
-	context_handlers.offset = XtOffsetOf(async_context_t, std);
+	context_handlers.offset = offsetof(async_context_t, std);
 	context_handlers.clone_obj = NULL;
 	context_handlers.dtor_obj = context_object_destroy;
 	context_handlers.free_obj = context_free;

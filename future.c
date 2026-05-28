@@ -693,7 +693,7 @@ static zend_object *async_future_state_object_create(zend_class_entry *ce)
 	/* Record where the Future was created */
 	zend_apply_current_filename_and_line(&future->filename, &future->lineno);
 
-	ZEND_ASYNC_EVENT_REF_SET(state, XtOffsetOf(async_future_state_t, std), event);
+	ZEND_ASYNC_EVENT_REF_SET(state, offsetof(async_future_state_t, std), event);
 	ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(state->event);
 	state->shared_state = NULL;
 
@@ -752,7 +752,7 @@ static void async_future_state_object_free(zend_object *object)
  */
 /* Direct offset — safe for pemalloc objects where handlers may be invalid */
 #define FUTURE_STATE_FROM_OBJ(obj) \
-	((async_future_state_t *)((char *)(obj) - XtOffsetOf(async_future_state_t, std)))
+	((async_future_state_t *)((char *)(obj) - offsetof(async_future_state_t, std)))
 
 static zend_object *async_future_state_transfer_obj(
 	zend_object *object, zend_async_thread_transfer_ctx_t *ctx,
@@ -825,7 +825,7 @@ static zend_object *async_future_object_create(zend_class_entry *ce)
 {
 	async_future_t *future = zend_object_alloc(sizeof(async_future_t), ce);
 
-	ZEND_ASYNC_EVENT_REF_SET(future, XtOffsetOf(async_future_t, std), NULL);
+	ZEND_ASYNC_EVENT_REF_SET(future, offsetof(async_future_t, std), NULL);
 
 	future->child_futures = NULL;
 	ZVAL_UNDEF(&future->mapper);
@@ -1141,7 +1141,7 @@ FUTURE_METHOD(__construct)
 	future->event = state->event;
 	ZEND_ASYNC_EVENT_ADD_REF(state->event);
 
-	ZEND_ASYNC_EVENT_REF_SET(future, XtOffsetOf(async_future_t, std), state->event);
+	ZEND_ASYNC_EVENT_REF_SET(future, offsetof(async_future_t, std), state->event);
 }
 
 FUTURE_METHOD(completed)
@@ -1923,7 +1923,7 @@ zend_object *async_new_future_obj(zend_future_t *future)
 
 	async_future_t *future_obj = (async_future_t *) zend_object_alloc(sizeof(async_future_t), async_ce_future);
 
-	ZEND_ASYNC_EVENT_REF_SET(future_obj, XtOffsetOf(async_future_t, std), &future->event);
+	ZEND_ASYNC_EVENT_REF_SET(future_obj, offsetof(async_future_t, std), &future->event);
 
 	future_obj->child_futures = NULL;
 	ZVAL_UNDEF(&future_obj->mapper);
@@ -2302,7 +2302,7 @@ void async_register_future_ce(void)
 	async_ce_future_state->create_object = async_future_state_object_create;
 
 	memcpy(&async_future_state_handlers, &std_object_handlers, sizeof(zend_object_handlers));
-	async_future_state_handlers.offset = XtOffsetOf(async_future_state_t, std);
+	async_future_state_handlers.offset = offsetof(async_future_state_t, std);
 	async_future_state_handlers.free_obj = async_future_state_object_free;
 	async_future_state_handlers.transfer_obj = async_future_state_transfer_obj;
 	async_ce_future_state->default_object_handlers = &async_future_state_handlers;
@@ -2312,7 +2312,7 @@ void async_register_future_ce(void)
 	async_ce_future->create_object = async_future_object_create;
 
 	memcpy(&async_future_handlers, &std_object_handlers, sizeof(zend_object_handlers));
-	async_future_handlers.offset = XtOffsetOf(async_future_t, std);
+	async_future_handlers.offset = offsetof(async_future_t, std);
 	async_future_handlers.free_obj = async_future_object_free;
 	async_future_handlers.get_gc = async_future_get_gc;
 	async_ce_future->default_object_handlers = &async_future_handlers;

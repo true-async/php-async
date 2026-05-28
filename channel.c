@@ -270,7 +270,7 @@ static void channel_deadlock_fire(zend_async_event_t *timer_event,
 								  void *result,
 								  zend_object *exception)
 {
-	async_channel_t *channel = (async_channel_t *) ((char *) callback - XtOffsetOf(async_channel_t, deadlock_callback));
+	async_channel_t *channel = (async_channel_t *) ((char *) callback - offsetof(async_channel_t, deadlock_callback));
 
 	if (ZEND_ASYNC_EVENT_IS_CLOSED(&channel->channel.event)) {
 		return;
@@ -466,7 +466,7 @@ static void channel_scope_close_fire(zend_async_event_t *scope_event,
 									 void *result,
 									 zend_object *exception)
 {
-	async_channel_t *channel = (async_channel_t *) ((char *) callback - XtOffsetOf(async_channel_t, scope_close_callback));
+	async_channel_t *channel = (async_channel_t *) ((char *) callback - offsetof(async_channel_t, scope_close_callback));
 
 	channel_close(channel, CHANNEL_CLOSE_SCOPE_DISPOSED);
 }
@@ -638,7 +638,7 @@ static void channel_event_init(async_channel_t *channel)
 	memset(event, 0, sizeof(zend_async_event_t));
 
 	event->flags = ZEND_ASYNC_EVENT_F_ZEND_OBJ;
-	event->zend_object_offset = XtOffsetOf(async_channel_t, std);
+	event->zend_object_offset = offsetof(async_channel_t, std);
 	event->add_callback = channel_add_callback;
 	event->del_callback = channel_del_callback;
 	event->start = channel_start;
@@ -1153,7 +1153,7 @@ void async_register_channel_ce(void)
 	async_ce_channel->get_iterator  = channel_get_iterator;
 
 	memcpy(&async_channel_handlers, &std_object_handlers, sizeof(zend_object_handlers));
-	async_channel_handlers.offset    = XtOffsetOf(async_channel_t, std);
+	async_channel_handlers.offset    = offsetof(async_channel_t, std);
 	async_channel_handlers.get_gc    = async_channel_get_gc;
 	async_channel_handlers.dtor_obj  = async_channel_dtor_object;
 	async_channel_handlers.free_obj  = async_channel_free_object;

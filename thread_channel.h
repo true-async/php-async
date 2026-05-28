@@ -69,7 +69,7 @@ extern zend_class_entry *async_ce_thread_channel_exception;
 
 /* Convert zend_object to thread_channel_object_t */
 #define ASYNC_THREAD_CHANNEL_FROM_OBJ(obj) \
-	((thread_channel_object_t *)((char *)(obj) - XtOffsetOf(thread_channel_object_t, std)))
+	((thread_channel_object_t *)((char *)(obj) - offsetof(thread_channel_object_t, std)))
 
 /* Get trigger event from wrapper (stored via ZEND_ASYNC_EVENT_REF_FIELDS) */
 #define ASYNC_THREAD_CHANNEL_TRIGGER(obj) \
