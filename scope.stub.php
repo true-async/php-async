@@ -51,6 +51,8 @@ final class Scope implements ScopeProvider
 
     public function asNotSafely(): Scope {}
 
+    public function allowZombies(): Scope {}
+
     public function spawn(\Closure $callable, mixed ...$params): Coroutine {}
 
     public function cancel(?AsyncCancellation $cancellationError = null): void {}

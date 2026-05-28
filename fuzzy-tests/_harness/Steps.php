@@ -4745,7 +4745,7 @@ final class StandardSteps {
         // ---- Scope extras: asNotSafely / getChildScopes / handlers ----
 
         // When coroutine "X" marks a fresh scope as not-safely
-        // asNotSafely() flips the cancellation-safety flag and returns the
+        // asNotSafely() clears the cancellation-safety flag and returns the
         // SAME Scope — identity must hold.
         $r->on('/^coroutine "([^"]+)" marks a fresh scope as not-safely$/',
             function(Context $ctx, string $coro) {

@@ -26,6 +26,8 @@ ZEND_END_ARG_INFO()
 
 #define arginfo_class_Async_Scope_asNotSafely arginfo_class_Async_Scope_provideScope
 
+#define arginfo_class_Async_Scope_allowZombies arginfo_class_Async_Scope_provideScope
+
 ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_class_Async_Scope_spawn, 0, 1, Async\\Coroutine, 0)
 	ZEND_ARG_OBJ_INFO(0, callable, Closure, 0)
 	ZEND_ARG_VARIADIC_TYPE_INFO(0, params, IS_MIXED, 0)
@@ -77,6 +79,7 @@ ZEND_METHOD(Async_Scope, inherit);
 ZEND_METHOD(Async_Scope, provideScope);
 ZEND_METHOD(Async_Scope, __construct);
 ZEND_METHOD(Async_Scope, asNotSafely);
+ZEND_METHOD(Async_Scope, allowZombies);
 ZEND_METHOD(Async_Scope, spawn);
 ZEND_METHOD(Async_Scope, cancel);
 ZEND_METHOD(Async_Scope, awaitCompletion);
@@ -108,6 +111,7 @@ static const zend_function_entry class_Async_Scope_methods[] = {
 	ZEND_ME(Async_Scope, provideScope, arginfo_class_Async_Scope_provideScope, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_Scope, __construct, arginfo_class_Async_Scope___construct, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_Scope, asNotSafely, arginfo_class_Async_Scope_asNotSafely, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_Scope, allowZombies, arginfo_class_Async_Scope_allowZombies, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_Scope, spawn, arginfo_class_Async_Scope_spawn, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_Scope, cancel, arginfo_class_Async_Scope_cancel, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_Scope, awaitCompletion, arginfo_class_Async_Scope_awaitCompletion, ZEND_ACC_PUBLIC)

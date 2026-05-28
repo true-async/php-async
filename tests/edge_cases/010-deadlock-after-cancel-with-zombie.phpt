@@ -12,7 +12,7 @@ use Async\Scope;
 
 echo "start\n";
 
-$scope = new Scope();
+$scope = (new Scope())->allowZombies();
 
 $coroutine1 = null;
 $coroutine2 = null;

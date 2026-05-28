@@ -10,8 +10,8 @@ use function Async\spawn;
 use function Async\delay;
 use function Async\await;
 
-$scope_a = new Scope();
-$scope_b = new Scope();
+$scope_a = (new Scope())->allowZombies();
+$scope_b = (new Scope())->allowZombies();
 
 $ch_a = null;
 $ch_b = null;

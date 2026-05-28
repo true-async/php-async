@@ -166,11 +166,26 @@ METHOD(inherit)
 		base_parent_scope = &parent_obj->scope->scope;
 	} else {
 		base_parent_scope = ZEND_ASYNC_CURRENT_SCOPE;
+
+		// At the top level (no current coroutine yet) fall back to the main
+		// scope so an inherited scope still inherits — otherwise it would
+		// be treated as a root and pick up the user-facing Not-Safe default
+		// of `new Scope()`.
+		if (base_parent_scope == NULL && ZEND_ASYNC_MAIN_SCOPE != NULL) {
+			base_parent_scope = ZEND_ASYNC_MAIN_SCOPE;
+		}
 	}
 
 	zend_async_scope_t *new_scope = async_new_scope(base_parent_scope, true);
 	if (UNEXPECTED(new_scope == NULL)) {
 		RETURN_THROWS();
+	}
+
+	// If neither a current scope nor a main scope existed, the new scope is
+	// still effectively inherited from the (yet-to-exist) main scope, which
+	// is always Safe — preserve that by setting the flag explicitly.
+	if (base_parent_scope == NULL) {
+		ZEND_ASYNC_SCOPE_SET_DISPOSE_SAFELY(new_scope);
 	}
 
 	RETURN_OBJ(new_scope->scope_object);
@@ -201,8 +216,26 @@ METHOD(asNotSafely)
 		RETURN_THROWS();
 	}
 
-	// Clear dispose safely flag
+	// Opt out of safe disposal: coroutines outliving the scope are cancelled
+	// rather than turned into zombies.
 	ZEND_ASYNC_SCOPE_CLR_DISPOSE_SAFELY(&scope_object->scope->scope);
+
+	RETURN_ZVAL(ZEND_THIS, 1, 0);
+}
+
+METHOD(allowZombies)
+{
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	async_scope_object_t *scope_object = THIS_SCOPE;
+	if (UNEXPECTED(scope_object->scope == NULL)) {
+		async_throw_error("Scope object has been disposed");
+		RETURN_THROWS();
+	}
+
+	// Opt into safe disposal: coroutines outliving the scope become zombies
+	// instead of being cancelled.
+	ZEND_ASYNC_SCOPE_SET_DISPOSE_SAFELY(&scope_object->scope->scope);
 
 	RETURN_ZVAL(ZEND_THIS, 1, 0);
 }
@@ -1275,8 +1308,15 @@ zend_async_scope_t *async_new_scope(zend_async_scope_t *parent_scope, const bool
 	scope->scope.request_scope = parent_scope != NULL ? parent_scope->request_scope : NULL;
 	zend_async_event_t *event = &scope->scope.event;
 
-	// Inherit safely disposal flag from parent scope or set it to true if parent scope is NULL
-	if (parent_scope == NULL || ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(parent_scope)) {
+	// Inherit DISPOSE_SAFELY from parent. For root scopes without parent:
+	//   - internal/main scope (no zend object) defaults to Safe (zombie-friendly).
+	//   - user-created `new Scope()` (with zend object) defaults to Not-Safe;
+	//     callers opt back in via Scope::allowZombies().
+	if (parent_scope != NULL) {
+		if (ZEND_ASYNC_SCOPE_IS_DISPOSE_SAFELY(parent_scope)) {
+			ZEND_ASYNC_SCOPE_SET_DISPOSE_SAFELY(&scope->scope);
+		}
+	} else if (!with_zend_object) {
 		ZEND_ASYNC_SCOPE_SET_DISPOSE_SAFELY(&scope->scope);
 	}
 

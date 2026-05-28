@@ -581,11 +581,22 @@ final class Scope implements ScopeProvider
     public function __construct() {}
 
     /**
-     * Mark the scope as "not safely disposable" and return it.
+     * Mark the scope as "not safely disposable" (clear the DISPOSE_SAFELY
+     * flag): coroutines outliving the scope are cancelled rather than turned
+     * into zombies. Returns the same scope for chaining.
      *
      * @return Scope $this
      */
     public function asNotSafely(): Scope {}
+
+    /**
+     * Opt the scope into safe disposal (set the DISPOSE_SAFELY flag):
+     * coroutines outliving the scope become zombies instead of being
+     * cancelled. Returns the same scope for chaining.
+     *
+     * @return Scope $this
+     */
+    public function allowZombies(): Scope {}
 
     /**
      * Spawn a new coroutine inside this scope.
