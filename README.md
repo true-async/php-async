@@ -28,9 +28,18 @@ no callbacks, no promises, no framework required.
 - **[Pool](https://true-async.github.io/en/docs/components/pool.html)** — Universal resource pool for managing reusable objects (connections, sockets) with health checks and circuit breaker patterns.
 - **[TaskGroup](https://true-async.github.io/en/docs/components/task-group.html)** — High-level structured concurrency with multiple completion strategies (`all` / `race` / `any`) and concurrency limits.
 - **[PDO Pool](https://true-async.github.io/en/docs/components/pdo-pool.html)** — Transparent built-in connection pool for PDO, with automatic transaction management and health checks.
+- **PDO Prepared Statement Cache** — Opt-in per-connection LRU cache of server-side prepared statements (`PDO::ATTR_POOL_STMT_CACHE_SIZE`). Repeated `prepare()` of the same SQL reuses the cached server-side statement with zero wire traffic; measured ~2.9× on a tight `prepare+execute+fetch` loop. Supported on `pdo_pgsql`, `pdo_mysql`, `pdo_sqlite`. See [`docs/pdo-pool-stmt-cache-perf.md`](docs/pdo-pool-stmt-cache-perf.md).
+- **[ThreadPool](https://true-async.github.io/en/docs/components/thread-pool.html)** — Pool of OS threads for offloading CPU-bound or blocking PHP closures. `submit()` / `map()` return awaitable futures; `coroutine: true` mode runs each task as a coroutine inside its own scope (so tasks may `await`/use channels/IO without blocking the worker). Auto-detects worker count via `Async\available_parallelism()`. Includes graceful `close()`, hard `cancel()`, and per-worker `bootloader` hook.
+- **`Async\spawn_thread()`** — Spawn a single OS thread running an arbitrary PHP closure. Thread-safe channel via deep-copy snapshot (`Async\ThreadChannel`): send/recv suspend the coroutine, not the OS thread.
 - **[FileSystemWatcher](https://true-async.github.io/en/docs/components/filesystem-watcher.html)** — Persistent filesystem event observer with coalesced and raw event delivery modes.
 - **[70+ async-aware PHP functions](https://true-async.github.io/en/docs/reference/supported-functions.html)** — 
   `DNS`, sockets, streams, `cURL`, `PDO`, `MySQLi`, `PostgreSQL`, process execution, sleep/timers, and more. All automatically non-blocking inside coroutines.
+
+---
+
+## Companion project: TrueAsync Server
+
+Looking for a production-ready way to put PHP TRUE ASYNC behind a network socket? See **[TrueAsync Server](https://github.com/true-async/server)** — a native PHP extension that runs a high-performance multi-protocol web server **directly inside PHP**, no separate process or reverse proxy. HTTP/1.1, HTTP/2, HTTP/3 (QUIC), WebSocket, SSE, and gRPC share a single TCP/UDP port via ALPN/Upgrade, and every connection runs on top of this event loop. Repository: [github.com/true-async/server](https://github.com/true-async/server).
 
 ---
 
@@ -157,6 +166,7 @@ Also see: [Contributing](https://true-async.github.io/en/contributing.html)
 
 - 🛠️ [php-src/true-async-api](https://github.com/true-async/php-src)
 - 🔌 [php-async](https://github.com/true-async/php-async)
+- 🌐 [TrueAsync Server](https://github.com/true-async/server) — native multi-protocol HTTP/WebSocket/gRPC server
 - 📄 [php-true-async-rfc](https://github.com/true-async/php-true-async-rfc)
 - 🌐 [true-async.github.io](https://true-async.github.io/)
 
