@@ -3,6 +3,7 @@ Feature: Scope lifecycle extras under chaos scheduler
   Beyond cancel/dispose/finally, a Scope exposes:
 
     asNotSafely()                    — flip cancellation-safety, returns self
+    allowZombies()                   — opt back into safe disposal, returns self
     provideScope()                   — ScopeProvider hook, returns the scope
     getChildScopes()                 — array of inheriting child scopes
     setChildScopeExceptionHandler()  — catches a child scope's throw
@@ -20,6 +21,17 @@ Feature: Scope lifecycle extras under chaos scheduler
       And counter "scope_not_safely_bad" equals 0
       And counter "scope_provide_ok" equals 1
       And counter "scope_provide_bad" equals 0
+      And no orphan coroutines
+
+  Scenario: allowZombies keeps a started child alive across dispose
+    Given a coroutine "C"
+     When coroutine "C" disposes a fresh scope with allowZombies and a parked child
+     Then counter "zombie_attempts" equals 1
+      And counter "zombie_identity_ok" equals 1
+      And counter "zombie_identity_bad" equals 0
+      And counter "zombie_child_finished" plus counter "zombie_child_cancelled" equals 1
+      And counter "zombie_child_finished" equals 1
+      And counter "zombie_done" equals 1
       And no orphan coroutines
 
   Scenario Outline: getChildScopes reports every inheriting child

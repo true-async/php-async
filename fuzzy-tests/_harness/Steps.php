@@ -4761,6 +4761,46 @@ final class StandardSteps {
                 });
             });
 
+        // When coroutine "X" disposes a fresh scope with allowZombies and a parked child
+        // allowZombies() opts a scope back into safe disposal (sets
+        // DISPOSE_SAFELY) and returns the SAME scope — the inverse of
+        // asNotSafely(). On a safe scope dispose() does NOT cancel an
+        // already-started child: it is marked a zombie, dropped from the
+        // active count, and left to finish on its own. The child parks in a
+        // short delay() so it finishes quickly (a long one would keep the
+        // loop alive — see FINDINGS.md).
+        $r->on('/^coroutine "([^"]+)" disposes a fresh scope with allowZombies and a parked child$/',
+            function(Context $ctx, string $coro) {
+                $ctx->planAction($coro, function(Context $ctx) {
+                    $ctx->inc("zombie_attempts");
+                    $scope = \Async\Scope::inherit();
+                    $same = $scope->allowZombies();
+                    $ctx->inc($same === $scope ? "zombie_identity_ok" : "zombie_identity_bad");
+                    $scope->spawn(function() use ($ctx) {
+                        try {
+                            \Async\delay(20);
+                            $ctx->inc("zombie_child_finished");
+                        } catch (\Async\AsyncCancellation $e) {
+                            $ctx->inc("zombie_child_cancelled");
+                        }
+                    });
+                    // Let the child start and park in delay() before disposing.
+                    \Async\suspend();
+                    $scope->dispose();
+                    // Let the zombie finish on its own.
+                    for ($i = 0; $i < 8; $i++) {
+                        \Async\delay(20);
+                    }
+                    if ($scope->isFinished()) {
+                        $ctx->inc("zombie_finished");
+                    }
+                    $ctx->inc("zombie_done");
+                    if (!$scope->isClosed()) {
+                        $scope->dispose();
+                    }
+                });
+            });
+
         // When coroutine "X" counts child scopes of a fresh parent of N
         // A parent created with N inheriting children reports exactly N via
         // getChildScopes(), each entry a Scope.
