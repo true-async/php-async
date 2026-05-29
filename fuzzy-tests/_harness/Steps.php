@@ -1147,6 +1147,82 @@ final class StandardSteps {
                 });
             });
 
+        // ---- timer / delay / timeout chaos ----
+
+        // When coroutine "X" runs a cancellable delay of N ms
+        // delay() parks on a libuv timer; outcome family delay_*: ok / cancelled.
+        $r->on('/^coroutine "([^"]+)" runs a cancellable delay of (\S+) ms$/',
+            function(Context $ctx, string $coro, string $msExpr) {
+                $ms = (int)$ctx->resolver->resolve($msExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $ms) {
+                    $ctx->inc("delay_attempts_$coro");
+                    try {
+                        \Async\delay($ms);
+                        $ctx->inc("delay_ok_$coro");
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("delay_cancelled_$coro");
+                    } catch (\Throwable $e) {
+                        $ctx->inc("delay_failed_$coro");
+                    }
+                });
+            });
+
+        // When coroutine "X" runs work of N ms guarded by timeout M ms
+        // await(job, timeout(M)): job slower than M -> OperationCanceledException
+        // (timed_out); job faster -> work_ok and the losing timeout must be
+        // cleaned by await (a leaked watcher is the #082 bug class); external
+        // cancel of the awaiter -> AsyncCancellation (cancelled).
+        $r->on('/^coroutine "([^"]+)" runs work of (\S+) ms guarded by timeout (\S+) ms$/',
+            function(Context $ctx, string $coro, string $workExpr, string $tmoExpr) {
+                $work = (int)$ctx->resolver->resolve($workExpr);
+                $tmo = (int)$ctx->resolver->resolve($tmoExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $work, $tmo) {
+                    $ctx->inc("tmo_attempts_$coro");
+                    $job = \Async\spawn(function() use ($work) { \Async\delay($work); return 'done'; });
+                    try {
+                        \Async\await($job, \Async\timeout($tmo));
+                        $ctx->inc("tmo_work_ok_$coro");
+                    } catch (\Async\OperationCanceledException $e) {
+                        $ctx->inc("tmo_timed_out_$coro");
+                        $job->cancel();
+                    } catch (\Async\AsyncCancellation $e) {
+                        $ctx->inc("tmo_cancelled_$coro");
+                        $job->cancel();
+                    } catch (\Throwable $e) {
+                        $ctx->inc("tmo_failed_$coro");
+                    }
+                });
+            });
+
+        // When coroutine "X" disposes a safe scope with a child delaying N ms
+        // #132 probe: a safe scope leaves a started child parked in delay() as a
+        // zombie on dispose; its libuv timer keeps the loop alive until it fires.
+        $r->on('/^coroutine "([^"]+)" disposes a safe scope with a child delaying (\S+) ms$/',
+            function(Context $ctx, string $coro, string $msExpr) {
+                $ms = (int)$ctx->resolver->resolve($msExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($coro, $ms) {
+                    $ctx->inc("ztimer_attempts_$coro");
+                    $scope = \Async\Scope::inherit()->allowZombies();
+                    $scope->spawn(function() use ($ctx, $coro, $ms) {
+                        try {
+                            \Async\delay($ms);
+                            $ctx->inc("ztimer_child_finished_$coro");
+                        } catch (\Async\AsyncCancellation $e) {
+                            $ctx->inc("ztimer_child_cancelled_$coro");
+                        }
+                    });
+                    \Async\suspend();
+                    $scope->dispose();
+                    for ($i = 0; $i < 8; $i++) {
+                        \Async\delay($ms);
+                    }
+                    $ctx->inc("ztimer_done_$coro");
+                    if (!$scope->isClosed()) {
+                        $scope->dispose();
+                    }
+                });
+            });
+
         // ---- output_buffer isolation actions ----
         //
         // Each coroutine pushes ob_start(), writes a known marker N times
