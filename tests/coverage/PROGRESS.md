@@ -1,6 +1,6 @@
 # Coverage Progress — Phase 2
 
-Tracks the phpt-only "achievable budget" from `COVERAGE_REPORT.md` §6
+Tracks the phpt-only "achievable budget" from `REPORT.md` §6
 (realistic ceiling ~80%). This file is updated as blocks land so the
 next session can pick up where the previous one stopped.
 

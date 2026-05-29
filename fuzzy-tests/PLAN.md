@@ -14,7 +14,7 @@ through real ext/async API while the C-level scheduler hook
 (`TRUE_ASYNC_SCHED=fifo|random:N|pct:...`) optionally permutes coroutine
 ordering.
 
-See `README.md` for usage. See `../FUZZ_TESTING.md` for the multi-layer
+See `README.md` for usage. See `STRATEGY.md` for the multi-layer
 strategy (this directory implements Layers 1 + part of step-fuzzing).
 
 ## Why we have it
@@ -244,7 +244,7 @@ Step handlers always operate through `$ctx->`, never reach for globals.
 
 ## Running the matrix
 
-The CI tier is not yet wired (Layer 1 strategy in `../FUZZ_TESTING.md`
+The CI tier is not yet wired (Layer 1 strategy in `STRATEGY.md`
 mentions per-PR / nightly tiers — none of those exist yet as workflows
 in the repo). Local matrix:
 

@@ -3,7 +3,7 @@
 **Status:** task spec / open work
 **Owner:** ext/async
 **Depends on:** `PDO::ATTR_POOL_STMT_CACHE_SIZE` infrastructure already shipped
-in 0.7.0 for `pdo_pgsql` (see [`PDO-PREPARE.md`](PDO-PREPARE.md)).
+in 0.7.0 for `pdo_pgsql` (see [`pdo-prepare.md`](pdo-prepare.md)).
 
 ---
 
@@ -269,7 +269,7 @@ Under the next release section:
 
 ## 10. References
 
-* [`PDO-PREPARE.md`](PDO-PREPARE.md) — original cache design.
+* [`pdo-prepare.md`](pdo-prepare.md) — original cache design.
 * [`docs/pdo-pool-stmt-cache-perf.md`](docs/pdo-pool-stmt-cache-perf.md) —
   pgsql perf measurements; methodology applies to mysql verbatim.
 * `ext/pdo_pgsql/pgsql_driver.c::pgsql_handle_preparer` — the path

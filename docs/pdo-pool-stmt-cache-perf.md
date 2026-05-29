@@ -2,7 +2,7 @@
 
 Performance validation of the per-physical-connection prepared-statement
 LRU cache (`PDO::ATTR_POOL_STMT_CACHE_SIZE`) shipped in ext/async 0.7.0.
-See [`PDO-PREPARE.md`](../PDO-PREPARE.md) for the design.
+See [`pdo-prepare.md`](pdo-prepare.md) for the design.
 
 ---
 

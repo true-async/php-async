@@ -1,7 +1,7 @@
 # TrueAsync Coverage Report
 
 Session wrap-up for the gcov-driven test-writing pass against
-`ext/async/`. Companion to `COVERAGE_PLAN.md`, which held the initial
+`ext/async/`. Companion to `PLAN.md`, which held the initial
 baseline survey and the raw per-file gap tables.
 
 ## 1. Headline numbers
