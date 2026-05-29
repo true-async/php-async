@@ -206,6 +206,12 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: php-src/coverage.info
+          # Upload ONLY the ext/async-filtered lcov. Without these, the action
+          # auto-searches the workspace and runs its gcov plugin over the whole
+          # php-src build tree, so the % covers all of PHP (~17%) instead of
+          # ext/async (~77%).
+          disable_search: true
+          plugins: noop
           flags: ext-async
           name: ext-async-gcov
           fail_ci_if_error: false
