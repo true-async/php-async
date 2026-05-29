@@ -4,7 +4,7 @@ Observations surfaced by the `fuzzy-tests/` chaos suite while chasing
 invariant violations. Each entry records what was seen, what it turned out
 to be, and how the suite was adjusted.
 
-## Stack-use-after-return in flock() when coroutine is cancelled — real bug, filed (#146)
+## Stack-use-after-return in flock() when coroutine is cancelled — real bug — fixed (#146)
 
 Drafting `io/flock_chaos.feature` (#143) — the cancel-mid-flock scenarios
 SEGV instantly. ASAN-ZTS pins it precisely: `main/streams/plain_wrapper.c:1192`
@@ -12,12 +12,14 @@ puts the flock task struct on the caller's stack; the libuv worker thread
 keeps writing to `flock_data->result` after the coroutine unwinds on
 cancel.
 
-Fix is straightforward (heap-allocate the task data, free via task dispose
-hook). Filed as #146. The two non-cancel scenarios (contention, holder +
-waiters) shipped; the cancel scenarios stay commented under `# Blocked:
-#146`.
+**Fixed** in `main/streams/plain_wrapper.c`: the flock task data is now an
+inline tail on the async task (commit `4dc419c`) and the task is pinned
+across `SUSPEND` with `ADD_REF` so the waker cleanup cannot free it while
+the worker still writes `result`/`error_code` (commit `3f3da90`). The
+cancel-mid-flock scenarios in `io/flock_chaos.feature` were reinstated as
+the regression backstop and pass under ASAN-ZTS.
 
-## Heap corruption when AsyncCancellation interrupts curl_multi_select() — real bug, filed (#145)
+## Heap corruption when AsyncCancellation interrupts curl_multi_select() — real bug — fixed (#145)
 
 Drafting `curl/curl_multi_chaos.feature` (#143) — the cancel-mid-multi-select
 scenarios SEGV with `zend_mm_heap corrupted`, preceded by a runtime warning
@@ -32,12 +34,14 @@ locus: `ext/curl/curl_async.c` (same file as the chunked-body bug fixed in
 handler that completes the coroutine while it's still in the runqueue,
 overwriting allocator metadata.
 
-The three planned cancel scenarios stay commented in the feature under
-`# Blocked: #145`; reinstate by uncomment after the fix lands. The three
-no-cancel scenarios (clean fetch, per-handle failure, two coroutines each
-owning a multi) are shipped.
+**Fixed** in `ext/curl/curl_async.c` (commit `0dcb62f`): a cancelled
+`curl_multi_select()` is now routed through `finally` so the coroutine is
+no longer completed while still in the runqueue — the heap is left intact.
+The cancel scenarios in `curl/curl_multi_chaos.feature` (single + timing
+outline) were reinstated as the regression backstop and pass under
+ASAN-ZTS.
 
-## Missing wakeup of parked fread() on a terminated child's pipe — real bug, filed (#144)
+## Missing wakeup of parked fread() on a terminated child's pipe — real bug — fixed (#144)
 
 While drafting `exec/proc_open_chaos.feature` (#143) the simplest scenario
 deadlocked deterministically: a reader coroutine parked in `fread()` on a
@@ -51,10 +55,13 @@ works correctly, so the gap is on the `proc_open` pipe(2)-backed reactor
 path — likely a `uv_pipe`/`uv_poll` POLLHUP mismatch or proc-event cleanup
 not notifying the per-pipe poll watcher.
 
-The chaos feature ships only the rapid-storm scenario (no parked reader →
-not affected). The cancel-vs-close scenarios are kept in the feature file
-as commented-out blocks under `Blocked: #144`; reinstate them after the
-fix lands.
+**Fixed** in `main/streams/plain_wrapper.c`: the close path now notifies
+the parked async request and early-returns on `io_closed` (commit
+`ef36f8d`), and the stdio stream/data/io lifetime is pinned across the
+async `SUSPEND` so the wakeup cannot UAF (commit `7a75c1e`). The
+parked-reader scenarios in `exec/proc_open_chaos.feature` (proc_close,
+close-timing outline, SIGTERM, cancel-then-close) were reinstated as the
+regression backstop and pass under ASAN-ZTS.
 
 ## Safe-scope zombie coroutines (not a leak)
 

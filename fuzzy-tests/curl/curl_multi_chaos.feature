@@ -18,35 +18,60 @@ Feature: HTTP chaos — async ext/curl curl_multi against several misbehaving pe
   _failed. The coroutine-level outcome (ok / cancelled / failed) sums to
   attempts.
 
-  # ----------------------------------------------------------------------
-  # Blocked: #145 (curl_multi cancel: heap corruption when AsyncCancellation
-  # interrupts curl_multi_select). Repro: a cancel mid-curl_multi_select
-  # corrupts the zend memory heap and the next coroutine SEGVs in
-  # zend_mm_alloc_small with a "still in the queue" warning. Verified on
-  # ASAN-ZTS in ~50 lines outside the harness. The three cancel scenarios
-  # below stay commented until #145 is fixed; reinstate by uncomment.
-  #
-  # Scenario: cancel mid-multi-select
-  #   Given an evil HTTP peer "EP1" serving 4096 bytes
-  #     And evil peer "EP1" slices output into 64-byte chunks
-  #     And evil peer "EP1" delays 100 ms between chunks
-  #     And an evil HTTP peer "EP2" serving 4096 bytes
-  #     And evil peer "EP2" slices output into 64-byte chunks
-  #     And evil peer "EP2" delays 100 ms between chunks
-  #     And a coroutine "C"
-  #     And a coroutine "K"
-  #    When coroutine "C" fetches peers "EP1","EP2" via curl_multi
-  #     And coroutine "K" sleeps 30 ms
-  #     And coroutine "K" cancels coroutine "C"
-  #    Then counter "curl_multi_ok_C" plus counter "curl_multi_cancelled_C" plus counter "curl_multi_failed_C" equals counter "curl_multi_attempts_C"
-  #     And counter "curl_multi_cancelled_C" is at least 1
-  #     And coroutine "C" is completed
-  #     And coroutine "K" is completed
-  #     And no orphan coroutines
-  #
-  # Scenario Outline: cancel-timing varied across the transfer window
-  #   Examples: | ms | 5 | 75 | 200 |
-  # ----------------------------------------------------------------------
+  # Fixed: #145 — a cancel mid-curl_multi_select() used to complete the
+  # coroutine while it was still in the runqueue ("still in the queue"
+  # warning), corrupting the zend heap so the next coroutine SEGV'd in
+  # zend_mm_alloc_small. Fix routes the cancelled select through finally
+  # (commit 0dcb62f). The cancel scenarios below are the regression
+  # backstop.
+
+  Scenario: cancel mid-multi-select (#145 regression)
+    # Two slow, sliced peers keep the curl_multi loop parked inside
+    # curl_multi_select(); the killer cancels the fetcher while it is
+    # parked. The cancellation must unwind cleanly — no heap corruption,
+    # no orphaned coroutine.
+    Given an evil HTTP peer "EP1" serving 4096 bytes
+      And evil peer "EP1" slices output into 64-byte chunks
+      And evil peer "EP1" delays 100 ms between chunks
+      And an evil HTTP peer "EP2" serving 4096 bytes
+      And evil peer "EP2" slices output into 64-byte chunks
+      And evil peer "EP2" delays 100 ms between chunks
+      And a coroutine "C"
+      And a coroutine "K"
+     When coroutine "C" fetches peers "EP1","EP2" via curl_multi
+      And coroutine "K" sleeps 30 ms
+      And coroutine "K" cancels coroutine "C"
+     Then counter "curl_multi_ok_C" plus counter "curl_multi_cancelled_C" plus counter "curl_multi_failed_C" equals counter "curl_multi_attempts_C"
+      And counter "curl_multi_cancelled_C" is at least 1
+      And coroutine "C" is completed
+      And coroutine "K" is completed
+      And no orphan coroutines
+
+  Scenario Outline: cancel-timing varied across the transfer window (#145)
+    # Slide the cancel instant across the slow transfer: early (5 ms, often
+    # before the first chunk), mid-window (75 ms) and late (200 ms). At all
+    # points the fetcher must unwind without corrupting the heap.
+    Given an evil HTTP peer "EP1" serving 4096 bytes
+      And evil peer "EP1" slices output into 64-byte chunks
+      And evil peer "EP1" delays 100 ms between chunks
+      And an evil HTTP peer "EP2" serving 4096 bytes
+      And evil peer "EP2" slices output into 64-byte chunks
+      And evil peer "EP2" delays 100 ms between chunks
+      And a coroutine "C"
+      And a coroutine "K"
+     When coroutine "C" fetches peers "EP1","EP2" via curl_multi
+      And coroutine "K" sleeps <ms> ms
+      And coroutine "K" cancels coroutine "C"
+     Then counter "curl_multi_ok_C" plus counter "curl_multi_cancelled_C" plus counter "curl_multi_failed_C" equals counter "curl_multi_attempts_C"
+      And coroutine "C" is completed
+      And coroutine "K" is completed
+      And no orphan coroutines
+
+    Examples:
+      | ms  |
+      | 5   |
+      | 75  |
+      | 200 |
 
   Scenario: three peers, all return intact
     Given an evil HTTP peer "EP1" serving 1024 bytes

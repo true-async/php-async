@@ -2,7 +2,7 @@
 
 This directory holds Gherkin-style scenario tests that exercise ext/async
 under the chaos scheduler (`TRUE_ASYNC_SCHED=random:N`) and other fault
-injection layers (see `../FUZZ_TESTING.md` for the full strategy).
+injection layers (see `STRATEGY.md` for the full strategy).
 
 ## Layout
 
@@ -13,21 +13,39 @@ directory holds Gherkin `.feature` sources; the generator produces one
 ```
 fuzzy-tests/
 ├── _harness/                # parser, executor, step definitions (PHP)
+├── _peers/                  # EvilPeer / Toxiproxy / forked-peer fixtures
 ├── _generated/              # auto-generated .phpt files (gitignored)
-├── channel/                 # Channel send/recv/close/cap chaos
-│   ├── send_recv_pair.feature
-│   └── close.feature
-├── coroutine/               # spawn/await/cancel chaos
-│   └── many_complete.feature
-├── scope/                   # (TODO) scope cancel/dispose ordering
-├── future/                  # (TODO) Future complete vs await race
-├── await/                   # (TODO) await_all / await_any cancellation
-├── task_group/              # (TODO) join semantics under cancel
-├── thread_channel/          # (TODO) cross-thread channel ordering
-└── thread_pool/             # (TODO) real-parallel worker chaos
+├── _frozen/                 # frozen regression tests (committed)
+│
+│  # core primitives
+├── channel/                 # send/recv/close/capacity/iterator/deadlock/scope-owned
+├── coroutine/               # spawn/cancel/exception/finally/introspection/recursion
+├── await/                   # await_all/any/_or_fail/first_success/any_of/mixed/cancel
+├── future/                  # complete/error/map_catch_finally/cancel_token/locations
+├── scope/                   # basic/nested/dispose/finally/exception_handler
+├── task_group/              # basic/concurrency_limit/race/cancel/dispose/getters
+├── task_set/                # join semantics
+├── context/                 # context propagation
+├── pool/                    # Async\Pool + CircuitBreaker
+├── spawn_with/              # SpawnStrategy hooks
+├── thread/ thread_channel/ thread_pool/   # real OS-thread parallelism
+├── exceptions/              # CompositeException
+│
+│  # I/O + transport chaos (EvilPeer / Toxiproxy)
+├── io/                      # streams, sockets, TLS, UDP, DNS, flock, feof,
+│                            #   stream_select, fs_watcher, backpressure, reset
+├── curl/                    # async curl_exec + curl_multi against evil HTTP peers
+├── db/                      # PDO mysql/pgsql/sqlite, mysqli, pool, stmt cache
+├── exec/                    # proc_open / proc_close storm + parked-reader race
+│
+│  # runtime internals
+├── signal/ gc/ include/ iterate/ output_buffer/ protect/ remote_future/
+└── cross_topic/             # shutdown_with_pending, cancel_during_io
 ```
 
-Topics with `_TODO.md` are placeholders awaiting features.
+Each topic mirrors a subsystem in `ext/async/tests/`. Run `./regen.sh`
+then `_harness/coverage.php` to see the live API-coverage report
+(`COVERAGE.md`).
 
 ## Workflow
 

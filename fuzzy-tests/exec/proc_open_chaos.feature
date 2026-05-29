@@ -1,4 +1,4 @@
-Feature: I/O chaos — proc_open / proc_close storm + parked-reader race (mostly blocked on #144)
+Feature: I/O chaos — proc_open / proc_close storm + parked-reader race (#144 fixed)
 
   Drives the reactor's child-process integration via `proc_open()`. Two
   shapes were originally planned:
@@ -10,48 +10,82 @@ Feature: I/O chaos — proc_open / proc_close storm + parked-reader race (mostly
         the libuv process_event hashtable / OS-HANDLE-reuse path that
         tests/exec/011-proc_open_handle_reuse_uaf already backstops.
 
-  Shape (a) is **blocked on php-async#144**: the reactor does not wake a
-  parked fread() on the child's pipe when the child is externally
-  terminated and reaped. The deadlock detector eventually aborts the
-  request. Reproduced outside the harness in ~25 lines while drafting
-  this feature; see FINDINGS.md. The scenarios are kept here, commented
-  out under `# Blocked: #144`, so reinstating them after the fix is a
-  one-line uncomment.
+  Shape (a) is **fixed in #144**: the reactor now notifies a parked
+  fread() on the child's pipe when the child is externally terminated and
+  reaped (commit ef36f8d notifies the parked req on close + early-returns
+  on io_closed; commit 7a75c1e pins the stdio stream/data/io lifetime
+  across the async SUSPEND so the wakeup path cannot UAF). The scenarios
+  below — originally a deterministic deadlock + the ~25-line repro in
+  FINDINGS.md — are the regression backstop for that fix.
 
-  Shape (b) is unaffected (no parked reader) and is shipped.
+  Shape (b) is unaffected (no parked reader) and was always shipped.
 
-  # ----------------------------------------------------------------------
-  # Blocked: #144 (reactor does not wake parked fread on terminated child)
-  # ----------------------------------------------------------------------
-  # Scenario: proc_close races a parked stdout reader
-  #   Given a long-lived child process "C" sleeping 200 ms
-  #     And a coroutine "R"
-  #     And a coroutine "K"
-  #    When coroutine "R" reads stdout of child process "C"
-  #     And coroutine "K" sleeps 10 ms
-  #     And coroutine "K" closes child process "C"
-  #    Then counter "proc_read_ok_R" plus counter "proc_read_eof_R" plus counter "proc_read_cancelled_R" plus counter "proc_read_failed_R" equals counter "proc_read_attempts_R"
-  #     And coroutine "R" is completed
-  #     And coroutine "K" is completed
-  #     And no orphan coroutines
-  #
-  # Scenario Outline: close-timing varied against a parked stdout reader
-  #   Given a long-lived child process "C" sleeping 200 ms
-  #     And a coroutine "R"
-  #     And a coroutine "K"
-  #    When coroutine "R" reads stdout of child process "C"
-  #     And coroutine "K" sleeps <ms> ms
-  #     And coroutine "K" closes child process "C"
-  #    Then counter "proc_read_ok_R" plus counter "proc_read_eof_R" plus counter "proc_read_cancelled_R" plus counter "proc_read_failed_R" equals counter "proc_read_attempts_R"
-  #     And coroutine "R" is completed
-  #     And coroutine "K" is completed
-  #     And no orphan coroutines
-  #   Examples:
-  #     | ms | 0 | 5 | 25 | 60 |
-  #
-  # Scenario: SIGTERM races a parked stdout reader
-  # Scenario: cancel reader and proc_close race
-  # ----------------------------------------------------------------------
+  Scenario: proc_close races a parked stdout reader (#144 regression)
+    # Reader parks in fread() on the child's stdout; killer terminates +
+    # reaps the child. Before #144 the reader never woke and the deadlock
+    # detector aborted the request. It must now observe EOF cleanly.
+    Given a long-lived child process "C" sleeping 200 ms
+      And a coroutine "R"
+      And a coroutine "K"
+     When coroutine "R" reads stdout of child process "C"
+      And coroutine "K" sleeps 10 ms
+      And coroutine "K" closes child process "C"
+     Then counter "proc_read_ok_R" plus counter "proc_read_eof_R" plus counter "proc_read_cancelled_R" plus counter "proc_read_failed_R" equals counter "proc_read_attempts_R"
+      And coroutine "R" is completed
+      And coroutine "K" is completed
+      And no orphan coroutines
+
+  Scenario Outline: close-timing varied against a parked stdout reader (#144)
+    Given a long-lived child process "C" sleeping 200 ms
+      And a coroutine "R"
+      And a coroutine "K"
+     When coroutine "R" reads stdout of child process "C"
+      And coroutine "K" sleeps <ms> ms
+      And coroutine "K" closes child process "C"
+     Then counter "proc_read_ok_R" plus counter "proc_read_eof_R" plus counter "proc_read_cancelled_R" plus counter "proc_read_failed_R" equals counter "proc_read_attempts_R"
+      And coroutine "R" is completed
+      And coroutine "K" is completed
+      And no orphan coroutines
+
+    Examples:
+      | ms |
+      | 0  |
+      | 5  |
+      | 25 |
+      | 60 |
+
+  Scenario: SIGTERM races a parked stdout reader (#144 regression)
+    # Like the close race, but the killer only sends SIGTERM (no
+    # proc_close). The kernel closes the child's stdout end on exit, so
+    # the parked reader must still wake with EOF; the handle is reaped in
+    # teardown.
+    Given a long-lived child process "C" sleeping 200 ms
+      And a coroutine "R"
+      And a coroutine "K"
+     When coroutine "R" reads stdout of child process "C"
+      And coroutine "K" sleeps 10 ms
+      And coroutine "K" sends SIGTERM to child process "C"
+     Then counter "proc_read_ok_R" plus counter "proc_read_eof_R" plus counter "proc_read_cancelled_R" plus counter "proc_read_failed_R" equals counter "proc_read_attempts_R"
+      And counter "proc_term_ok_K" equals 1
+      And coroutine "R" is completed
+      And coroutine "K" is completed
+      And no orphan coroutines
+
+  Scenario: cancel reader then proc_close race (#144 regression)
+    # The reader is cancelled while parked, then the killer reaps the
+    # child. Cancellation and the close-wakeup race; the reader unwinds
+    # via exactly one bucket and the handle is reaped without UAF.
+    Given a long-lived child process "C" sleeping 200 ms
+      And a coroutine "R"
+      And a coroutine "K"
+     When coroutine "R" reads stdout of child process "C"
+      And coroutine "K" sleeps 10 ms
+      And coroutine "K" cancels coroutine "R"
+      And coroutine "K" closes child process "C"
+     Then counter "proc_read_ok_R" plus counter "proc_read_eof_R" plus counter "proc_read_cancelled_R" plus counter "proc_read_failed_R" equals counter "proc_read_attempts_R"
+      And coroutine "R" is completed
+      And coroutine "K" is completed
+      And no orphan coroutines
 
   Scenario: rapid proc_open / proc_close storm — #011 UAF backstop
     # Four coroutines each open + close N short-lived children in a loop.

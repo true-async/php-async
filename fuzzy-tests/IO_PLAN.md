@@ -76,7 +76,7 @@ cancel/close racing the wait.
 
 ## Layer 2 — protocol-level fault injection
 
-Per `FUZZ_TESTING.md` this is future work. Lives in the same
+Per `STRATEGY.md` this is future work. Lives in the same
 `fuzzy-tests/` tree under a topic subfolder (e.g. `fuzzy-tests/io/` or
 `fuzzy-tests/net/`) — no separate harness, reuse the existing one.
 
@@ -108,7 +108,7 @@ definitions for fault injection.
 
 ## Layer 4 — kernel-level network chaos
 
-Per `FUZZ_TESTING.md`: `tc netem` for loss / reorder / corruption /
+Per `STRATEGY.md`: `tc netem` for loss / reorder / corruption /
 duplicate. Out of scope until Layers 1+2 are done. Mentioned for
 completeness — tracks at OS level, not user-visible from a PHP test.
 
@@ -150,9 +150,9 @@ under umbrella issue **#143**.
 | UDP | 028–030 | ✓ #138 (`udp_chaos`) |
 | File IO concurrent | 049, 056, 060, 069, 083 | ✓ #138 (`file_concurrent_writes`) |
 | feof semantics | 038–044 | ✓ #143 (`feof_chaos`, 4 scenarios) |
-| flock under reactor | 081 | ✓ #143 (`flock_chaos`, 2 scenarios; cancel blocked on #146) |
-| proc_open / exec / shell_exec | exec/001–024 | **TODO — #143** (whole subsystem, UAF class proven in `011`) |
-| curl_multi | curl/003, 010 | ✓ #143 (`curl_multi_chaos`, 3 scenarios; cancel-mid-select blocked on #145) |
+| flock under reactor | 081 | ✓ #143/#146 (`flock_chaos`, 4 scenarios incl. cancel-mid-flock) |
+| proc_open / exec / shell_exec | exec/001–024 | ✓ #143/#144 (`proc_open_chaos`: storm + parked-reader race, SIGTERM, cancel-then-close) |
+| curl_multi | curl/003, 010 | ✓ #143/#145 (`curl_multi_chaos`, 5 scenarios incl. cancel-mid-select) |
 | socket ext (POSIX sockets) | socket/001–004 | ✓ #143 (`socket_ext_chaos`, 4 scenarios) |
 | DNS | dns/001–015 | ✓ #138 (`dns_slow`) |
 | signals | signal/* | ✓ #138 (`signal_chaos`) |
@@ -163,16 +163,13 @@ under umbrella issue **#143**.
 `proc_open`/`exec` were skipped through Layers 1–2 because they need a
 real child process. They're the next white zone:
 
-- **`exec/proc_open_chaos.feature`** — `proc_close()` races a parked
-  `fread()` on the child's stdout (mirrors `io/stream_close_during_read`
-  but with a real OS pipe to a real process). Killer cancels the reader
-  or closes the proc handle. Invariant: no UAF on the process handle
-  (regression backstop for `tests/exec/011`).
-- **`exec/proc_concurrent.feature`** — N coroutines `proc_open` concurrent
-  children + collect output. Cancel half. Reactor must reap every child
-  without zombies.
-- **`exec/proc_signal.feature`** — coroutine reads stdout, another sends
-  SIGTERM. Read must surface EOF cleanly, exit-code via `proc_close`.
+- **`exec/proc_open_chaos.feature`** — ✓ done (#144). `proc_close()` races
+  a parked `fread()` on the child's stdout (real OS pipe to a real
+  process); killer closes the proc handle, sends SIGTERM, or cancels the
+  reader then closes. Backstops the #144 wakeup fix and `tests/exec/011`.
+- **`exec/proc_concurrent.feature`** — still TODO. N coroutines `proc_open`
+  concurrent children + collect output. Cancel half. Reactor must reap
+  every child without zombies.
 
 ## Layer 3 — curl_multi chaos (#143)
 
@@ -180,14 +177,14 @@ real child process. They're the next white zone:
 `curl_multi_*` reactor path (`ext/curl/curl_async.c` — same file as the
 #136 chunked-bug fix) is untouched.
 
-- **`curl/curl_multi_chaos.feature`** — N parallel transfers through
-  EvilPeer toxics; clean fetch, per-handle failure, two coroutines each
-  owning their own multi. Cancel-mid-`curl_multi_select` scenarios
-  drafted but blocked on #145 (heap corruption); reinstate after fix.
+- **`curl/curl_multi_chaos.feature`** — ✓ done (#145). N parallel
+  transfers through EvilPeer toxics; clean fetch, per-handle failure, two
+  coroutines each owning their own multi, plus cancel-mid-`curl_multi_select`
+  (single + timing outline) backstopping the #145 heap-corruption fix.
 
 ## Tier strategy (recommended once Layer 1 is filled)
 
-Per `FUZZ_TESTING.md`:
+Per `STRATEGY.md`:
 
 - **Per-PR (~5 min)**: fifo + 2 random seeds across all Layer 1 IO
   features + existing chaos suite.
