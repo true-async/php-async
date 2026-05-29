@@ -1,5 +1,7 @@
 # <img src="true-async-logo.png" alt="PHP TRUE ASYNC Logo" height="48" style="vertical-align: middle; margin-right: 12px;" /> PHP TRUE ASYNC
 
+[![codecov](https://codecov.io/gh/true-async/php-async/branch/main/graph/badge.svg)](https://codecov.io/gh/true-async/php-async)
+
 **PHP TRUE ASYNC** is an experimental `PHP` extension providing true asynchronous execution,
 tightly integrated at the core level. Write concurrent code using familiar PHP syntax —
 no callbacks, no promises, no framework required.

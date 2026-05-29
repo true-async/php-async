@@ -1,0 +1,153 @@
+name: Coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    name: gcov + Codecov
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    env:
+      MYSQL_TEST_HOST: 127.0.0.1
+      MYSQL_TEST_PORT: 3306
+      MYSQL_TEST_USER: root
+      MYSQL_TEST_PASSWD: root
+      MYSQL_TEST_DB: test
+      PDO_MYSQL_TEST_DSN: "mysql:host=127.0.0.1;dbname=test"
+      PDO_MYSQL_TEST_HOST: 127.0.0.1
+      PDO_MYSQL_TEST_USER: root
+      PDO_MYSQL_TEST_PASS: root
+      PDO_PGSQL_TEST_DSN: "pgsql:host=127.0.0.1 port=5432 dbname=test user=postgres password=postgres"
+
+    services:
+      mysql:
+        image: mysql:8.3
+        ports:
+          - 3306:3306
+        env:
+          MYSQL_DATABASE: test
+          MYSQL_ROOT_PASSWORD: root
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
+
+      postgres:
+        image: postgres
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+
+    steps:
+      - name: Checkout php-async repo
+        uses: actions/checkout@v4
+        with:
+          path: async
+
+      - name: Clone php-src (true-async-stable)
+        run: git clone --depth=1 --branch=true-async-stable https://github.com/true-async/php-src php-src
+
+      - name: Copy php-async extension into php-src
+        run: |
+          mkdir -p php-src/ext/async
+          cp -r async/* php-src/ext/async/
+
+      - name: Install build dependencies
+        run: |
+          set -x
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            autoconf bison build-essential re2c pkg-config lcov \
+            libssl-dev libsqlite3-dev libpq-dev libonig-dev libxml2-dev \
+            cmake ninja-build
+
+          # libuv >= 1.45 from source (matches the build workflows)
+          wget --tries=5 --waitretry=10 --retry-connrefused https://github.com/libuv/libuv/archive/v1.48.0.tar.gz
+          tar -xzf v1.48.0.tar.gz
+          cd libuv-1.48.0 && mkdir build && cd build
+          cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+          ninja && sudo ninja install && sudo ldconfig
+          cd ../..
+
+          # libcurl >= 7.87 from source (TrueAsync requirement)
+          wget --tries=5 --waitretry=10 --retry-connrefused https://github.com/curl/curl/releases/download/curl-8_5_0/curl-8.5.0.tar.gz
+          tar -xzf curl-8.5.0.tar.gz
+          cd curl-8.5.0
+          ./configure --prefix=/usr/local --with-openssl --enable-shared --disable-static
+          make -j$(nproc) && sudo make install && sudo ldconfig
+          cd ..
+
+      - name: Configure PHP (gcov)
+        working-directory: php-src
+        run: |
+          set -x
+          ./buildconf --force
+          ./configure \
+            --enable-zts \
+            --enable-debug \
+            --disable-all \
+            --enable-async \
+            --enable-pdo \
+            --with-pdo-mysql=mysqlnd \
+            --with-mysqli=mysqlnd \
+            --with-pdo-sqlite \
+            --with-pdo-pgsql \
+            --with-curl \
+            --with-openssl \
+            --enable-sockets \
+            --enable-posix \
+            --enable-pcntl \
+            --enable-gcov
+
+      - name: Build PHP
+        working-directory: php-src
+        run: make -j$(nproc) >/dev/null
+
+      - name: Generate chaos tests
+        working-directory: php-src/ext/async
+        run: PHP_BIN=../../sapi/cli/php bash fuzzy-tests/regen.sh
+
+      - name: Run test suite (produces .gcda)
+        working-directory: php-src/ext/async
+        continue-on-error: true
+        run: |
+          ../../sapi/cli/php -v
+          ../../sapi/cli/php ../../run-tests.php \
+            -p ../../sapi/cli/php \
+            -q -j$(nproc) \
+            -g FAIL,BORK \
+            --no-progress \
+            --offline \
+            --set-timeout 120 \
+            .
+
+      - name: Capture coverage (lcov, ext/async only)
+        working-directory: php-src
+        run: |
+          lcov --capture --directory ext/async --base-directory . \
+            --no-external --gcov-tool gcov \
+            --ignore-errors gcov,source,graph \
+            --output-file coverage.info
+          lcov --extract coverage.info '*/ext/async/*' \
+            --ignore-errors source,graph \
+            --output-file coverage.info
+          lcov --list coverage.info || true
+
+      - name: Upload results to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: php-src/coverage.info
+          flags: ext-async
+          name: ext-async-gcov
+          fail_ci_if_error: false
