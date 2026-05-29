@@ -2499,6 +2499,12 @@ static void libuv_task_after_work_cb(uv_work_t *req, int status)
 
 	/* Free only the wrapper, not the task */
 	pefree(wrapper, 0);
+
+	/* Drop the in-flight reference taken in libuv_queue_task. The worker has
+	 * returned, so this is safe even if the coroutine already cancelled and
+	 * released its own refs; if this was the last reference the task (and its
+	 * inline-tail data) is freed here, after the worker is done with it. */
+	ZEND_ASYNC_EVENT_RELEASE(&task->base);
 }
 
 /* }}} */
@@ -2608,6 +2614,13 @@ static bool libuv_queue_task(zend_async_task_t *task)
 		async_throw_error("Failed to queue thread pool task: %s", uv_strerror(error));
 		return false;
 	}
+
+	/* The in-flight work owns a reference on the task: it must outlive the
+	 * worker thread even if the awaiting coroutine is cancelled and releases
+	 * its own refs while the worker is still inside task->run (e.g. blocked
+	 * in flock()). Released in libuv_task_after_work_cb, which libuv runs only
+	 * after the worker function returns. */
+	ZEND_ASYNC_EVENT_ADD_REF(&task->base);
 
 	return true;
 }

@@ -12,12 +12,27 @@ puts the flock task struct on the caller's stack; the libuv worker thread
 keeps writing to `flock_data->result` after the coroutine unwinds on
 cancel.
 
-**Fixed** in `main/streams/plain_wrapper.c`: the flock task data is now an
-inline tail on the async task (commit `4dc419c`) and the task is pinned
-across `SUSPEND` with `ADD_REF` so the waker cleanup cannot free it while
-the worker still writes `result`/`error_code` (commit `3f3da90`). The
-cancel-mid-flock scenarios in `io/flock_chaos.feature` were reinstated as
-the regression backstop and pass under ASAN-ZTS.
+**Fixed in two parts.** First, `main/streams/plain_wrapper.c`: the flock
+task data moved to an inline tail on the async task (commit `4dc419c`) and
+the task pinned across `SUSPEND` with `ADD_REF` (commit `3f3da90`). That
+was necessary but **insufficient** — reinstating the cancel scenarios still
+tripped a heap-use-after-free on CI Linux x64 ASAN (not reproducible on
+single-host WSL2): `php_stdiop_flock_task_run` at `plain_wrapper.c:1208`
+wrote `flock_data->result` after the task was freed. Root cause was in the
+**reactor**: `libuv_queue_task` took no reference on the task, so a
+coroutine cancelled while the worker was still blocked inside the blocking
+`flock()` could release its refs and free the task (and its inline-tail
+data) out from under the detached worker. When the lock holder released and
+`flock()` returned, the worker wrote into freed memory.
+
+Completing fix in `ext/async/libuv_reactor.c`: the in-flight `uv_work` now
+owns a reference — `libuv_queue_task` does `ZEND_ASYNC_EVENT_ADD_REF` after
+`uv_queue_work`, and `libuv_task_after_work_cb` does the matching
+`ZEND_ASYNC_EVENT_RELEASE` (it runs only after the worker function
+returns). The task therefore outlives the worker regardless of coroutine
+cancellation. General fix for every thread-pool task, not just flock. The
+cancel-mid-flock scenarios in `io/flock_chaos.feature` are the regression
+backstop; green on CI Linux x64 ASAN after the fix.
 
 ## Heap corruption when AsyncCancellation interrupts curl_multi_select() — real bug — fixed (#145)
 
