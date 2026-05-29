@@ -115,7 +115,9 @@ jobs:
 
       - name: Generate chaos tests
         working-directory: php-src/ext/async
-        run: PHP_BIN=../../sapi/cli/php bash fuzzy-tests/regen.sh
+        # Absolute PHP_BIN: regen.sh cd's into fuzzy-tests/, so a relative
+        # path would break after the chdir.
+        run: PHP_BIN="$PWD/../../sapi/cli/php" bash fuzzy-tests/regen.sh
 
       - name: Run test suite (produces .gcda)
         working-directory: php-src/ext/async
