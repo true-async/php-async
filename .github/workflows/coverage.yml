@@ -164,19 +164,24 @@ jobs:
         working-directory: php-src
         run: make -j$(nproc) >/dev/null
 
+      - name: Install PHP
+        # Run the installed binary (like build-linux.yml) so tests that spawn
+        # the CLI web server (curl_cli_server_start / php_cli_server_start)
+        # find an absolute interpreter. gcda still lands in the build tree
+        # (compile-time absolute paths), so coverage is unaffected.
+        working-directory: php-src
+        run: sudo make install
+
       - name: Generate chaos tests
         working-directory: php-src/ext/async
-        # Absolute PHP_BIN: regen.sh cd's into fuzzy-tests/, so a relative
-        # path would break after the chdir.
-        run: PHP_BIN="$PWD/../../sapi/cli/php" bash fuzzy-tests/regen.sh
+        run: PHP_BIN=/usr/local/bin/php bash fuzzy-tests/regen.sh
 
       - name: Run test suite (produces .gcda)
         working-directory: php-src/ext/async
         continue-on-error: true
         run: |
-          ../../sapi/cli/php -v
-          ../../sapi/cli/php ../../run-tests.php \
-            -p ../../sapi/cli/php \
+          /usr/local/bin/php -v
+          /usr/local/bin/php ../../run-tests.php \
             -q -j$(nproc) \
             -g FAIL,BORK \
             --no-progress \
