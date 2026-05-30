@@ -92,6 +92,20 @@ static zend_object *thread_pool_bailout_exception(void)
 		            : "ThreadPool worker terminated via exit() or a fatal error");
 }
 
+/* Build a clean ThreadTransferException carrying another exception's message.
+ * Used for errors thrown deep in the cross-thread transfer machinery (e.g.
+ * "Cannot load transferred object"): that Error's full object graph — its
+ * backtrace reaches into worker-local load state — can crash the awaiter when
+ * deep-copied to the parent thread, so we re-ship only its message text. The
+ * copy happens inside async_new_exception while `src` is still alive. */
+static zend_object *thread_pool_wrap_transfer_error(zend_object *src)
+{
+	zval rv;
+	const zval *msg = zend_read_property_ex(src->ce, src, ZSTR_KNOWN(ZEND_STR_MESSAGE), 1, &rv);
+	return async_new_exception(async_ce_thread_transfer_exception, "%s",
+		(msg != NULL && Z_TYPE_P(msg) == IS_STRING) ? Z_STRVAL_P(msg) : "thread transfer failed");
+}
+
 /* event is always NULL for pool workers (started via ZEND_ASYNC_START_THREAD) */
 static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *ctx)
 {
@@ -140,10 +154,10 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 
 			if (UNEXPECTED(EG(exception))) {
 				/* Bootloader transfer failed (e.g. a $this-bound bootloader whose
-				 * class isn't defined on the worker). Propagate the real error to
-				 * every pending task's awaiter instead of a generic cancellation. */
-				zend_object *boot_ex = EG(exception);
-				GC_ADDREF(boot_ex);
+				 * class isn't defined on the worker). Re-ship the error's message
+				 * as a clean transfer exception (the raw Error's backtrace reaches
+				 * into worker-local load state and crashes the awaiter if copied). */
+				zend_object *boot_ex = thread_pool_wrap_transfer_error(EG(exception));
 				zend_clear_exception();
 				zval_ptr_dtor(&boot_callable);
 				thread_pool_close(pool);
