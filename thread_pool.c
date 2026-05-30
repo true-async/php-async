@@ -42,7 +42,7 @@ static zend_object_handlers thread_pool_handlers;
 
 static void thread_pool_destroy(async_thread_pool_t *pool);
 static void thread_pool_close(async_thread_pool_t *pool);
-static void thread_pool_drain_tasks(async_thread_pool_t *pool, bool reject);
+static void thread_pool_drain_tasks(async_thread_pool_t *pool, bool reject, zend_object *reject_with);
 static bool thread_pool_spawn_task_coroutine(
 	async_thread_pool_t *pool, zend_async_scope_t *pool_scope,
 	zval *callable,
@@ -78,6 +78,33 @@ static bool thread_pool_spawn_task_coroutine(
 #define TASK_KIND_INTERNAL  1
 
 static zend_function worker_root_function = { ZEND_INTERNAL_FUNCTION };
+
+/* Build a ThreadTransferException carrying the current bailout's message.
+ * Used when the worker observed a graceful exit()/die() (unwind-exit token) or a
+ * fatal-error bailout: the pool delivers this to awaiters instead of re-raising
+ * zend_bailout() or passing the token to reject() — either crashes the worker
+ * fiber, which can't transfer a non-throwable exit token. */
+static zend_object *thread_pool_bailout_exception(void)
+{
+	const zend_string *msg = PG(last_error_message);
+	return async_new_exception(async_ce_thread_transfer_exception, "%s",
+		msg != NULL ? ZSTR_VAL(msg)
+		            : "ThreadPool worker terminated via exit() or a fatal error");
+}
+
+/* Build a clean ThreadTransferException carrying another exception's message.
+ * Used for errors thrown deep in the cross-thread transfer machinery (e.g.
+ * "Cannot load transferred object"): that Error's full object graph — its
+ * backtrace reaches into worker-local load state — can crash the awaiter when
+ * deep-copied to the parent thread, so we re-ship only its message text. The
+ * copy happens inside async_new_exception while `src` is still alive. */
+static zend_object *thread_pool_wrap_transfer_error(zend_object *src)
+{
+	zval rv;
+	const zval *msg = zend_read_property_ex(src->ce, src, ZSTR_KNOWN(ZEND_STR_MESSAGE), 1, &rv);
+	return async_new_exception(async_ce_thread_transfer_exception, "%s",
+		(msg != NULL && Z_TYPE_P(msg) == IS_STRING) ? Z_STRVAL_P(msg) : "thread transfer failed");
+}
 
 /* event is always NULL for pool workers (started via ZEND_ASYNC_START_THREAD) */
 static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *ctx)
@@ -126,29 +153,61 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			async_thread_create_closure(&pool->bootloader_snapshot->entry, &boot_callable);
 
 			if (UNEXPECTED(EG(exception))) {
-				zend_exception_error(EG(exception), E_WARNING);
+				/* Bootloader transfer failed (e.g. a $this-bound bootloader whose
+				 * class isn't defined on the worker). Re-ship the error's message
+				 * as a clean transfer exception (the raw Error's backtrace reaches
+				 * into worker-local load state and crashes the awaiter if copied). */
+				zend_object *boot_ex = thread_pool_wrap_transfer_error(EG(exception));
 				zend_clear_exception();
 				zval_ptr_dtor(&boot_callable);
 				thread_pool_close(pool);
-				thread_pool_drain_tasks(pool, true);
+				thread_pool_drain_tasks(pool, true, boot_ex);
+				OBJ_RELEASE(boot_ex);
 				goto done;
 			}
 
 			zend_fcall_info boot_fci;
 			zend_fcall_info_cache boot_fcc;
+			volatile bool boot_bailed = false;
 			if (zend_fcall_info_init(&boot_callable, 0, &boot_fci, &boot_fcc, NULL, NULL) == SUCCESS) {
 				boot_fci.retval = &boot_retval;
-				zend_call_function(&boot_fci, &boot_fcc);
+				zend_try {
+					zend_call_function(&boot_fci, &boot_fcc);
+				} zend_catch {
+					boot_bailed = true;
+				} zend_end_try();
 			}
 
 			zval_ptr_dtor(&boot_retval);
 			zval_ptr_dtor(&boot_callable);
 
+			if (boot_bailed
+				|| (EG(exception) != NULL
+					&& (zend_is_unwind_exit(EG(exception))
+						|| zend_is_graceful_exit(EG(exception))))) {
+				/* Bootloader called exit()/die() (unwind-exit token) or hit a fatal
+				 * error (bailout). Convert into a transfer exception for every
+				 * pending task instead of leaking the token through reject or
+				 * re-raising zend_bailout(), either of which crashes the worker fiber. */
+				if (EG(exception) != NULL) {
+					zend_clear_exception();
+				}
+				zend_object *boot_ex = thread_pool_bailout_exception();
+				thread_pool_close(pool);
+				thread_pool_drain_tasks(pool, true, boot_ex);
+				OBJ_RELEASE(boot_ex);
+				goto done;
+			}
+
 			if (UNEXPECTED(EG(exception))) {
-				zend_exception_error(EG(exception), E_WARNING);
+				/* Bootloader body threw — propagate the real exception to every
+				 * pending task's awaiter instead of a generic cancellation. */
+				zend_object *boot_ex = EG(exception);
+				GC_ADDREF(boot_ex);
 				zend_clear_exception();
 				thread_pool_close(pool);
-				thread_pool_drain_tasks(pool, true);
+				thread_pool_drain_tasks(pool, true, boot_ex);
+				OBJ_RELEASE(boot_ex);
 				goto done;
 			}
 		}
@@ -330,21 +389,49 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 				goto task_cleanup;
 			}
 
+			/* A real fatal error longjmps (zend_bailout); exit()/die() instead
+			 * throws an unwind-exit token into EG(exception). Neither may be
+			 * re-raised or passed to reject() — the token can't cross the fiber
+			 * boundary and would crash the worker fiber. */
+			volatile bool task_bailed = false;
+			zend_try {
+				zend_call_function(&fci, &fcc);
+			} zend_catch {
+				task_bailed = true;
+			} zend_end_try();
+
 			/* Decrement running and bump completed BEFORE notifying the awaiter
 			 * via complete/reject — otherwise a coroutine waking from await()
 			 * would observe stale running_count and a missing completed bump. */
-			if (zend_call_function(&fci, &fcc) == SUCCESS && !EG(exception)) {
-				zend_atomic_int_dec(&pool->base.running_count);
-				zend_atomic_int_inc(&pool->base.completed_count);
-				async_future_shared_state_complete(state, &retval);
-			} else if (EG(exception)) {
-				zend_atomic_int_dec(&pool->base.running_count);
-				zend_atomic_int_inc(&pool->base.completed_count);
+			zend_atomic_int_dec(&pool->base.running_count);
+			zend_atomic_int_inc(&pool->base.completed_count);
+
+			const bool task_exited = (EG(exception) != NULL
+				&& (zend_is_unwind_exit(EG(exception))
+					|| zend_is_graceful_exit(EG(exception))));
+
+			if (task_exited) {
+				/* exit()/die() is graceful "this task is done" — the worker's
+				 * request survives it, so resolve the future with null (no return
+				 * value) and keep serving the next task. Never pass the unwind
+				 * token to reject(): it can't cross the fiber to the awaiter. */
+				zend_clear_exception();
+				zval null_result;
+				ZVAL_NULL(&null_result);
+				async_future_shared_state_complete(state, &null_result);
+			} else if (task_bailed) {
+				/* A real fatal (e.g. OOM) leaves the worker's request unusable —
+				 * deliver a transfer exception and tear the pool down. */
+				zend_object *bex = thread_pool_bailout_exception();
+				async_future_shared_state_reject(state, bex);
+				thread_pool_close(pool);
+				thread_pool_drain_tasks(pool, true, bex);
+				OBJ_RELEASE(bex);
+			} else if (EG(exception) != NULL) {
 				async_future_shared_state_reject(state, EG(exception));
 				zend_clear_exception();
 			} else {
-				zend_atomic_int_dec(&pool->base.running_count);
-				zend_atomic_int_inc(&pool->base.completed_count);
+				async_future_shared_state_complete(state, &retval);
 			}
 
 		task_cleanup:
@@ -399,12 +486,19 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 	/* Restore execute_data */
 	EG(current_execute_data) = fake_frame.prev_execute_data;
 
+	if (bailout) {
+		/* A bailout escaped the per-task/bootloader guards (e.g. during the
+		 * scheduler drain). Re-raising zend_bailout() inside the worker fiber
+		 * crashes it, so reject any still-pending tasks and exit cleanly. Done
+		 * before DELREF so the pool is still alive for the drain. */
+		zend_object *bex = thread_pool_bailout_exception();
+		thread_pool_close(pool);
+		thread_pool_drain_tasks(pool, true, bex);
+		OBJ_RELEASE(bex);
+	}
+
 	/* Release worker's ref on pool */
 	ZEND_THREAD_POOL_DELREF(&pool->base);
-
-	if (bailout) {
-		zend_bailout();
-	}
 }
 
 ///////////////////////////////////////////////////////////
@@ -698,10 +792,13 @@ static void thread_pool_close_base(zend_async_thread_pool_t *base)
 
 /**
  * Drain remaining tasks from channel buffer.
- * @param reject  If true, reject each task's future with a cancellation exception.
- *                If false, just release the shared_state ref (for destroy path).
+ * @param reject       If true, reject each task's future with an exception.
+ *                     If false, just release the shared_state ref (for destroy path).
+ * @param reject_with  Exception to reject with (borrowed). If NULL, a generic
+ *                     "cancelled before execution" exception is synthesized per task.
+ *                     Used to propagate the real bootloader-transfer error.
  */
-static void thread_pool_drain_tasks(async_thread_pool_t *pool, bool reject)
+static void thread_pool_drain_tasks(async_thread_pool_t *pool, bool reject, zend_object *reject_with)
 {
 	async_thread_channel_t *ch = pool->task_channel;
 	if (ch == NULL) {
@@ -754,11 +851,15 @@ static void thread_pool_drain_tasks(async_thread_pool_t *pool, bool reject)
 				(zend_future_shared_state_t *)(uintptr_t) Z_LVAL_P(state_zv);
 
 			if (reject) {
-				zend_object *exception = async_new_exception(
-					async_ce_cancellation_exception,
-					"ThreadPool task was cancelled before execution");
-				async_future_shared_state_reject(state, exception);
-				OBJ_RELEASE(exception);
+				if (reject_with != NULL) {
+					async_future_shared_state_reject(state, reject_with);
+				} else {
+					zend_object *exception = async_new_exception(
+						async_ce_cancellation_exception,
+						"ThreadPool task was cancelled before execution");
+					async_future_shared_state_reject(state, exception);
+					OBJ_RELEASE(exception);
+				}
 			}
 
 			async_future_shared_state_delref(state);
@@ -775,7 +876,7 @@ static void thread_pool_drain_tasks(async_thread_pool_t *pool, bool reject)
  */
 static void thread_pool_destroy(async_thread_pool_t *pool)
 {
-	thread_pool_drain_tasks(pool, false);
+	thread_pool_drain_tasks(pool, false, NULL);
 
 	if (pool->task_channel != NULL) {
 		pool->task_channel->channel.event.dispose(&pool->task_channel->channel.event);
@@ -1169,7 +1270,7 @@ METHOD(cancel)
 	thread_pool_close(pool);
 	/* Reject queued (not-yet-picked-up) tasks. In-flight: sync runs to
 	 * completion (not preemptible), coroutine dies via scope cascade. */
-	thread_pool_drain_tasks(pool, /*reject*/ true);
+	thread_pool_drain_tasks(pool, /*reject*/ true, NULL);
 }
 
 METHOD(isClosed)
