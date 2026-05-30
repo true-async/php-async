@@ -374,10 +374,10 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 				goto task_cleanup;
 			}
 
-			/* A fatal error longjmps (zend_bailout); exit()/die() instead throws an
-			 * unwind-exit token into EG(exception). Both must terminate the worker
-			 * gracefully, NOT be re-raised or passed to reject() — the token can't
-			 * cross the fiber boundary and would crash the worker fiber. */
+			/* A real fatal error longjmps (zend_bailout); exit()/die() instead
+			 * throws an unwind-exit token into EG(exception). Neither may be
+			 * re-raised or passed to reject() — the token can't cross the fiber
+			 * boundary and would crash the worker fiber. */
 			volatile bool task_bailed = false;
 			zend_try {
 				zend_call_function(&fci, &fcc);
@@ -391,15 +391,22 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			zend_atomic_int_dec(&pool->base.running_count);
 			zend_atomic_int_inc(&pool->base.completed_count);
 
-			if (task_bailed
-				|| (EG(exception) != NULL
-					&& (zend_is_unwind_exit(EG(exception))
-						|| zend_is_graceful_exit(EG(exception))))) {
-				/* exit()/die()/fatal: deliver as a transfer exception and tear the
-				 * pool down — a worker can't safely keep running after a bailout. */
-				if (EG(exception) != NULL) {
-					zend_clear_exception();
-				}
+			const bool task_exited = (EG(exception) != NULL
+				&& (zend_is_unwind_exit(EG(exception))
+					|| zend_is_graceful_exit(EG(exception))));
+
+			if (task_exited) {
+				/* exit()/die() is graceful "this task is done" — the worker's
+				 * request survives it, so resolve the future with null (no return
+				 * value) and keep serving the next task. Never pass the unwind
+				 * token to reject(): it can't cross the fiber to the awaiter. */
+				zend_clear_exception();
+				zval null_result;
+				ZVAL_NULL(&null_result);
+				async_future_shared_state_complete(state, &null_result);
+			} else if (task_bailed) {
+				/* A real fatal (e.g. OOM) leaves the worker's request unusable —
+				 * deliver a transfer exception and tear the pool down. */
 				zend_object *bex = thread_pool_bailout_exception();
 				async_future_shared_state_reject(state, bex);
 				thread_pool_close(pool);
@@ -513,17 +520,7 @@ static void pool_task_dispose(zend_coroutine_t *coroutine)
 	zend_atomic_int_inc(&ctx->pool->base.completed_count);
 
 	if (coroutine->exception != NULL) {
-		if (zend_is_unwind_exit(coroutine->exception)
-			|| zend_is_graceful_exit(coroutine->exception)) {
-			/* Task called exit()/die(): the unwind-exit token can't cross to the
-			 * awaiter — deliver a transfer exception instead. Only this task's
-			 * coroutine unwound, so the worker keeps serving siblings. */
-			zend_object *bex = thread_pool_bailout_exception();
-			async_future_shared_state_reject(ctx->state, bex);
-			OBJ_RELEASE(bex);
-		} else {
-			async_future_shared_state_reject(ctx->state, coroutine->exception);
-		}
+		async_future_shared_state_reject(ctx->state, coroutine->exception);
 		ZEND_COROUTINE_SET_EXCEPTION_HANDLED(coroutine);
 	} else if (Z_TYPE(coroutine->result) != IS_UNDEF) {
 		async_future_shared_state_complete(ctx->state, &coroutine->result);
