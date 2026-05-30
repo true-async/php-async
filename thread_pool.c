@@ -80,9 +80,10 @@ static bool thread_pool_spawn_task_coroutine(
 static zend_function worker_root_function = { ZEND_INTERNAL_FUNCTION };
 
 /* Build a ThreadTransferException carrying the current bailout's message.
- * Call after a zend_catch that trapped a graceful exit()/die() or fatal error:
- * the pool delivers this to awaiters instead of re-raising zend_bailout(), which
- * would crash the worker fiber (it can't transfer a non-throwable exit token). */
+ * Used when the worker observed a graceful exit()/die() (unwind-exit token) or a
+ * fatal-error bailout: the pool delivers this to awaiters instead of re-raising
+ * zend_bailout() or passing the token to reject() — either crashes the worker
+ * fiber, which can't transfer a non-throwable exit token. */
 static zend_object *thread_pool_bailout_exception(void)
 {
 	const zend_string *msg = PG(last_error_message);
