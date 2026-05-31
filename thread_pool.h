@@ -56,6 +56,12 @@ struct _async_thread_pool_s {
 	 * wakeup and scope-cancel in-flight tasks; sync workers can't be
 	 * preempted out of zend_call_function, so they ignore it. */
 	zend_atomic_int cancel_requested;
+
+	/* Bootloader-failure message (persistent), set once by the first worker
+	 * whose bootloader fails, before it closes the channel. A submit() that
+	 * loses the race against the close reports THIS real reason instead of a
+	 * generic closed-pool error. Guarded by task_channel->mutex. */
+	char *bootloader_error;
 };
 
 ///////////////////////////////////////////////////////////

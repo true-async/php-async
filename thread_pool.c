@@ -106,6 +106,47 @@ static zend_object *thread_pool_wrap_transfer_error(zend_object *src)
 		(msg != NULL && Z_TYPE_P(msg) == IS_STRING) ? Z_STRVAL_P(msg) : "thread transfer failed");
 }
 
+/* Record (once) the bootloader-failure message on the pool, before its channel
+ * is closed, so a submit() that races the close reports the real reason instead
+ * of a generic closed-pool error. Guarded by the channel mutex; first failing
+ * worker wins. */
+static void thread_pool_record_bootloader_error(async_thread_pool_t *pool, zend_object *ex)
+{
+	if (pool->task_channel == NULL) {
+		return;
+	}
+
+	zval rv;
+	const zval *msg = zend_read_property_ex(ex->ce, ex, ZSTR_KNOWN(ZEND_STR_MESSAGE), 1, &rv);
+	const char *text = (msg != NULL && Z_TYPE_P(msg) == IS_STRING)
+		? Z_STRVAL_P(msg) : "ThreadPool bootloader failed";
+
+	ASYNC_MUTEX_LOCK(pool->task_channel->mutex);
+	if (pool->bootloader_error == NULL) {
+		pool->bootloader_error = pestrdup(text, 1);
+	}
+	ASYNC_MUTEX_UNLOCK(pool->task_channel->mutex);
+}
+
+/* Throw the reason a submit failed against a closed pool: the real bootloader
+ * error if a worker recorded one before closing the channel, otherwise the
+ * given generic message. A pending generic channel-closed exception is replaced
+ * by the bootloader error so the awaiter sees the true cause, not the symptom. */
+static void thread_pool_throw_closed(async_thread_pool_t *pool, const char *fallback)
+{
+	if (pool->bootloader_error != NULL) {
+		if (EG(exception)) {
+			zend_clear_exception();
+		}
+		zend_throw_exception(async_ce_thread_transfer_exception, pool->bootloader_error, 0);
+		return;
+	}
+
+	if (!EG(exception)) {
+		zend_throw_exception(async_ce_thread_pool_exception, fallback, 0);
+	}
+}
+
 /* event is always NULL for pool workers (started via ZEND_ASYNC_START_THREAD) */
 static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *ctx)
 {
@@ -160,6 +201,7 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 				zend_object *boot_ex = thread_pool_wrap_transfer_error(EG(exception));
 				zend_clear_exception();
 				zval_ptr_dtor(&boot_callable);
+				thread_pool_record_bootloader_error(pool, boot_ex);
 				thread_pool_close(pool);
 				thread_pool_drain_tasks(pool, true, boot_ex);
 				OBJ_RELEASE(boot_ex);
@@ -193,6 +235,7 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 					zend_clear_exception();
 				}
 				zend_object *boot_ex = thread_pool_bailout_exception();
+				thread_pool_record_bootloader_error(pool, boot_ex);
 				thread_pool_close(pool);
 				thread_pool_drain_tasks(pool, true, boot_ex);
 				OBJ_RELEASE(boot_ex);
@@ -205,6 +248,7 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 				zend_object *boot_ex = EG(exception);
 				GC_ADDREF(boot_ex);
 				zend_clear_exception();
+				thread_pool_record_bootloader_error(pool, boot_ex);
 				thread_pool_close(pool);
 				thread_pool_drain_tasks(pool, true, boot_ex);
 				OBJ_RELEASE(boot_ex);
@@ -673,7 +717,7 @@ static zend_async_event_t *thread_pool_submit_internal_impl(
 	async_thread_pool_t *pool = (async_thread_pool_t *) base;
 
 	if (UNEXPECTED(zend_atomic_int_load(&pool->base.closed))) {
-		zend_throw_exception(async_ce_thread_pool_exception, "ThreadPool is closed", 0);
+		thread_pool_throw_closed(pool, "ThreadPool is closed");
 		return NULL;
 	}
 
@@ -705,9 +749,7 @@ static zend_async_event_t *thread_pool_submit_internal_impl(
 		zval_ptr_dtor(&task);
 		async_future_shared_state_delref(state);
 		ZEND_ASYNC_EVENT_RELEASE(&remote->future.event);
-		if (!EG(exception)) {
-			zend_throw_exception(async_ce_thread_pool_exception, "ThreadPool channel is closed", 0);
-		}
+		thread_pool_throw_closed(pool, "ThreadPool channel is closed");
 		return NULL;
 	}
 
@@ -893,6 +935,11 @@ static void thread_pool_destroy(async_thread_pool_t *pool)
 		pool->bootloader_snapshot = NULL;
 	}
 
+	if (pool->bootloader_error != NULL) {
+		pefree(pool->bootloader_error, 1);
+		pool->bootloader_error = NULL;
+	}
+
 	pefree(pool, 1);
 }
 
@@ -1029,7 +1076,7 @@ METHOD(submit)
 	}
 
 	if (UNEXPECTED(zend_atomic_int_load(&pool->base.closed))) {
-		zend_throw_exception(async_ce_thread_pool_exception, "ThreadPool is closed", 0);
+		thread_pool_throw_closed(pool, "ThreadPool is closed");
 		RETURN_THROWS();
 	}
 
@@ -1090,9 +1137,7 @@ METHOD(submit)
 		async_thread_snapshot_destroy(snapshot);
 		async_future_shared_state_delref(state);
 		ZEND_ASYNC_EVENT_RELEASE(&remote->future.event);
-		if (!EG(exception)) {
-			zend_throw_exception(async_ce_thread_pool_exception, "ThreadPool channel is closed", 0);
-		}
+		thread_pool_throw_closed(pool, "ThreadPool channel is closed");
 		RETURN_THROWS();
 	}
 
@@ -1124,7 +1169,7 @@ METHOD(map)
 	}
 
 	if (UNEXPECTED(zend_atomic_int_load(&pool->base.closed))) {
-		zend_throw_exception(async_ce_thread_pool_exception, "ThreadPool is closed", 0);
+		thread_pool_throw_closed(pool, "ThreadPool is closed");
 		RETURN_THROWS();
 	}
 
@@ -1199,9 +1244,7 @@ METHOD(map)
 			async_future_shared_state_delref(state);
 			ZEND_ASYNC_EVENT_RELEASE(&remote->future.event);
 			zval_ptr_dtor(&futures_arr);
-			if (!EG(exception)) {
-				zend_throw_exception(async_ce_thread_pool_exception, "ThreadPool channel is closed", 0);
-			}
+			thread_pool_throw_closed(pool, "ThreadPool channel is closed");
 			RETURN_THROWS();
 		}
 
