@@ -984,6 +984,15 @@ static zend_always_inline void thread_transfer_zval_inner(thread_transfer_ctx_t 
 			ZVAL_NULL(dst);
 			break;
 
+		case IS_PTR:
+			/* Opaque pointer passed through verbatim — not copied, not freed.
+			 * The caller guarantees it points at persistent (pemalloc) memory
+			 * with a lifetime it manages itself; the channel only carries the
+			 * value. Enables C-level cross-thread handoffs (e.g. HTTP/3
+			 * cross-worker packet forwarding). Matches thread_copy_zval. */
+			ZVAL_PTR(dst, Z_PTR_P(src));
+			break;
+
 		default:
 			ctx->error = "Cannot transfer zval of unsupported type between threads";
 			ZVAL_NULL(dst);
