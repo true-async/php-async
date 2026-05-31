@@ -54,6 +54,13 @@ PHP_ASYNC_API extern zend_class_entry *async_ce_circuit_breaker_strategy;
 
 #define REACTOR_CHECK_INTERVAL (100 * 1000000) // ms in nanoseconds
 
+/* Main scheduler-loop reactor-poll throttle window. While coroutines are
+ * runnable the reactor is polled at most once per this interval to amortise
+ * the epoll/io_uring poll over a batch of micro-coroutines. 1ms: small
+ * enough to stay under QUIC loss-detection (a coarser window trips PTO and
+ * collapses HTTP/3 throughput), large enough to still batch the poll. */
+#define REACTOR_POLL_THROTTLE_NS (1 * 1000000) // 1ms in nanoseconds
+
 typedef struct
 {
 	// The first field must be a reference to a Zend object.

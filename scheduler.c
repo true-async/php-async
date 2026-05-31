@@ -1792,21 +1792,25 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 			 * more syscalls than the suspend-based path which is throttled
 			 * via REACTOR_CHECK_INTERVAL in scheduler_next_tick.
 			 *
-			 * Use CLOCK_MONOTONIC_COARSE: ~5ns vs ~25ns vdso for hrtime,
-			 * with 4-10ms granularity (depends on CONFIG_HZ). The
-			 * granularity itself is the throttle window — comparing
-			 * `coarse_now == last_coarse_tick` skips reactor until the
-			 * kernel's jiffies counter advances. Non-Linux: behaviour
-			 * unchanged (no throttle, same as before). */
+			 * Window = REACTOR_POLL_THROTTLE_NS (1ms) via the fine
+			 * CLOCK_MONOTONIC (~25ns vdso, no syscall). It MUST stay well
+			 * under QUIC loss-detection (PTO): the previous
+			 * CLOCK_MONOTONIC_COARSE jiffy (~10ms at CONFIG_HZ=100) delayed
+			 * ACKs/sends enough to trip PTO and collapse HTTP/3 throughput
+			 * under many active connections (measured c=64: 124 -> 20k
+			 * req/s once the window drops to 1ms). 1ms still amortises the
+			 * poll over a batch of micro-coroutines, so the h2 hello-world
+			 * syscall saving is preserved. Platforms without
+			 * CLOCK_MONOTONIC (MSVC/Windows): no throttle, as before. */
 			bool need_reactor = !has_next_coroutine;
-#if defined(__linux__) && defined(CLOCK_MONOTONIC_COARSE)
-			static __thread uint64_t last_coarse_tick_ns = 0;
+#if defined(CLOCK_MONOTONIC)
+			static __thread uint64_t last_reactor_tick_ns = 0;
 			if (!need_reactor) {
 				struct timespec ts;
-				clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
+				clock_gettime(CLOCK_MONOTONIC, &ts);
 				const uint64_t now_ns = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-				if (now_ns != last_coarse_tick_ns) {
-					last_coarse_tick_ns = now_ns;
+				if (now_ns - last_reactor_tick_ns >= REACTOR_POLL_THROTTLE_NS) {
+					last_reactor_tick_ns = now_ns;
 					need_reactor = true;
 				}
 			}
