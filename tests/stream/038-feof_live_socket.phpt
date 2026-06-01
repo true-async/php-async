@@ -64,8 +64,11 @@ $client = spawn(function() use ($s2c, $c2s) {
     // Wait for server to confirm close
     $s2c->recv();
 
-    // Give TCP stack time to deliver FIN
-    \Async\delay(1);
+    // Bounded wait for the remote FIN to be observed: a fixed delay races FIN
+    // propagation on slow/loaded CI VMs. Breaks as soon as EOF is visible.
+    for ($i = 0; $i < 100 && !feof($sock); $i++) {
+        \Async\delay(1);
+    }
 
     // Server closed — feof() should return true
     $eof = feof($sock);
