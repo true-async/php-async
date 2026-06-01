@@ -1,7 +1,15 @@
 --TEST--
 Two coroutines appending to the same file do not corrupt each other's data
---XFAIL--
-Windows: WriteFile ignores CRT _O_APPEND flag because FILE_WRITE_DATA is present alongside FILE_APPEND_DATA on the HANDLE. Removing FILE_WRITE_DATA would fix atomic append but breaks ftruncate (SetEndOfFile requires FILE_WRITE_DATA). The lseek(SEEK_END) workaround in the reactor is not sufficient when libuv dispatches writes to a worker thread — another coroutine can obtain the same EOF offset before the first write completes.
+--SKIPIF--
+<?php
+/* Windows only: WriteFile ignores the CRT _O_APPEND flag because FILE_WRITE_DATA
+ * sits alongside FILE_APPEND_DATA on the HANDLE; dropping FILE_WRITE_DATA would
+ * fix atomic append but breaks ftruncate (SetEndOfFile needs it), and the
+ * lseek(SEEK_END) workaround is insufficient once libuv hands writes to a worker
+ * thread (another coroutine can grab the same EOF offset first). So concurrent
+ * atomic append is not guaranteed on Windows. Passes everywhere else. */
+if (substr(PHP_OS, 0, 3) === 'WIN') die('skip Windows: atomic concurrent append not guaranteed (WriteFile ignores _O_APPEND)');
+?>
 --FILE--
 <?php
 
