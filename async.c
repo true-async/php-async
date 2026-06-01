@@ -870,8 +870,15 @@ PHP_FUNCTION(Async_request_context)
 
 	zend_async_scope_t *scope = ZEND_ASYNC_REQUEST_SCOPE;
 
-	if (scope == NULL || scope->context == NULL) {
+	if (scope == NULL) {
 		RETURN_NULL();
+	}
+
+	if (scope->context == NULL) {
+		async_context_t *context = async_context_new();
+		context->scope = scope;
+		scope->context = &context->base;
+		RETURN_OBJ_COPY(&context->std);
 	}
 
 	async_context_t *context = (async_context_t *) scope->context;
