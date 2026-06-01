@@ -32,7 +32,11 @@ $client = spawn(function() use ($s2c, $c2s) {
     $c2s->send("close now");
     $s2c->recv();
 
-    \Async\delay(1);
+    // Bounded wait for the remote FIN to be observed: a fixed delay races FIN
+    // propagation on slow/loaded CI VMs. Breaks as soon as EOF is visible.
+    for ($i = 0; $i < 100 && !feof($sock); $i++) {
+        \Async\delay(1);
+    }
 
     echo "feof after remote close: " . (feof($sock) ? "true" : "false (BUG!)") . "\n";
 
