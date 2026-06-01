@@ -688,9 +688,16 @@ static bool thread_pool_start_worker(async_thread_pool_t *pool, int32_t index)
 	ZEND_ASYNC_THREAD_CONTEXT_EVENT_MUTEX_ALLOC(context);
 	context->internal_entry = NULL; /* set by start_thread */
 
+	/* Take the worker's pool ref BEFORE spawning. A worker can run to
+	 * completion and DELREF immediately (e.g. a bootloader that throws), so
+	 * its ref must already be accounted for — otherwise that DELREF drops the
+	 * pool to zero and frees it before we store the handle below. */
+	ZEND_THREAD_POOL_ADDREF(&pool->base);
+
 	zend_async_thread_handle_t handle = ZEND_ASYNC_START_THREAD(entry, context);
 
 	if (UNEXPECTED(handle == 0)) {
+		ZEND_THREAD_POOL_DELREF(&pool->base);
 		pefree(entry, 1);
 		ZEND_ASYNC_THREAD_CONTEXT_EVENT_MUTEX_FREE(context);
 		pefree(context, 1);
@@ -698,7 +705,6 @@ static bool thread_pool_start_worker(async_thread_pool_t *pool, int32_t index)
 	}
 
 	pool->base.workers[index] = handle;
-	ZEND_THREAD_POOL_ADDREF(&pool->base);
 
 	return true;
 }

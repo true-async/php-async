@@ -2441,13 +2441,14 @@ static zend_async_thread_handle_t libuv_start_thread(
 	 * See start_thread comment above for why post-create assignment races. */
 	libuv_thread_registry_init();
 	context->key = (zend_async_thread_handle_t) async_ptr_to_index(context);
-	libuv_thread_registry_add(context->key);
+	const zend_async_thread_handle_t key = context->key;
+	libuv_thread_registry_add(key);
 
 	uv_thread_t uv_handle;
 	const int ret = uv_thread_create(&uv_handle, zend_async_thread_run_fn, context);
 
 	if (UNEXPECTED(ret != 0)) {
-		libuv_thread_registry_remove(context->key);
+		libuv_thread_registry_remove(key);
 		context->key = 0;
 		zend_atomic_int_dec(&context->ref_count);
 		context->internal_entry = NULL;
@@ -2455,7 +2456,11 @@ static zend_async_thread_handle_t libuv_start_thread(
 		return 0;
 	}
 
-	return context->key;
+	/* Do NOT touch `context` after a successful create: the runner holds the
+	 * only ref (pool workers have no owning Thread object), so a fast-exiting
+	 * worker — e.g. a bootloader that throws immediately — can RELEASE and free
+	 * context before this returns. Return the key captured before the spawn. */
+	return key;
 }
 
 /* }}} */
