@@ -82,6 +82,15 @@ if test "$PHP_ASYNC" = "yes"; then
       esac
     fi
 
+    dnl The TrueAsync libuv fork exposes uv_next_timer_timeout() (timer-only
+    dnl deadline), used by the adaptive reactor-poll throttle. Optional: when
+    dnl building against a stock libuv that lacks it, fall back to the fixed
+    dnl 1ms cadence instead of failing to link.
+    PHP_CHECK_LIBRARY(uv, uv_next_timer_timeout,
+    [
+      AC_DEFINE([HAVE_UV_NEXT_TIMER_TIMEOUT], 1, [libuv exposes uv_next_timer_timeout (TrueAsync fork)])
+    ], [], [$LIBUV_LIBLINE])
+
 	PHP_SUBST([CFLAGS])
     PHP_SUBST(UV_SHARED_LIBADD)
 

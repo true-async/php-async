@@ -1814,6 +1814,7 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 				 * or HTTP/3 collapses); otherwise batch up to
 				 * REACTOR_POLL_THROTTLE_MAX_NS (10ms) so pipelined / keep-alive
 				 * HTTP/1 amortises the poll over many requests. */
+#ifdef HAVE_UV_NEXT_TIMER_TIMEOUT
 				uv_update_time(&ASYNC_G(uvloop));
 				const int next_timer_ms = uv_next_timer_timeout(&ASYNC_G(uvloop));
 				const bool timer_imminent =
@@ -1821,6 +1822,10 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 					(uint64_t)next_timer_ms * 1000000ULL <= REACTOR_POLL_THROTTLE_NS;
 				const uint64_t window =
 					timer_imminent ? REACTOR_POLL_THROTTLE_NS : REACTOR_POLL_THROTTLE_MAX_NS;
+#else
+					/* stock libuv: no timer-only signal — keep fixed 1ms */
+					const uint64_t window = REACTOR_POLL_THROTTLE_NS;
+#endif
 
 				if (now_ns - last_reactor_tick_ns >= window) {
 					last_reactor_tick_ns = now_ns;
