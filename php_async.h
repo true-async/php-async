@@ -54,12 +54,16 @@ PHP_ASYNC_API extern zend_class_entry *async_ce_circuit_breaker_strategy;
 
 #define REACTOR_CHECK_INTERVAL (100 * 1000000) // ms in nanoseconds
 
-/* Main scheduler-loop reactor-poll throttle window. While coroutines are
- * runnable the reactor is polled at most once per this interval to amortise
- * the epoll/io_uring poll over a batch of micro-coroutines. 1ms: small
- * enough to stay under QUIC loss-detection (a coarser window trips PTO and
- * collapses HTTP/3 throughput), large enough to still batch the poll. */
-#define REACTOR_POLL_THROTTLE_NS (1 * 1000000) // 1ms in nanoseconds
+/* Main scheduler-loop reactor-poll throttle, adaptive window.
+ * While coroutines are runnable the reactor is polled at most once per this
+ * window, to amortise the epoll/io_uring poll over a batch of micro-coroutines.
+ * The window is chosen per-iteration:
+ *   - MAX (10ms) when no libuv timer is imminent — lets pipelined / keep-alive
+ *     HTTP/1 batch many requests per poll (throughput);
+ *   - MIN (1ms) when a libuv timer is due within MIN — QUIC ACK/PTO must fire
+ *     on time or HTTP/3 collapses. */
+#define REACTOR_POLL_THROTTLE_NS     (1 * 1000000)  // 1ms — floor, when a timer is imminent
+#define REACTOR_POLL_THROTTLE_MAX_NS (10 * 1000000) // 10ms — coarse batch window, no near timer
 
 typedef struct
 {

@@ -1809,7 +1809,20 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 				struct timespec ts;
 				clock_gettime(CLOCK_MONOTONIC, &ts);
 				const uint64_t now_ns = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-				if (now_ns - last_reactor_tick_ns >= REACTOR_POLL_THROTTLE_NS) {
+				/* Adaptive window: poll within REACTOR_POLL_THROTTLE_NS (1ms) only
+				 * when a libuv timer is imminent (QUIC ACK/PTO — must fire on time
+				 * or HTTP/3 collapses); otherwise batch up to
+				 * REACTOR_POLL_THROTTLE_MAX_NS (10ms) so pipelined / keep-alive
+				 * HTTP/1 amortises the poll over many requests. */
+				uv_update_time(&ASYNC_G(uvloop));
+				const int next_timer_ms = uv_next_timer_timeout(&ASYNC_G(uvloop));
+				const bool timer_imminent =
+					next_timer_ms >= 0 &&
+					(uint64_t)next_timer_ms * 1000000ULL <= REACTOR_POLL_THROTTLE_NS;
+				const uint64_t window =
+					timer_imminent ? REACTOR_POLL_THROTTLE_NS : REACTOR_POLL_THROTTLE_MAX_NS;
+
+				if (now_ns - last_reactor_tick_ns >= window) {
 					last_reactor_tick_ns = now_ns;
 					need_reactor = true;
 				}
