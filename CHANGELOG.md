@@ -5,7 +5,7 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.7.0] -
+## [0.7.0] - 2026-06-02
 
 ### Changed
 - **BREAKING — `new Scope()` defaults to Not-Safe disposal** — a user-created root `Scope` no longer sets the `DISPOSE_SAFELY` flag automatically. Calling `dispose()` on a fresh `new Scope()` now cancels its coroutines synchronously instead of letting them outlive the scope as zombies. Main scope and any `Scope::inherit(...)` chain are **unchanged** (inheritance still propagates the parent's flag; `Scope::inherit()` at the top level falls back to the main scope so it stays Safe). Migration: chain `->allowZombies()` on the constructor to keep the old behavior, e.g. `(new Scope())->allowZombies()`.
