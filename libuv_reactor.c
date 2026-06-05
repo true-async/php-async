@@ -3945,17 +3945,29 @@ static bool libuv_io_event_dispose(zend_async_event_t *event)
 		libuv_io_close(&io->base);
 	}
 
-	/* Dispose any in-flight request left attached to the io. Multishot UDP
-	 * recv keeps one req alive for the lifetime of the handle; without this
-	 * the 2 KiB buffer plus the req struct leak on close. The dispose fn is
-	 * at the same offset for both zend_async_io_req_t and zend_async_udp_req_t
-	 * (completed, dispose) so a single call path covers TCP reads and UDP
-	 * recvfrom alike. */
+	/* Dispose any in-flight request still attached to the io (a one-shot
+	 * read/recv whose awaiter never ran, or a leftover). The multishot recv
+	 * req is normally freed by its consumer (libuv_io_close detaches it for
+	 * the await/consumer path), so this is a backstop.
+	 *
+	 * IMPORTANT: dispose() lives at a DIFFERENT struct offset in
+	 * zend_async_io_req_t (after an 8-byte free_cb) vs zend_async_udp_req_t
+	 * (after a 4-byte flags), so the two layouts are NOT interchangeable.
+	 * Reading dispose through the wrong layout calls the UDP req's sockaddr
+	 * bytes as a function pointer (access violation). Branch on io type. */
 	if (io->active_req != NULL) {
-		async_io_req_t *req = io->active_req;
-		io->active_req = NULL;
-		if (req->base.dispose != NULL) {
-			req->base.dispose(&req->base);
+		if (io->base.type == ZEND_ASYNC_IO_TYPE_UDP) {
+			async_udp_req_t *ureq = (async_udp_req_t *) io->active_req;
+			io->active_req = NULL;
+			if (ureq->base.dispose != NULL) {
+				ureq->base.dispose(&ureq->base);
+			}
+		} else {
+			async_io_req_t *req = io->active_req;
+			io->active_req = NULL;
+			if (req->base.dispose != NULL) {
+				req->base.dispose(&req->base);
+			}
 		}
 	}
 
@@ -5120,6 +5132,14 @@ static bool libuv_io_close(zend_async_io_t *io_base)
 	if (io->base.event.callbacks.length > 0) {
 		zend_object *exc = async_new_exception(
 			async_ce_input_output_exception, "Stream was closed");
+		/* Detach + mark the in-flight req, but do NOT free it here — its
+		 * memory is owned elsewhere:
+		 *   - awaited one-shot read/recv: the parked coroutine frees it after
+		 *     the NOTIFY below wakes it (async_io_req_await contract);
+		 *   - multishot recv (persistent callback, no awaiter): the CONSUMER
+		 *     that submitted it owns disposal — e.g. http3_listener frees its
+		 *     recv_req on teardown.
+		 * Freeing here would double-free. */
 		if (io->active_req != NULL) {
 			if (io->base.type == ZEND_ASYNC_IO_TYPE_UDP) {
 				async_udp_req_t *ureq = (async_udp_req_t *) io->active_req;
