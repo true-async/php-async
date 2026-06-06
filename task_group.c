@@ -421,6 +421,7 @@ static zend_object *task_group_create_object(zend_class_entry *ce)
 	task_group_event_init(group);
 
 	group->scope = NULL;
+	group->scope_object = NULL;
 	group->concurrency = 0;
 	group->queue_limit = 0;
 	group->pending_count = 0;
@@ -498,6 +499,14 @@ static void task_group_dtor_object(zend_object *object)
 		ZEND_ASYNC_SCOPE_RELEASE(scope);
 	}
 
+	// Release the external Scope object, after the scope above so group->scope
+	// stayed valid throughout.
+	if (group->scope_object != NULL) {
+		zend_object *scope_object = group->scope_object;
+		group->scope_object = NULL;
+		OBJ_RELEASE(scope_object);
+	}
+
 	zend_object_std_dtor(object);
 }
 
@@ -532,6 +541,12 @@ static void task_group_free_object(zend_object *object)
 
 	/* Free event callbacks */
 	zend_async_callbacks_free(&group->event);
+
+	/* Normally released in the dtor; guard against leaks if it was skipped. */
+	if (group->scope_object != NULL) {
+		OBJ_RELEASE(group->scope_object);
+		group->scope_object = NULL;
+	}
 
 	/* Scope is released in dtor_obj, but guard against leaks */
 	ZEND_ASSERT(group->scope == NULL && "Scope should have been released in dtor");
@@ -577,6 +592,11 @@ static HashTable *task_group_get_gc(zend_object *object, zval **table, int *n)
 			zend_get_gc_buffer_add_zval(buf, zv);
 		}
 		ZEND_HASH_FOREACH_END();
+	}
+
+	/* GC the held external Scope object */
+	if (group->scope_object != NULL) {
+		zend_get_gc_buffer_add_obj(buf, group->scope_object);
 	}
 
 	zend_get_gc_buffer_use(buf, table, n);
@@ -1297,6 +1317,10 @@ zend_async_group_t *async_new_group(uint32_t concurrency, uint32_t queue_limit, 
 			zval_ptr_dtor(&zv);
 			return NULL;
 		}
+		/* Hold a ref to the external Scope object: keeps scope_object != NULL so
+		 * scope_can_be_disposed() won't free it while we hold group->scope. */
+		GC_ADDREF(scope_obj);
+		group->scope_object = scope_obj;
 		ZEND_ASYNC_EVENT_ADD_REF(&scope_object->scope->scope.event);
 		group->scope = scope_object->scope;
 	} else {
@@ -1371,6 +1395,10 @@ METHOD(__construct)
 			async_throw_error("Cannot use a disposed Scope for TaskGroup");
 			RETURN_THROWS();
 		}
+		/* Hold a ref to the external Scope object: keeps scope_object != NULL so
+		 * scope_can_be_disposed() won't free it while we hold group->scope. */
+		GC_ADDREF(scope_obj);
+		group->scope_object = scope_obj;
 		ZEND_ASYNC_EVENT_ADD_REF(&scope_object->scope->scope.event);
 		group->scope = scope_object->scope;
 	} else {

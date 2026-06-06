@@ -48,8 +48,12 @@ struct _async_task_group_s
 	 *   ASYNC_TASK_GROUP_F_COMPLETED       — terminal: all tasks done, event CLOSED */
 	zend_async_event_t event;
 
-	/* Child scope (always owned, dispose is safe) */
+	/* Scope for the group's coroutines: an owned child scope, or an external
+	 * PHP-supplied one (then scope_object holds its zend object). */
 	async_scope_t *scope;
+
+	/* Held ref to an external scope's zend object; NULL for owned child scopes. */
+	zend_object *scope_object;
 
 	/* Concurrency settings */
 	uint32_t concurrency;      /* 0 = unlimited */

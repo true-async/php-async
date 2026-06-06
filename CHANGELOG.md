@@ -5,6 +5,11 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **`TaskSet`/`TaskGroup(scope: $scope)` use-after-free on teardown** — the group held only an event refcount on a PHP-supplied scope, which is shared with coroutine bookkeeping, so a finishing coroutine could free the scope while `group->scope` still pointed at it (`task_group.c:486`, seen as `zend_mm_heap corrupted`). The group now holds a strong ref to the external Scope object for its lifetime, so the scope can't be disposed while in use. Test `tests/task_group/043-task_group_external_scope_uaf.phpt`.
+
 ## [0.7.0] - 2026-06-02
 
 ### Changed
