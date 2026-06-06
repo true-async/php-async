@@ -338,6 +338,13 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			ZVAL_UNDEF(&retval);
 			ZVAL_UNDEF(&callable);
 
+			/* Per-task nursery Scope (structured concurrency); used by the
+			 * non-coroutine run path below. Declared up here so the early
+			 * error gotos to task_cleanup never jump past an initializer. */
+			zend_async_scope_t *task_scope        = NULL;
+			zend_async_scope_t *task_saved_scope  = NULL;
+			zend_coroutine_t   *task_worker_coro  = NULL;
+
 			async_thread_create_closure(&snapshot->entry, &callable);
 
 			if (UNEXPECTED(EG(exception))) {
@@ -433,6 +440,21 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 				goto task_cleanup;
 			}
 
+			/* Structured concurrency: run the task body under its own
+			 * per-task Scope in NOT-safe mode (a nursery). Async\spawn uses
+			 * the current coroutine's scope, so coroutines the task spawns
+			 * land in task_scope. Temporarily point the worker coroutine's
+			 * scope at task_scope around the call; the worker itself is NOT a
+			 * member of task_scope (never spawned into it), so it can await it
+			 * below without tripping the same-scope deadlock guard. */
+			task_worker_coro = ZEND_ASYNC_CURRENT_COROUTINE;
+			task_scope = ZEND_ASYNC_NEW_SCOPE(ZEND_ASYNC_CURRENT_SCOPE);
+			if (EXPECTED(task_scope != NULL && task_worker_coro != NULL)) {
+				ZEND_ASYNC_SCOPE_CLR_DISPOSE_SAFELY(task_scope); /* not-safe */
+				task_saved_scope = task_worker_coro->scope;
+				task_worker_coro->scope = task_scope;
+			}
+
 			/* A real fatal error longjmps (zend_bailout); exit()/die() instead
 			 * throws an unwind-exit token into EG(exception). Neither may be
 			 * re-raised or passed to reject() — the token can't cross the fiber
@@ -443,6 +465,33 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			} zend_catch {
 				task_bailed = true;
 			} zend_end_try();
+
+			/* Task body returned. Restore the worker's own scope, then cancel
+			 * any coroutines the task spawned but left running and await their
+			 * teardown BEFORE the snapshot arena (which backs every spawned
+			 * closure's op_array) is freed at task_cleanup — so no child
+			 * outlives the snapshot. NOT-safe cancel = stragglers/zombies are
+			 * cancelled, never awaited forever (bounded by the runtime grace).
+			 * Mirrors Scope::awaitAfterCancellation at the C level. */
+			if (task_scope != NULL && task_worker_coro != NULL) {
+				task_worker_coro->scope = task_saved_scope;
+				ZEND_ASYNC_SCOPE_CANCEL(task_scope, NULL, false, false);
+
+				if (!ZEND_ASYNC_SCOPE_IS_COMPLETELY_DONE(task_scope)) {
+					ZEND_ASYNC_WAKER_NEW(task_worker_coro);
+					if (EXPECTED(EG(exception) == NULL)) {
+						zend_async_resume_when(task_worker_coro, &task_scope->event,
+											   false, zend_async_waker_callback_resolve, NULL);
+						if (EXPECTED(EG(exception) == NULL)) {
+							ZEND_ASYNC_SUSPEND();
+						}
+						zend_async_waker_clean(task_worker_coro);
+					}
+				}
+
+				ZEND_ASYNC_SCOPE_RELEASE(task_scope);
+				task_scope = NULL;
+			}
 
 			/* Decrement running and bump completed BEFORE notifying the awaiter
 			 * via complete/reject — otherwise a coroutine waking from await()
