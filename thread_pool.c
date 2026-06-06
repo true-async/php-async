@@ -17,6 +17,7 @@
 #include "thread_pool.h"
 #include "thread_pool_arginfo.h"
 #include "thread.h"
+#include "scope.h"
 #include "async_API.h"
 #include "exceptions.h"
 #include "php_async.h"
@@ -475,17 +476,39 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			 * Mirrors Scope::awaitAfterCancellation at the C level. */
 			if (task_scope != NULL && task_worker_coro != NULL) {
 				task_worker_coro->scope = task_saved_scope;
-				ZEND_ASYNC_SCOPE_CANCEL(task_scope, NULL, false, false);
 
-				if (!ZEND_ASYNC_SCOPE_IS_COMPLETELY_DONE(task_scope)) {
-					ZEND_ASYNC_WAKER_NEW(task_worker_coro);
-					if (EXPECTED(EG(exception) == NULL)) {
-						zend_async_resume_when(task_worker_coro, &task_scope->event,
-											   false, zend_async_waker_callback_resolve, NULL);
+				/* If every child already ran to completion during the task body
+				 * (e.g. the body ran an event loop), the scope is already closed
+				 * and its coroutines disposed — nothing to cancel or await, and
+				 * touching the terminated scope event would throw. Only engage
+				 * the nursery teardown while the scope is still open. */
+				if (!ZEND_ASYNC_SCOPE_IS_CLOSED(task_scope)) {
+					ZEND_ASYNC_SCOPE_CANCEL(task_scope, NULL, false, false);
+
+					/* Await until every coroutine the task spawned has PHYSICALLY
+					 * disposed — not merely until the scope reports "completed".
+					 * IS_COMPLETELY_DONE (can_be_disposed with_zombies=true) flips
+					 * true the instant the children are cancelled, while their
+					 * coroutine objects (and the op_arrays they hold, which live
+					 * in the snapshot arena) are still queued for disposal on a
+					 * later scheduler tick. Gate on the live coroutine/child-scope
+					 * count instead — mirrors Scope::awaitAfterCancellation — so
+					 * the SUSPEND lets each child run to full disposal (op_array
+					 * freed) while the arena is still alive; cooperative scheduling
+					 * guarantees they finish before we resume and free it. */
+					if (!ZEND_ASYNC_SCOPE_IS_CLOSED(task_scope)
+						&& (((async_scope_t *) task_scope)->coroutines.length != 0
+							|| task_scope->scopes.length != 0)
+						&& EXPECTED(EG(exception) == NULL)) {
+						ZEND_ASYNC_WAKER_NEW(task_worker_coro);
 						if (EXPECTED(EG(exception) == NULL)) {
-							ZEND_ASYNC_SUSPEND();
+							zend_async_resume_when(task_worker_coro, &task_scope->event,
+												   false, zend_async_waker_callback_resolve, NULL);
+							if (EXPECTED(EG(exception) == NULL)) {
+								ZEND_ASYNC_SUSPEND();
+							}
+							zend_async_waker_clean(task_worker_coro);
 						}
-						zend_async_waker_clean(task_worker_coro);
 					}
 				}
 
