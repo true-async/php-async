@@ -33,6 +33,8 @@
 #ifdef PHP_WIN32
 #include "win32/unistd.h"
 #include "win32/codepage.h"
+#include <mswsock.h> /* TransmitFile, WSAID_TRANSMITFILE — file→socket sendfile */
+#include <io.h>      /* _get_osfhandle — CRT fd → Win32 HANDLE for the source file */
 #else
 #include <sys/wait.h>
 #include <signal.h>
@@ -4444,6 +4446,126 @@ static void io_sendfile_zc_cb(uv_fs_t *fs_request)
 	}
 }
 
+#ifdef PHP_WIN32
+/* {{{ Windows file→socket sendfile via TransmitFile
+ *
+ * uv_fs_sendfile() targets the destination through CRT _write(), which
+ * only works when the destination is a CRT file descriptor. A TCP
+ * destination is a Winsock SOCKET — a different Windows descriptor
+ * namespace entirely (HANDLE / SOCKET / CRT fd are three distinct
+ * tables) — so feeding the socket value to _write writes nowhere and the
+ * body is silently lost. POSIX hides this because it unifies every
+ * descriptor into one int that sendfile(2) accepts directly.
+ *
+ * Resolve it at the right layer: dispatch socket destinations to
+ * TransmitFile, the Win32 file→socket primitive (the real "sendfile to a
+ * socket"). It runs synchronously on a libuv threadpool worker — exactly
+ * how uv_fs_sendfile runs its own copy loop off-loop — so completion
+ * still arrives on the loop thread via the after-work callback and the
+ * existing sendfile_complete() notify path is reused unchanged. */
+
+/* TransmitFile's byte count is a DWORD; loop for larger files. 1 GiB per
+ * call stays well inside the limit and bounds worker occupancy per pass. */
+#define ASYNC_TRANSMITFILE_CHUNK_MAX (1u << 30)
+
+typedef struct {
+	uv_work_t              work;
+	async_sendfile_req_t *req;
+	SOCKET                sock;        /* destination Winsock socket */
+	HANDLE                file;        /* source file Win32 HANDLE */
+	zend_off_t            offset;      /* start offset; -1 = current position */
+	size_t                remaining;
+	size_t                transferred;
+	int                   uv_err;      /* 0 = ok, else a UV_* error code */
+} async_transmitfile_work_t;
+
+/* Resolve TransmitFile lazily via WSAIoctl — no mswsock.lib link needed,
+ * and the pointer is process-stable so the static cache's benign
+ * same-value race across workers is harmless. */
+static LPFN_TRANSMITFILE async_resolve_transmitfile(const SOCKET s)
+{
+	static LPFN_TRANSMITFILE cached = NULL;
+
+	if (cached != NULL) {
+		return cached;
+	}
+
+	GUID guid = WSAID_TRANSMITFILE;
+	LPFN_TRANSMITFILE fn = NULL;
+	DWORD bytes = 0;
+
+	if (WSAIoctl(s, SIO_GET_EXTENSION_FUNCTION_POINTER, &guid, sizeof(guid),
+				 &fn, sizeof(fn), &bytes, NULL, NULL) == 0) {
+		cached = fn;
+	}
+
+	return cached;
+}
+
+/* Worker thread: no PHP/Zend API here, only Win32 + the req's own bytes. */
+static void io_transmitfile_work_cb(uv_work_t *work)
+{
+	async_transmitfile_work_t *tw = (async_transmitfile_work_t *) work->data;
+
+	const LPFN_TRANSMITFILE transmit = async_resolve_transmitfile(tw->sock);
+
+	if (UNEXPECTED(transmit == NULL)) {
+		tw->uv_err = UV_ENOSYS;
+		return;
+	}
+
+	/* Position the file once; synchronous TransmitFile reads from and
+	 * advances the file pointer, so later loop passes continue in place. */
+	if (tw->offset >= 0) {
+		LARGE_INTEGER li;
+		li.QuadPart = (LONGLONG) tw->offset;
+
+		if (!SetFilePointerEx(tw->file, li, NULL, FILE_BEGIN)) {
+			tw->uv_err = uv_translate_sys_error(GetLastError());
+			return;
+		}
+	}
+
+	while (tw->remaining > 0) {
+		const DWORD n = (DWORD) (tw->remaining < ASYNC_TRANSMITFILE_CHUNK_MAX
+									 ? tw->remaining
+									 : ASYNC_TRANSMITFILE_CHUNK_MAX);
+
+		/* NULL OVERLAPPED on a (blocking) libuv socket → synchronous:
+		 * returns only once all n bytes are handed to the transport.
+		 * Stream sockets preserve send order, so the head written inline
+		 * before this op stays ahead of the body on the wire. */
+		if (!transmit(tw->sock, tw->file, n, 0, NULL, NULL, 0)) {
+			tw->uv_err = uv_translate_sys_error(WSAGetLastError());
+			return;
+		}
+
+		tw->transferred += n;
+		tw->remaining   -= n;
+	}
+}
+
+/* Loop thread: translate the worker outcome onto the shared completion. */
+static void io_transmitfile_after_cb(uv_work_t *work, const int status)
+{
+	async_transmitfile_work_t *tw = (async_transmitfile_work_t *) work->data;
+	async_sendfile_req_t *req = tw->req;
+
+	req->transferred = tw->transferred;
+
+	if (status == UV_ECANCELED) {
+		sendfile_complete(req, UV_ECANCELED, "Sendfile");
+	} else if (tw->uv_err != 0) {
+		sendfile_complete(req, tw->uv_err, "TransmitFile");
+	} else {
+		sendfile_complete(req, 0, NULL);
+	}
+
+	pefree(tw, 0);
+}
+/* }}} */
+#endif /* PHP_WIN32 */
+
 /* {{{ libuv_io_sendfile
  *
  * Pure zero-copy: bytes never enter user space. Caller is responsible
@@ -4485,6 +4607,43 @@ libuv_io_sendfile(zend_async_io_t *out_io_base, zend_async_io_t *in_io_base,
 		req->base.base.completed   = true;
 		return &req->base.base;
 	}
+
+#ifdef PHP_WIN32
+	/* Socket destination: uv_fs_sendfile's CRT _write() cannot reach a
+	 * Winsock SOCKET. Route through TransmitFile instead, using the proper
+	 * descriptors — the socket from descriptor.socket, the source as a
+	 * Win32 HANDLE via _get_osfhandle(crt_fd) — never the conflated
+	 * crt_fd-as-socket value. */
+	if (out_io->base.type == ZEND_ASYNC_IO_TYPE_TCP) {
+		const HANDLE file = (HANDLE) _get_osfhandle(in_io->crt_fd);
+
+		if (UNEXPECTED(file == INVALID_HANDLE_VALUE)) {
+			async_throw_error("Failed to start sendfile: source is not a valid file handle");
+			libuv_sendfile_req_dispose(&req->base.base);
+			return NULL;
+		}
+
+		async_transmitfile_work_t *tw = pecalloc(1, sizeof(*tw), 0);
+		tw->work.data  = tw;
+		tw->req        = req;
+		tw->sock       = (SOCKET) out_io->base.descriptor.socket;
+		tw->file       = file;
+		tw->offset     = offset;
+		tw->remaining  = length;
+
+		const int werr = uv_queue_work(UVLOOP, &tw->work, io_transmitfile_work_cb,
+									   io_transmitfile_after_cb);
+		if (UNEXPECTED(werr < 0)) {
+			pefree(tw, 0);
+			async_throw_error("Failed to start sendfile: %s", uv_strerror(werr));
+			libuv_sendfile_req_dispose(&req->base.base);
+			return NULL;
+		}
+
+		ZEND_ASYNC_INCREASE_EVENT_COUNT(&in_io->base.event);
+		return &req->base.base;
+	}
+#endif
 
 	req->base.fs_req.data = req;
 
