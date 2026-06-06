@@ -452,6 +452,11 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			task_scope = ZEND_ASYNC_NEW_SCOPE(ZEND_ASYNC_CURRENT_SCOPE);
 			if (EXPECTED(task_scope != NULL && task_worker_coro != NULL)) {
 				ZEND_ASYNC_SCOPE_CLR_DISPOSE_SAFELY(task_scope); /* not-safe */
+				/* Pin the scope so it survives the cancel/await below: when the
+				 * last child finishes mid-SUSPEND the scope would otherwise
+				 * try_to_dispose and free itself out from under us. Same pattern
+				 * as pool_scope. Cleared right before RELEASE. */
+				ZEND_ASYNC_SCOPE_SET_OWNER_PINNED(task_scope);
 				task_saved_scope = task_worker_coro->scope;
 				task_worker_coro->scope = task_scope;
 			}
@@ -512,6 +517,7 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 					}
 				}
 
+				ZEND_ASYNC_SCOPE_CLR_OWNER_PINNED(task_scope);
 				ZEND_ASYNC_SCOPE_RELEASE(task_scope);
 				task_scope = NULL;
 			}
