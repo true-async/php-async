@@ -433,16 +433,70 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 				goto task_cleanup;
 			}
 
-			/* A real fatal error longjmps (zend_bailout); exit()/die() instead
-			 * throws an unwind-exit token into EG(exception). Neither may be
-			 * re-raised or passed to reject() — the token can't cross the fiber
-			 * boundary and would crash the worker fiber. */
-			volatile bool task_bailed = false;
-			zend_try {
-				zend_call_function(&fci, &fcc);
-			} zend_catch {
-				task_bailed = true;
-			} zend_end_try();
+			/* Synchronous mode: run the task body in its own per-task nursery
+			 * Scope. The body runs as a real coroutine, so CURRENT SCOPE follows
+			 * it and any Async\spawn() inside the body lands in task_scope on its
+			 * own — no scope hijacking. After the body finishes we cancel and
+			 * drain the scope before freeing the snapshot, so a coroutine the
+			 * body spawned but never awaited cannot outlive the snapshot arena
+			 * that backs its op_array. */
+			zend_coroutine_t *worker_coro = ZEND_ASYNC_CURRENT_COROUTINE;
+			zend_async_scope_t *task_scope =
+				worker_coro != NULL ? ZEND_ASYNC_NEW_SCOPE(ZEND_ASYNC_CURRENT_SCOPE) : NULL;
+
+			if (UNEXPECTED(task_scope == NULL)) {
+				zend_atomic_int_dec(&pool->base.running_count);
+				zend_atomic_int_inc(&pool->base.completed_count);
+				if (EG(exception)) {
+					async_future_shared_state_reject(state, EG(exception));
+					zend_clear_exception();
+				}
+				goto task_cleanup;
+			}
+
+			/* Nursery: un-awaited children are cancelled at task exit, never
+			 * awaited forever. Pinned so the scope survives the cancel/drain
+			 * below instead of self-disposing the moment it empties; cleared
+			 * right before RELEASE. */
+			ZEND_ASYNC_SCOPE_CLR_DISPOSE_SAFELY(task_scope);
+			ZEND_ASYNC_SCOPE_SET_OWNER_PINNED(task_scope);
+
+			zend_coroutine_t *body = ZEND_ASYNC_SPAWN_WITH(task_scope);
+			if (UNEXPECTED(body == NULL)) {
+				ZEND_ASYNC_SCOPE_CLR_OWNER_PINNED(task_scope);
+				ZEND_ASYNC_SCOPE_RELEASE(task_scope);
+				zend_atomic_int_dec(&pool->base.running_count);
+				zend_atomic_int_inc(&pool->base.completed_count);
+				if (EG(exception)) {
+					async_future_shared_state_reject(state, EG(exception));
+					zend_clear_exception();
+				}
+				goto task_cleanup;
+			}
+
+			/* Hand the prepared call to the body coroutine, reusing the params
+			 * buffer the worker already populated. Ownership of params moves to
+			 * the coroutine; the snapshot stays ours to free after the drain. */
+			zend_fcall_t *fcall = ecalloc(1, sizeof(zend_fcall_t));
+			fcall->fci = fci;
+			fcall->fci_cache = fcc;
+			fcall->fci.param_count = param_count;
+			fcall->fci.params = params;
+			fcall->fci.retval = &body->result;
+			Z_TRY_ADDREF(fcall->fci.function_name);
+			body->fcall = fcall;
+			params = NULL;
+
+			/* Await the body coroutine. waker_callback_resolve copies its result
+			 * (or error) into OUR waker at notify time — while the body is still
+			 * alive — and marks the body's exception handled so it does not
+			 * cascade and cancel the worker; we never read the body coroutine
+			 * after it may have been disposed. An exit()/die() in the body is
+			 * swallowed by the coroutine layer (exception NULL, result UNDEF). */
+			ZEND_ASYNC_WAKER_NEW(worker_coro);
+			zend_async_resume_when(worker_coro, &body->event, false,
+								   zend_async_waker_callback_resolve, NULL);
+			ZEND_ASYNC_SUSPEND();
 
 			/* Decrement running and bump completed BEFORE notifying the awaiter
 			 * via complete/reject — otherwise a coroutine waking from await()
@@ -450,33 +504,54 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			zend_atomic_int_dec(&pool->base.running_count);
 			zend_atomic_int_inc(&pool->base.completed_count);
 
-			const bool task_exited = (EG(exception) != NULL
-				&& (zend_is_unwind_exit(EG(exception))
-					|| zend_is_graceful_exit(EG(exception))));
-
-			if (task_exited) {
-				/* exit()/die() is graceful "this task is done" — the worker's
-				 * request survives it, so resolve the future with null (no return
-				 * value) and keep serving the next task. Never pass the unwind
-				 * token to reject(): it can't cross the fiber to the awaiter. */
+			zend_object *body_error = NULL;
+			if (worker_coro->waker != NULL && worker_coro->waker->error != NULL) {
+				body_error = worker_coro->waker->error;
+				worker_coro->waker->error = NULL;
+			} else if (EG(exception) != NULL) {
+				body_error = EG(exception);
+				GC_ADDREF(body_error);
 				zend_clear_exception();
+			}
+
+			if (body_error != NULL) {
+				async_future_shared_state_reject(state, body_error);
+				OBJ_RELEASE(body_error);
+			} else if (worker_coro->waker != NULL
+					&& Z_TYPE(worker_coro->waker->result) != IS_UNDEF) {
+				async_future_shared_state_complete(state, &worker_coro->waker->result);
+			} else {
 				zval null_result;
 				ZVAL_NULL(&null_result);
 				async_future_shared_state_complete(state, &null_result);
-			} else if (task_bailed) {
-				/* A real fatal (e.g. OOM) leaves the worker's request unusable —
-				 * deliver a transfer exception and tear the pool down. */
-				zend_object *bex = thread_pool_bailout_exception();
-				async_future_shared_state_reject(state, bex);
-				thread_pool_close(pool);
-				thread_pool_drain_tasks(pool, true, bex);
-				OBJ_RELEASE(bex);
-			} else if (EG(exception) != NULL) {
-				async_future_shared_state_reject(state, EG(exception));
-				zend_clear_exception();
-			} else {
-				async_future_shared_state_complete(state, &retval);
 			}
+
+			zend_async_waker_clean(worker_coro);
+
+			/* Cancel coroutines the body spawned but left running, then await
+			 * their physical disposal before freeing the snapshot arena that
+			 * backs their op_arrays — so none can outlive the snapshot. */
+			if (!ZEND_ASYNC_SCOPE_IS_CLOSED(task_scope)) {
+				ZEND_ASYNC_SCOPE_CANCEL(task_scope, NULL, false, false);
+				ZEND_ASYNC_SCOPE_AWAIT_AFTER_CANCELLATION(task_scope, worker_coro, NULL, NULL, NULL);
+				if (UNEXPECTED(EG(exception))) {
+					zend_clear_exception();
+				}
+			}
+
+			ZEND_ASYNC_SCOPE_CLR_OWNER_PINNED(task_scope);
+			ZEND_ASYNC_SCOPE_RELEASE(task_scope);
+
+			/* Release our closure ref BEFORE the snapshot: callable's op_array
+			 * lives in the snapshot arena, so destroy_op_array must run while the
+			 * arena is still mapped. The body dropped its own closure ref when it
+			 * disposed during the drain above, so this is the last one. */
+			zval_ptr_dtor(&callable);
+			zval_ptr_dtor(&retval);
+			async_thread_snapshot_destroy(snapshot);
+			async_future_shared_state_delref(state);
+			zval_ptr_dtor(&task);
+			continue;
 
 		task_cleanup:
 			if (params) {

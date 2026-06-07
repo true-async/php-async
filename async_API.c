@@ -1304,6 +1304,7 @@ void async_api_register(void)
 								  async_scheduler_coroutine_enqueue,
 								  async_coroutine_resume,
 								  async_coroutine_cancel,
+								  async_scope_await_after_cancellation,
 								  async_spawn_and_throw,
 								  start_graceful_shutdown,
 								  async_waker_new,

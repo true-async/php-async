@@ -371,6 +371,79 @@ METHOD(awaitCompletion)
 	zend_async_waker_clean(current_coroutine);
 }
 
+/* C core of Scope::awaitAfterCancellation, exposed via the async API so the
+ * thread pool can drain a per-task nursery from C without going through the PHP
+ * method. Suspends `awaiter` until the scope is COMPLETELY_DONE — active AND
+ * zombie counts both zero — so it waits for physical disposal of cancelled
+ * children, not the "completed" flag that flips the instant they are cancelled
+ * while their objects are still queued for disposal. `awaiter` must not belong
+ * to `scope` or its children. `error_fci`/`cancellation` are optional. */
+void async_scope_await_after_cancellation(
+		zend_async_scope_t *zend_scope, zend_coroutine_t *awaiter,
+		zend_fcall_info *error_fci, zend_fcall_info_cache *error_fci_cache,
+		zend_async_event_t *cancellation)
+{
+	if (UNEXPECTED(awaiter == NULL || zend_scope == NULL || ZEND_ASYNC_SCOPE_IS_CLOSED(zend_scope))) {
+		return;
+	}
+
+	async_scope_t *scope = (async_scope_t *) zend_scope;
+
+	// Deadlock guard: the awaiter must not belong to this scope or its children.
+	if (async_scope_contains_coroutine(scope, awaiter, 0)) {
+		async_throw_error(
+				"Cannot await completion of scope from a coroutine that belongs to the same scope or its children");
+		return;
+	}
+	if (UNEXPECTED(EG(exception))) {
+		return;
+	}
+
+	// Already drained — no active coroutines and no child scopes.
+	if (scope->coroutines.length == 0 && scope->scope.scopes.length == 0) {
+		return;
+	}
+
+	ZEND_ASYNC_WAKER_NEW(awaiter);
+	if (UNEXPECTED(EG(exception))) {
+		return;
+	}
+
+	// Custom callback resumes only once the scope is COMPLETELY_DONE and routes
+	// any child error through the optional handler.
+	scope_coroutine_callback_t *scope_callback = (scope_coroutine_callback_t *) zend_async_coroutine_callback_new(
+			awaiter, callback_resolve_when_zombie_completed, sizeof(scope_coroutine_callback_t));
+	if (UNEXPECTED(scope_callback == NULL)) {
+		ZEND_ASYNC_WAKER_DESTROY(awaiter);
+		return;
+	}
+
+	if (error_fci != NULL && error_fci->size != 0) {
+		scope_callback->error_fci = error_fci;
+		scope_callback->error_fci_cache = error_fci_cache;
+	} else {
+		scope_callback->error_fci = NULL;
+		scope_callback->error_fci_cache = NULL;
+	}
+
+	if (UNEXPECTED(!zend_async_resume_when(
+			awaiter, &zend_scope->event, false, NULL, &scope_callback->callback))) {
+		ZEND_ASYNC_WAKER_DESTROY(awaiter);
+		return;
+	}
+
+	if (cancellation != NULL) {
+		zend_async_resume_when(awaiter, cancellation, false, zend_async_waker_callback_cancel, NULL);
+		if (UNEXPECTED(EG(exception))) {
+			zend_async_waker_clean(awaiter);
+			return;
+		}
+	}
+
+	ZEND_ASYNC_SUSPEND();
+	zend_async_waker_clean(awaiter);
+}
+
 METHOD(awaitAfterCancellation)
 {
 	zend_fcall_info error_handler_fci = { 0 };
@@ -384,8 +457,9 @@ METHOD(awaitAfterCancellation)
 	ZEND_PARSE_PARAMETERS_END();
 
 	// Mark cancellation token as used immediately, before any early returns
+	zend_async_event_t *cancellation_event = NULL;
 	if (cancellation_obj != NULL) {
-		zend_async_event_t *cancellation_event = ZEND_ASYNC_OBJECT_TO_EVENT(cancellation_obj);
+		cancellation_event = ZEND_ASYNC_OBJECT_TO_EVENT(cancellation_obj);
 		ZEND_ASYNC_EVENT_SET_RESULT_USED(cancellation_event);
 		ZEND_ASYNC_EVENT_SET_EXC_CAUGHT(cancellation_event);
 	}
@@ -402,64 +476,14 @@ METHOD(awaitAfterCancellation)
 
 	if (false == ZEND_ASYNC_SCOPE_IS_CANCELLED(&scope_object->scope->scope)) {
 		async_throw_error("Attempt to await a Scope that has not been cancelled");
-	}
-
-	// Check for deadlock: current coroutine belongs to this scope or its children
-	if (async_scope_contains_coroutine(scope_object->scope, current_coroutine, 0)) {
-		async_throw_error(
-				"Cannot await completion of scope from a coroutine that belongs to the same scope or its children");
-		RETURN_THROWS();
-	}
-	if (UNEXPECTED(EG(exception))) {
 		RETURN_THROWS();
 	}
 
-	// Check if scope is already finished (no active coroutines and no child scopes)
-	if (scope_object->scope->coroutines.length == 0 && scope_object->scope->scope.scopes.length == 0) {
-		return;
-	}
-
-	ZEND_ASYNC_WAKER_NEW(current_coroutine);
-	if (UNEXPECTED(EG(exception))) {
-		RETURN_THROWS();
-	}
-
-	// We need to create a custom callback to handle errors coming from coroutines.
-	scope_coroutine_callback_t *scope_callback = (scope_coroutine_callback_t *) zend_async_coroutine_callback_new(
-			current_coroutine, callback_resolve_when_zombie_completed, sizeof(scope_coroutine_callback_t));
-	if (UNEXPECTED(scope_callback == NULL)) {
-		ZEND_ASYNC_WAKER_DESTROY(current_coroutine);
-		RETURN_THROWS();
-	}
-
-	if (error_handler_fci.size != 0) {
-		scope_callback->error_fci = &error_handler_fci;
-		scope_callback->error_fci_cache = &error_handler_fcc;
-	} else {
-		scope_callback->error_fci = NULL;
-		scope_callback->error_fci_cache = NULL;
-	}
-
-	if (UNEXPECTED(!zend_async_resume_when(current_coroutine, &scope_object->scope->scope.event, false, NULL,
-		&scope_callback->callback))) {
-		ZEND_ASYNC_WAKER_DESTROY(current_coroutine);
-		RETURN_THROWS();
-	}
-
-	if (cancellation_obj != NULL) {
-		zend_async_resume_when(current_coroutine,
-							   ZEND_ASYNC_OBJECT_TO_EVENT(cancellation_obj),
-							   false,
-							   zend_async_waker_callback_cancel,
-							   NULL);
-		if (UNEXPECTED(EG(exception))) {
-			zend_async_waker_clean(current_coroutine);
-			RETURN_THROWS();
-		}
-	}
-
-	ZEND_ASYNC_SUSPEND();
-	zend_async_waker_clean(current_coroutine);
+	async_scope_await_after_cancellation(
+			&scope_object->scope->scope, current_coroutine,
+			error_handler_fci.size != 0 ? &error_handler_fci : NULL,
+			error_handler_fci.size != 0 ? &error_handler_fcc : NULL,
+			cancellation_event);
 }
 
 METHOD(isFinished)
