@@ -371,13 +371,10 @@ METHOD(awaitCompletion)
 	zend_async_waker_clean(current_coroutine);
 }
 
-/* C core of Scope::awaitAfterCancellation, exposed via the async API so the
- * thread pool can drain a per-task nursery from C without going through the PHP
- * method. Suspends `awaiter` until the scope is COMPLETELY_DONE — active AND
- * zombie counts both zero — so it waits for physical disposal of cancelled
- * children, not the "completed" flag that flips the instant they are cancelled
- * while their objects are still queued for disposal. `awaiter` must not belong
- * to `scope` or its children. `error_fci`/`cancellation` are optional. */
+/* C core of Scope::awaitAfterCancellation, also used by the thread pool via the
+ * async API. Suspends `awaiter` until the scope is COMPLETELY_DONE (active and
+ * zombie counts both zero — physical disposal, not just "completed"). `awaiter`
+ * must not belong to `scope`. `error_fci`/`cancellation` are optional. */
 void async_scope_await_after_cancellation(
 		zend_async_scope_t *zend_scope, zend_coroutine_t *awaiter,
 		zend_fcall_info *error_fci, zend_fcall_info_cache *error_fci_cache,
@@ -409,8 +406,7 @@ void async_scope_await_after_cancellation(
 		return;
 	}
 
-	// Custom callback resumes only once the scope is COMPLETELY_DONE and routes
-	// any child error through the optional handler.
+	// Resumes only when COMPLETELY_DONE; routes any child error through the handler.
 	scope_coroutine_callback_t *scope_callback = (scope_coroutine_callback_t *) zend_async_coroutine_callback_new(
 			awaiter, callback_resolve_when_zombie_completed, sizeof(scope_coroutine_callback_t));
 	if (UNEXPECTED(scope_callback == NULL)) {
