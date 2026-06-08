@@ -1604,7 +1604,12 @@ static void thread_copy_callable(
 				thread_release_subgraph_zval(&transferred);
 				break;
 			}
-			zend_string *pkey = zend_string_dup(key, 1);
+			/* Force a private persistent copy even when the key is interned:
+			 * zend_string_dup() aliases interned strings, but an interned key
+			 * belongs to the source thread's interned-string table and dangles
+			 * once that thread shuts down while a worker is still reading it
+			 * (cross-thread UAF in async_thread_create_closure). */
+			zend_string *pkey = zend_string_init(ZSTR_VAL(key), ZSTR_LEN(key), 1);
 			zend_hash_add(dst->bound_vars, pkey, &transferred);
 			zend_string_release(pkey);
 		} ZEND_HASH_FOREACH_END();
