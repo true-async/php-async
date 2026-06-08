@@ -11,14 +11,18 @@ use Async\ThreadPool;
 use function Async\spawn;
 use function Async\await_all_or_fail;
 
-$path = tempnam(sys_get_temp_dir(), 'async_pool_io_');
+// Each task writes its OWN file. Concurrent appends ('a') to a single shared
+// file are not atomic on Windows and can lose a write; per-task files keep the
+// "worker I/O actually hits disk" coverage without the contention.
+$base = tempnam(sys_get_temp_dir(), 'async_pool_io_');
+@unlink($base);
 
-spawn(function() use ($path) {
+spawn(function() use ($base) {
     $pool = new ThreadPool(2);
     $futures = [];
     for ($i = 0; $i < 4; $i++) {
-        $futures[] = $pool->submit(static function () use ($i, $path): array {
-            $f = fopen($path, 'a');
+        $futures[] = $pool->submit(static function () use ($i, $base): array {
+            $f = fopen(sprintf('%s-%02d', $base, $i), 'w');
             $is_res = is_resource($f);
             $written = fwrite($f, sprintf("line-%02d\n", $i));
             fclose($f);
@@ -33,14 +37,19 @@ spawn(function() use ($path) {
     }
     $pool->close();
     clearstatcache();
-    $contents = file_get_contents($path);
-    $lines = array_filter(explode("\n", $contents), 'strlen');
+    $lines = [];
+    for ($i = 0; $i < 4; $i++) {
+        $lines[] = trim(file_get_contents(sprintf('%s-%02d', $base, $i)));
+    }
     sort($lines);
     echo "lines=", count($lines), "\n";
     echo implode("\n", $lines), "\n";
 });
 
-register_shutdown_function(static fn () => @unlink($path));
+register_shutdown_function(static function () use ($base) {
+    for ($i = 0; $i < 4; $i++) { @unlink(sprintf('%s-%02d', $base, $i)); }
+    @unlink($base);
+});
 ?>
 --EXPECT--
 lines=4

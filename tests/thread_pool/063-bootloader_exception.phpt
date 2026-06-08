@@ -19,10 +19,14 @@ spawn(function() {
         await($pool->submit(fn() => 1));
         echo "no exception\n";
     } catch (\Throwable $e) {
-        echo get_class($e), ": ", $e->getMessage(), "\n";
+        // The bootloader failure reaches the awaiter either as the real
+        // RuntimeException (submit landed before the worker closed the channel)
+        // or as Async\ThreadTransferException carrying the same message (submit
+        // raced the close). Both deliver the true cause, so assert on it.
+        echo $e->getMessage(), "\n";
     }
     $pool->close();
 });
 ?>
 --EXPECT--
-RuntimeException: boot failed!
+boot failed!
