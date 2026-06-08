@@ -73,9 +73,8 @@ async_thread_snapshot_t *async_thread_snapshot_create(
  */
 void async_thread_snapshot_destroy(async_thread_snapshot_t *snapshot);
 
-/* Materialize the entry op_array's name strings into normal refcounted heap
- * strings so they outlive the snapshot arena. Per-task snapshots only (never the
- * shared bootloader); idempotent. */
+/* Heap-copy the entry op_array's name strings so they outlive the snapshot
+ * arena. Per-task snapshots only; idempotent. */
 void async_thread_snapshot_materialize_entry(async_thread_snapshot_t *snapshot);
 
 ///////////////////////////////////////////////////////////
@@ -185,10 +184,6 @@ void async_thread_defer_release_ctx(
 
 PHP_ASYNC_API extern zend_class_entry *async_ce_remote_exception;
 PHP_ASYNC_API extern zend_class_entry *async_ce_thread_transfer_exception;
-
-/* Build a ThreadTransferException carrying a plain cause message. Used on the
- * destination thread to turn a future's bailout_cause string into an exception. */
-zend_object *async_thread_create_transfer_exception(const char *message);
 
 ///////////////////////////////////////////////////////////
 /// Thread PHP object — Async\Thread class

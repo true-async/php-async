@@ -1604,13 +1604,8 @@ static void thread_copy_callable(
 				thread_release_subgraph_zval(&transferred);
 				break;
 			}
-			/* Force a private persistent copy even when the key is interned:
-			 * zend_string_dup() aliases interned strings, but an interned key
-			 * belongs to the source thread's interned-string table and dangles
-			 * once that thread shuts down while a worker is still reading it
-			 * (cross-thread UAF in async_thread_create_closure). Mark it
-			 * PERSISTENT_LOCAL like the hash above so the GC_ADDREF in
-			 * zend_hash_add doesn't trip the zend_rc_debug assertion. */
+			/* Private persistent copy: an interned key aliases the parent's
+			 * interned table and dangles after the parent shuts down. */
 			zend_string *pkey = zend_string_init(ZSTR_VAL(key), ZSTR_LEN(key), 1);
 			GC_MAKE_PERSISTENT_LOCAL(pkey);
 			zend_hash_add(dst->bound_vars, pkey, &transferred);
@@ -1653,8 +1648,7 @@ static void thread_copy_callable(
  */
 static void thread_release_closure_copy(thread_release_ctx_t *ctx, async_thread_closure_copy_t *copy)
 {
-	/* Drop the snapshot's ref on the name strings. No-op while interned (shared
-	 * bootloader); for a materialized per-task snapshot this is the base ref. */
+	/* Release name strings (no-op while interned; the base ref once materialized). */
 	if (copy->func != NULL) {
 		if (copy->func->function_name != NULL) {
 			zend_string_release(copy->func->function_name);
@@ -1711,9 +1705,8 @@ async_thread_snapshot_t *async_thread_snapshot_create(const zend_fcall_t *entry,
 	return snapshot;
 }
 
-/* Turn an op_array's interned (arena-backed) name strings into refcounted heap
- * copies, so holders that outlive the arena (closure, PG(last_error_file)) are
- * freed by refcount instead of dangling into freed memory. Idempotent. */
+/* Heap-copy the op_array's interned (arena-backed) name strings so holders that
+ * outlive the arena (closure, PG(last_error_file)) are freed by refcount. */
 static void thread_materialize_op_array_names(zend_op_array *op_array)
 {
 	if (op_array->function_name != NULL && ZSTR_IS_INTERNED(op_array->function_name)) {
@@ -1781,14 +1774,6 @@ static zend_object *thread_create_transfer_exception(
 	}
 
 	return Z_OBJ(exception_zv);
-}
-
-/* Public builder for a ThreadTransferException carrying a plain cause message.
- * Called on the destination thread to materialize a future shared state's
- * bailout_cause into a real exception. */
-zend_object *async_thread_create_transfer_exception(const char *message)
-{
-	return thread_create_transfer_exception(message, NULL);
 }
 
 static zend_object *thread_wrap_remote_exception(

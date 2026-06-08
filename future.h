@@ -130,13 +130,6 @@ typedef struct _zend_future_shared_state_s {
 	/** Transferred exception in persistent memory (UNDEF if success) */
 	zval transferred_exception;
 
-	/** Plain bailout-cause message (pemalloc), set when the source thread
-	 *  bailed out (fatal/OOM/exit) instead of throwing. The destination thread
-	 *  builds a ThreadTransferException from it. NULL unless a bailout occurred.
-	 *  Carried as a C string so the source never has to allocate a PHP object
-	 *  under an exhausted allocator. */
-	char *bailout_cause;
-
 	/** Trigger event bound to the destination thread's event loop */
 	zend_async_trigger_event_t *trigger;
 
@@ -189,20 +182,6 @@ void async_future_shared_state_complete(zend_future_shared_state_t *state, zval 
  * @param exception  The exception object (will be deep-copied to persistent memory).
  */
 void async_future_shared_state_reject(zend_future_shared_state_t *state, zend_object *exception);
-
-/**
- * @brief Reject a shared state with a bailout cause message. Thread-safe.
- *
- * Stores @p message as a plain persistent string and fires the trigger; the
- * destination thread builds the actual ThreadTransferException. Use instead of
- * async_future_shared_state_reject when the source bailed out (fatal/OOM/exit)
- * and must not allocate a PHP exception under an exhausted allocator. No-op if
- * already completed.
- *
- * @param state    The shared state to reject.
- * @param message  The cause text (copied with pestrdup — persistent allocator).
- */
-void async_future_shared_state_reject_bailout(zend_future_shared_state_t *state, const char *message);
 
 /**
  * @brief Increment the shared state reference count. Thread-safe.
