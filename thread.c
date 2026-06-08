@@ -1608,8 +1608,11 @@ static void thread_copy_callable(
 			 * zend_string_dup() aliases interned strings, but an interned key
 			 * belongs to the source thread's interned-string table and dangles
 			 * once that thread shuts down while a worker is still reading it
-			 * (cross-thread UAF in async_thread_create_closure). */
+			 * (cross-thread UAF in async_thread_create_closure). Mark it
+			 * PERSISTENT_LOCAL like the hash above so the GC_ADDREF in
+			 * zend_hash_add doesn't trip the zend_rc_debug assertion. */
 			zend_string *pkey = zend_string_init(ZSTR_VAL(key), ZSTR_LEN(key), 1);
+			GC_MAKE_PERSISTENT_LOCAL(pkey);
 			zend_hash_add(dst->bound_vars, pkey, &transferred);
 			zend_string_release(pkey);
 		} ZEND_HASH_FOREACH_END();
