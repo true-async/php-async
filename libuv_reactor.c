@@ -411,6 +411,18 @@ static void libuv_reactor_stop_with_exception(void)
 
 /* }}} */
 
+#ifdef ZEND_DEBUG
+/* Dump a libuv handle that survived reactor shutdown — such a handle keeps the
+ * loop from closing (uv_loop_close => EBUSY) and leaks the loop's internals. */
+static void libuv_debug_dump_handle(uv_handle_t *handle, void *arg)
+{
+	(void) arg;
+	fprintf(stderr, "async: leftover libuv handle: type=%s active=%d closing=%d has_ref=%d\n",
+		uv_handle_type_name(uv_handle_get_type(handle)),
+		uv_is_active(handle), uv_is_closing(handle), uv_has_ref(handle));
+}
+#endif
+
 /* {{{ libuv_reactor_shutdown */
 bool libuv_reactor_shutdown(void)
 {
@@ -434,9 +446,20 @@ bool libuv_reactor_shutdown(void)
 		if (uv_loop_alive(UVLOOP)) {
 #ifdef ZEND_DEBUG
 			fprintf(stderr, "async: libuv shutdown timeout; loop left open\n");
+			uv_walk(UVLOOP, libuv_debug_dump_handle, NULL);
 #endif
 		} else {
-			uv_loop_close(UVLOOP);
+			/* uv_loop_close fails with EBUSY if any handle is still open (even an
+			 * unref'd one, which uv_loop_alive ignores) — that would silently
+			 * leak the loop's internals. Surface it in debug builds. */
+			const int close_result = uv_loop_close(UVLOOP);
+			if (UNEXPECTED(close_result != 0)) {
+#ifdef ZEND_DEBUG
+				fprintf(stderr, "async: uv_loop_close failed (%s); leftover handles:\n",
+					uv_err_name(close_result));
+				uv_walk(UVLOOP, libuv_debug_dump_handle, NULL);
+#endif
+			}
 		}
 
 		ASYNC_G(reactor_started) = false;

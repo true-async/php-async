@@ -112,7 +112,26 @@ retry:
 
 	zend_async_resume_when(ZEND_ASYNC_CURRENT_COROUTINE,
 		&trigger->base, false, zend_async_waker_callback_resolve, NULL);
-	ZEND_ASYNC_SUSPEND();
+
+	/* A bailout through SUSPEND would skip the dispose paths below and leak the
+	 * trigger (open uv_async blocks uv_loop_close). Catch, dispose, re-raise. */
+	bool channel_bailed = false;
+	zend_try {
+		ZEND_ASYNC_SUSPEND();
+	} zend_catch {
+		channel_bailed = true;
+	} zend_end_try();
+
+	if (UNEXPECTED(channel_bailed)) {
+		ASYNC_MUTEX_LOCK(ch->mutex);
+		zend_hash_index_del(&ch->sender_triggers, (zend_ulong)(uintptr_t) trigger);
+		ASYNC_MUTEX_UNLOCK(ch->mutex);
+		ZEND_ASYNC_WAKER_DESTROY(ZEND_ASYNC_CURRENT_COROUTINE);
+		async_thread_release_transferred_zval(&persistent_copy);
+		trigger->base.dispose(&trigger->base);
+		zend_bailout();
+	}
+
 	ZEND_ASYNC_WAKER_DESTROY(ZEND_ASYNC_CURRENT_COROUTINE);
 
 	/* Woke up — remove from sender queue */
@@ -182,7 +201,25 @@ retry:
 		zend_async_resume_when(ZEND_ASYNC_CURRENT_COROUTINE,
 			cancellation, false, zend_async_waker_callback_resolve, NULL);
 	}
-	ZEND_ASYNC_SUSPEND();
+
+	/* A bailout through SUSPEND would skip the dispose paths below and leak the
+	 * trigger (open uv_async blocks uv_loop_close). Catch, dispose, re-raise. */
+	bool channel_bailed = false;
+	zend_try {
+		ZEND_ASYNC_SUSPEND();
+	} zend_catch {
+		channel_bailed = true;
+	} zend_end_try();
+
+	if (UNEXPECTED(channel_bailed)) {
+		ASYNC_MUTEX_LOCK(ch->mutex);
+		zend_hash_index_del(&ch->receiver_triggers, (zend_ulong)(uintptr_t) trigger);
+		ASYNC_MUTEX_UNLOCK(ch->mutex);
+		ZEND_ASYNC_WAKER_DESTROY(ZEND_ASYNC_CURRENT_COROUTINE);
+		trigger->base.dispose(&trigger->base);
+		zend_bailout();
+	}
+
 	ZEND_ASYNC_WAKER_DESTROY(ZEND_ASYNC_CURRENT_COROUTINE);
 
 	/* Woke up — remove from receiver queue, observe closed state */

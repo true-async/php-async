@@ -153,20 +153,16 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 	async_thread_pool_t *pool = (async_thread_pool_t *) ctx;
 	async_thread_channel_t *channel = pool->task_channel;
 	int bailout = 0;
-	/* Future of the sync task whose body is running. A fatal in the body bails
-	 * past the normal resolve, so the bailout handler rejects this one (volatile:
-	 * written in the try, read in zend_catch). */
-	zend_future_shared_state_t * volatile inflight_state = NULL;
 	/* Per-worker pool scope: child of worker's main scope. Pinned for the
 	 * worker's lifetime; each spawned task lives in its own child scope of
 	 * this one (see thread_pool_spawn_task_coroutine). Created lazily, only
 	 * when coroutine_mode is enabled — sync workers don't need it. */
 	zend_async_scope_t *pool_scope = NULL;
-	/* Concurrency slot accounting (only used when pool->concurrency > 0).
-	 * Worker parks on slot_event when at the limit; dispose decrements
-	 * active and fires slot_event to wake it. */
+	/* Concurrency accounting (pool->concurrency > 0 only). Worker parks on
+	 * slot_event at the limit. Volatile: assigned in the try, read by the
+	 * bailout handler below, so it must survive the longjmp. */
 	int32_t active_count = 0;
-	zend_async_trigger_event_t *slot_event = NULL;
+	zend_async_trigger_event_t * volatile slot_event = NULL;
 
 	ZEND_ASSERT(event == NULL);
 
@@ -342,6 +338,10 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			ZVAL_UNDEF(&retval);
 			ZVAL_UNDEF(&callable);
 
+			/* Per-task snapshot is ours alone: materialize its op_array names into
+			 * refcounted heap strings so they outlive the arena on a fatal. */
+			async_thread_snapshot_materialize_entry(snapshot);
+
 			async_thread_create_closure(&snapshot->entry, &callable);
 
 			if (UNEXPECTED(EG(exception))) {
@@ -437,8 +437,11 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 				goto task_cleanup;
 			}
 
-			/* Run the body as a coroutine in a per-task nursery: Async\spawn()
-			 * inside it lands in task_scope by itself, no scope hijacking. */
+			/* Sync mode: run the body as a real coroutine in a per-task nursery
+			 * scope, so CURRENT SCOPE follows it and Async\spawn() inside the body
+			 * lands there — no scope hijacking. Cancel + drain the scope before
+			 * freeing the snapshot, so an un-awaited child can't outlive the arena
+			 * backing its op_array. */
 			zend_coroutine_t *worker_coro = ZEND_ASYNC_CURRENT_COROUTINE;
 			zend_async_scope_t *task_scope =
 				worker_coro != NULL ? ZEND_ASYNC_NEW_SCOPE(ZEND_ASYNC_CURRENT_SCOPE) : NULL;
@@ -453,8 +456,9 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 				goto task_cleanup;
 			}
 
-			/* NOT-safe = un-awaited children are cancelled, not awaited. Pin so
-			 * the scope can't self-dispose mid-drain; cleared before RELEASE. */
+			/* Nursery: un-awaited children are cancelled at task exit. Pinned so
+			 * the scope survives the cancel/drain instead of self-disposing when it
+			 * empties; unpinned right before RELEASE. */
 			ZEND_ASYNC_SCOPE_CLR_DISPOSE_SAFELY(task_scope);
 			ZEND_ASYNC_SCOPE_SET_OWNER_PINNED(task_scope);
 
@@ -471,7 +475,9 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 				goto task_cleanup;
 			}
 
-			/* Coroutine takes over params/fcall; the snapshot stays ours. */
+			/* Hand the prepared call to the body coroutine, reusing the params
+			 * buffer the worker already populated. Ownership of params moves to
+			 * the coroutine; the snapshot stays ours to free after the drain. */
 			zend_fcall_t *fcall = ecalloc(1, sizeof(zend_fcall_t));
 			fcall->fci = fci;
 			fcall->fci_cache = fcc;
@@ -482,21 +488,46 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			body->fcall = fcall;
 			params = NULL;
 
-			/* Await the body. The callback copies its result/error into OUR waker
-			 * while the body is still alive (it may be freed before we resume)
-			 * and marks its exception handled so it can't cascade to the worker. */
-			inflight_state = state;
+			/* Await the body. Its callback copies result/error into OUR waker
+			 * while the body is still alive (we never read it after disposal). A
+			 * fatal re-raises zend_bailout() out of the coroutine — caught here so
+			 * we still reject the awaiter (body_bailed set only in catch → no
+			 * volatile). */
+			bool body_bailed = false;
 			ZEND_ASYNC_WAKER_NEW(worker_coro);
 			zend_async_resume_when(worker_coro, &body->event, false,
 								   zend_async_waker_callback_resolve, NULL);
-			ZEND_ASYNC_SUSPEND();
-			inflight_state = NULL;
+			zend_try {
+				ZEND_ASYNC_SUSPEND();
+			} zend_catch {
+				body_bailed = true;
+			} zend_end_try();
 
 			/* Decrement running and bump completed BEFORE notifying the awaiter
 			 * via complete/reject — otherwise a coroutine waking from await()
 			 * would observe stale running_count and a missing completed bump. */
 			zend_atomic_int_dec(&pool->base.running_count);
 			zend_atomic_int_inc(&pool->base.completed_count);
+
+			if (UNEXPECTED(body_bailed)) {
+				/* Fatal in the body: reject the awaiter, tear the pool down. Freeing
+				 * the snapshot is safe — op_array names are materialized and children
+				 * are heap-self-contained, so nothing reads the freed arena. */
+				zend_async_waker_clean(worker_coro);
+				zend_object *bex = thread_pool_bailout_exception();
+				async_future_shared_state_reject(state, bex);
+				thread_pool_close(pool);
+				thread_pool_drain_tasks(pool, true, bex);
+				OBJ_RELEASE(bex);
+				ZEND_ASYNC_SCOPE_CLR_OWNER_PINNED(task_scope);
+				ZEND_ASYNC_SCOPE_RELEASE(task_scope);
+				zval_ptr_dtor(&callable);
+				zval_ptr_dtor(&retval);
+				async_thread_snapshot_destroy(snapshot);
+				async_future_shared_state_delref(state);
+				zval_ptr_dtor(&task);
+				break;
+			}
 
 			zend_object *body_error = NULL;
 			if (worker_coro->waker != NULL && worker_coro->waker->error != NULL) {
@@ -522,8 +553,9 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 
 			zend_async_waker_clean(worker_coro);
 
-			/* Cancel and drain un-awaited children before freeing the snapshot
-			 * their op_arrays live in. */
+			/* Cancel coroutines the body spawned but left running, then await
+			 * their physical disposal before freeing the snapshot arena that
+			 * backs their op_arrays — so none can outlive the snapshot. */
 			if (!ZEND_ASYNC_SCOPE_IS_CLOSED(task_scope)) {
 				ZEND_ASYNC_SCOPE_CANCEL(task_scope, NULL, false, false);
 				ZEND_ASYNC_SCOPE_AWAIT_AFTER_CANCELLATION(task_scope, worker_coro, NULL, NULL, NULL);
@@ -535,8 +567,8 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			ZEND_ASYNC_SCOPE_CLR_OWNER_PINNED(task_scope);
 			ZEND_ASYNC_SCOPE_RELEASE(task_scope);
 
-			/* callable's op_array lives in the snapshot arena — drop it before
-			 * freeing the snapshot. */
+			/* Drop our closure ref and free the snapshot. Names are materialized,
+			 * so closure destruction no longer reads the arena — order is free. */
 			zval_ptr_dtor(&callable);
 			zval_ptr_dtor(&retval);
 			async_thread_snapshot_destroy(snapshot);
@@ -602,18 +634,16 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 		 * crashes it, so reject any still-pending tasks and exit cleanly. Done
 		 * before DELREF so the pool is still alive for the drain. */
 		zend_object *bex = thread_pool_bailout_exception();
-
-		/* The task whose body bailed was already dequeued, so drain_tasks (which
-		 * only sees the channel) won't reach it — reject it here. */
-		if (inflight_state != NULL) {
-			async_future_shared_state_reject(inflight_state, bex);
-			async_future_shared_state_delref(inflight_state);
-			inflight_state = NULL;
-		}
-
 		thread_pool_close(pool);
 		thread_pool_drain_tasks(pool, true, bex);
 		OBJ_RELEASE(bex);
+
+		/* Bailout longjmped past `done:` (which disposes slot_event). Its open
+		 * uv_async would block uv_loop_close — dispose it while reactor is up. */
+		if (slot_event != NULL) {
+			slot_event->base.dispose(&slot_event->base);
+			slot_event = NULL;
+		}
 	}
 
 	/* Release worker's ref on pool */
