@@ -13,8 +13,9 @@ memory_limit=64M
  * Regression: with concurrency > 0 the worker parks on its slot_event trigger
  * at the limit. A fatal in a task longjmps past the worker's `done:` cleanup,
  * which disposes slot_event — leaving its open uv_async to block uv_loop_close
- * and leak the libuv loop. The worker's bailout handler now disposes slot_event.
- * Caught by LeakSanitizer.
+ * and leak the libuv loop. The worker's bailout handler now disposes slot_event
+ * (no-leak verified by LeakSanitizer). Also asserts the fatal cause reaches the
+ * awaiter (reject, not a silent null).
  */
 use Async\ThreadPool;
 use function Async\await;
@@ -26,8 +27,13 @@ $f = $pool->submit(function () {
     return strlen($s);
 });
 
-var_dump(await($f));
+try {
+    var_dump(await($f));
+} catch (\Throwable $e) {
+    printf("%s: %s\n", get_class($e),
+        str_contains($e->getMessage(), 'memory size') ? 'memory exhausted' : 'other');
+}
 echo "done\n";
 --EXPECTF--
-%ANULL
+%AAsync\ThreadTransferException: memory exhausted
 done

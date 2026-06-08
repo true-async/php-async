@@ -1962,6 +1962,11 @@ void async_future_shared_state_destroy(zend_future_shared_state_t *state)
 		async_thread_release_transferred_zval(&state->transferred_exception);
 	}
 
+	if (state->bailout_cause != NULL) {
+		pefree(state->bailout_cause, 1);
+		state->bailout_cause = NULL;
+	}
+
 	if (state->trigger != NULL) {
 		state->trigger->base.dispose(&state->trigger->base);
 		state->trigger = NULL;
@@ -1984,6 +1989,20 @@ static void shared_state_trigger_cb(zend_async_event_t *event,
 	const shared_state_cb_t *cb = (const shared_state_cb_t *) callback;
 	zend_future_shared_state_t *state = cb->state;
 	zend_future_t *future = state->target_future;
+
+	if (state->bailout_cause != NULL) {
+		/* Source bailed out — build the exception here, in the healthy
+		 * destination thread, from the plain cause string. */
+		zend_object *exc = async_thread_create_transfer_exception(state->bailout_cause);
+		pefree(state->bailout_cause, 1);
+		state->bailout_cause = NULL;
+
+		ZEND_FUTURE_REJECT(future, exc);
+		OBJ_RELEASE(exc);
+
+		state->trigger->base.stop(&state->trigger->base);
+		return;
+	}
 
 	if (!Z_ISUNDEF(state->transferred_exception)) {
 		zval exc_zval;
@@ -2059,6 +2078,7 @@ zend_future_shared_state_t *async_future_shared_state_create(void)
 
 	ZVAL_UNDEF(&state->transferred_result);
 	ZVAL_UNDEF(&state->transferred_exception);
+	state->bailout_cause = NULL;
 	ZEND_ATOMIC_INT_INIT(&state->completed, 0);
 	ZEND_ATOMIC_INT_INIT(&state->ref_count, 0);
 	ASYNC_MUTEX_INIT(state->mutex);
@@ -2143,6 +2163,36 @@ void async_future_shared_state_reject(zend_future_shared_state_t *state, zend_ob
 	ZVAL_OBJ_COPY(&exc_zval, exception);
 	async_thread_transfer_zval(&state->transferred_exception, &exc_zval);
 	zval_ptr_dtor(&exc_zval);
+
+	/* Owner may have already torn down the trigger — nobody to notify. */
+	if (state->trigger != NULL) {
+		state->trigger->trigger(state->trigger);
+	}
+
+	ASYNC_MUTEX_UNLOCK(state->mutex);
+}
+
+/** @copydoc async_future_shared_state_reject_bailout */
+void async_future_shared_state_reject_bailout(zend_future_shared_state_t *state, const char *message)
+{
+	/* Fast path: already completed */
+	if (zend_atomic_int_load(&state->completed)) {
+		return;
+	}
+
+	ASYNC_MUTEX_LOCK(state->mutex);
+
+	if (zend_atomic_int_load(&state->completed)) {
+		ASYNC_MUTEX_UNLOCK(state->mutex);
+		return;
+	}
+
+	zend_atomic_int_store(&state->completed, 1);
+
+	/* Only allocation on this path is one persistent string copy (system
+	 * malloc — not bound by memory_limit), so it survives the OOM that
+	 * triggered the bailout. The exception object is built on the parent side. */
+	state->bailout_cause = pestrdup(message, 1);
 
 	/* Owner may have already torn down the trigger — nobody to notify. */
 	if (state->trigger != NULL) {

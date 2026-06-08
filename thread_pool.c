@@ -92,6 +92,15 @@ static zend_object *thread_pool_bailout_exception(void)
 		            : "ThreadPool worker terminated via exit() or a fatal error");
 }
 
+/* The bailout cause text (the fatal/OOM message). Returns a borrowed pointer
+ * valid until request shutdown; the future copies it with pestrdup. */
+static const char *thread_pool_bailout_cause(void)
+{
+	const zend_string *msg = PG(last_error_message);
+	return msg != NULL ? ZSTR_VAL(msg)
+	                   : "ThreadPool task terminated via exit() or a fatal error";
+}
+
 /* Build a clean ThreadTransferException carrying another exception's message.
  * Used for errors thrown deep in the cross-thread transfer machinery (e.g.
  * "Cannot load transferred object"): that Error's full object graph — its
@@ -510,12 +519,14 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			zend_atomic_int_inc(&pool->base.completed_count);
 
 			if (UNEXPECTED(body_bailed)) {
-				/* Fatal in the body: reject the awaiter, tear the pool down. Freeing
-				 * the snapshot is safe — op_array names are materialized and children
-				 * are heap-self-contained, so nothing reads the freed arena. */
+				/* Fatal in the body: deliver the cause to the awaiter and tear the
+				 * pool down. The in-flight task uses the cause-string path (no PHP
+				 * object built under the exhausted allocator); pending tasks are
+				 * drained with a regular exception. Freeing the snapshot is safe —
+				 * op_array names are materialized, so nothing reads the freed arena. */
 				zend_async_waker_clean(worker_coro);
+				async_future_shared_state_reject_bailout(state, thread_pool_bailout_cause());
 				zend_object *bex = thread_pool_bailout_exception();
-				async_future_shared_state_reject(state, bex);
 				thread_pool_close(pool);
 				thread_pool_drain_tasks(pool, true, bex);
 				OBJ_RELEASE(bex);
@@ -689,9 +700,10 @@ static void pool_task_dispose(zend_coroutine_t *coroutine)
 	} else if (Z_TYPE(coroutine->result) != IS_UNDEF) {
 		async_future_shared_state_complete(ctx->state, &coroutine->result);
 	} else {
-		zval undef;
-		ZVAL_UNDEF(&undef);
-		async_future_shared_state_complete(ctx->state, &undef);
+		/* No exception and no result means the body bailed out (fatal/OOM) or
+		 * called exit()/die() — a normal return leaves result IS_NULL, not UNDEF.
+		 * Deliver the cause to the awaiter instead of a silent null. */
+		async_future_shared_state_reject_bailout(ctx->state, thread_pool_bailout_cause());
 	}
 
 	async_future_shared_state_delref(ctx->state);

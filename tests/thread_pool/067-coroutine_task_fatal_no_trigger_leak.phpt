@@ -1,5 +1,5 @@
 --TEST--
-ThreadPool: a fatal in a coroutine-mode task disposes the worker's channel trigger (no libuv loop leak)
+ThreadPool: a fatal in a coroutine-mode task delivers the cause and disposes the worker's channel trigger (no libuv loop leak)
 --SKIPIF--
 <?php
 if (!PHP_ZTS) die('skip ZTS required');
@@ -14,8 +14,12 @@ memory_limit=64M
  * (creating a uv_async trigger) while task coroutines run. A fatal in a task
  * re-raises zend_bailout() through that SUSPEND, which used to skip the
  * trigger's dispose — leaving an open uv_async that blocked uv_loop_close, so
- * the libuv loop leaked. The channel now disposes the trigger on bailout.
- * Caught by LeakSanitizer; here we just assert no hang and clean completion.
+ * the libuv loop leaked. The channel now disposes the trigger on bailout
+ * (no-leak verified by LeakSanitizer).
+ *
+ * Also asserts the cause is delivered: pool_task_dispose detects the bailout
+ * (no exception, UNDEF result) and rejects the future with the fatal message
+ * instead of resolving to a silent null.
  */
 use Async\ThreadPool;
 use function Async\await;
@@ -27,8 +31,13 @@ $f = $pool->submit(function () {
     return strlen($s);
 });
 
-var_dump(await($f));
+try {
+    var_dump(await($f));
+} catch (\Throwable $e) {
+    printf("%s: %s\n", get_class($e),
+        str_contains($e->getMessage(), 'memory size') ? 'memory exhausted' : 'other');
+}
 echo "done\n";
 --EXPECTF--
-%ANULL
+%AAsync\ThreadTransferException: memory exhausted
 done

@@ -1775,6 +1775,14 @@ static zend_object *thread_create_transfer_exception(
 	return Z_OBJ(exception_zv);
 }
 
+/* Public builder for a ThreadTransferException carrying a plain cause message.
+ * Called on the destination thread to materialize a future shared state's
+ * bailout_cause into a real exception. */
+zend_object *async_thread_create_transfer_exception(const char *message)
+{
+	return thread_create_transfer_exception(message, NULL);
+}
+
 static zend_object *thread_wrap_remote_exception(
 	zend_object *remote_obj, const char *remote_class_name)
 {
