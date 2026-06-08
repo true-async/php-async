@@ -1604,7 +1604,10 @@ static void thread_copy_callable(
 				thread_release_subgraph_zval(&transferred);
 				break;
 			}
-			zend_string *pkey = zend_string_dup(key, 1);
+			/* Private persistent copy: an interned key aliases the parent's
+			 * interned table and dangles after the parent shuts down. */
+			zend_string *pkey = zend_string_init(ZSTR_VAL(key), ZSTR_LEN(key), 1);
+			GC_MAKE_PERSISTENT_LOCAL(pkey);
 			zend_hash_add(dst->bound_vars, pkey, &transferred);
 			zend_string_release(pkey);
 		} ZEND_HASH_FOREACH_END();
@@ -1645,6 +1648,16 @@ static void thread_copy_callable(
  */
 static void thread_release_closure_copy(thread_release_ctx_t *ctx, async_thread_closure_copy_t *copy)
 {
+	/* Release name strings (no-op while interned; the base ref once materialized). */
+	if (copy->func != NULL) {
+		if (copy->func->function_name != NULL) {
+			zend_string_release(copy->func->function_name);
+		}
+		if (copy->func->filename != NULL) {
+			zend_string_release(copy->func->filename);
+		}
+	}
+
 	if (copy->bound_vars) {
 		zval *val;
 		ZEND_HASH_FOREACH_VAL(copy->bound_vars, val) {
@@ -1690,6 +1703,28 @@ async_thread_snapshot_t *async_thread_snapshot_create(const zend_fcall_t *entry,
 	}
 
 	return snapshot;
+}
+
+/* Heap-copy the op_array's interned (arena-backed) name strings so holders that
+ * outlive the arena (closure, PG(last_error_file)) are freed by refcount. */
+static void thread_materialize_op_array_names(zend_op_array *op_array)
+{
+	if (op_array->function_name != NULL && ZSTR_IS_INTERNED(op_array->function_name)) {
+		op_array->function_name = zend_string_init(
+			ZSTR_VAL(op_array->function_name), ZSTR_LEN(op_array->function_name), 0);
+	}
+
+	if (op_array->filename != NULL && ZSTR_IS_INTERNED(op_array->filename)) {
+		op_array->filename = zend_string_init(
+			ZSTR_VAL(op_array->filename), ZSTR_LEN(op_array->filename), 0);
+	}
+}
+
+void async_thread_snapshot_materialize_entry(async_thread_snapshot_t *snapshot)
+{
+	if (snapshot != NULL && snapshot->entry.func != NULL) {
+		thread_materialize_op_array_names(snapshot->entry.func);
+	}
 }
 
 /**

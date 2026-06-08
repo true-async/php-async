@@ -158,11 +158,11 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 	 * this one (see thread_pool_spawn_task_coroutine). Created lazily, only
 	 * when coroutine_mode is enabled — sync workers don't need it. */
 	zend_async_scope_t *pool_scope = NULL;
-	/* Concurrency slot accounting (only used when pool->concurrency > 0).
-	 * Worker parks on slot_event when at the limit; dispose decrements
-	 * active and fires slot_event to wake it. */
+	/* Concurrency accounting (pool->concurrency > 0 only). Worker parks on
+	 * slot_event at the limit. Volatile: assigned in the try, read by the
+	 * bailout handler below, so it must survive the longjmp. */
 	int32_t active_count = 0;
-	zend_async_trigger_event_t *slot_event = NULL;
+	zend_async_trigger_event_t * volatile slot_event = NULL;
 
 	ZEND_ASSERT(event == NULL);
 
@@ -338,6 +338,9 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			ZVAL_UNDEF(&retval);
 			ZVAL_UNDEF(&callable);
 
+			/* Heap-copy op_array names so they outlive the arena on a fatal. */
+			async_thread_snapshot_materialize_entry(snapshot);
+
 			async_thread_create_closure(&snapshot->entry, &callable);
 
 			if (UNEXPECTED(EG(exception))) {
@@ -433,15 +436,63 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 				goto task_cleanup;
 			}
 
-			/* A real fatal error longjmps (zend_bailout); exit()/die() instead
-			 * throws an unwind-exit token into EG(exception). Neither may be
-			 * re-raised or passed to reject() — the token can't cross the fiber
-			 * boundary and would crash the worker fiber. */
-			volatile bool task_bailed = false;
+			/* Sync mode: run the body as a coroutine in a per-task nursery scope so
+			 * Async\spawn() inside it lands there. Cancel + drain before freeing the
+			 * snapshot so an un-awaited child can't outlive its arena. */
+			zend_coroutine_t *worker_coro = ZEND_ASYNC_CURRENT_COROUTINE;
+			zend_async_scope_t *task_scope =
+				worker_coro != NULL ? ZEND_ASYNC_NEW_SCOPE(ZEND_ASYNC_CURRENT_SCOPE) : NULL;
+
+			if (UNEXPECTED(task_scope == NULL)) {
+				zend_atomic_int_dec(&pool->base.running_count);
+				zend_atomic_int_inc(&pool->base.completed_count);
+				if (EG(exception)) {
+					async_future_shared_state_reject(state, EG(exception));
+					zend_clear_exception();
+				}
+				goto task_cleanup;
+			}
+
+			/* Nursery (NOT-safe): un-awaited children cancelled at exit. Pinned so
+			 * it survives the drain; unpinned before RELEASE. */
+			ZEND_ASYNC_SCOPE_CLR_DISPOSE_SAFELY(task_scope);
+			ZEND_ASYNC_SCOPE_SET_OWNER_PINNED(task_scope);
+
+			zend_coroutine_t *body = ZEND_ASYNC_SPAWN_WITH(task_scope);
+			if (UNEXPECTED(body == NULL)) {
+				ZEND_ASYNC_SCOPE_CLR_OWNER_PINNED(task_scope);
+				ZEND_ASYNC_SCOPE_RELEASE(task_scope);
+				zend_atomic_int_dec(&pool->base.running_count);
+				zend_atomic_int_inc(&pool->base.completed_count);
+				if (EG(exception)) {
+					async_future_shared_state_reject(state, EG(exception));
+					zend_clear_exception();
+				}
+				goto task_cleanup;
+			}
+
+			/* Hand the call to the body; params ownership moves to it, snapshot
+			 * stays ours to free after the drain. */
+			zend_fcall_t *fcall = ecalloc(1, sizeof(zend_fcall_t));
+			fcall->fci = fci;
+			fcall->fci_cache = fcc;
+			fcall->fci.param_count = param_count;
+			fcall->fci.params = params;
+			fcall->fci.retval = &body->result;
+			Z_TRY_ADDREF(fcall->fci.function_name);
+			body->fcall = fcall;
+			params = NULL;
+
+			/* Await the body; its callback copies result/error into our waker. A
+			 * fatal re-raises zend_bailout() out of the coroutine — caught here. */
+			bool body_bailed = false;
+			ZEND_ASYNC_WAKER_NEW(worker_coro);
+			zend_async_resume_when(worker_coro, &body->event, false,
+								   zend_async_waker_callback_resolve, NULL);
 			zend_try {
-				zend_call_function(&fci, &fcc);
+				ZEND_ASYNC_SUSPEND();
 			} zend_catch {
-				task_bailed = true;
+				body_bailed = true;
 			} zend_end_try();
 
 			/* Decrement running and bump completed BEFORE notifying the awaiter
@@ -450,33 +501,68 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			zend_atomic_int_dec(&pool->base.running_count);
 			zend_atomic_int_inc(&pool->base.completed_count);
 
-			const bool task_exited = (EG(exception) != NULL
-				&& (zend_is_unwind_exit(EG(exception))
-					|| zend_is_graceful_exit(EG(exception))));
-
-			if (task_exited) {
-				/* exit()/die() is graceful "this task is done" — the worker's
-				 * request survives it, so resolve the future with null (no return
-				 * value) and keep serving the next task. Never pass the unwind
-				 * token to reject(): it can't cross the fiber to the awaiter. */
-				zend_clear_exception();
-				zval null_result;
-				ZVAL_NULL(&null_result);
-				async_future_shared_state_complete(state, &null_result);
-			} else if (task_bailed) {
-				/* A real fatal (e.g. OOM) leaves the worker's request unusable —
-				 * deliver a transfer exception and tear the pool down. */
+			if (UNEXPECTED(body_bailed)) {
+				/* Fatal in the body: reject this task and tear the pool down. */
+				zend_async_waker_clean(worker_coro);
 				zend_object *bex = thread_pool_bailout_exception();
 				async_future_shared_state_reject(state, bex);
 				thread_pool_close(pool);
 				thread_pool_drain_tasks(pool, true, bex);
 				OBJ_RELEASE(bex);
-			} else if (EG(exception) != NULL) {
-				async_future_shared_state_reject(state, EG(exception));
-				zend_clear_exception();
-			} else {
-				async_future_shared_state_complete(state, &retval);
+				ZEND_ASYNC_SCOPE_CLR_OWNER_PINNED(task_scope);
+				ZEND_ASYNC_SCOPE_RELEASE(task_scope);
+				zval_ptr_dtor(&callable);
+				zval_ptr_dtor(&retval);
+				async_thread_snapshot_destroy(snapshot);
+				async_future_shared_state_delref(state);
+				zval_ptr_dtor(&task);
+				break;
 			}
+
+			zend_object *body_error = NULL;
+			if (worker_coro->waker != NULL && worker_coro->waker->error != NULL) {
+				body_error = worker_coro->waker->error;
+				worker_coro->waker->error = NULL;
+			} else if (EG(exception) != NULL) {
+				body_error = EG(exception);
+				GC_ADDREF(body_error);
+				zend_clear_exception();
+			}
+
+			if (body_error != NULL) {
+				async_future_shared_state_reject(state, body_error);
+				OBJ_RELEASE(body_error);
+			} else if (worker_coro->waker != NULL
+					&& Z_TYPE(worker_coro->waker->result) != IS_UNDEF) {
+				async_future_shared_state_complete(state, &worker_coro->waker->result);
+			} else {
+				zval null_result;
+				ZVAL_NULL(&null_result);
+				async_future_shared_state_complete(state, &null_result);
+			}
+
+			zend_async_waker_clean(worker_coro);
+
+			/* Cancel + await un-awaited children before freeing the snapshot
+			 * arena that backs their op_arrays. */
+			if (!ZEND_ASYNC_SCOPE_IS_CLOSED(task_scope)) {
+				ZEND_ASYNC_SCOPE_CANCEL(task_scope, NULL, false, false);
+				ZEND_ASYNC_SCOPE_AWAIT_AFTER_CANCELLATION(task_scope, worker_coro, NULL, NULL, NULL);
+				if (UNEXPECTED(EG(exception))) {
+					zend_clear_exception();
+				}
+			}
+
+			ZEND_ASYNC_SCOPE_CLR_OWNER_PINNED(task_scope);
+			ZEND_ASYNC_SCOPE_RELEASE(task_scope);
+
+			/* Drop the closure ref and free the snapshot. */
+			zval_ptr_dtor(&callable);
+			zval_ptr_dtor(&retval);
+			async_thread_snapshot_destroy(snapshot);
+			async_future_shared_state_delref(state);
+			zval_ptr_dtor(&task);
+			continue;
 
 		task_cleanup:
 			if (params) {
@@ -539,6 +625,13 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 		thread_pool_close(pool);
 		thread_pool_drain_tasks(pool, true, bex);
 		OBJ_RELEASE(bex);
+
+		/* Bailout longjmped past `done:` (which disposes slot_event). Its open
+		 * uv_async would block uv_loop_close — dispose it while reactor is up. */
+		if (slot_event != NULL) {
+			slot_event->base.dispose(&slot_event->base);
+			slot_event = NULL;
+		}
 	}
 
 	/* Release worker's ref on pool */
@@ -584,9 +677,11 @@ static void pool_task_dispose(zend_coroutine_t *coroutine)
 	} else if (Z_TYPE(coroutine->result) != IS_UNDEF) {
 		async_future_shared_state_complete(ctx->state, &coroutine->result);
 	} else {
-		zval undef;
-		ZVAL_UNDEF(&undef);
-		async_future_shared_state_complete(ctx->state, &undef);
+		/* UNDEF result, no exception = the body bailed out (fatal/OOM/exit).
+		 * Reject with the cause instead of resolving to a silent null. */
+		zend_object *bex = thread_pool_bailout_exception();
+		async_future_shared_state_reject(ctx->state, bex);
+		OBJ_RELEASE(bex);
 	}
 
 	async_future_shared_state_delref(ctx->state);

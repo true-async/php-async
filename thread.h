@@ -73,6 +73,10 @@ async_thread_snapshot_t *async_thread_snapshot_create(
  */
 void async_thread_snapshot_destroy(async_thread_snapshot_t *snapshot);
 
+/* Heap-copy the entry op_array's name strings so they outlive the snapshot
+ * arena. Per-task snapshots only; idempotent. */
+void async_thread_snapshot_materialize_entry(async_thread_snapshot_t *snapshot);
+
 ///////////////////////////////////////////////////////////
 /// Thread lifecycle — PHP request in child thread
 ///////////////////////////////////////////////////////////
