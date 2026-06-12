@@ -3669,7 +3669,7 @@ final class StandardSteps {
                     for ($i = 0; $i < $n; $i++) {
                         $ctx->inc("tp_submit_attempts_$pool");
                         try {
-                            $f = $p->submit(static fn(int $idx): int => $idx, $i);
+                            $f = $p->submit(self::unscoped(static fn(int $idx): int => $idx), $i);
                             $ctx->threadPoolFutures[$pool][] = $f;
                             $ctx->inc("tp_submitted_$pool");
                         } catch (\Throwable $e) {
@@ -3769,7 +3769,7 @@ final class StandardSteps {
                     $items = range(0, $n - 1);
                     $ctx->inc("tp_map_attempts_$pool");
                     try {
-                        $res = $ctx->threadPools[$pool]->map($items, static fn(int $i): int => $i * $i);
+                        $res = $ctx->threadPools[$pool]->map($items, self::unscoped(static fn(int $i): int => $i * $i));
                         $ctx->inc("tp_map_succeeded_$pool");
                         $ctx->inc("tp_map_results_$pool", count($res));
                     } catch (\Throwable $e) {
