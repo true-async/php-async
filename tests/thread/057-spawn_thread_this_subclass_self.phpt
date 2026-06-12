@@ -6,12 +6,9 @@ if (!PHP_ZTS) die('skip ZTS required');
 if (!function_exists('Async\spawn_thread')) die('skip spawn_thread not available');
 ?>
 --DESCRIPTION--
-Documents the current scope semantics for transferred closures.
 In native PHP `self::X` resolves to the closure's *defining* class (Base).
-Across spawn_thread the worker scope is currently set to Z_OBJCE($this),
-so `self::X` resolves to Child::X. Same closure called locally still
-gives Base::X — this test pins both behaviors so a future fix is
-visible as an EXPECT diff.
+The transferred closure carries its scope by name, so the worker matches
+the local result: self::X is Base::X on both sides.
 --FILE--
 <?php
 
@@ -41,4 +38,4 @@ spawn(function() use ($boot) {
 ?>
 --EXPECT--
 local: base
-worker: child
+worker: base

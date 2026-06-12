@@ -46,6 +46,8 @@ typedef struct _async_thread_closure_copy_t {
 	zend_op_array *func;
 	HashTable *bound_vars;   /* NULL if no captured variables (pemalloc, not arena) */
 	zval bound_this;         /* IS_UNDEF if closure has no $this binding (pemalloc) */
+	zend_string *scope_name;        /* declaring class of the closure; NULL if unscoped (pemalloc) */
+	zend_string *called_scope_name; /* late-static-binding scope; NULL if none (pemalloc) */
 } async_thread_closure_copy_t;
 
 typedef struct _async_thread_snapshot_t {
@@ -66,7 +68,7 @@ typedef struct _async_thread_snapshot_t {
  * @return Snapshot (caller owns, free with async_thread_snapshot_destroy)
  */
 async_thread_snapshot_t *async_thread_snapshot_create(
-	const zend_fcall_t *entry, const zend_fcall_t *bootloader);
+	const zend_fcall_t *entry, const zend_fcall_t *bootloader, bool entry_is_bootloader);
 
 /**
  * Free a snapshot and all its resources.

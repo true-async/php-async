@@ -887,7 +887,7 @@ zend_async_thread_pool_t *async_thread_pool_create(
 	 * entry — each task brings its own. */
 	pool->bootloader_snapshot = NULL;
 	if (bootloader != NULL) {
-		pool->bootloader_snapshot = async_thread_snapshot_create(bootloader, NULL);
+		pool->bootloader_snapshot = async_thread_snapshot_create(bootloader, NULL, true);
 		if (UNEXPECTED(pool->bootloader_snapshot == NULL)) {
 			/* snapshot_create propagated an exception (e.g. captured value
 			 * refused transfer). Fail construction. */
@@ -1186,7 +1186,7 @@ METHOD(submit)
 
 	/* 1. Create snapshot — deep-copies closure op_array + bound vars */
 	const zend_fcall_t fcall = { .fci = fci, .fci_cache = fcc };
-	async_thread_snapshot_t *snapshot = async_thread_snapshot_create(&fcall, NULL);
+	async_thread_snapshot_t *snapshot = async_thread_snapshot_create(&fcall, NULL, false);
 
 	if (UNEXPECTED(snapshot == NULL)) {
 		zend_throw_exception(async_ce_thread_pool_exception, "Failed to create task snapshot", 0);
@@ -1295,7 +1295,7 @@ METHOD(map)
 
 	ZEND_HASH_FOREACH_KEY_VAL(ht, num_key, str_key, item) {
 		const zend_fcall_t fcall = { .fci = fci, .fci_cache = fcc };
-		async_thread_snapshot_t *snapshot = async_thread_snapshot_create(&fcall, NULL);
+		async_thread_snapshot_t *snapshot = async_thread_snapshot_create(&fcall, NULL, false);
 
 		if (UNEXPECTED(snapshot == NULL)) {
 			zval_ptr_dtor(&futures_arr);

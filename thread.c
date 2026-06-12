@@ -1552,7 +1552,8 @@ static bool async_thread_check_op_array(zend_op_array *op_array)
  * captured variables via async_thread_transfer_zval.
  */
 static void thread_copy_callable(
-	thread_copy_ctx_t *ctx, const zend_fcall_t *fcall, async_thread_closure_copy_t *dst)
+	thread_copy_ctx_t *ctx, const zend_fcall_t *fcall, async_thread_closure_copy_t *dst,
+	bool strip_scope)
 {
 	zend_op_array *src_op = &fcall->fci_cache.function_handler->op_array;
 
@@ -1560,6 +1561,19 @@ static void thread_copy_callable(
 	 * EG(exception) is set and async_thread_snapshot_create() will tear
 	 * down the half-built snapshot. */
 	if (!async_thread_check_op_array(src_op)) {
+		return;
+	}
+
+	/* CE pointers are thread-local: carry scope/called_scope by name and
+	 * re-resolve them in the target thread. Anonymous classes have no
+	 * resolvable name there. Bootloaders are copied with strip_scope: they
+	 * bootstrap a thread where their own declaring class may not exist yet. */
+	const zend_class_entry *scope = strip_scope ? NULL : src_op->scope;
+	const zend_class_entry *called_scope = strip_scope ? NULL : fcall->fci_cache.called_scope;
+
+	if ((scope != NULL && (scope->ce_flags & ZEND_ACC_ANON_CLASS) != 0)
+		|| (called_scope != NULL && (called_scope->ce_flags & ZEND_ACC_ANON_CLASS) != 0)) {
+		zend_throw_error(NULL, "Cannot transfer a closure scoped to an anonymous class between threads");
 		return;
 	}
 
@@ -1571,6 +1585,18 @@ static void thread_copy_callable(
 
 	ZVAL_UNDEF(&dst->bound_this);
 	dst->bound_vars = NULL;
+	dst->scope_name = NULL;
+	dst->called_scope_name = NULL;
+
+	if (scope != NULL) {
+		dst->scope_name = zend_string_init(ZSTR_VAL(scope->name), ZSTR_LEN(scope->name), 1);
+		GC_MAKE_PERSISTENT_LOCAL(dst->scope_name);
+	}
+
+	if (called_scope != NULL) {
+		dst->called_scope_name = zend_string_init(ZSTR_VAL(called_scope->name), ZSTR_LEN(called_scope->name), 1);
+		GC_MAKE_PERSISTENT_LOCAL(dst->called_scope_name);
+	}
 
 	HashTable *static_vars = ZEND_MAP_PTR_GET(src_op->static_variables_ptr);
 	if (!static_vars) {
@@ -1658,6 +1684,15 @@ static void thread_release_closure_copy(thread_release_ctx_t *ctx, async_thread_
 		}
 	}
 
+	if (copy->scope_name != NULL) {
+		zend_string_release(copy->scope_name);
+		copy->scope_name = NULL;
+	}
+	if (copy->called_scope_name != NULL) {
+		zend_string_release(copy->called_scope_name);
+		copy->called_scope_name = NULL;
+	}
+
 	if (copy->bound_vars) {
 		zval *val;
 		ZEND_HASH_FOREACH_VAL(copy->bound_vars, val) {
@@ -1675,18 +1710,21 @@ static void thread_release_closure_copy(thread_release_ctx_t *ctx, async_thread_
 
 /**
  * Create a snapshot: deep-copy closures into arena memory.
+ * entry_is_bootloader: the entry slot holds a bootloader (pool case) and is
+ * copied unscoped, like the regular bootloader slot.
  */
-async_thread_snapshot_t *async_thread_snapshot_create(const zend_fcall_t *entry, const zend_fcall_t *bootloader)
+async_thread_snapshot_t *async_thread_snapshot_create(
+	const zend_fcall_t *entry, const zend_fcall_t *bootloader, bool entry_is_bootloader)
 {
 	async_thread_snapshot_t *snapshot = pecalloc(1, sizeof(async_thread_snapshot_t), 1);
 
 	thread_copy_ctx_t ctx;
 	thread_copy_ctx_init(&ctx);
 
-	thread_copy_callable(&ctx, entry, &snapshot->entry);
+	thread_copy_callable(&ctx, entry, &snapshot->entry, entry_is_bootloader);
 
 	if (bootloader != NULL && !EG(exception)) {
-		thread_copy_callable(&ctx, bootloader, &snapshot->bootloader);
+		thread_copy_callable(&ctx, bootloader, &snapshot->bootloader, true);
 	}
 
 	/* Store arena block list in snapshot — needed even for the failure path
@@ -2311,10 +2349,55 @@ static void op_array_to_emalloc(zend_op_array *op_array)
 	 * separate efree(literals) call. */
 }
 
+/* Resolve a transferred scope class name in the current thread. The stored
+ * name is persistent (foreign) — lookup and autoload need a local copy. */
+static zend_class_entry *thread_resolve_scope_class(const zend_string *name)
+{
+	zend_string *local = zend_string_init(ZSTR_VAL(name), ZSTR_LEN(name), 0);
+	zend_class_entry *ce = zend_lookup_class(local);
+	zend_string_release(local);
+
+	if (UNEXPECTED(ce == NULL)) {
+		zend_throw_error(NULL,
+			"Cannot restore closure scope: class \"%s\" not found in the target thread",
+			ZSTR_VAL(name));
+	}
+
+	return ce;
+}
+
 void async_thread_create_closure(
 	const async_thread_closure_copy_t *copy, zval *closure_zv)
 {
 	ZEND_ASSERT(copy->func != NULL);
+
+	/* Re-resolve the closure's scope here before building anything. A missing
+	 * class is a hard error — silently dropping the scope would break
+	 * self::/static:: and member visibility at first use. */
+	zend_class_entry *scope = NULL;
+	zend_class_entry *called_scope = NULL;
+
+	if (copy->scope_name != NULL) {
+		scope = thread_resolve_scope_class(copy->scope_name);
+
+		if (UNEXPECTED(scope == NULL)) {
+			ZVAL_UNDEF(closure_zv);
+			return;
+		}
+	}
+
+	if (copy->called_scope_name != NULL) {
+		if (scope != NULL && zend_string_equals(copy->called_scope_name, copy->scope_name)) {
+			called_scope = scope;
+		} else {
+			called_scope = thread_resolve_scope_class(copy->called_scope_name);
+
+			if (UNEXPECTED(called_scope == NULL)) {
+				ZVAL_UNDEF(closure_zv);
+				return;
+			}
+		}
+	}
 
 	zend_function func;
 	memcpy(&func, copy->func, sizeof(zend_op_array));
@@ -2364,14 +2447,15 @@ void async_thread_create_closure(
 	ZEND_MAP_PTR_INIT(func.op_array.run_time_cache, NULL);
 	func.op_array.fn_flags &= ~ZEND_ACC_HEAP_RT_CACHE;
 
-	zend_class_entry *this_scope = NULL;
 	zval *this_arg = NULL;
 	if (Z_TYPE(loaded_this) == IS_OBJECT) {
-		this_scope = Z_OBJCE(loaded_this);
 		this_arg = &loaded_this;
 	}
 
-	zend_create_closure(closure_zv, &func, this_scope, this_scope, this_arg);
+	/* Kill the source thread's stale CE pointer before handing to the engine. */
+	func.op_array.scope = scope;
+
+	zend_create_closure(closure_zv, &func, scope, called_scope != NULL ? called_scope : scope, this_arg);
 
 	/* zend_create_closure took its own ref on $this; release our load ref. */
 	if (Z_TYPE(loaded_this) == IS_OBJECT) {
@@ -2407,29 +2491,34 @@ static bool thread_call_closure(
 	zval closure_zv;
 	async_thread_create_closure(copy, &closure_zv);
 
-	const zend_function *func = zend_get_closure_method_def(Z_OBJ(closure_zv));
-	async_zend_closure_t *closure = (async_zend_closure_t *) Z_OBJ(closure_zv);
-
 	ZVAL_UNDEF(retval);
 
-	/* Execute closure directly via VM, bypassing zend_call_function.
-	 * zend_call_function would trigger zend_throw_exception_internal
-	 * when current_execute_data is NULL (no PHP caller above us),
-	 * converting any uncaught exception into a fatal bailout.
-	 * With zend_execute_ex we get the exception cleanly in EG(exception). */
-	uint32_t call_info = ZEND_CALL_TOP_FUNCTION;
-	void *object_or_scope = NULL;
-	if (Z_TYPE(closure->this_ptr) == IS_OBJECT) {
-		call_info |= ZEND_CALL_HAS_THIS;
-		object_or_scope = Z_OBJ(closure->this_ptr);
-	}
-	zend_execute_data *frame = zend_vm_stack_push_call_frame(
-		call_info, (zend_function *) func, 0, object_or_scope);
-	zend_init_func_execute_data(frame, (zend_op_array *) &func->op_array, retval);
-	zend_execute_ex(frame);
+	if (EXPECTED(EG(exception) == NULL)) {
+		const zend_function *func = zend_get_closure_method_def(Z_OBJ(closure_zv));
+		async_zend_closure_t *closure = (async_zend_closure_t *) Z_OBJ(closure_zv);
 
-	/* After zend_execute_ex returns, the frame is already freed by the VM.
-	 * If the closure threw, EG(exception) is set — no bailout occurred. */
+		/* Execute closure directly via VM, bypassing zend_call_function.
+		 * zend_call_function would trigger zend_throw_exception_internal
+		 * when current_execute_data is NULL (no PHP caller above us),
+		 * converting any uncaught exception into a fatal bailout.
+		 * With zend_execute_ex we get the exception cleanly in EG(exception). */
+		uint32_t call_info = ZEND_CALL_TOP_FUNCTION;
+		void *object_or_scope = NULL;
+		if (Z_TYPE(closure->this_ptr) == IS_OBJECT) {
+			call_info |= ZEND_CALL_HAS_THIS;
+			object_or_scope = Z_OBJ(closure->this_ptr);
+		} else if (closure->called_scope != NULL) {
+			/* Scoped static call: the frame carries called_scope, no $this. */
+			object_or_scope = closure->called_scope;
+		}
+		zend_execute_data *frame = zend_vm_stack_push_call_frame(
+			call_info, (zend_function *) func, 0, object_or_scope);
+		zend_init_func_execute_data(frame, (zend_op_array *) &func->op_array, retval);
+		zend_execute_ex(frame);
+	}
+
+	/* EG(exception) is set when closure creation failed (e.g. scope class
+	 * missing in this thread) or the closure threw — no bailout occurred. */
 	const bool has_exception = EG(exception) != NULL;
 	if (UNEXPECTED(has_exception)) {
 		zval exception_zval, transferred_exception;
@@ -3065,7 +3154,7 @@ METHOD(finally)
 void *async_thread_snapshot_create_api(
 	const zend_fcall_t *entry, const zend_fcall_t *bootloader)
 {
-	return async_thread_snapshot_create(entry, bootloader);
+	return async_thread_snapshot_create(entry, bootloader, false);
 }
 
 void async_thread_snapshot_destroy_api(void *snapshot)
@@ -3094,6 +3183,8 @@ static zend_object *closure_transfer_obj(
 		zend_fcall_t fcall;
 		memset(&fcall, 0, sizeof(fcall));
 		fcall.fci_cache.function_handler = (zend_function *) func;
+		/* zend_closure has std as first member, so the cast is valid. */
+		fcall.fci_cache.called_scope = ((async_zend_closure_t *) object)->called_scope;
 
 		/* Preserve the closure's bound $this. thread_copy_callable reads the
 		 * bound instance from fci_cache.object; without this the snapshot is
@@ -3107,7 +3198,7 @@ static zend_object *closure_transfer_obj(
 			fcall.fci_cache.object = Z_OBJ_P(bound_this);
 		}
 
-		async_thread_snapshot_t *snapshot = async_thread_snapshot_create(&fcall, NULL);
+		async_thread_snapshot_t *snapshot = async_thread_snapshot_create(&fcall, NULL, false);
 		if (snapshot == NULL) {
 			return NULL;
 		}
@@ -3132,6 +3223,18 @@ static zend_object *closure_transfer_obj(
 
 		zval closure_zv;
 		async_thread_create_closure(&snapshot->entry, &closure_zv);
+
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			/* Scope class missing here or a bound value failed to load.
+			 * Follow the default-loader convention: throw + stdClass fallback. */
+			zval_ptr_dtor(&closure_zv);
+			async_thread_snapshot_destroy(snapshot);
+			object->properties = NULL;
+
+			zend_object *fallback = zend_objects_new(zend_standard_class_def);
+			object_properties_init(fallback, zend_standard_class_def);
+			return fallback;
+		}
 
 		/* Copy op_array internals from persistent arena into emalloc
 		 * so the closure is fully self-contained */
