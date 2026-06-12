@@ -22,6 +22,15 @@ require_once __DIR__ . '/Context.php';
 require_once __DIR__ . '/StepRegistry.php';
 
 final class StandardSteps {
+    /**
+     * Worker-thread payloads below are lexically declared inside this class,
+     * but chaos workers boot bare (no harness classes). Strip the class scope
+     * so the transfer does not require StandardSteps on the worker side.
+     */
+    private static function unscoped(\Closure $fn): \Closure {
+        return \Closure::bind($fn, null, null);
+    }
+
     public static function register(StepRegistry $r): StepRegistry {
         // ---- Given: setup ----
 
@@ -3660,7 +3669,7 @@ final class StandardSteps {
                     for ($i = 0; $i < $n; $i++) {
                         $ctx->inc("tp_submit_attempts_$pool");
                         try {
-                            $f = $p->submit(static fn(int $idx): int => $idx, $i);
+                            $f = $p->submit(self::unscoped(static fn(int $idx): int => $idx), $i);
                             $ctx->threadPoolFutures[$pool][] = $f;
                             $ctx->inc("tp_submitted_$pool");
                         } catch (\Throwable $e) {
@@ -3760,7 +3769,7 @@ final class StandardSteps {
                     $items = range(0, $n - 1);
                     $ctx->inc("tp_map_attempts_$pool");
                     try {
-                        $res = $ctx->threadPools[$pool]->map($items, static fn(int $i): int => $i * $i);
+                        $res = $ctx->threadPools[$pool]->map($items, self::unscoped(static fn(int $i): int => $i * $i));
                         $ctx->inc("tp_map_succeeded_$pool");
                         $ctx->inc("tp_map_results_$pool", count($res));
                     } catch (\Throwable $e) {
@@ -3831,11 +3840,11 @@ final class StandardSteps {
                     for ($i = 0; $i < $n; $i++) {
                         $ctx->inc("thr_spawn_attempts_$coro");
                         try {
-                            $h = \Async\spawn_thread(static function() use ($i): array {
+                            $h = \Async\spawn_thread(self::unscoped(static function() use ($i): array {
                                 $x = 0.0;
                                 for ($j = 0; $j < 20000; $j++) { $x += sqrt($j); }
                                 return ['idx' => $i, 'x' => $x];
-                            });
+                            }));
                             $ctx->threadHandles[$coro][] = $h;
                             $ctx->inc("thr_spawned_$coro");
                         } catch (\Throwable $e) {
@@ -3854,11 +3863,11 @@ final class StandardSteps {
                     for ($i = 0; $i < $n; $i++) {
                         $ctx->inc("thr_spawn_attempts_$coro");
                         try {
-                            $h = \Async\spawn_thread(static function() use ($i): void {
+                            $h = \Async\spawn_thread(self::unscoped(static function() use ($i): void {
                                 $x = 0.0;
                                 for ($j = 0; $j < 20000; $j++) { $x += sqrt($j); }
                                 throw new \RuntimeException('thread boom ' . $i);
-                            });
+                            }));
                             $ctx->threadHandles[$coro][] = $h;
                             $ctx->inc("thr_spawned_$coro");
                         } catch (\Throwable $e) {
@@ -3880,11 +3889,11 @@ final class StandardSteps {
                     for ($i = 0; $i < $n; $i++) {
                         $ctx->inc("thr_spawn_attempts_$coro");
                         try {
-                            \Async\spawn_thread(static function() use ($i): array {
+                            \Async\spawn_thread(self::unscoped(static function() use ($i): array {
                                 $x = 0.0;
                                 for ($j = 0; $j < 40000; $j++) { $x += sqrt($j); }
                                 return ['idx' => $i, 'x' => $x, 'buf' => str_repeat('w', 64)];
-                            });
+                            }));
                             $ctx->inc("thr_spawned_$coro");
                         } catch (\Throwable $e) {
                             $ctx->inc("thr_spawn_failed_$coro");
@@ -3981,9 +3990,9 @@ final class StandardSteps {
                     $state = $ctx->futureStates[$f];
                     $ctx->inc("rf_xfer_attempts_$f");
                     try {
-                        $h = \Async\spawn_thread(static function() use ($state, $val) {
+                        $h = \Async\spawn_thread(self::unscoped(static function() use ($state, $val) {
                             $state->complete($val);
-                        });
+                        }));
                         $ctx->remoteFutureThreads[$f] = $h;
                         $ctx->inc("rf_xfer_ok_$f");
                     } catch (\Throwable $e) {
@@ -4004,9 +4013,9 @@ final class StandardSteps {
                     $state = $ctx->futureStates[$f];
                     $ctx->inc("rf_xfer_attempts_$f");
                     try {
-                        $h = \Async\spawn_thread(static function() use ($state, $msg) {
+                        $h = \Async\spawn_thread(self::unscoped(static function() use ($state, $msg) {
                             $state->error(new \RuntimeException($msg));
-                        });
+                        }));
                         $ctx->remoteFutureThreads[$f] = $h;
                         $ctx->inc("rf_xfer_ok_$f");
                     } catch (\Throwable $e) {
@@ -4031,9 +4040,9 @@ final class StandardSteps {
                     $state = $ctx->futureStates[$f];
                     $ctx->inc("rf_xfer_attempts_$f");
                     try {
-                        $h = \Async\spawn_thread(static function() use ($state) {
+                        $h = \Async\spawn_thread(self::unscoped(static function() use ($state) {
                             throw new \RuntimeException("worker crashed before complete");
-                        });
+                        }));
                         $ctx->remoteFutureThreads[$f] = $h;
                         $ctx->inc("rf_xfer_ok_$f");
                     } catch (\Throwable $e) {
@@ -4108,10 +4117,10 @@ final class StandardSteps {
                     $state = $ctx->futureStates[$f];
                     $ctx->inc("rf_double_xfer_attempts_$f");
                     try {
-                        $h2 = \Async\spawn_thread(static function() use ($state) {
+                        $h2 = \Async\spawn_thread(self::unscoped(static function() use ($state) {
                             // unreachable if transfer is blocked
                             try { $state->complete("dup"); } catch (\Throwable $e) {}
-                        });
+                        }));
                         // Transfer was allowed — join the rogue so we don't leak it.
                         try { \Async\await($h2); } catch (\Throwable $e) {}
                         $ctx->inc("rf_double_xfer_allowed_$f");
@@ -4180,12 +4189,12 @@ final class StandardSteps {
                     }
                     $ch = $ctx->threadChannels[$tc];
                     $ctx->inc("tc_thread_send_attempts_$tc");
-                    $h = \Async\spawn_thread(static function() use ($ch, $n): int {
+                    $h = \Async\spawn_thread(self::unscoped(static function() use ($ch, $n): int {
                         for ($i = 0; $i < $n; $i++) {
                             $ch->send($i);
                         }
                         return $n;
-                    });
+                    }));
                     for ($i = 0; $i < $n; $i++) {
                         try {
                             $ch->recv();
@@ -4218,12 +4227,12 @@ final class StandardSteps {
                     }
                     $ch = $ctx->threadChannels[$tc];
                     $ctx->inc("tc_thread_recv_attempts_$tc");
-                    $h = \Async\spawn_thread(static function() use ($ch, $n): int {
+                    $h = \Async\spawn_thread(self::unscoped(static function() use ($ch, $n): int {
                         for ($i = 0; $i < $n; $i++) {
                             $ch->recv();
                         }
                         return $n;
-                    });
+                    }));
                     for ($i = 0; $i < $n; $i++) {
                         try {
                             $ch->send($i);
@@ -4256,14 +4265,14 @@ final class StandardSteps {
                     }
                     $ch = $ctx->threadChannels[$tc];
                     $ctx->inc("tc_close_race_attempts_$tc");
-                    $h = \Async\spawn_thread(static function() use ($ch): string {
+                    $h = \Async\spawn_thread(self::unscoped(static function() use ($ch): string {
                         try {
                             $ch->recv();
                             return "no-throw";
                         } catch (\Throwable $e) {
                             return "threw";
                         }
-                    });
+                    }));
                     $ch->close();
                     try {
                         $outcome = \Async\await($h);
