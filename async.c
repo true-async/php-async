@@ -717,6 +717,27 @@ PHP_FUNCTION(Async_runtime_stats)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
+	/*
+	 * Before the scheduler is launched (e.g. runtime_stats() called at the top
+	 * level, outside any coroutine), the queue buffers are not yet allocated.
+	 * Report a zeroed snapshot rather than reading uninitialized state; the pool
+	 * minimum and fiber stack size are static and still meaningful.
+	 */
+	if (ZEND_ASYNC_SCHEDULER == NULL) {
+		array_init(return_value);
+		add_assoc_long(return_value, "coroutines_total",         0);
+		add_assoc_long(return_value, "coroutines_active",        0);
+		add_assoc_long(return_value, "microtasks_queue",         0);
+		add_assoc_long(return_value, "coroutine_queue",          0);
+		add_assoc_long(return_value, "resumed_queue",            0);
+		add_assoc_long(return_value, "fiber_pool_count",         0);
+		add_assoc_long(return_value, "fiber_pool_capacity",      0);
+		add_assoc_long(return_value, "fiber_pool_min",           (zend_long) ASYNC_FIBER_POOL_SIZE);
+		add_assoc_long(return_value, "fiber_stack_size",         (zend_long) EG(fiber_stack_size));
+		add_assoc_long(return_value, "fiber_pool_virtual_bytes", 0);
+		return;
+	}
+
 	const circular_buffer_t *const pool       = &ASYNC_G(fiber_context_pool);
 	const circular_buffer_t *const microtasks = &ASYNC_G(microtasks);
 	const circular_buffer_t *const coro_queue = &ASYNC_G(coroutine_queue);
