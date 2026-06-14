@@ -520,6 +520,16 @@ bool circular_buffer_is_full(const circular_buffer_t *buffer)
 size_t circular_buffer_count(const circular_buffer_t *buffer)
 {
 	ZEND_ASSERT(buffer != NULL && "Buffer cannot be NULL");
+
+	/*
+	 * A buffer that was never initialized (capacity 0 — e.g. a scheduler queue
+	 * read before the scheduler has allocated it) holds nothing. Return 0 rather
+	 * than asserting the head/tail bounds, where 0 < 0 would fail.
+	 */
+	if (buffer->capacity == 0) {
+		return 0;
+	}
+
 	ZEND_ASSERT(buffer->head < buffer->capacity && "Head index out of bounds");
 	ZEND_ASSERT(buffer->tail < buffer->capacity && "Tail index out of bounds");
 

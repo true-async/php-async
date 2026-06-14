@@ -717,14 +717,37 @@ PHP_FUNCTION(Async_runtime_stats)
 {
 	ZEND_PARSE_PARAMETERS_NONE();
 
+	/*
+	 * Before the scheduler is launched (e.g. runtime_stats() called at the top
+	 * level, outside any coroutine), the queue buffers are not yet allocated.
+	 * Report a zeroed snapshot rather than reading uninitialized state; the pool
+	 * minimum and fiber stack size are static and still meaningful.
+	 */
+	if (ZEND_ASYNC_SCHEDULER == NULL) {
+		array_init(return_value);
+		add_assoc_long(return_value, "coroutines_total",         0);
+		add_assoc_long(return_value, "coroutines_active",        0);
+		add_assoc_long(return_value, "microtasks_queue",         0);
+		add_assoc_long(return_value, "coroutine_queue",          0);
+		add_assoc_long(return_value, "resumed_queue",            0);
+		add_assoc_long(return_value, "fiber_pool_count",         0);
+		add_assoc_long(return_value, "fiber_pool_capacity",      0);
+		add_assoc_long(return_value, "fiber_pool_min",           (zend_long) ASYNC_FIBER_POOL_SIZE);
+		add_assoc_long(return_value, "fiber_stack_size",         (zend_long) EG(fiber_stack_size));
+		add_assoc_long(return_value, "fiber_pool_virtual_bytes", 0);
+		return;
+	}
+
 	const circular_buffer_t *const pool       = &ASYNC_G(fiber_context_pool);
 	const circular_buffer_t *const microtasks = &ASYNC_G(microtasks);
 	const circular_buffer_t *const coro_queue = &ASYNC_G(coroutine_queue);
 	const circular_buffer_t *const resumed_q  = &ASYNC_G(resumed_coroutines);
 
-	const size_t pool_count      = circular_buffer_count(pool);
-	/* circular_buffer_capacity does capacity-1, underflows to SIZE_MAX
-	 * pre-init. Clamp. */
+	/* Both reads guard against capacity 0: before the scheduler allocates these
+	 * buffers, circular_buffer_capacity() would underflow (capacity-1 = SIZE_MAX)
+	 * and circular_buffer_count() would read uninitialized head/tail. Clamp to 0. */
+	const size_t pool_count      = pool->capacity > 0
+	                                 ? circular_buffer_count(pool) : 0;
 	const size_t pool_capacity   = pool->capacity > 0
 	                                 ? circular_buffer_capacity(pool) : 0;
 	const size_t stack_size      = EG(fiber_stack_size);
@@ -737,11 +760,11 @@ PHP_FUNCTION(Async_runtime_stats)
 	               (zend_long) ZEND_ASYNC_ACTIVE_COROUTINE_COUNT);
 
 	add_assoc_long(return_value, "microtasks_queue",
-	               (zend_long) circular_buffer_count(microtasks));
+	               (zend_long) (microtasks->capacity > 0 ? circular_buffer_count(microtasks) : 0));
 	add_assoc_long(return_value, "coroutine_queue",
-	               (zend_long) circular_buffer_count(coro_queue));
+	               (zend_long) (coro_queue->capacity > 0 ? circular_buffer_count(coro_queue) : 0));
 	add_assoc_long(return_value, "resumed_queue",
-	               (zend_long) circular_buffer_count(resumed_q));
+	               (zend_long) (resumed_q->capacity > 0 ? circular_buffer_count(resumed_q) : 0));
 
 	add_assoc_long(return_value, "fiber_pool_count",    (zend_long) pool_count);
 	add_assoc_long(return_value, "fiber_pool_capacity", (zend_long) pool_capacity);
