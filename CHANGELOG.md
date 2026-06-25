@@ -7,9 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- **phpredis async pool ignored the host given to `connect()` — `failed to acquire connection` outside loopback (e.g. Docker)** — the pool factory hardcoded `127.0.0.1:6379` and applied only the constructor options, so a host supplied via a later `$redis->connect('redis', 6379)` was never used; every pooled connection dialed loopback and failed wherever Redis lives on a service hostname. The factory now seeds each connection (host, port, timeouts, auth, selected DB, TLS context, keepalive) from the owner's template socket; constructor options still override. Fixed in phpredis `redis_pool.c`; regression test `tests/async/008-pool_connect_host.phpt`.
-  - **Limitation — with `mux > 0` the host MUST be set in the constructor, not via `connect()`.** Multiplex lanes are opened eagerly inside the `new Redis([...])` constructor, before `connect()` runs, so there is no template to seed from yet and the lane falls back to loopback. Use `new Redis(['host' => 'redis', 'pool' => ['mux' => 2, ...]])`. The checkout pool (`mux = 0`) creates connections lazily after `connect()`, so the `connect()` host works there.
+### Changed
+- **phpredis async pool: `connect()`/`pconnect()` is now rejected in pool mode — configure `host`/`port` in the constructor options.** A pooled `Redis` object is a template, not a single live connection, so `connect()` has no meaning there: the pool's own connections are created elsewhere and silently ignored the `connect()` target, which dialed `127.0.0.1` and failed wherever Redis lives on a service hostname (e.g. `failed to acquire connection` inside Docker). Calling `connect()` on a pooled instance now throws `Redis::connect() is not supported in pool mode; set 'host' and 'port' in the constructor options`. Use `new Redis(['host' => 'redis', 'port' => 6379, 'pool' => [...]])`. This is consistent for both the checkout pool (`mux = 0`) and eager multiplex lanes (`mux > 0`, opened in the constructor). Fixed in phpredis `redis.c`/`redis_pool.c`; test `tests/async/008-pool_connect_host.phpt`.
 
 ## [0.7.3] - 2026-06-25
 
