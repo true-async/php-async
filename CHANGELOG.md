@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-06-25
+
 ### Fixed
 - **`ThreadChannel`/`spawn_thread`/`ThreadPool`: object with declared-only properties wrongly rejected after `var_dump()`** — the cross-thread transfer guard rejected any object whose lazy properties table had been materialized (by `var_dump()`, `get_object_vars()`, `foreach`, array cast, etc.), reporting `Cannot transfer object with dynamic properties between threads` even when the object had no dynamic properties. The check counted every entry in `zend_object.properties`, but a materialized table stores declared properties as `IS_INDIRECT` slots into `properties_table`; it now rejects only genuine (non-indirect) dynamic properties. Regression tests `tests/thread_channel/040`–`041`, `tests/thread_pool/069`.
 
