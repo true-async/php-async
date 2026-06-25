@@ -49,29 +49,9 @@ struct _async_thread_channel_s {
 	HashTable receiver_triggers;  /* triggers from wrappers waiting to receive */
 	HashTable sender_triggers;    /* triggers from wrappers waiting to send */
 
-	/* Reference count for cross-thread sharing. For PHP-constructed channels it
-	 * also counts live endpoints (one wrapper ref each), which auto_disconnect
-	 * relies on. Raw C holders (e.g. the thread pool) keep ref_count at 1. */
+	/* Reference count for cross-thread sharing */
 	zend_atomic_int ref_count;
-
-	/* Coroutines currently suspended inside recv()/send() (mutex-guarded).
-	 * Used to detect "no producer/consumer left" disconnect. */
-	int32_t parked_receivers;
-	int32_t parked_senders;
-
-	/* Why the channel closed; read by a woken recv/send to pick the message. */
-	uint8_t close_reason;
-
-	/* Auto-disconnect parked waiters when no peer endpoint remains. Set only for
-	 * PHP-constructed channels, where ref_count is a reliable endpoint count.
-	 * Off for raw pool channels, which manage close() explicitly. */
-	bool auto_disconnect;
 };
-
-/* close_reason values */
-#define ASYNC_THREAD_CHANNEL_CLOSED        0
-#define ASYNC_THREAD_CHANNEL_NO_PRODUCERS  1
-#define ASYNC_THREAD_CHANNEL_NO_CONSUMERS  2
 
 ///////////////////////////////////////////////////////////
 /// PHP object wrapper (emalloc, per-thread)
@@ -100,6 +80,12 @@ async_thread_channel_t *async_thread_channel_create(int32_t capacity);
 
 /* Close channel — wakes all waiters, rejects new send/recv */
 void async_thread_channel_close(async_thread_channel_t *ch);
+
+/* Init the process-wide channel registry (MINIT). */
+void async_thread_channel_registry_init(void);
+
+/* Close every live channel — called at shutdown so parked workers wake and exit. */
+void async_thread_channel_close_all(void);
 
 /* Addref shared channel */
 void async_thread_channel_addref(async_thread_channel_t *ch);

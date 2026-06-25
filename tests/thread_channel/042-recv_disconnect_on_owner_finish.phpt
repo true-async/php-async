@@ -30,4 +30,4 @@ echo "main: end (nothing sent, channel not closed)\n";
 ?>
 --EXPECT--
 main: end (nothing sent, channel not closed)
-worker: ThreadChannel deadlock: no producers remain to send
+worker: ThreadChannel is closed

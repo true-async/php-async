@@ -62,17 +62,61 @@ static void fire_all_triggers(HashTable *triggers)
 	} ZEND_HASH_FOREACH_END();
 }
 
-/* Message for a recv/send woken on a closed channel, by close reason. */
-static const char *thread_channel_close_message(uint8_t reason)
+///////////////////////////////////////////////////////////////////////////////
+// Process-wide registry of live channels
+///////////////////////////////////////////////////////////////////////////////
+
+/* Every live shared channel is registered here. At shutdown async_thread_channel
+ * _close_all() closes them so workers parked on recv()/send() wake and exit
+ * instead of hanging the process (a non-awaited owner can finish without close).
+ * Lock order is always registry mutex -> channel mutex. */
+#ifdef ZTS
+static MUTEX_T thread_channel_registry_mutex = NULL;
+#endif
+static HashTable thread_channel_registry;
+static bool thread_channel_registry_inited = false;
+
+void async_thread_channel_registry_init(void)
 {
-	switch (reason) {
-		case ASYNC_THREAD_CHANNEL_NO_PRODUCERS:
-			return "ThreadChannel deadlock: no producers remain to send";
-		case ASYNC_THREAD_CHANNEL_NO_CONSUMERS:
-			return "ThreadChannel deadlock: no consumers remain to receive";
-		default:
-			return "ThreadChannel is closed";
+	if (thread_channel_registry_inited) {
+		return;
 	}
+	zend_hash_init(&thread_channel_registry, 8, NULL, NULL, 1);
+	ASYNC_MUTEX_INIT(thread_channel_registry_mutex);
+	thread_channel_registry_inited = true;
+}
+
+static void thread_channel_registry_add(async_thread_channel_t *ch)
+{
+	if (!thread_channel_registry_inited) {
+		return;
+	}
+	ASYNC_MUTEX_LOCK(thread_channel_registry_mutex);
+	zend_hash_index_add_ptr(&thread_channel_registry, (zend_ulong)(uintptr_t) ch, ch);
+	ASYNC_MUTEX_UNLOCK(thread_channel_registry_mutex);
+}
+
+static void thread_channel_registry_remove(async_thread_channel_t *ch)
+{
+	if (!thread_channel_registry_inited) {
+		return;
+	}
+	ASYNC_MUTEX_LOCK(thread_channel_registry_mutex);
+	zend_hash_index_del(&thread_channel_registry, (zend_ulong)(uintptr_t) ch);
+	ASYNC_MUTEX_UNLOCK(thread_channel_registry_mutex);
+}
+
+void async_thread_channel_close_all(void)
+{
+	if (!thread_channel_registry_inited) {
+		return;
+	}
+	ASYNC_MUTEX_LOCK(thread_channel_registry_mutex);
+	async_thread_channel_t *ch;
+	ZEND_HASH_FOREACH_PTR(&thread_channel_registry, ch) {
+		async_thread_channel_close(ch);
+	} ZEND_HASH_FOREACH_END();
+	ASYNC_MUTEX_UNLOCK(thread_channel_registry_mutex);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -96,13 +140,12 @@ retry:
 
 	/* Check closed under lock */
 	if (UNEXPECTED(ZEND_ASYNC_EVENT_IS_CLOSED(&ch->channel.event))) {
-		const uint8_t reason = ch->close_reason;
 		ASYNC_MUTEX_UNLOCK(ch->mutex);
 		async_thread_release_transferred_zval(&persistent_copy);
 		if (trigger != NULL) {
 			trigger->base.dispose(&trigger->base);
 		}
-		zend_throw_exception(async_ce_thread_channel_exception, thread_channel_close_message(reason), 0);
+		zend_throw_exception(async_ce_thread_channel_exception, "ThreadChannel is closed", 0);
 		return false;
 	}
 
@@ -121,25 +164,6 @@ retry:
 	if (trigger == NULL) {
 		trigger = ZEND_ASYNC_NEW_TRIGGER_EVENT();
 	}
-
-	/* Track parked senders so the dispose path can detect "no consumer left". */
-	ch->parked_senders++;
-
-	/* Sole wrapper left: no other thread can ever receive. Closes the race where
-	 * the last peer dropped before we parked. */
-	if (ch->auto_disconnect && zend_atomic_int_load(&ch->ref_count) <= 1) {
-		ch->parked_senders--;
-		ch->close_reason = ASYNC_THREAD_CHANNEL_NO_CONSUMERS;
-		ZEND_ASYNC_EVENT_SET_CLOSED(&ch->channel.event);
-		fire_all_triggers(&ch->sender_triggers);
-		ASYNC_MUTEX_UNLOCK(ch->mutex);
-		async_thread_release_transferred_zval(&persistent_copy);
-		trigger->base.dispose(&trigger->base);
-		zend_throw_exception(async_ce_thread_channel_exception,
-			thread_channel_close_message(ASYNC_THREAD_CHANNEL_NO_CONSUMERS), 0);
-		return false;
-	}
-
 	zend_hash_index_update_ptr(&ch->sender_triggers, (zend_ulong)(uintptr_t) trigger, trigger);
 	ASYNC_MUTEX_UNLOCK(ch->mutex);
 
@@ -157,7 +181,6 @@ retry:
 
 	if (UNEXPECTED(channel_bailed)) {
 		ASYNC_MUTEX_LOCK(ch->mutex);
-		ch->parked_senders--;
 		zend_hash_index_del(&ch->sender_triggers, (zend_ulong)(uintptr_t) trigger);
 		ASYNC_MUTEX_UNLOCK(ch->mutex);
 		ZEND_ASYNC_WAKER_DESTROY(ZEND_ASYNC_CURRENT_COROUTINE);
@@ -170,7 +193,6 @@ retry:
 
 	/* Woke up — remove from sender queue */
 	ASYNC_MUTEX_LOCK(ch->mutex);
-	ch->parked_senders--;
 	zend_hash_index_del(&ch->sender_triggers, (zend_ulong)(uintptr_t) trigger);
 	ASYNC_MUTEX_UNLOCK(ch->mutex);
 
@@ -211,14 +233,13 @@ retry:
 
 	/* Buffer empty (or wait_only) — check if closed */
 	if (UNEXPECTED(ZEND_ASYNC_EVENT_IS_CLOSED(&ch->channel.event))) {
-		const uint8_t reason = ch->close_reason;
 		ASYNC_MUTEX_UNLOCK(ch->mutex);
 		if (trigger != NULL) {
 			trigger->base.dispose(&trigger->base);
 		}
 		/* wait_only callers expect a quiet false on close. */
 		if (!wait_only) {
-			zend_throw_exception(async_ce_thread_channel_exception, thread_channel_close_message(reason), 0);
+			zend_throw_exception(async_ce_thread_channel_exception, "ThreadChannel is closed", 0);
 		}
 		return false;
 	}
@@ -228,27 +249,6 @@ retry:
 	if (trigger == NULL) {
 		trigger = ZEND_ASYNC_NEW_TRIGGER_EVENT();
 	}
-
-	/* Track parked receivers so the dispose path can detect "no producer left". */
-	ch->parked_receivers++;
-
-	/* Sole wrapper left: no other thread can ever send. Closes the race where
-	 * the last peer dropped before we parked. (ref_count counts wrappers, i.e.
-	 * threads; > 1 means a peer endpoint still exists somewhere.) */
-	if (ch->auto_disconnect && zend_atomic_int_load(&ch->ref_count) <= 1) {
-		ch->parked_receivers--;
-		ch->close_reason = ASYNC_THREAD_CHANNEL_NO_PRODUCERS;
-		ZEND_ASYNC_EVENT_SET_CLOSED(&ch->channel.event);
-		fire_all_triggers(&ch->receiver_triggers);
-		ASYNC_MUTEX_UNLOCK(ch->mutex);
-		trigger->base.dispose(&trigger->base);
-		if (!wait_only) {
-			zend_throw_exception(async_ce_thread_channel_exception,
-				thread_channel_close_message(ASYNC_THREAD_CHANNEL_NO_PRODUCERS), 0);
-		}
-		return false;
-	}
-
 	zend_hash_index_update_ptr(&ch->receiver_triggers, (zend_ulong)(uintptr_t) trigger, trigger);
 	ASYNC_MUTEX_UNLOCK(ch->mutex);
 
@@ -270,7 +270,6 @@ retry:
 
 	if (UNEXPECTED(channel_bailed)) {
 		ASYNC_MUTEX_LOCK(ch->mutex);
-		ch->parked_receivers--;
 		zend_hash_index_del(&ch->receiver_triggers, (zend_ulong)(uintptr_t) trigger);
 		ASYNC_MUTEX_UNLOCK(ch->mutex);
 		ZEND_ASYNC_WAKER_DESTROY(ZEND_ASYNC_CURRENT_COROUTINE);
@@ -282,7 +281,6 @@ retry:
 
 	/* Woke up — remove from receiver queue, observe closed state */
 	ASYNC_MUTEX_LOCK(ch->mutex);
-	ch->parked_receivers--;
 	zend_hash_index_del(&ch->receiver_triggers, (zend_ulong)(uintptr_t) trigger);
 	const bool closed = ZEND_ASYNC_EVENT_IS_CLOSED(&ch->channel.event);
 	ASYNC_MUTEX_UNLOCK(ch->mutex);
@@ -364,11 +362,15 @@ async_thread_channel_t *async_thread_channel_create(int32_t capacity)
 	ch->channel.close = thread_channel_close;
 	ch->channel.event.dispose = thread_channel_event_dispose;
 
+	thread_channel_registry_add(ch);
+
 	return ch;
 }
 
 static void thread_channel_destroy(async_thread_channel_t *ch)
 {
+	thread_channel_registry_remove(ch);
+
 	/* Close and notify waiters before destroying */
 	if (!ZEND_ASYNC_EVENT_IS_CLOSED(&ch->channel.event)) {
 		ASYNC_MUTEX_LOCK(ch->mutex);
@@ -413,29 +415,7 @@ static bool thread_channel_event_dispose(zend_async_event_t *event)
 
 	if (old == 1) {
 		thread_channel_destroy(ch);
-		return true;
 	}
-
-	/* An endpoint is gone. If every endpoint left is a parked waiter, no peer
-	 * can ever make progress, so close the channel: parked recv()/send() then
-	 * surface ThreadChannelException with the matching reason. Endpoints here
-	 * are wrapper refs (ref_count); raw-pointer holders such as the thread pool
-	 * keep ref_count == 1 and only ever drop it to 0 (handled above). */
-	ASYNC_MUTEX_LOCK(ch->mutex);
-	if (ch->auto_disconnect && !ZEND_ASYNC_EVENT_IS_CLOSED(&ch->channel.event)) {
-		const int endpoints = old - 1;
-		const bool no_producers = ch->parked_receivers > 0 && endpoints <= 1;
-		const bool no_consumers = ch->parked_senders > 0 && endpoints <= 1;
-
-		if (no_producers || no_consumers) {
-			ch->close_reason = no_producers ? ASYNC_THREAD_CHANNEL_NO_PRODUCERS
-											: ASYNC_THREAD_CHANNEL_NO_CONSUMERS;
-			ZEND_ASYNC_EVENT_SET_CLOSED(&ch->channel.event);
-			fire_all_triggers(&ch->receiver_triggers);
-			fire_all_triggers(&ch->sender_triggers);
-		}
-	}
-	ASYNC_MUTEX_UNLOCK(ch->mutex);
 
 	return true;
 }
@@ -541,7 +521,6 @@ METHOD(__construct)
 
 	thread_channel_object_t *obj = ASYNC_THREAD_CHANNEL_FROM_OBJ(Z_OBJ_P(ZEND_THIS));
 	obj->channel = async_thread_channel_create((int32_t) capacity);
-	obj->channel->auto_disconnect = true;
 }
 
 METHOD(send)
@@ -632,6 +611,8 @@ METHOD(isFull)
 
 void async_register_thread_channel_ce(void)
 {
+	async_thread_channel_registry_init();
+
 	async_ce_thread_channel_exception = register_class_Async_ThreadChannelException(async_ce_async_exception);
 
 	async_ce_thread_channel = register_class_Async_ThreadChannel(async_ce_awaitable, zend_ce_countable);

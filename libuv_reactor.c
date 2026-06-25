@@ -21,6 +21,7 @@
 
 #include "exceptions.h"
 #include "php_async.h"
+#include "thread_channel.h"
 #include "php_main.h"
 #include "thread.h"
 #include "thread_pool.h"
@@ -165,6 +166,10 @@ static void libuv_reactor_quiesce(void)
 	if (!child_thread_registry_inited) {
 		return;
 	}
+
+	/* Wake any worker parked on a thread channel so it can exit; otherwise the
+	 * wait below would hang on a non-awaited worker whose owner finished. */
+	async_thread_channel_close_all();
 
 	uv_mutex_lock(&child_thread_registry_mutex);
 	while (zend_hash_num_elements(&child_thread_registry) > 0) {
@@ -2161,9 +2166,8 @@ static void libuv_thread_notify_cb(uv_async_t *handle)
 		}
 	}
 
-	/* Thread finished: notify waiters, disarm the wait, then mark completed.
-	 * CLOSED must be set AFTER stop() — the stop prologue short-circuits on a
-	 * closed event and would otherwise skip the disarm (unref + uncount). */
+	/* Set CLOSED AFTER stop(): the stop prologue short-circuits on a closed
+	 * event and would skip the disarm (unref + uncount). */
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&thread->event.base, &thread->event.result, thread->event.exception);
 	thread->event.base.stop(&thread->event.base);
 	ZEND_ASYNC_EVENT_SET_CLOSED(&thread->event.base);
