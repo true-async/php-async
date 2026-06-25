@@ -4286,6 +4286,33 @@ final class StandardSteps {
             })
             ->requires('zts');
 
+        // When coroutine "X" spawns N orphan workers parked on recv of a fresh thread channel
+        // Models #162: workers park on recv(); the owner finishes WITHOUT close()
+        // or await(). The channel is local (not tracked by the harness, so it is
+        // not closed at scenario end); the process-wide close_all() at shutdown
+        // must disconnect every worker, otherwise the process hangs.
+        $r->on('/^coroutine "([^"]+)" spawns (\S+) orphan workers parked on recv of a fresh thread channel$/',
+            function(Context $ctx, string $coro, string $nExpr) {
+                $n = (int)$ctx->resolver->resolve($nExpr);
+                $ctx->planAction($coro, function(Context $ctx) use ($n) {
+                    $ch = new \Async\ThreadChannel();
+                    for ($i = 0; $i < $n; $i++) {
+                        $ctx->inc("tc_orphan_spawn_attempts");
+                        try {
+                            \Async\spawn_thread(self::unscoped(static function() use ($ch): void {
+                                try { $ch->recv(); }
+                                catch (\Throwable $e) { /* disconnected at shutdown */ }
+                            }));
+                            $ctx->inc("tc_orphan_spawned");
+                        } catch (\Throwable $e) {
+                            $ctx->inc("tc_orphan_spawn_failed");
+                        }
+                    }
+                    // owner returns here: $ch drops out of scope, never closed/awaited
+                });
+            })
+            ->requires('zts');
+
         // ---- TaskGroup actions ----
 
         // When coroutine "X" spawns N tasks into "G" that print "msg"
