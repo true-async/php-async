@@ -905,11 +905,18 @@ static zend_object *thread_transfer_object(thread_transfer_ctx_t *ctx, const zen
 		return dst;
 	}
 
-	/* Dynamic properties (stdClass, __set) are not supported */
-	if (src->properties && zend_hash_num_elements(src->properties) > 0) {
-		ctx->error = "Cannot transfer object with dynamic properties between threads";
-		THREAD_DEPTH_RELEASE(ctx);
-		return NULL;
+	/* Reject genuine dynamic properties (stdClass, __set). A materialized
+	 * properties table (var_dump, get_object_vars, ...) lists declared props as
+	 * IS_INDIRECT slots, so only non-indirect entries are truly dynamic. */
+	if (src->properties) {
+		zval *prop_val;
+		ZEND_HASH_FOREACH_VAL(src->properties, prop_val) {
+			if (Z_TYPE_P(prop_val) != IS_INDIRECT) {
+				ctx->error = "Cannot transfer object with dynamic properties between threads";
+				THREAD_DEPTH_RELEASE(ctx);
+				return NULL;
+			}
+		} ZEND_HASH_FOREACH_END();
 	}
 
 	/* xlat_put is performed inside _default before property recursion. */
