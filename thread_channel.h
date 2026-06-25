@@ -81,11 +81,9 @@ async_thread_channel_t *async_thread_channel_create(int32_t capacity);
 /* Close channel — wakes all waiters, rejects new send/recv */
 void async_thread_channel_close(async_thread_channel_t *ch);
 
-/* Init the process-wide channel registry (MINIT). */
-void async_thread_channel_registry_init(void);
-
-/* Close every live channel — called at shutdown so parked workers wake and exit. */
-void async_thread_channel_close_all(void);
+/* Close channels created on this thread (releasing the registry ref each).
+ * Called at this thread's shutdown so parked workers wake and exit. */
+void async_thread_channel_close_owned(void);
 
 /* Addref shared channel */
 void async_thread_channel_addref(async_thread_channel_t *ch);

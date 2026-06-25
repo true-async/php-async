@@ -18,6 +18,7 @@
 #include "context.h"
 #include "coroutine.h"
 #include "exceptions.h"
+#include "thread_channel.h"
 #include "future.h"
 #include "iterator.h"
 #include "php_async.h"
@@ -207,6 +208,10 @@ zend_coroutine_t *spawn(zend_async_scope_t *scope, zend_object *scope_provider, 
 
 static bool engine_shutdown(void)
 {
+	/* Close channels created on this thread so a worker parked on one whose
+	 * owner finished without close() wakes — before REACTOR_SHUTDOWN waits for it. */
+	async_thread_channel_close_owned();
+
 	ZEND_ASYNC_REACTOR_SHUTDOWN();
 
 	circular_buffer_dtor(&ASYNC_G(microtasks));
@@ -214,6 +219,7 @@ static bool engine_shutdown(void)
 	circular_buffer_dtor(&ASYNC_G(resumed_coroutines));
 	zend_hash_destroy(&ASYNC_G(coroutines));
 	zend_hash_destroy(&ASYNC_G(deadlock_channels));
+	zend_hash_destroy(&ASYNC_G(thread_channels));
 
 	if (ASYNC_G(root_context) != NULL) {
 		async_context_t *root_context = (async_context_t *) ASYNC_G(root_context);

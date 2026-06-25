@@ -63,60 +63,29 @@ static void fire_all_triggers(HashTable *triggers)
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// Process-wide registry of live channels
+// Per-thread registry of channels created on this thread
 ///////////////////////////////////////////////////////////////////////////////
 
-/* Every live shared channel is registered here. At shutdown async_thread_channel
- * _close_all() closes them so workers parked on recv()/send() wake and exit
- * instead of hanging the process (a non-awaited owner can finish without close).
- * Lock order is always registry mutex -> channel mutex. */
-#ifdef ZTS
-static MUTEX_T thread_channel_registry_mutex = NULL;
-#endif
-static HashTable thread_channel_registry;
-static bool thread_channel_registry_inited = false;
-
-void async_thread_channel_registry_init(void)
-{
-	if (thread_channel_registry_inited) {
-		return;
-	}
-	zend_hash_init(&thread_channel_registry, 8, NULL, NULL, 1);
-	ASYNC_MUTEX_INIT(thread_channel_registry_mutex);
-	thread_channel_registry_inited = true;
-}
-
+/* Channels created on the current thread, holding a ref each. Closed at this
+ * thread's shutdown (async_thread_channel_close_owned) so a worker parked on a
+ * channel whose owner finished without close() wakes and exits. Thread-local:
+ * only the owning thread touches its own ASYNC_G(thread_channels) — no lock. */
 static void thread_channel_registry_add(async_thread_channel_t *ch)
 {
-	if (!thread_channel_registry_inited) {
-		return;
-	}
-	ASYNC_MUTEX_LOCK(thread_channel_registry_mutex);
-	zend_hash_index_add_ptr(&thread_channel_registry, (zend_ulong)(uintptr_t) ch, ch);
-	ASYNC_MUTEX_UNLOCK(thread_channel_registry_mutex);
+	async_thread_channel_addref(ch);
+	zend_hash_index_add_ptr(&ASYNC_G(thread_channels), (zend_ulong)(uintptr_t) ch, ch);
 }
 
-static void thread_channel_registry_remove(async_thread_channel_t *ch)
+void async_thread_channel_close_owned(void)
 {
-	if (!thread_channel_registry_inited) {
-		return;
-	}
-	ASYNC_MUTEX_LOCK(thread_channel_registry_mutex);
-	zend_hash_index_del(&thread_channel_registry, (zend_ulong)(uintptr_t) ch);
-	ASYNC_MUTEX_UNLOCK(thread_channel_registry_mutex);
-}
-
-void async_thread_channel_close_all(void)
-{
-	if (!thread_channel_registry_inited) {
-		return;
-	}
-	ASYNC_MUTEX_LOCK(thread_channel_registry_mutex);
 	async_thread_channel_t *ch;
-	ZEND_HASH_FOREACH_PTR(&thread_channel_registry, ch) {
+	ZEND_HASH_FOREACH_PTR(&ASYNC_G(thread_channels), ch) {
 		async_thread_channel_close(ch);
+		/* Release the registry's ref. The channel survives while a wrapper or a
+		 * worker still holds it; the woken worker drops the last ref and frees. */
+		ch->channel.event.dispose(&ch->channel.event);
 	} ZEND_HASH_FOREACH_END();
-	ASYNC_MUTEX_UNLOCK(thread_channel_registry_mutex);
+	zend_hash_clean(&ASYNC_G(thread_channels));
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -369,8 +338,6 @@ async_thread_channel_t *async_thread_channel_create(int32_t capacity)
 
 static void thread_channel_destroy(async_thread_channel_t *ch)
 {
-	thread_channel_registry_remove(ch);
-
 	/* Close and notify waiters before destroying */
 	if (!ZEND_ASYNC_EVENT_IS_CLOSED(&ch->channel.event)) {
 		ASYNC_MUTEX_LOCK(ch->mutex);
@@ -611,8 +578,6 @@ METHOD(isFull)
 
 void async_register_thread_channel_ce(void)
 {
-	async_thread_channel_registry_init();
-
 	async_ce_thread_channel_exception = register_class_Async_ThreadChannelException(async_ce_async_exception);
 
 	async_ce_thread_channel = register_class_Async_ThreadChannel(async_ce_awaitable, zend_ce_countable);

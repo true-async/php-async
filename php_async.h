@@ -132,6 +132,11 @@ bool debug_deadlock;
  * reason "deadlock_resolved" rather than as a generic Deadlock error. */
 HashTable deadlock_channels;
 
+/* Thread channels created on THIS thread (holds a ref each). Closed at this
+ * thread's shutdown so workers parked on recv()/send() of a channel whose owner
+ * finished without close() wake and exit. Thread-local — no cross-thread lock. */
+HashTable thread_channels;
+
 #ifdef PHP_WIN32
 #endif
 
