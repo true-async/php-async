@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **phpredis async pool ignored the host given to `connect()` — `failed to acquire connection` outside loopback (e.g. Docker)** — the pool factory hardcoded `127.0.0.1:6379` and applied only the constructor options, so a host supplied via a later `$redis->connect('redis', 6379)` was never used; every pooled connection dialed loopback and failed wherever Redis lives on a service hostname. The factory now seeds each connection (host, port, timeouts, auth, selected DB, TLS context, keepalive) from the owner's template socket; constructor options still override. Fixed in phpredis `redis_pool.c`; regression test `tests/async/008-pool_connect_host.phpt`.
+  - **Limitation — with `mux > 0` the host MUST be set in the constructor, not via `connect()`.** Multiplex lanes are opened eagerly inside the `new Redis([...])` constructor, before `connect()` runs, so there is no template to seed from yet and the lane falls back to loopback. Use `new Redis(['host' => 'redis', 'pool' => ['mux' => 2, ...]])`. The checkout pool (`mux = 0`) creates connections lazily after `connect()`, so the `connect()` host works there.
+
 ## [0.7.3] - 2026-06-25
 
 ### Fixed
