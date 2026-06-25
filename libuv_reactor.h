@@ -103,6 +103,10 @@ struct _async_thread_event_t
 	uv_async_t uv_notify;     /* Cross-thread notification handle */
 };
 
+/* Thread event is launched (OS thread created). Shares event.base.flags;
+ * thread bits 13/14 are taken, so this uses 15. */
+#define ASYNC_THREAD_F_LAUNCHED (1u << 15)
+
 struct _async_exec_event_t
 {
 	zend_async_exec_event_t event;

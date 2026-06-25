@@ -2161,8 +2161,12 @@ static void libuv_thread_notify_cb(uv_async_t *handle)
 		}
 	}
 
+	/* Thread finished: notify waiters, disarm the wait, then mark completed.
+	 * CLOSED must be set AFTER stop() — the stop prologue short-circuits on a
+	 * closed event and would otherwise skip the disarm (unref + uncount). */
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&thread->event.base, &thread->event.result, thread->event.exception);
 	thread->event.base.stop(&thread->event.base);
+	ZEND_ASYNC_EVENT_SET_CLOSED(&thread->event.base);
 
 	if (ZEND_ASYNC_EVENT_IS_EXCEPTION_HANDLED(&thread->event.base)) {
 		ZEND_THREAD_SET_EXCEPTION_CONSUMED(&thread->event);
@@ -2189,37 +2193,46 @@ static bool libuv_thread_event_start(zend_async_event_t *event)
 
 	async_thread_event_t *thread = (async_thread_event_t *) event;
 
-	/* Add ref on context for the thread runner */
-	if (thread->event.context) {
-		zend_atomic_ptr_store(&thread->event.context->event, &thread->event);
-		ZEND_ASYNC_THREAD_CONTEXT_ADDREF(thread->event.context);
-	}
+	/* First start() is the spawn call: create the OS thread and stay transparent
+	 * (no ref/count). loop_ref_count stays 0 so the first awaiter's start() arms. */
+	if ((event->flags & ASYNC_THREAD_F_LAUNCHED) == 0) {
 
-	/* Initialise registry and assign+register the context's key BEFORE
-	 * uv_thread_create. Doing it after creates a race: a fast-exiting
-	 * runner reads context->key == 0, skips self-removal, then we add
-	 * the key and the entry leaks — quiesce hangs forever. */
-	libuv_thread_registry_init();
-
-	if (thread->event.context) {
-		thread->event.context->key =
-			(zend_async_thread_handle_t) async_ptr_to_index(thread->event.context);
-		libuv_thread_registry_add(thread->event.context->key);
-	}
-
-	const int ret = uv_thread_create(&thread->uv_handle, zend_async_thread_run_fn, thread->event.context);
-
-	if (UNEXPECTED(ret != 0)) {
 		if (thread->event.context) {
-			libuv_thread_registry_remove(thread->event.context->key);
-			thread->event.context->key = 0;
-			zend_atomic_int_dec(&thread->event.context->ref_count);
+			zend_atomic_ptr_store(&thread->event.context->event, &thread->event);
+			ZEND_ASYNC_THREAD_CONTEXT_ADDREF(thread->event.context);
 		}
 
-		async_throw_error("Failed to create thread: %s", uv_strerror(ret));
-		return false;
+		/* Assign+register the key BEFORE uv_thread_create: a fast-exiting runner
+		 * that reads key == 0 skips self-removal and the registry entry leaks. */
+		libuv_thread_registry_init();
+
+		if (thread->event.context) {
+			thread->event.context->key =
+				(zend_async_thread_handle_t) async_ptr_to_index(thread->event.context);
+			libuv_thread_registry_add(thread->event.context->key);
+		}
+
+		const int ret = uv_thread_create(&thread->uv_handle, zend_async_thread_run_fn, thread->event.context);
+
+		if (UNEXPECTED(ret != 0)) {
+			if (thread->event.context) {
+				libuv_thread_registry_remove(thread->event.context->key);
+				thread->event.context->key = 0;
+				zend_atomic_int_dec(&thread->event.context->ref_count);
+			}
+
+			async_throw_error("Failed to create thread: %s", uv_strerror(ret));
+			return false;
+		}
+
+		event->flags |= ASYNC_THREAD_F_LAUNCHED;
+		return true;
 	}
 
+	/* Subsequent start() is an awaiter: arm the wait so the parent loop blocks
+	 * for completion (ref the notify handle and count the event). */
+	uv_ref((uv_handle_t *) &thread->uv_notify);
+	ZEND_ASYNC_EVENT_CLR_HIDDEN(event);
 	event->loop_ref_count++;
 	ZEND_ASYNC_INCREASE_EVENT_COUNT(event);
 	return true;
@@ -2234,13 +2247,13 @@ static bool libuv_thread_event_stop(zend_async_event_t *event)
 
 	async_thread_event_t *thread = (async_thread_event_t *) event;
 
-	/* Unref async handle so it doesn't keep the event loop alive.
-	 * Actual uv_close happens in dispose when refcount reaches 0. */
+	/* Last awaiter left: disarm back to transparent. Decrement before hiding
+	 * (the count macro is a no-op on hidden events). CLOSED is set on actual
+	 * completion in libuv_thread_notify_cb, not here. */
 	uv_unref((uv_handle_t *) &thread->uv_notify);
-
-	ZEND_ASYNC_EVENT_SET_CLOSED(event);
 	event->loop_ref_count = 0;
 	ZEND_ASYNC_DECREASE_EVENT_COUNT(event);
+	ZEND_ASYNC_EVENT_SET_HIDDEN(event);
 	return true;
 }
 
@@ -2442,6 +2455,12 @@ zend_async_thread_event_t *libuv_new_thread_event(
 	}
 
 	thread_event->uv_notify.data = thread_event;
+
+	/* Transparent by default: notify stays armed but unref'd (does not keep the
+	 * parent loop alive) and the event is hidden (not counted). start() arms the
+	 * wait (ref + count) only when someone awaits. */
+	uv_unref((uv_handle_t *) &thread_event->uv_notify);
+	ZEND_ASYNC_EVENT_SET_HIDDEN(&thread_event->event.base);
 
 	/* Allocate last: every early-failure path above pefree's ctx directly,
 	 * so keeping the mutex out of those paths avoids a leak. No-op under NTS. */
