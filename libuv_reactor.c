@@ -21,7 +21,6 @@
 
 #include "exceptions.h"
 #include "php_async.h"
-#include "thread_channel.h"
 #include "php_main.h"
 #include "thread.h"
 #include "thread_pool.h"
@@ -166,10 +165,6 @@ static void libuv_reactor_quiesce(void)
 	if (!child_thread_registry_inited) {
 		return;
 	}
-
-	/* Wake any worker parked on a thread channel so it can exit; otherwise the
-	 * wait below would hang on a non-awaited worker whose owner finished. */
-	async_thread_channel_close_all();
 
 	uv_mutex_lock(&child_thread_registry_mutex);
 	while (zend_hash_num_elements(&child_thread_registry) > 0) {
