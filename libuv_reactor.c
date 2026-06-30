@@ -4182,7 +4182,24 @@ static void io_pipe_read_cb(uv_stream_t *pipe_stream, ssize_t bytes_read, const 
 	/* In multishot mode on a successful read, leave the request uncompleted so
 	 * it can be reused for the next chunk delivered by libuv. */
 	req->base.completed = !multishot || terminal;
-	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
+
+	/* Own the broadcast exception for the duration of the notify. It belongs
+	 * to this req and dies with it, but a consumer (e.g. the connection's
+	 * persistent read listener) may dispose the req mid-notify while a sibling
+	 * callback on the same io->event still forwards the same object to a parked
+	 * writer. Hold a ref across the broadcast; the local survives even if the
+	 * req is freed by a consumer. */
+	zend_object *exc = req->base.exception;
+	if (exc != NULL) {
+		GC_ADDREF(exc);
+	}
+
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, exc);
+
+	if (exc != NULL) {
+		OBJ_RELEASE(exc);
+	}
+
 	IF_EXCEPTION_STOP_REACTOR;
 }
 
@@ -4221,7 +4238,19 @@ static void io_pipe_write_cb(uv_write_t *write_request, int status)
 		return;
 	}
 
-	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
+	/* Own the broadcast exception across the notify (see io_pipe_read_cb):
+	 * a consumer may free the req mid-broadcast while a sibling still uses it. */
+	zend_object *exc = req->base.exception;
+	if (exc != NULL) {
+		GC_ADDREF(exc);
+	}
+
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, exc);
+
+	if (exc != NULL) {
+		OBJ_RELEASE(exc);
+	}
+
 	IF_EXCEPTION_STOP_REACTOR;
 }
 
