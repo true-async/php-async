@@ -104,9 +104,86 @@ static void async_reactor_tick(void)
 	}
 }
 
+/* ---- run a foreign call (JNI/FFI) on the main coroutine's OS-thread stack ----
+ * The main coroutine runs on the OS thread stack; spawned coroutines run on
+ * their own fiber stacks. A runtime that validates the stack pointer against the
+ * OS thread's recorded bounds — ART for JNI, some FFI — rejects calls made from
+ * a fiber stack (ART throws StackOverflowError at the JNI->Java boundary before
+ * any frame runs). We switch ONLY the stack pointer to the suspended main
+ * coroutine's stack, run fn(arg) there as an ordinary C call (the ABI preserves
+ * callee-saved registers — this is NOT a full context switch), then switch back.
+ * Same idea as Go's cgo asmcgocall -> g0 system stack. */
+#if defined(__aarch64__)
+# define ASYNC_HAVE_STACK_SWITCH 1
+__attribute__((naked)) static void async_asm_stack_call(void *newsp, void (*fn)(void *), void *arg)
+{
+	__asm__ volatile(
+		"mov  x9, sp\n\t"               /* x9 = caller sp */
+		"bic  x0, x0, #15\n\t"          /* 16-byte align newsp */
+		"mov  sp, x0\n\t"               /* switch stack */
+		"stp  x30, x9, [sp, #-16]!\n\t" /* save lr + caller sp on the new stack */
+		"mov  x9, x1\n\t"               /* x9 = fn */
+		"mov  x0, x2\n\t"               /* x0 = arg */
+		"blr  x9\n\t"                   /* fn(arg) */
+		"ldp  x30, x9, [sp], #16\n\t"   /* restore lr + caller sp */
+		"mov  sp, x9\n\t"               /* switch back */
+		"ret\n\t"
+	);
+}
+#elif defined(__x86_64__)
+# define ASYNC_HAVE_STACK_SWITCH 1
+__attribute__((naked)) static void async_asm_stack_call(void *newsp, void (*fn)(void *), void *arg)
+{
+	/* SysV: rdi=newsp rsi=fn rdx=arg. The return address sits on the caller's
+	 * stack, so we only need to preserve/restore rsp across the call. */
+	__asm__ volatile(
+		"movq %rsp, %rax\n\t"      /* rax = caller sp */
+		"andq $-16, %rdi\n\t"      /* align newsp */
+		"movq %rdi, %rsp\n\t"      /* switch stack */
+		"pushq %rax\n\t"           /* [sp+8] = caller sp */
+		"pushq %rax\n\t"           /* [sp]   = alignment pad (keep rsp%%16==0) */
+		"movq %rsi, %r10\n\t"      /* r10 = fn */
+		"movq %rdx, %rdi\n\t"      /* rdi = arg */
+		"call *%r10\n\t"           /* fn(arg) */
+		"movq 8(%rsp), %rsp\n\t"   /* restore caller sp (skip the pad) */
+		"ret\n\t"
+	);
+}
+#endif
+
+void async_call_on_main_stack(void (*fn)(void *), void *arg)
+{
+	zend_coroutine_t *current = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	/* On the main coroutine (or before any coroutine exists) we are already on
+	 * the OS thread stack — call straight through. */
+	if (current == NULL || ZEND_COROUTINE_IS_MAIN(current)) {
+		fn(arg);
+		return;
+	}
+
+#if defined(ASYNC_HAVE_STACK_SWITCH)
+	async_coroutine_t *main_co = (async_coroutine_t *) ZEND_ASYNC_MAIN_COROUTINE;
+
+	if (main_co == NULL || main_co->fiber_context == NULL
+		|| main_co->fiber_context->context.handle == NULL) {
+		fn(arg);
+		return;
+	}
+
+	/* The main coroutine is suspended; context.handle points at boost.context's
+	 * saved-register block near its suspended SP on the OS stack — everything
+	 * below it is free. Redzone so we never overwrite those saved registers. */
+	async_asm_stack_call((char *) main_co->fiber_context->context.handle - 256, fn, arg);
+#else
+	fn(arg);
+#endif
+}
+
 void async_scheduler_startup(void)
 {
 	zend_async_reactor_tick_fn = async_reactor_tick;
+	zend_async_call_on_main_stack_fn = async_call_on_main_stack;
 }
 
 void async_scheduler_shutdown(void)
@@ -1156,6 +1233,10 @@ bool async_scheduler_launch(void)
 	// Normalize the main coroutine state
 	ZEND_COROUTINE_SET_STARTED(&main_coroutine->coroutine);
 	ZEND_COROUTINE_SET_MAIN(&main_coroutine->coroutine);
+
+	// Publish the main coroutine so foreign calls from other coroutines can
+	// borrow its (OS thread) stack — see async_call_on_main_stack.
+	ZEND_ASYNC_MAIN_COROUTINE = &main_coroutine->coroutine;
 
 	if (UNEXPECTED(zend_hash_index_add_ptr(&ASYNC_G(coroutines), main_coroutine->std.handle, main_coroutine) == NULL)) {
 		async_throw_error("Failed to add the main coroutine to the list");

@@ -42,6 +42,11 @@ void bailout_all_coroutines(void);
 /* Fiber context creation */
 async_fiber_context_t *async_fiber_context_create(void);
 
+/* Run fn(arg) on the main coroutine's (OS thread) stack. Registered as
+ * zend_async_call_on_main_stack_fn so foreign calls (JNI/FFI) made from a
+ * coroutine execute on the stack the OS/runtime knows about. */
+void async_call_on_main_stack(void (*fn)(void *), void *arg);
+
 END_EXTERN_C()
 
 #endif // PHP_SCHEDULER_H
