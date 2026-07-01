@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Android platform support.** `zend_async_call_on_main_stack_fn` (ABI v0.21) runs a C callback on the main coroutine's OS-thread stack via a naked SP-only switch (arm64 + x86_64, the `asmcgocall` pattern), for foreign calls that trip a runtime's stack-pointer guard when made from a fiber stack — e.g. ART throws `StackOverflowError` at the JNI→Java boundary. If the current coroutine is already main, the call goes straight through. This is the extension-side counterpart of the `ZEND_ASYNC_CALL_ON_MAIN_STACK` API added in php-src; together with the Android/Bionic build fixes there (TSRM TLS model, `getdtablesize`), it unblocks embedding TrueAsync PHP in Android apps (JNI).
 
+### Fixed
+- **(true-async/server#2) Reactor: io-completion exception freed mid-broadcast (UAF/heap corruption).** `io_pipe_read_cb`/`io_pipe_write_cb` broadcast `req->base.exception` to every callback subscribed on the shared `io->event`, but the exception is owned by `req` and dies with it. A consumer — e.g. a connection's persistent multishot read listener — could legitimately release its req's exception and dispose the req inside the same notify pass, while a sibling write-filter for a parked writer still forwarded that same object to `async_coroutine_resume`, add-reffing freed memory. Fixed in `libuv_reactor.c` by having the producer capture the exception into a local, `GC_ADDREF` before `NOTIFY` and `OBJ_RELEASE` after, so it survives even if a consumer frees the req mid-notify.
+
 ## [0.7.4] - 2026-06-25
 
 ### Fixed
