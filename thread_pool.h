@@ -27,6 +27,7 @@
 ///////////////////////////////////////////////////////////
 
 typedef struct _async_thread_pool_s async_thread_pool_t;
+typedef struct _thread_pool_worker_ctx_s thread_pool_worker_ctx_t;
 
 struct _async_thread_pool_s {
 	/* Base structure (must be first for casting) */
@@ -62,6 +63,11 @@ struct _async_thread_pool_s {
 	 * loses the race against the close reports THIS real reason instead of a
 	 * generic closed-pool error. Guarded by task_channel->mutex. */
 	char *bootloader_error;
+
+	/* Per-slot worker context (pool + index + cooperative exit flag), sized
+	 * worker_count. Stable pool-owned memory; each worker points at its slot so
+	 * respawn_worker can retire one worker and start a fresh thread in place. */
+	thread_pool_worker_ctx_t *worker_ctx;
 };
 
 ///////////////////////////////////////////////////////////

@@ -81,6 +81,25 @@ final class ThreadPool
      * Number of worker threads.
      */
     public function getWorkerCount(): int {}
+
+    /**
+     * Ask the worker in slot $index to leave its receive loop after its current
+     * task returns. Cooperative: a task that runs forever (e.g. a server accept
+     * loop) must stop itself first; this only prevents the worker from taking a
+     * new task. Pair with respawnWorker() for rolling in-place code reload.
+     *
+     * @return bool False on a bad index or an unsupported runtime.
+     */
+    public function requestWorkerExit(int $index): bool {}
+
+    /**
+     * Start a fresh OS thread in slot $index — clean symbol tables, re-runs the
+     * bootloader, so reloaded code takes effect. The previous occupant must
+     * already be retired (see requestWorkerExit); it self-terminates.
+     *
+     * @return bool False on a bad index, a closed pool, or an unsupported runtime.
+     */
+    public function respawnWorker(int $index): bool {}
 }
 
 /**

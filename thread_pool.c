@@ -148,9 +148,18 @@ static void thread_pool_throw_closed(async_thread_pool_t *pool, const char *fall
 }
 
 /* event is always NULL for pool workers (started via ZEND_ASYNC_START_THREAD) */
+/* Per-slot worker context. Stable memory in pool->worker_ctx[idx]; a worker
+ * reads exit_requested after each task to leave its loop for a respawn. */
+struct _thread_pool_worker_ctx_s {
+	async_thread_pool_t *pool;
+	int32_t idx;
+	zend_atomic_int exit_requested;
+};
+
 static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *ctx)
 {
-	async_thread_pool_t *pool = (async_thread_pool_t *) ctx;
+	thread_pool_worker_ctx_t *wc = (thread_pool_worker_ctx_t *) ctx;
+	async_thread_pool_t *pool = wc->pool;
 	async_thread_channel_t *channel = pool->task_channel;
 	int bailout = 0;
 	/* Per-worker pool scope: child of worker's main scope. Pinned for the
@@ -258,6 +267,12 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 
 		zval task;
 		while (true) {
+			/* Retired for a rolling respawn: leave the loop so a fresh thread
+			 * can take this slot. Checked after the previous task returned. */
+			if (UNEXPECTED(zend_atomic_int_load(&wc->exit_requested))) {
+				goto done;
+			}
+
 			/* Concurrency gate: when at the limit, park via wait-only
 			 * receive (result=NULL) suspending on both the channel and
 			 * slot_event. Wakes on a free slot (dispose fires
@@ -770,7 +785,12 @@ static bool thread_pool_start_worker(async_thread_pool_t *pool, int32_t index)
 {
 	zend_async_thread_internal_entry_t *entry = pecalloc(1, sizeof(zend_async_thread_internal_entry_t), 1);
 	entry->handler = thread_pool_worker_handler;
-	entry->ctx = pool;
+
+	/* Point the worker at its stable per-slot context (reset for this spawn). */
+	pool->worker_ctx[index].pool = pool;
+	pool->worker_ctx[index].idx = index;
+	zend_atomic_int_store(&pool->worker_ctx[index].exit_requested, 0);
+	entry->ctx = &pool->worker_ctx[index];
 
 	/* Create thread context (no event for pool workers).
 	 * start_thread will add ref for the runner. */
@@ -802,6 +822,44 @@ static bool thread_pool_start_worker(async_thread_pool_t *pool, int32_t index)
 	pool->base.workers[index] = handle;
 
 	return true;
+}
+
+/**
+ * Retire the worker in slot `idx` after its current task returns. Cooperative:
+ * the running task must finish on its own (e.g. a server worker self-stops).
+ * The worker then leaves its receive loop and its thread self-terminates.
+ */
+static bool thread_pool_request_worker_exit(zend_async_thread_pool_t *base, int32_t idx)
+{
+	async_thread_pool_t *pool = (async_thread_pool_t *) base;
+
+	if (UNEXPECTED(idx < 0 || idx >= base->worker_count || pool->worker_ctx == NULL)) {
+		return false;
+	}
+
+	zend_atomic_int_store(&pool->worker_ctx[idx].exit_requested, 1);
+	return true;
+}
+
+/**
+ * Start a fresh thread in slot `idx` — clean CG/EG, re-runs the bootloader, so
+ * reloaded code takes effect. The previous occupant (if any) must already be
+ * retired (see request_worker_exit); it self-terminates via its own key, so
+ * overwriting the slot handle is safe. +1 pool ref for the new worker.
+ */
+static bool thread_pool_respawn_worker(zend_async_thread_pool_t *base, int32_t idx)
+{
+	async_thread_pool_t *pool = (async_thread_pool_t *) base;
+
+	if (UNEXPECTED(idx < 0 || idx >= base->worker_count)) {
+		return false;
+	}
+
+	if (UNEXPECTED(zend_atomic_int_load(&base->closed))) {
+		return false;
+	}
+
+	return thread_pool_start_worker(pool, idx);
 }
 
 /**
@@ -881,6 +939,8 @@ zend_async_thread_pool_t *async_thread_pool_create(
 	pool->base.close = thread_pool_close_base;
 	pool->base.dispose = thread_pool_dispose_base;
 	pool->base.submit_internal = thread_pool_submit_internal_impl;
+	pool->base.respawn_worker = thread_pool_respawn_worker;
+	pool->base.request_worker_exit = thread_pool_request_worker_exit;
 
 	/* Deep-copy bootloader once into a persistent snapshot reused by every
 	 * worker. We stash it in `entry` because pool snapshots have no separate
@@ -899,6 +959,7 @@ zend_async_thread_pool_t *async_thread_pool_create(
 
 	pool->task_channel = async_thread_channel_create(queue_size);
 	pool->base.workers = pecalloc(worker_count, sizeof(zend_async_thread_handle_t), 1);
+	pool->worker_ctx = pecalloc(worker_count, sizeof(thread_pool_worker_ctx_t), 1);
 
 	for (int32_t i = 0; i < worker_count; i++) {
 		if (UNEXPECTED(false == thread_pool_start_worker(pool, i))) {
@@ -1029,6 +1090,11 @@ static void thread_pool_destroy(async_thread_pool_t *pool)
 	if (pool->base.workers != NULL) {
 		pefree(pool->base.workers, 1);
 		pool->base.workers = NULL;
+	}
+
+	if (pool->worker_ctx != NULL) {
+		pefree(pool->worker_ctx, 1);
+		pool->worker_ctx = NULL;
 	}
 
 	if (pool->bootloader_snapshot != NULL) {
@@ -1455,6 +1521,40 @@ METHOD(getWorkerCount)
 
 	async_thread_pool_t *pool = THIS_POOL();
 	RETURN_LONG(pool ? pool->base.worker_count : 0);
+}
+
+METHOD(requestWorkerExit)
+{
+	zend_long index;
+
+	ZEND_PARSE_PARAMETERS_START(1, 1)
+	Z_PARAM_LONG(index)
+	ZEND_PARSE_PARAMETERS_END();
+
+	async_thread_pool_t *pool = THIS_POOL();
+
+	if (UNEXPECTED(pool == NULL || pool->base.request_worker_exit == NULL)) {
+		RETURN_FALSE;
+	}
+
+	RETURN_BOOL(pool->base.request_worker_exit(&pool->base, (int32_t) index));
+}
+
+METHOD(respawnWorker)
+{
+	zend_long index;
+
+	ZEND_PARSE_PARAMETERS_START(1, 1)
+	Z_PARAM_LONG(index)
+	ZEND_PARSE_PARAMETERS_END();
+
+	async_thread_pool_t *pool = THIS_POOL();
+
+	if (UNEXPECTED(pool == NULL || pool->base.respawn_worker == NULL)) {
+		RETURN_FALSE;
+	}
+
+	RETURN_BOOL(pool->base.respawn_worker(&pool->base, (int32_t) index));
 }
 
 ///////////////////////////////////////////////////////////
