@@ -40,6 +40,9 @@
 #include <signal.h>
 #include <unistd.h>
 #include <errno.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <limits.h>
 #endif
 
 #ifdef ZEND_SIGNALS
@@ -2710,12 +2713,273 @@ static void on_filesystem_event(uv_fs_event_t *handle, const char *filename, int
 
 /* }}} */
 
+/* Native UV_FS_EVENT_RECURSIVE exists only on macOS (FSEvents) and Windows
+ * (ReadDirectoryChangesW); elsewhere (Linux/inotify, BSD) we emulate it. */
+#if defined(__APPLE__) || defined(PHP_WIN32)
+# define ASYNC_FS_HAS_NATIVE_RECURSIVE 1
+#else
+# define ASYNC_FS_HAS_NATIVE_RECURSIVE 0
+#endif
+
+#if !ASYNC_FS_HAS_NATIVE_RECURSIVE
+/* One inotify watch per directory, so an unbounded tree would otherwise exhaust
+ * fs.inotify.max_user_watches. Bounds both watch count and walk breadth. */
+#define ASYNC_FS_MAX_WATCH_DIRS 8192
+
+static void async_fs_watch_walk(async_filesystem_event_t *fs_event, const char *abs_path, const char *rel_prefix);
+static bool async_fs_watch_add_dir(async_filesystem_event_t *fs_event, zend_string *abs_path, zend_string *rel_prefix);
+
+/* Close cb for a node that failed to start: free the node only, never touch the
+ * owner (it may already be tearing down on its own pending_close accounting). */
+static void async_fs_watch_dir_orphan_close_cb(uv_handle_t *handle)
+{
+	async_fs_watch_dir_t *node = handle->data;
+
+	if (node->abs_path != NULL) {
+		zend_string_release(node->abs_path);
+	}
+
+	if (node->rel_prefix != NULL) {
+		zend_string_release(node->rel_prefix);
+	}
+
+	pefree(node, 0);
+}
+
+/* Close cb for a node torn down as part of the owner's dispose. Frees the node,
+ * then frees the owning event once its last node handle has closed — so a node
+ * never outlives the event it points back at. */
+static void async_fs_watch_dir_close_cb(uv_handle_t *handle)
+{
+	async_fs_watch_dir_t     *node     = handle->data;
+	async_filesystem_event_t *fs_event = node->owner;
+
+	if (node->abs_path != NULL) {
+		zend_string_release(node->abs_path);
+	}
+
+	if (node->rel_prefix != NULL) {
+		zend_string_release(node->rel_prefix);
+	}
+
+	pefree(node, 0);
+
+	if (--fs_event->pending_close == 0) {
+		if (fs_event->watch_dirs != NULL) {
+			pefree(fs_event->watch_dirs, 0);
+		}
+
+		pefree(fs_event, 0);
+	}
+}
+
+/* Drop the watch on a directory and everything beneath it — a subdirectory was
+ * deleted or moved out of the tree. Removes stale nodes so a path reused later
+ * is watched afresh instead of being skipped by the dedup check. */
+static void async_fs_watch_remove_subtree(async_filesystem_event_t *fs_event, const char *abs_path)
+{
+	const size_t len = strlen(abs_path);
+	uint32_t     i   = 0;
+
+	while (i < fs_event->watch_dir_count) {
+		async_fs_watch_dir_t *node = fs_event->watch_dirs[i];
+		const char           *p    = ZSTR_VAL(node->abs_path);
+		const size_t          plen = ZSTR_LEN(node->abs_path);
+
+		/* Match the directory itself or anything under it (prefix + '/'). */
+		if (plen < len || memcmp(p, abs_path, len) != 0 || (plen != len && p[len] != '/')) {
+			i++;
+			continue;
+		}
+
+		/* Unlink from the array first (swap the last node in) so dedup and
+		 * dispose no longer see it, then close — the orphan cb frees the node. */
+		fs_event->watch_dirs[i] = fs_event->watch_dirs[--fs_event->watch_dir_count];
+		uv_close((uv_handle_t *) &node->handle, async_fs_watch_dir_orphan_close_cb);
+	}
+}
+
+/* Per-directory event callback: folds every node's events onto the one owning
+ * event and keeps the watch set in sync as subdirectories appear or vanish. */
+static void async_fs_watch_dir_cb(uv_fs_event_t *handle, const char *filename, int events, int status)
+{
+	const async_fs_watch_dir_t *node     = handle->data;
+	async_filesystem_event_t   *fs_event = node->owner;
+
+	if (fs_event->event.triggered_filename != NULL) {
+		zend_string_release(fs_event->event.triggered_filename);
+		fs_event->event.triggered_filename = NULL;
+	}
+
+	fs_event->event.triggered_events = 0;
+
+	if (UNEXPECTED(status < 0)) {
+		zend_object *exception = async_new_exception(
+				async_ce_input_output_exception, "Filesystem monitoring error: %s", uv_strerror(status));
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&fs_event->event.base, NULL, exception);
+		zend_object_release(exception);
+		return;
+	}
+
+	if (events & UV_RENAME) {
+		fs_event->event.triggered_events |= ZEND_ASYNC_FS_EVENT_RENAME;
+	}
+
+	if (events & UV_CHANGE) {
+		fs_event->event.triggered_events |= ZEND_ASYNC_FS_EVENT_CHANGE;
+	}
+
+	if (filename != NULL) {
+		fs_event->event.triggered_filename = (ZSTR_LEN(node->rel_prefix) != 0)
+				? zend_strpprintf(0, "%s/%s", ZSTR_VAL(node->rel_prefix), filename)
+				: zend_string_init(filename, strlen(filename), 0);
+	}
+
+	/* Keep the subtree in sync: a rename that created a directory gains a watch
+	 * (inotify is not recursive); a deleted / moved-out one loses it. */
+	if ((events & UV_RENAME) && filename != NULL) {
+		char child_abs[PATH_MAX];
+
+		if (EXPECTED((size_t) snprintf(child_abs, sizeof(child_abs), "%s/%s", ZSTR_VAL(node->abs_path), filename)
+				< sizeof(child_abs))) {
+			struct stat st;
+
+			if (lstat(child_abs, &st) == 0 && S_ISDIR(st.st_mode)) {
+				if (fs_event->watch_dir_count < ASYNC_FS_MAX_WATCH_DIRS) {
+					zend_string *child_abs_zs = zend_string_init(child_abs, strlen(child_abs), 0);
+					zend_string *child_rel    = (ZSTR_LEN(node->rel_prefix) != 0)
+							? zend_strpprintf(0, "%s/%s", ZSTR_VAL(node->rel_prefix), filename)
+							: zend_string_init(filename, strlen(filename), 0);
+
+					async_fs_watch_add_dir(fs_event, child_abs_zs, child_rel);
+
+					zend_string_release(child_rel);
+					zend_string_release(child_abs_zs);
+				}
+			} else {
+				async_fs_watch_remove_subtree(fs_event, child_abs);
+			}
+		}
+	}
+
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&fs_event->event.base, NULL, NULL);
+
+	IF_EXCEPTION_STOP_REACTOR;
+}
+
+/* Watch every existing subdirectory of an already-watched directory. lstat (not
+ * stat) skips symlinked directories so the walk cannot follow a cycle. */
+static void async_fs_watch_walk(async_filesystem_event_t *fs_event, const char *abs_path, const char *rel_prefix)
+{
+	DIR *dir = opendir(abs_path);
+
+	if (dir == NULL) {
+		return;
+	}
+
+	struct dirent *ent;
+
+	while ((ent = readdir(dir)) != NULL) {
+		if (ent->d_name[0] == '.'
+			&& (ent->d_name[1] == '\0' || (ent->d_name[1] == '.' && ent->d_name[2] == '\0'))) {
+			continue;
+		}
+
+		char child_abs[PATH_MAX];
+
+		if (UNEXPECTED((size_t) snprintf(child_abs, sizeof(child_abs), "%s/%s", abs_path, ent->d_name)
+				>= sizeof(child_abs))) {
+			continue;
+		}
+
+		struct stat st;
+
+		if (lstat(child_abs, &st) != 0 || !S_ISDIR(st.st_mode)) {
+			continue;
+		}
+
+		zend_string *child_rel    = (rel_prefix[0] != '\0')
+				? zend_strpprintf(0, "%s/%s", rel_prefix, ent->d_name)
+				: zend_string_init(ent->d_name, strlen(ent->d_name), 0);
+		zend_string *child_abs_zs = zend_string_init(child_abs, strlen(child_abs), 0);
+
+		async_fs_watch_add_dir(fs_event, child_abs_zs, child_rel);
+
+		zend_string_release(child_abs_zs);
+		zend_string_release(child_rel);
+
+		if (fs_event->watch_dir_count >= ASYNC_FS_MAX_WATCH_DIRS) {
+			break;
+		}
+	}
+
+	closedir(dir);
+}
+
+/* Add one directory as a watch node and descend into its existing subtree.
+ * Idempotent: a directory already watched is skipped. */
+static bool async_fs_watch_add_dir(async_filesystem_event_t *fs_event, zend_string *abs_path, zend_string *rel_prefix)
+{
+	if (UNEXPECTED(fs_event->watch_dir_count >= ASYNC_FS_MAX_WATCH_DIRS)) {
+		return false;
+	}
+
+	for (uint32_t i = 0; i < fs_event->watch_dir_count; i++) {
+		if (zend_string_equals(fs_event->watch_dirs[i]->abs_path, abs_path)) {
+			return true;
+		}
+	}
+
+	async_fs_watch_dir_t *node = pecalloc(1, sizeof(*node), 0);
+
+	if (UNEXPECTED(uv_fs_event_init(UVLOOP, &node->handle) < 0)) {
+		pefree(node, 0);
+		return false;
+	}
+
+	node->handle.data = node;
+	node->owner       = fs_event;
+	node->abs_path    = zend_string_copy(abs_path);
+	node->rel_prefix  = zend_string_copy(rel_prefix);
+
+	if (UNEXPECTED(uv_fs_event_start(&node->handle, async_fs_watch_dir_cb, ZSTR_VAL(abs_path), 0) < 0)) {
+		uv_close((uv_handle_t *) &node->handle, async_fs_watch_dir_orphan_close_cb);
+		return false;
+	}
+
+	if (fs_event->watch_dir_count == fs_event->watch_dir_capacity) {
+		fs_event->watch_dir_capacity = fs_event->watch_dir_capacity != 0 ? fs_event->watch_dir_capacity * 2 : 8;
+		fs_event->watch_dirs =
+				perealloc(fs_event->watch_dirs, fs_event->watch_dir_capacity * sizeof(async_fs_watch_dir_t *), 0);
+	}
+
+	fs_event->watch_dirs[fs_event->watch_dir_count++] = node;
+
+	async_fs_watch_walk(fs_event, ZSTR_VAL(abs_path), ZSTR_VAL(rel_prefix));
+
+	return true;
+}
+#endif /* !ASYNC_FS_HAS_NATIVE_RECURSIVE */
+
 /* {{{ libuv_filesystem_start */
 static bool libuv_filesystem_start(zend_async_event_t *event)
 {
 	EVENT_START_PROLOGUE(event);
 
 	async_filesystem_event_t *fs_event = (async_filesystem_event_t *) (event);
+
+#if !ASYNC_FS_HAS_NATIVE_RECURSIVE
+	if (fs_event->recursive_emulated) {
+		if (UNEXPECTED(false == async_fs_watch_add_dir(fs_event, fs_event->event.path, ZSTR_EMPTY_ALLOC()))) {
+			async_throw_error("Failed to start recursive filesystem watch on %s", ZSTR_VAL(fs_event->event.path));
+			return false;
+		}
+
+		event->loop_ref_count++;
+		ZEND_ASYNC_INCREASE_EVENT_COUNT(event);
+		return true;
+	}
+#endif
 
 	unsigned int uv_flags = 0;
 	if (fs_event->event.flags & ZEND_ASYNC_FS_EVENT_RECURSIVE) {
@@ -2743,6 +3007,18 @@ static bool libuv_filesystem_stop(zend_async_event_t *event)
 	EVENT_STOP_PROLOGUE(event);
 
 	async_filesystem_event_t *fs_event = (async_filesystem_event_t *) (event);
+
+#if !ASYNC_FS_HAS_NATIVE_RECURSIVE
+	if (fs_event->recursive_emulated) {
+		for (uint32_t i = 0; i < fs_event->watch_dir_count; i++) {
+			uv_fs_event_stop(&fs_event->watch_dirs[i]->handle);
+		}
+
+		event->loop_ref_count = 0;
+		ZEND_ASYNC_DECREASE_EVENT_COUNT(event);
+		return true;
+	}
+#endif
 
 	const int error = uv_fs_event_stop(&fs_event->uv_handle);
 
@@ -2785,6 +3061,29 @@ static bool libuv_filesystem_dispose(zend_async_event_t *event)
 		fs_event->event.triggered_filename = NULL;
 	}
 
+#if !ASYNC_FS_HAS_NATIVE_RECURSIVE
+	if (fs_event->recursive_emulated) {
+		fs_event->disposing = true;
+
+		if (fs_event->watch_dir_count == 0) {
+			if (fs_event->watch_dirs != NULL) {
+				pefree(fs_event->watch_dirs, 0);
+			}
+
+			pefree(fs_event, 0);
+			return true;
+		}
+
+		fs_event->pending_close = fs_event->watch_dir_count;
+
+		for (uint32_t i = 0; i < fs_event->watch_dir_count; i++) {
+			uv_close((uv_handle_t *) &fs_event->watch_dirs[i]->handle, async_fs_watch_dir_close_cb);
+		}
+
+		return true;
+	}
+#endif
+
 	uv_close((uv_handle_t *) &fs_event->uv_handle, libuv_close_handle_cb);
 	return true;
 }
@@ -2800,15 +3099,24 @@ libuv_new_filesystem_event(zend_string *path, const unsigned int flags, size_t e
 	async_filesystem_event_t *fs_event = pecalloc(
 			1, extra_size != 0 ? sizeof(async_filesystem_event_t) + extra_size : sizeof(async_filesystem_event_t), 0);
 
-	const int error = uv_fs_event_init(UVLOOP, &fs_event->uv_handle);
+#if !ASYNC_FS_HAS_NATIVE_RECURSIVE
+	fs_event->recursive_emulated = (flags & ZEND_ASYNC_FS_EVENT_RECURSIVE) != 0;
+#endif
 
-	if (error < 0) {
-		async_throw_error("Failed to initialize filesystem handle: %s", uv_strerror(error));
-		pefree(fs_event, 0);
-		return NULL;
+	/* Emulated recursion watches one uv handle per subdirectory (created in
+	 * start), so the embedded handle stays unused — don't init or dispose it. */
+	if (false == fs_event->recursive_emulated) {
+		const int error = uv_fs_event_init(UVLOOP, &fs_event->uv_handle);
+
+		if (error < 0) {
+			async_throw_error("Failed to initialize filesystem handle: %s", uv_strerror(error));
+			pefree(fs_event, 0);
+			return NULL;
+		}
+
+		fs_event->uv_handle.data = fs_event;
 	}
 
-	fs_event->uv_handle.data = fs_event;
 	fs_event->event.path = zend_string_copy(path);
 	fs_event->event.flags = flags;
 	fs_event->event.base.extra_offset = sizeof(async_filesystem_event_t);

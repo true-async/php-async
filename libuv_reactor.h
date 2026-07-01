@@ -33,6 +33,7 @@ typedef struct _async_socket_event_t async_socket_event_t;
 typedef struct _async_timer_event_t async_timer_event_t;
 typedef struct _async_signal_event_t async_signal_event_t;
 typedef struct _async_filesystem_event_t async_filesystem_event_t;
+typedef struct _async_fs_watch_dir async_fs_watch_dir_t;
 
 typedef struct _async_process_event_t async_process_event_t;
 typedef struct _async_thread_event_t async_thread_event_t;
@@ -74,6 +75,27 @@ struct _async_filesystem_event_t
 {
 	zend_async_filesystem_event_t event;
 	uv_fs_event_t uv_handle;
+
+	/* Recursive-watch emulation for platforms whose libuv backend lacks a
+	 * native UV_FS_EVENT_RECURSIVE (Linux/inotify, most BSD): one watch node
+	 * per directory in the subtree, all feeding this one event. Zeroed and
+	 * unused when recursive_emulated is false. */
+	async_fs_watch_dir_t **watch_dirs;
+	uint32_t                watch_dir_count;
+	uint32_t                watch_dir_capacity;
+	uint32_t                pending_close;     /* live node handles during async teardown */
+	bool                    recursive_emulated;
+	bool                    disposing;
+};
+
+/* One watched directory in the recursive-emulation subtree. Its uv handle's
+ * data points back here; owner reaches the aggregating event. */
+struct _async_fs_watch_dir
+{
+	uv_fs_event_t             handle;
+	async_filesystem_event_t *owner;
+	zend_string              *abs_path;    /* absolute path this handle watches */
+	zend_string              *rel_prefix;  /* path relative to the watched root; empty for root */
 };
 
 struct _async_dns_nameinfo_t
