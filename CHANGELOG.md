@@ -5,7 +5,12 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.7.5] - 2026-07-01
+
+### Added
+- **Android platform support.** `zend_async_call_on_main_stack_fn` (ABI v0.21) runs a C callback on the main coroutine's OS-thread stack via a naked SP-only switch (arm64 + x86_64, the `asmcgocall` pattern), for foreign calls that trip a runtime's stack-pointer guard when made from a fiber stack — e.g. ART throws `StackOverflowError` at the JNI→Java boundary. If the current coroutine is already main, the call goes straight through. This is the extension-side counterpart of the `ZEND_ASYNC_CALL_ON_MAIN_STACK` API added in php-src; together with the Android/Bionic build fixes there (TSRM TLS model, `getdtablesize`), it unblocks embedding TrueAsync PHP in Android apps (JNI).
+
+## [0.7.4] - 2026-06-25
 
 ### Fixed
 - **#162 `ThreadChannel`/`spawn_thread`: a worker parked on `recv()`/`send()` hung process shutdown when the owning side finished without `close()`.** A non-awaited worker thread kept the parent scheduler alive by itself, so the parent never reached shutdown, and the worker blocked forever (no output, no diagnostic). Two changes: (1) the thread completion event is now **transparent** — it only keeps the parent loop alive while a coroutine actually `await`s the thread — so a non-awaited worker no longer pins the parent, which finishes and proceeds to shutdown; (2) each thread now tracks the `ThreadChannel`s it created (thread-local, in `ASYNC_G`) and **closes them at its own shutdown**, so any worker still parked on `recv()`/`send()` wakes with `Async\ThreadChannelException` and exits. Awaited threads still block the parent as before; works for fan-out (any number of workers).
