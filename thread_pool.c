@@ -148,19 +148,23 @@ static void thread_pool_throw_closed(async_thread_pool_t *pool, const char *fall
 }
 
 /* event is always NULL for pool workers (started via ZEND_ASYNC_START_THREAD) */
-/* Per-slot worker context. Stable memory in pool->worker_ctx[idx]; a worker
- * reads exit_requested after each task to leave its loop for a respawn. */
-struct _thread_pool_worker_ctx_s {
-	async_thread_pool_t *pool;
-	int32_t idx;
-	zend_atomic_int exit_requested;
-};
+/* Per-spawn worker context: the cohort channel is captured SYNCHRONOUSLY at
+ * spawn time (in start_worker), not read lazily here — so a worker started by
+ * reload N stays bound to that reload's channel even if reload N+1 swaps
+ * pool->task_channel before this thread runs. Freed by the worker on exit. */
+typedef struct {
+	async_thread_pool_t    *pool;
+	async_thread_channel_t *channel;
+} thread_pool_worker_ctx_t;
 
 static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *ctx)
 {
 	thread_pool_worker_ctx_t *wc = (thread_pool_worker_ctx_t *) ctx;
 	async_thread_pool_t *pool = wc->pool;
-	async_thread_channel_t *channel = pool->task_channel;
+	/* This worker's cohort channel. reload() gives fresh workers a NEW channel
+	 * and closes this one, so an old worker leaves its loop when receive()
+	 * returns false on the closed channel. */
+	async_thread_channel_t *channel = wc->channel;
 	int bailout = 0;
 	/* Per-worker pool scope: child of worker's main scope. Pinned for the
 	 * worker's lifetime; each spawned task lives in its own child scope of
@@ -267,12 +271,6 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 
 		zval task;
 		while (true) {
-			/* Retired for a rolling respawn: leave the loop so a fresh thread
-			 * can take this slot. Checked after the previous task returned. */
-			if (UNEXPECTED(zend_atomic_int_load(&wc->exit_requested))) {
-				goto done;
-			}
-
 			/* Concurrency gate: when at the limit, park via wait-only
 			 * receive (result=NULL) suspending on both the channel and
 			 * slot_event. Wakes on a free slot (dispose fires
@@ -601,6 +599,21 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 		}
 
 	done:
+		/* Reload in flight and this (old-cohort) worker is leaving its loop:
+		 * post one token so reload() spawns its 1:1 replacement on the new
+		 * channel. Cross-thread send into a channel sized for the whole cohort,
+		 * so it never blocks the exiting worker. */
+		{
+			async_thread_channel_t *reload_notify =
+				(async_thread_channel_t *) zend_atomic_ptr_load_ex(&pool->reload_notify);
+
+			if (UNEXPECTED(reload_notify != NULL)) {
+				zval token;
+				ZVAL_TRUE(&token);
+				reload_notify->channel.send(&reload_notify->channel, &token);
+			}
+		}
+
 		/* Cancel (if requested) and release pool_scope BEFORE AFTER_MAIN:
 		 * unpinning + release lets the cascade disposal complete during
 		 * the scheduler drain instead of leaking the scope. */
@@ -651,6 +664,8 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 
 	/* Release worker's ref on pool */
 	ZEND_THREAD_POOL_DELREF(&pool->base);
+
+	pefree(wc, 1);
 }
 
 ///////////////////////////////////////////////////////////
@@ -786,11 +801,13 @@ static bool thread_pool_start_worker(async_thread_pool_t *pool, int32_t index)
 	zend_async_thread_internal_entry_t *entry = pecalloc(1, sizeof(zend_async_thread_internal_entry_t), 1);
 	entry->handler = thread_pool_worker_handler;
 
-	/* Point the worker at its stable per-slot context (reset for this spawn). */
-	pool->worker_ctx[index].pool = pool;
-	pool->worker_ctx[index].idx = index;
-	zend_atomic_int_store(&pool->worker_ctx[index].exit_requested, 0);
-	entry->ctx = &pool->worker_ctx[index];
+	/* Capture the cohort channel NOW (on the spawning thread), so the worker
+	 * binds to the current channel even if a later reload swaps it. The worker
+	 * frees this context on exit. */
+	thread_pool_worker_ctx_t *wc = pemalloc(sizeof(*wc), 1);
+	wc->pool = pool;
+	wc->channel = pool->task_channel;
+	entry->ctx = wc;
 
 	/* Create thread context (no event for pool workers).
 	 * start_thread will add ref for the runner. */
@@ -813,6 +830,7 @@ static bool thread_pool_start_worker(async_thread_pool_t *pool, int32_t index)
 
 	if (UNEXPECTED(handle == 0)) {
 		ZEND_THREAD_POOL_DELREF(&pool->base);
+		pefree(wc, 1);
 		pefree(entry, 1);
 		ZEND_ASYNC_THREAD_CONTEXT_EVENT_MUTEX_FREE(context);
 		pefree(context, 1);
@@ -825,41 +843,69 @@ static bool thread_pool_start_worker(async_thread_pool_t *pool, int32_t index)
 }
 
 /**
- * Retire the worker in slot `idx` after its current task returns. Cooperative:
- * the running task must finish on its own (e.g. a server worker self-stops).
- * The worker then leaves its receive loop and its thread self-terminates.
+ * In-place rolling reload (blue-green). Fresh workers start on a NEW task
+ * channel; the old cohort is retired by closing theirs (their receive() returns
+ * false and they leave the loop). Replacements spawn 1:1 as old workers drain —
+ * ~N workers throughout, no 2N spike. Runs on the calling coroutine: it awaits
+ * each old worker's exit token before spawning its replacement.
  */
-static bool thread_pool_request_worker_exit(zend_async_thread_pool_t *base, int32_t idx)
+static void thread_pool_reload(zend_async_thread_pool_t *base)
 {
 	async_thread_pool_t *pool = (async_thread_pool_t *) base;
-
-	if (UNEXPECTED(idx < 0 || idx >= base->worker_count || pool->worker_ctx == NULL)) {
-		return false;
-	}
-
-	zend_atomic_int_store(&pool->worker_ctx[idx].exit_requested, 1);
-	return true;
-}
-
-/**
- * Start a fresh thread in slot `idx` — clean CG/EG, re-runs the bootloader, so
- * reloaded code takes effect. The previous occupant (if any) must already be
- * retired (see request_worker_exit); it self-terminates via its own key, so
- * overwriting the slot handle is safe. +1 pool ref for the new worker.
- */
-static bool thread_pool_respawn_worker(zend_async_thread_pool_t *base, int32_t idx)
-{
-	async_thread_pool_t *pool = (async_thread_pool_t *) base;
-
-	if (UNEXPECTED(idx < 0 || idx >= base->worker_count)) {
-		return false;
-	}
 
 	if (UNEXPECTED(zend_atomic_int_load(&base->closed))) {
-		return false;
+		return;
 	}
 
-	return thread_pool_start_worker(pool, idx);
+	const int32_t n = base->worker_count;
+
+	if (UNEXPECTED(n <= 0)) {
+		return;
+	}
+
+	async_thread_channel_t *old_channel = pool->task_channel;
+	async_thread_channel_t *new_channel = async_thread_channel_create(old_channel->capacity);
+	async_thread_channel_t *notify = async_thread_channel_create(n);
+
+	if (UNEXPECTED(new_channel == NULL || notify == NULL)) {
+		if (new_channel != NULL) {
+			new_channel->channel.event.dispose(&new_channel->channel.event);
+		}
+
+		if (notify != NULL) {
+			notify->channel.event.dispose(&notify->channel.event);
+		}
+
+		return;
+	}
+
+	/* Publish the new channel first (new submits + fresh workers use it), arm
+	 * the notify channel, then wake the old cohort by closing their channel. */
+	zend_atomic_ptr_store_ex(&pool->reload_notify, notify);
+	pool->task_channel = new_channel;
+	async_thread_channel_close(old_channel);
+
+	for (int32_t i = 0; i < n; i++) {
+		thread_pool_start_worker(pool, i);
+
+		zval token;
+		ZVAL_UNDEF(&token);
+
+		if (notify->channel.receive(&notify->channel, &token, NULL)) {
+			zval_ptr_dtor(&token);
+		}
+
+		if (UNEXPECTED(EG(exception))) {
+			zend_clear_exception();
+		}
+	}
+
+	zend_atomic_ptr_store_ex(&pool->reload_notify, NULL);
+
+	/* The old cohort has fully drained and no longer touches its channel. */
+	async_thread_channel_close(notify);
+	notify->channel.event.dispose(&notify->channel.event);
+	old_channel->channel.event.dispose(&old_channel->channel.event);
 }
 
 /**
@@ -927,6 +973,7 @@ zend_async_thread_pool_t *async_thread_pool_create(
 	pool->coroutine_mode = coroutine_mode;
 	pool->concurrency = concurrency;
 	ZEND_ATOMIC_INT_INIT(&pool->cancel_requested, 0);
+	zend_atomic_ptr_init(&pool->reload_notify, NULL);
 
 	pool->base.worker_count = 0;
 	ZEND_ATOMIC_INT_INIT(&pool->base.pending_count, 0);
@@ -939,8 +986,7 @@ zend_async_thread_pool_t *async_thread_pool_create(
 	pool->base.close = thread_pool_close_base;
 	pool->base.dispose = thread_pool_dispose_base;
 	pool->base.submit_internal = thread_pool_submit_internal_impl;
-	pool->base.respawn_worker = thread_pool_respawn_worker;
-	pool->base.request_worker_exit = thread_pool_request_worker_exit;
+	pool->base.reload = thread_pool_reload;
 
 	/* Deep-copy bootloader once into a persistent snapshot reused by every
 	 * worker. We stash it in `entry` because pool snapshots have no separate
@@ -959,7 +1005,6 @@ zend_async_thread_pool_t *async_thread_pool_create(
 
 	pool->task_channel = async_thread_channel_create(queue_size);
 	pool->base.workers = pecalloc(worker_count, sizeof(zend_async_thread_handle_t), 1);
-	pool->worker_ctx = pecalloc(worker_count, sizeof(thread_pool_worker_ctx_t), 1);
 
 	for (int32_t i = 0; i < worker_count; i++) {
 		if (UNEXPECTED(false == thread_pool_start_worker(pool, i))) {
@@ -1090,11 +1135,6 @@ static void thread_pool_destroy(async_thread_pool_t *pool)
 	if (pool->base.workers != NULL) {
 		pefree(pool->base.workers, 1);
 		pool->base.workers = NULL;
-	}
-
-	if (pool->worker_ctx != NULL) {
-		pefree(pool->worker_ctx, 1);
-		pool->worker_ctx = NULL;
 	}
 
 	if (pool->bootloader_snapshot != NULL) {
@@ -1523,38 +1563,17 @@ METHOD(getWorkerCount)
 	RETURN_LONG(pool ? pool->base.worker_count : 0);
 }
 
-METHOD(requestWorkerExit)
+METHOD(reload)
 {
-	zend_long index;
-
-	ZEND_PARSE_PARAMETERS_START(1, 1)
-	Z_PARAM_LONG(index)
-	ZEND_PARSE_PARAMETERS_END();
+	ZEND_PARSE_PARAMETERS_NONE();
 
 	async_thread_pool_t *pool = THIS_POOL();
 
-	if (UNEXPECTED(pool == NULL || pool->base.request_worker_exit == NULL)) {
-		RETURN_FALSE;
+	if (UNEXPECTED(pool == NULL || pool->base.reload == NULL)) {
+		return;
 	}
 
-	RETURN_BOOL(pool->base.request_worker_exit(&pool->base, (int32_t) index));
-}
-
-METHOD(respawnWorker)
-{
-	zend_long index;
-
-	ZEND_PARSE_PARAMETERS_START(1, 1)
-	Z_PARAM_LONG(index)
-	ZEND_PARSE_PARAMETERS_END();
-
-	async_thread_pool_t *pool = THIS_POOL();
-
-	if (UNEXPECTED(pool == NULL || pool->base.respawn_worker == NULL)) {
-		RETURN_FALSE;
-	}
-
-	RETURN_BOOL(pool->base.respawn_worker(&pool->base, (int32_t) index));
+	pool->base.reload(&pool->base);
 }
 
 ///////////////////////////////////////////////////////////

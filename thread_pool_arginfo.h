@@ -1,5 +1,5 @@
 /* This is a generated file, edit thread_pool.stub.php instead.
- * Stub hash: 1f34973c469913c5fcd31256130d8ac125c3adcd */
+ * Stub hash: 0c8839b09a2be23b688ea0d1e432ac294404b9a2 */
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Async_ThreadPool___construct, 0, 0, 0)
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, workers, IS_LONG, 0, "0")
@@ -36,11 +36,7 @@ ZEND_END_ARG_INFO()
 
 #define arginfo_class_Async_ThreadPool_getWorkerCount arginfo_class_Async_ThreadPool_getPendingCount
 
-ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_ThreadPool_requestWorkerExit, 0, 1, _IS_BOOL, 0)
-	ZEND_ARG_TYPE_INFO(0, index, IS_LONG, 0)
-ZEND_END_ARG_INFO()
-
-#define arginfo_class_Async_ThreadPool_respawnWorker arginfo_class_Async_ThreadPool_requestWorkerExit
+#define arginfo_class_Async_ThreadPool_reload arginfo_class_Async_ThreadPool_close
 
 ZEND_METHOD(Async_ThreadPool, __construct);
 ZEND_METHOD(Async_ThreadPool, submit);
@@ -52,8 +48,7 @@ ZEND_METHOD(Async_ThreadPool, getPendingCount);
 ZEND_METHOD(Async_ThreadPool, getRunningCount);
 ZEND_METHOD(Async_ThreadPool, getCompletedCount);
 ZEND_METHOD(Async_ThreadPool, getWorkerCount);
-ZEND_METHOD(Async_ThreadPool, requestWorkerExit);
-ZEND_METHOD(Async_ThreadPool, respawnWorker);
+ZEND_METHOD(Async_ThreadPool, reload);
 
 static const zend_function_entry class_Async_ThreadPool_methods[] = {
 	ZEND_ME(Async_ThreadPool, __construct, arginfo_class_Async_ThreadPool___construct, ZEND_ACC_PUBLIC)
@@ -66,8 +61,7 @@ static const zend_function_entry class_Async_ThreadPool_methods[] = {
 	ZEND_ME(Async_ThreadPool, getRunningCount, arginfo_class_Async_ThreadPool_getRunningCount, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_ThreadPool, getCompletedCount, arginfo_class_Async_ThreadPool_getCompletedCount, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_ThreadPool, getWorkerCount, arginfo_class_Async_ThreadPool_getWorkerCount, ZEND_ACC_PUBLIC)
-	ZEND_ME(Async_ThreadPool, requestWorkerExit, arginfo_class_Async_ThreadPool_requestWorkerExit, ZEND_ACC_PUBLIC)
-	ZEND_ME(Async_ThreadPool, respawnWorker, arginfo_class_Async_ThreadPool_respawnWorker, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_ThreadPool, reload, arginfo_class_Async_ThreadPool_reload, ZEND_ACC_PUBLIC)
 	ZEND_FE_END
 };
 

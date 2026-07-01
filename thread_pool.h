@@ -27,7 +27,6 @@
 ///////////////////////////////////////////////////////////
 
 typedef struct _async_thread_pool_s async_thread_pool_t;
-typedef struct _thread_pool_worker_ctx_s thread_pool_worker_ctx_t;
 
 struct _async_thread_pool_s {
 	/* Base structure (must be first for casting) */
@@ -64,10 +63,11 @@ struct _async_thread_pool_s {
 	 * generic closed-pool error. Guarded by task_channel->mutex. */
 	char *bootloader_error;
 
-	/* Per-slot worker context (pool + index + cooperative exit flag), sized
-	 * worker_count. Stable pool-owned memory; each worker points at its slot so
-	 * respawn_worker can retire one worker and start a fresh thread in place. */
-	thread_pool_worker_ctx_t *worker_ctx;
+	/* Set by reload() to the notification channel while a reload is in flight;
+	 * NULL otherwise. An old worker that leaves its loop (its cohort's channel
+	 * was closed) posts one token here so reload() can spawn its replacement
+	 * 1:1 — rolling, without a 2N spike. Read cross-thread by exiting workers. */
+	zend_atomic_ptr reload_notify;
 };
 
 ///////////////////////////////////////////////////////////
