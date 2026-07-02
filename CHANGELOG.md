@@ -5,6 +5,12 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **#109 `Async\signal()` waiters silently detached when `pcntl_signal()` re-registered a reactor-owned signal** (Symfony Console/artisan does this in every command — first Ctrl+C was swallowed; YanGusik/laravel-spawn#8). `zend_sigaction()` now delegates to the reactor via the new `zend_async_sigaction_fn` hook: the reactor keeps delivery ownership and forwards to the Zend chain. Tests `tests/signal/013`, `015`.
+- **SEGV on signal delivery when `pcntl_signal()` was registered before `Async\signal()`** — the Zend-chain forwarding called SA_SIGINFO handlers with `siginfo=NULL`; it now passes a zeroed `siginfo_t`. Test `tests/signal/014`.
+
 ## [0.7.5] - 2026-07-01
 
 ### Added
