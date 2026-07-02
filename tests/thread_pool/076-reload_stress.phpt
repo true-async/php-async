@@ -1,5 +1,10 @@
 --TEST--
 ThreadPool - repeated reload() under submit load: every task resolves, pool stays healthy
+--SKIPIF--
+<?php
+if (!PHP_ZTS) die('skip ZTS required');
+if (!class_exists('Async\ThreadPool')) die('skip ThreadPool not available');
+?>
 --FILE--
 <?php
 

@@ -1,5 +1,10 @@
 --TEST--
 ThreadPool - overlapping reload() calls serialize and coalesce into one follow-up rotation
+--SKIPIF--
+<?php
+if (!PHP_ZTS) die('skip ZTS required');
+if (!class_exists('Async\ThreadPool')) die('skip ThreadPool not available');
+?>
 --FILE--
 <?php
 
@@ -20,14 +25,14 @@ delay(200);   // initial boot -> 1 mark
 
 // Stretch rotation #1: the old worker is busy, its exit token comes late.
 $f = $pool->submit(function () {
-    usleep(400000);
+    usleep(800000);
     return 1;
 });
 
-delay(50);
+delay(100);
 
 $c1 = spawn(fn() => $pool->reload());   // becomes rotation #1
-delay(50);                              // let it start and suspend in the drain
+delay(100);                             // let it start and suspend in the drain
 $c2 = spawn(fn() => $pool->reload());   // queues behind #1
 $c3 = spawn(fn() => $pool->reload());   // queues behind #1
 

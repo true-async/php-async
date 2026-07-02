@@ -1,5 +1,10 @@
 --TEST--
 ThreadPool - submit() during a suspended reload() lands on the fresh cohort
+--SKIPIF--
+<?php
+if (!PHP_ZTS) die('skip ZTS required');
+if (!class_exists('Async\ThreadPool')) die('skip ThreadPool not available');
+?>
 --FILE--
 <?php
 

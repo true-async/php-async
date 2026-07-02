@@ -1,5 +1,10 @@
 --TEST--
 ThreadPool - reload() rolls fresh workers that re-run the bootloader
+--SKIPIF--
+<?php
+if (!PHP_ZTS) die('skip ZTS required');
+if (!class_exists('Async\ThreadPool')) die('skip ThreadPool not available');
+?>
 --FILE--
 <?php
 

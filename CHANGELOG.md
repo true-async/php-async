@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`FileSystemWatcher`: `recursive: true` now works on Linux/inotify** — emulated with one watch per directory (subtrees auto-added/dropped, symlinks skipped, `$filename` relative to the watched root). New constructor args `debounceMs`/`maxHoldMs`/`extensions` collapse a change burst into a single `filename = null` event (true-async/server#93).
+- **`ThreadPool::reload()`** — rolling blue-green reload of a live pool's workers (fresh cohort on a new task channel, 1:1 replacements as old workers drain; ABI v0.22). Overlapping calls serialize and coalesce into one follow-up rotation; in-flight tasks always complete (true-async/server#93).
+
 ### Fixed
 - **#162 `ThreadChannel`/`spawn_thread`: a worker parked on `recv()`/`send()` hung process shutdown when the owning side finished without `close()`.** A non-awaited worker thread kept the parent scheduler alive by itself, so the parent never reached shutdown, and the worker blocked forever (no output, no diagnostic). Two changes: (1) the thread completion event is now **transparent** — it only keeps the parent loop alive while a coroutine actually `await`s the thread — so a non-awaited worker no longer pins the parent, which finishes and proceeds to shutdown; (2) each thread now tracks the `ThreadChannel`s it created (thread-local, in `ASYNC_G`) and **closes them at its own shutdown**, so any worker still parked on `recv()`/`send()` wakes with `Async\ThreadChannelException` and exits. Awaited threads still block the parent as before; works for fan-out (any number of workers).
 

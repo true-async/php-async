@@ -1,5 +1,10 @@
 --TEST--
 ThreadPool - two sequential reload() calls each roll a full fresh cohort
+--SKIPIF--
+<?php
+if (!PHP_ZTS) die('skip ZTS required');
+if (!class_exists('Async\ThreadPool')) die('skip ThreadPool not available');
+?>
 --FILE--
 <?php
 

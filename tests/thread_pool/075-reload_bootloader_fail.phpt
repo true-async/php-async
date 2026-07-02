@@ -1,5 +1,10 @@
 --TEST--
 ThreadPool - reload() returns even when every replacement dies in its bootloader
+--SKIPIF--
+<?php
+if (!PHP_ZTS) die('skip ZTS required');
+if (!class_exists('Async\ThreadPool')) die('skip ThreadPool not available');
+?>
 --FILE--
 <?php
 
