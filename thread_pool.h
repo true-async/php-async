@@ -32,8 +32,10 @@ struct _async_thread_pool_s {
 	/* Base structure (must be first for casting) */
 	zend_async_thread_pool_t base;
 
-	/* Task channel (shared, persistent memory) */
-	async_thread_channel_t *task_channel;
+	/* Task channel (shared, persistent memory). Atomic: reload() swaps it on
+	 * the owner thread while a bailing worker reads it cross-thread in
+	 * thread_pool_close / thread_pool_drain_tasks. */
+	zend_atomic_ptr task_channel;
 
 	/* Optional bootloader: deep-copied closure to be executed once per worker
 	 * on startup, before the task receive loop. The snapshot's `entry` slot
@@ -62,6 +64,24 @@ struct _async_thread_pool_s {
 	 * loses the race against the close reports THIS real reason instead of a
 	 * generic closed-pool error. Guarded by task_channel->mutex. */
 	char *bootloader_error;
+
+	/* Active-rotation pair, read cross-thread by exiting workers: notify is the
+	 * exit-token channel, reload_old the cohort channel that rotation retired.
+	 * A worker sends a token only when its captured channel == reload_old
+	 * (identity gate), so replacements and stragglers never miscount. */
+	zend_atomic_ptr reload_notify;
+	zend_atomic_ptr reload_old;
+
+	/* Owner-thread-only rotation bookkeeping: overlapping reload() calls queue
+	 * on reload_waiters and coalesce via the counters (one follow-up rotation
+	 * satisfies every caller that entered during the active one). orphan_* park
+	 * the channels of an aborted rotation until the next one / destroy. */
+	bool reload_in_progress;
+	uint64_t rotations_started;
+	uint64_t rotations_completed;
+	HashTable reload_waiters;
+	async_thread_channel_t *orphan_notify;
+	async_thread_channel_t *orphan_old;
 };
 
 ///////////////////////////////////////////////////////////
