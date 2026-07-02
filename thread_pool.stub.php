@@ -81,6 +81,24 @@ final class ThreadPool
      * Number of worker threads.
      */
     public function getWorkerCount(): int {}
+
+    /**
+     * Reload the pool's workers in place (rolling blue-green): fresh worker
+     * threads start on a new task channel and re-run the bootloader — so code
+     * changes picked up by opcache take effect — while the old workers finish
+     * their in-flight tasks and exit. New submissions go to the fresh workers;
+     * the pool never stops accepting. Replacements are spawned one-for-one as
+     * old workers drain, so the worker count stays ~N (no 2N spike).
+     *
+     * Must be called from within a coroutine — it suspends until the old
+     * cohort has drained.
+     *
+     * Overlapping calls serialize and coalesce: a call made while a reload is
+     * already in progress waits it out, then a single follow-up reload rotates
+     * the whole cohort once more for every caller queued behind it. When your
+     * reload() returns, no live worker predates your call.
+     */
+    public function reload(): void {}
 }
 
 /**

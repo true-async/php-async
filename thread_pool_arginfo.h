@@ -1,5 +1,5 @@
 /* This is a generated file, edit thread_pool.stub.php instead.
- * Stub hash: f8d1b70e2ee14b5629298c079eb52315477d5078 */
+ * Stub hash: 8b9445ac3bca09d32c18feedc36ac16dbd3fd0b8 */
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Async_ThreadPool___construct, 0, 0, 0)
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, workers, IS_LONG, 0, "0")
@@ -36,6 +36,8 @@ ZEND_END_ARG_INFO()
 
 #define arginfo_class_Async_ThreadPool_getWorkerCount arginfo_class_Async_ThreadPool_getPendingCount
 
+#define arginfo_class_Async_ThreadPool_reload arginfo_class_Async_ThreadPool_close
+
 ZEND_METHOD(Async_ThreadPool, __construct);
 ZEND_METHOD(Async_ThreadPool, submit);
 ZEND_METHOD(Async_ThreadPool, map);
@@ -46,6 +48,7 @@ ZEND_METHOD(Async_ThreadPool, getPendingCount);
 ZEND_METHOD(Async_ThreadPool, getRunningCount);
 ZEND_METHOD(Async_ThreadPool, getCompletedCount);
 ZEND_METHOD(Async_ThreadPool, getWorkerCount);
+ZEND_METHOD(Async_ThreadPool, reload);
 
 static const zend_function_entry class_Async_ThreadPool_methods[] = {
 	ZEND_ME(Async_ThreadPool, __construct, arginfo_class_Async_ThreadPool___construct, ZEND_ACC_PUBLIC)
@@ -58,6 +61,7 @@ static const zend_function_entry class_Async_ThreadPool_methods[] = {
 	ZEND_ME(Async_ThreadPool, getRunningCount, arginfo_class_Async_ThreadPool_getRunningCount, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_ThreadPool, getCompletedCount, arginfo_class_Async_ThreadPool_getCompletedCount, ZEND_ACC_PUBLIC)
 	ZEND_ME(Async_ThreadPool, getWorkerCount, arginfo_class_Async_ThreadPool_getWorkerCount, ZEND_ACC_PUBLIC)
+	ZEND_ME(Async_ThreadPool, reload, arginfo_class_Async_ThreadPool_reload, ZEND_ACC_PUBLIC)
 	ZEND_FE_END
 };
 
