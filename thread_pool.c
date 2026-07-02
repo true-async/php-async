@@ -106,13 +106,20 @@ static zend_object *thread_pool_wrap_transfer_error(zend_object *src)
 		(msg != NULL && Z_TYPE_P(msg) == IS_STRING) ? Z_STRVAL_P(msg) : "thread transfer failed");
 }
 
+/* task_channel is swapped by reload() and read cross-thread on bailout paths —
+ * always go through the atomic load. */
+#define POOL_TASK_CHANNEL(pool) \
+	((async_thread_channel_t *) zend_atomic_ptr_load_ex(&(pool)->task_channel))
+
 /* Record (once) the bootloader-failure message on the pool, before its channel
  * is closed, so a submit() that races the close reports the real reason instead
  * of a generic closed-pool error. Guarded by the channel mutex; first failing
  * worker wins. */
 static void thread_pool_record_bootloader_error(async_thread_pool_t *pool, zend_object *ex)
 {
-	if (pool->task_channel == NULL) {
+	async_thread_channel_t *channel = POOL_TASK_CHANNEL(pool);
+
+	if (channel == NULL) {
 		return;
 	}
 
@@ -121,11 +128,11 @@ static void thread_pool_record_bootloader_error(async_thread_pool_t *pool, zend_
 	const char *text = (msg != NULL && Z_TYPE_P(msg) == IS_STRING)
 		? Z_STRVAL_P(msg) : "ThreadPool bootloader failed";
 
-	ASYNC_MUTEX_LOCK(pool->task_channel->mutex);
+	ASYNC_MUTEX_LOCK(channel->mutex);
 	if (pool->bootloader_error == NULL) {
 		pool->bootloader_error = pestrdup(text, 1);
 	}
-	ASYNC_MUTEX_UNLOCK(pool->task_channel->mutex);
+	ASYNC_MUTEX_UNLOCK(channel->mutex);
 }
 
 /* Throw the reason a submit failed against a closed pool: the real bootloader
@@ -599,21 +606,6 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 		}
 
 	done:
-		/* Reload in flight and this (old-cohort) worker is leaving its loop:
-		 * post one token so reload() spawns its 1:1 replacement on the new
-		 * channel. Cross-thread send into a channel sized for the whole cohort,
-		 * so it never blocks the exiting worker. */
-		{
-			async_thread_channel_t *reload_notify =
-				(async_thread_channel_t *) zend_atomic_ptr_load_ex(&pool->reload_notify);
-
-			if (UNEXPECTED(reload_notify != NULL)) {
-				zval token;
-				ZVAL_TRUE(&token);
-				reload_notify->channel.send(&reload_notify->channel, &token);
-			}
-		}
-
 		/* Cancel (if requested) and release pool_scope BEFORE AFTER_MAIN:
 		 * unpinning + release lets the cascade disposal complete during
 		 * the scheduler drain instead of leaking the scope. */
@@ -659,6 +651,23 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 		if (slot_event != NULL) {
 			slot_event->base.dispose(&slot_event->base);
 			slot_event = NULL;
+		}
+	}
+
+	/* Rolling reload: post one exit token iff OUR cohort channel is the one the
+	 * active rotation retired (identity check before any notify dereference —
+	 * dying replacements and stragglers don't send). Past zend_end_try so
+	 * bailout exits report too; capacity == cohort size, never blocks. */
+	async_thread_channel_t *reload_notify =
+			(async_thread_channel_t *) zend_atomic_ptr_load_ex(&pool->reload_notify);
+
+	if (UNEXPECTED(reload_notify != NULL) &&
+			zend_atomic_ptr_load_ex(&pool->reload_old) == (void *) channel) {
+		zval token;
+		ZVAL_TRUE(&token);
+
+		if (UNEXPECTED(false == reload_notify->channel.send(&reload_notify->channel, &token))) {
+			zend_clear_exception();
 		}
 	}
 
@@ -806,7 +815,7 @@ static bool thread_pool_start_worker(async_thread_pool_t *pool, int32_t index)
 	 * frees this context on exit. */
 	thread_pool_worker_ctx_t *wc = pemalloc(sizeof(*wc), 1);
 	wc->pool = pool;
-	wc->channel = pool->task_channel;
+	wc->channel = POOL_TASK_CHANNEL(pool);
 	entry->ctx = wc;
 
 	/* Create thread context (no event for pool workers).
@@ -842,12 +851,63 @@ static bool thread_pool_start_worker(async_thread_pool_t *pool, int32_t index)
 	return true;
 }
 
+/* Wake every reload() caller queued behind the active rotation; each re-checks
+ * the rotation counters and either coalesces or becomes the next rotator. */
+static void thread_pool_reload_fire_waiters(async_thread_pool_t *pool)
+{
+	zend_async_trigger_event_t *trigger;
+
+	ZEND_HASH_FOREACH_PTR(&pool->reload_waiters, trigger)
+	{
+		trigger->trigger(trigger);
+	}
+	ZEND_HASH_FOREACH_END();
+}
+
+/* Park the calling coroutine until the active rotation finishes (same
+ * per-waiter trigger pattern as thread_channel). false = woken by exception. */
+static bool thread_pool_reload_wait(async_thread_pool_t *pool)
+{
+	zend_async_trigger_event_t *trigger = ZEND_ASYNC_NEW_TRIGGER_EVENT();
+
+	if (UNEXPECTED(trigger == NULL)) {
+		return false;
+	}
+
+	zend_hash_index_update_ptr(&pool->reload_waiters, (zend_ulong)(uintptr_t) trigger, trigger);
+	zend_async_resume_when(ZEND_ASYNC_CURRENT_COROUTINE, &trigger->base, false,
+			zend_async_waker_callback_resolve, NULL);
+
+	/* A bailout through SUSPEND would leak the trigger and leave a stale entry
+	 * in reload_waiters. Catch, clean up, re-raise. */
+	bool bailed = false;
+	zend_try {
+		ZEND_ASYNC_SUSPEND();
+	} zend_catch {
+		bailed = true;
+	} zend_end_try();
+
+	ZEND_ASYNC_WAKER_DESTROY(ZEND_ASYNC_CURRENT_COROUTINE);
+	zend_hash_index_del(&pool->reload_waiters, (zend_ulong)(uintptr_t) trigger);
+	trigger->base.dispose(&trigger->base);
+
+	if (UNEXPECTED(bailed)) {
+		zend_bailout();
+	}
+
+	return !EG(exception);
+}
+
 /**
  * In-place rolling reload (blue-green). Fresh workers start on a NEW task
  * channel; the old cohort is retired by closing theirs (their receive() returns
  * false and they leave the loop). Replacements spawn 1:1 as old workers drain —
  * ~N workers throughout, no 2N spike. Runs on the calling coroutine: it awaits
  * each old worker's exit token before spawning its replacement.
+ *
+ * Overlapping calls serialize and coalesce: callers queued behind an active
+ * rotation are all satisfied by the single follow-up rotation that starts after
+ * their entry ("when my reload() returns, no live worker predates my call").
  */
 static void thread_pool_reload(zend_async_thread_pool_t *base)
 {
@@ -857,13 +917,52 @@ static void thread_pool_reload(zend_async_thread_pool_t *base)
 		return;
 	}
 
+	if (UNEXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == NULL)) {
+		zend_throw_error(NULL, "ThreadPool::reload() must be called from within a coroutine");
+		return;
+	}
+
+	/* The next rotation to START runs after this call entered — its completion
+	 * delivers our freshness guarantee. */
+	const uint64_t target = pool->rotations_started + 1;
+
+	while (pool->reload_in_progress) {
+		if (UNEXPECTED(false == thread_pool_reload_wait(pool))) {
+			return; /* cancelled while queued — exception propagates */
+		}
+
+		if (pool->rotations_completed >= target) {
+			return; /* coalesced onto a rotation that started after our entry */
+		}
+
+		if (UNEXPECTED(zend_atomic_int_load(&base->closed))) {
+			return;
+		}
+	}
+
 	const int32_t n = base->worker_count;
 
 	if (UNEXPECTED(n <= 0)) {
 		return;
 	}
 
-	async_thread_channel_t *old_channel = pool->task_channel;
+	pool->reload_in_progress = true;
+	pool->rotations_started++;
+
+	/* Leftovers of an aborted rotation: the atomic pair was cleared on abort,
+	 * so no straggler can target them anymore — safe to release. */
+	if (pool->orphan_notify != NULL) {
+		async_thread_channel_close(pool->orphan_notify);
+		pool->orphan_notify->channel.event.dispose(&pool->orphan_notify->channel.event);
+		pool->orphan_notify = NULL;
+	}
+
+	if (pool->orphan_old != NULL) {
+		pool->orphan_old->channel.event.dispose(&pool->orphan_old->channel.event);
+		pool->orphan_old = NULL;
+	}
+
+	async_thread_channel_t *old_channel = POOL_TASK_CHANNEL(pool);
 	async_thread_channel_t *new_channel = async_thread_channel_create(old_channel->capacity);
 	async_thread_channel_t *notify = async_thread_channel_create(n);
 
@@ -876,36 +975,64 @@ static void thread_pool_reload(zend_async_thread_pool_t *base)
 			notify->channel.event.dispose(&notify->channel.event);
 		}
 
+		pool->rotations_started--;
+		pool->reload_in_progress = false;
+		thread_pool_reload_fire_waiters(pool);
+		zend_throw_exception(async_ce_thread_pool_exception, "Failed to allocate reload channels", 0);
 		return;
 	}
 
-	/* Publish the new channel first (new submits + fresh workers use it), arm
-	 * the notify channel, then wake the old cohort by closing their channel. */
+	/* Publish the identity pair (old first — a worker that sees notify != NULL
+	 * must see a valid old), swap, then wake the old cohort by closing theirs. */
+	zend_atomic_ptr_store_ex(&pool->reload_old, old_channel);
 	zend_atomic_ptr_store_ex(&pool->reload_notify, notify);
-	pool->task_channel = new_channel;
+	zend_atomic_ptr_store_ex(&pool->task_channel, new_channel);
 	async_thread_channel_close(old_channel);
 
+	bool aborted = false;
+
 	for (int32_t i = 0; i < n; i++) {
-		thread_pool_start_worker(pool, i);
+		/* Spawn failure or a pool closed mid-rotation degrade the replacement
+		 * count, never the token accounting — old exits are still collected. */
+		if (!zend_atomic_int_load(&base->closed)) {
+			thread_pool_start_worker(pool, i);
+		}
 
 		zval token;
 		ZVAL_UNDEF(&token);
 
 		if (notify->channel.receive(&notify->channel, &token, NULL)) {
 			zval_ptr_dtor(&token);
+			continue;
 		}
 
-		if (UNEXPECTED(EG(exception))) {
-			zend_clear_exception();
-		}
+		aborted = true;
+		break;
 	}
 
+	/* Clear the pair before touching the channels: late loaders see NULL. */
 	zend_atomic_ptr_store_ex(&pool->reload_notify, NULL);
+	zend_atomic_ptr_store_ex(&pool->reload_old, NULL);
 
-	/* The old cohort has fully drained and no longer touches its channel. */
-	async_thread_channel_close(notify);
-	notify->channel.event.dispose(&notify->channel.event);
-	old_channel->channel.event.dispose(&old_channel->channel.event);
+	if (UNEXPECTED(aborted)) {
+		/* Cancelled mid-drain. Stragglers that loaded the pair before the clear
+		 * may still send (buffered, cap == n) — park both channels until the
+		 * next rotation / destroy. completed is NOT bumped: a woken waiter runs
+		 * the follow-up rotation and heals the partial cohort. */
+		pool->orphan_notify = notify;
+		pool->orphan_old = old_channel;
+	} else {
+		/* Exact accounting: all n exit tokens received, so no sender touches
+		 * the notify channel anymore and the old channel is fully drained. */
+		async_thread_channel_close(notify);
+		notify->channel.event.dispose(&notify->channel.event);
+		old_channel->channel.event.dispose(&old_channel->channel.event);
+		pool->rotations_completed++;
+	}
+
+	pool->reload_in_progress = false;
+	thread_pool_reload_fire_waiters(pool);
+	/* On abort the cancellation exception propagates to the caller. */
 }
 
 /**
@@ -950,7 +1077,9 @@ static zend_async_event_t *thread_pool_submit_internal_impl(
 	ZVAL_LONG(&slot, (zend_long)(uintptr_t) state);
 	zend_hash_next_index_insert_new(Z_ARRVAL(task), &slot);
 
-	if (UNEXPECTED(!pool->task_channel->channel.send(&pool->task_channel->channel, &task))) {
+	async_thread_channel_t *channel = POOL_TASK_CHANNEL(pool);
+
+	if (UNEXPECTED(!channel->channel.send(&channel->channel, &task))) {
 		zval_ptr_dtor(&task);
 		async_future_shared_state_delref(state);
 		ZEND_ASYNC_EVENT_RELEASE(&remote->future.event);
@@ -973,7 +1102,10 @@ zend_async_thread_pool_t *async_thread_pool_create(
 	pool->coroutine_mode = coroutine_mode;
 	pool->concurrency = concurrency;
 	ZEND_ATOMIC_INT_INIT(&pool->cancel_requested, 0);
+	zend_atomic_ptr_init(&pool->task_channel, NULL);
 	zend_atomic_ptr_init(&pool->reload_notify, NULL);
+	zend_atomic_ptr_init(&pool->reload_old, NULL);
+	zend_hash_init(&pool->reload_waiters, 0, NULL, NULL, 1);
 
 	pool->base.worker_count = 0;
 	ZEND_ATOMIC_INT_INIT(&pool->base.pending_count, 0);
@@ -997,13 +1129,12 @@ zend_async_thread_pool_t *async_thread_pool_create(
 		if (UNEXPECTED(pool->bootloader_snapshot == NULL)) {
 			/* snapshot_create propagated an exception (e.g. captured value
 			 * refused transfer). Fail construction. */
-			pool->task_channel = NULL;
 			pool->base.workers = NULL;
 			return &pool->base;
 		}
 	}
 
-	pool->task_channel = async_thread_channel_create(queue_size);
+	zend_atomic_ptr_store_ex(&pool->task_channel, async_thread_channel_create(queue_size));
 	pool->base.workers = pecalloc(worker_count, sizeof(zend_async_thread_handle_t), 1);
 
 	for (int32_t i = 0; i < worker_count; i++) {
@@ -1029,8 +1160,10 @@ static void thread_pool_close(async_thread_pool_t *pool)
 	zend_atomic_int_store(&pool->base.closed, 1);
 
 	/* Close task channel — workers see closed on next recv and exit */
-	if (pool->task_channel != NULL) {
-		pool->task_channel->channel.close(&pool->task_channel->channel);
+	async_thread_channel_t *channel = POOL_TASK_CHANNEL(pool);
+
+	if (channel != NULL) {
+		channel->channel.close(&channel->channel);
 	}
 }
 
@@ -1049,7 +1182,7 @@ static void thread_pool_close_base(zend_async_thread_pool_t *base)
  */
 static void thread_pool_drain_tasks(async_thread_pool_t *pool, bool reject, zend_object *reject_with)
 {
-	async_thread_channel_t *ch = pool->task_channel;
+	async_thread_channel_t *ch = POOL_TASK_CHANNEL(pool);
 	if (ch == NULL) {
 		return;
 	}
@@ -1127,10 +1260,27 @@ static void thread_pool_destroy(async_thread_pool_t *pool)
 {
 	thread_pool_drain_tasks(pool, false, NULL);
 
-	if (pool->task_channel != NULL) {
-		pool->task_channel->channel.event.dispose(&pool->task_channel->channel.event);
-		pool->task_channel = NULL;
+	async_thread_channel_t *channel = POOL_TASK_CHANNEL(pool);
+
+	if (channel != NULL) {
+		channel->channel.event.dispose(&channel->channel.event);
+		zend_atomic_ptr_store_ex(&pool->task_channel, NULL);
 	}
+
+	/* Channels parked by an aborted rotation (all their senders are gone:
+	 * every worker holds a pool ref until after its token send). */
+	if (pool->orphan_notify != NULL) {
+		async_thread_channel_close(pool->orphan_notify);
+		pool->orphan_notify->channel.event.dispose(&pool->orphan_notify->channel.event);
+		pool->orphan_notify = NULL;
+	}
+
+	if (pool->orphan_old != NULL) {
+		pool->orphan_old->channel.event.dispose(&pool->orphan_old->channel.event);
+		pool->orphan_old = NULL;
+	}
+
+	zend_hash_destroy(&pool->reload_waiters);
 
 	if (pool->base.workers != NULL) {
 		pefree(pool->base.workers, 1);
@@ -1339,7 +1489,9 @@ METHOD(submit)
 	zend_hash_next_index_insert_new(Z_ARRVAL(task), &state_zv);
 
 	/* 4. Send through channel (may suspend if full — backpressure) */
-	if (!pool->task_channel->channel.send(&pool->task_channel->channel, &task)) {
+	async_thread_channel_t *channel = POOL_TASK_CHANNEL(pool);
+
+	if (!channel->channel.send(&channel->channel, &task)) {
 		zval_ptr_dtor(&task);
 		async_thread_snapshot_destroy(snapshot);
 		async_future_shared_state_delref(state);
@@ -1445,7 +1597,9 @@ METHOD(map)
 		ZVAL_LONG(&state_zv, (zend_long)(uintptr_t) state);
 		zend_hash_next_index_insert_new(Z_ARRVAL(task), &state_zv);
 
-		if (!pool->task_channel->channel.send(&pool->task_channel->channel, &task)) {
+		async_thread_channel_t *channel = POOL_TASK_CHANNEL(pool);
+
+		if (!channel->channel.send(&channel->channel, &task)) {
 			zval_ptr_dtor(&task);
 			async_thread_snapshot_destroy(snapshot);
 			async_future_shared_state_delref(state);
@@ -1569,8 +1723,15 @@ METHOD(reload)
 
 	async_thread_pool_t *pool = THIS_POOL();
 
-	if (UNEXPECTED(pool == NULL || pool->base.reload == NULL)) {
-		return;
+	if (UNEXPECTED(pool == NULL)) {
+		zend_throw_exception(async_ce_thread_pool_exception, "ThreadPool not initialized", 0);
+		RETURN_THROWS();
+	}
+
+	if (UNEXPECTED(pool->base.reload == NULL)) {
+		zend_throw_exception(async_ce_thread_pool_exception,
+				"This thread pool does not support reload()", 0);
+		RETURN_THROWS();
 	}
 
 	pool->base.reload(&pool->base);

@@ -1,5 +1,5 @@
 /* This is a generated file, edit thread_pool.stub.php instead.
- * Stub hash: 0c8839b09a2be23b688ea0d1e432ac294404b9a2 */
+ * Stub hash: 8b9445ac3bca09d32c18feedc36ac16dbd3fd0b8 */
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Async_ThreadPool___construct, 0, 0, 0)
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, workers, IS_LONG, 0, "0")

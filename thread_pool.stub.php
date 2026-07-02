@@ -92,6 +92,11 @@ final class ThreadPool
      *
      * Must be called from within a coroutine — it suspends until the old
      * cohort has drained.
+     *
+     * Overlapping calls serialize and coalesce: a call made while a reload is
+     * already in progress waits it out, then a single follow-up reload rotates
+     * the whole cohort once more for every caller queued behind it. When your
+     * reload() returns, no live worker predates your call.
      */
     public function reload(): void {}
 }

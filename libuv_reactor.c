@@ -2970,7 +2970,25 @@ static bool libuv_filesystem_start(zend_async_event_t *event)
 
 #if !ASYNC_FS_HAS_NATIVE_RECURSIVE
 	if (fs_event->recursive_emulated) {
-		if (UNEXPECTED(false == async_fs_watch_add_dir(fs_event, fs_event->event.path, ZSTR_EMPTY_ALLOC()))) {
+		if (fs_event->watch_dir_count > 0) {
+			/* Restart after stop(): re-arm every surviving node; a directory
+			 * gone meanwhile is dropped the same way remove_subtree drops it. */
+			uint32_t i = 0;
+
+			while (i < fs_event->watch_dir_count) {
+				async_fs_watch_dir_t *node = fs_event->watch_dirs[i];
+
+				if (UNEXPECTED(uv_fs_event_start(&node->handle, async_fs_watch_dir_cb,
+						ZSTR_VAL(node->abs_path), 0) < 0)) {
+					fs_event->watch_dirs[i] = fs_event->watch_dirs[--fs_event->watch_dir_count];
+					uv_close((uv_handle_t *) &node->handle, async_fs_watch_dir_orphan_close_cb);
+					continue;
+				}
+
+				i++;
+			}
+		} else if (UNEXPECTED(false ==
+				async_fs_watch_add_dir(fs_event, fs_event->event.path, ZSTR_EMPTY_ALLOC()))) {
 			async_throw_error("Failed to start recursive filesystem watch on %s", ZSTR_VAL(fs_event->event.path));
 			return false;
 		}
@@ -3063,8 +3081,6 @@ static bool libuv_filesystem_dispose(zend_async_event_t *event)
 
 #if !ASYNC_FS_HAS_NATIVE_RECURSIVE
 	if (fs_event->recursive_emulated) {
-		fs_event->disposing = true;
-
 		if (fs_event->watch_dir_count == 0) {
 			if (fs_event->watch_dirs != NULL) {
 				pefree(fs_event->watch_dirs, 0);

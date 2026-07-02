@@ -85,7 +85,6 @@ struct _async_filesystem_event_t
 	uint32_t                watch_dir_capacity;
 	uint32_t                pending_close;     /* live node handles during async teardown */
 	bool                    recursive_emulated;
-	bool                    disposing;
 };
 
 /* One watched directory in the recursive-emulation subtree. Its uv handle's
