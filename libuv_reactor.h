@@ -87,6 +87,18 @@ struct _async_filesystem_event_t
 	bool                    recursive_emulated;
 };
 
+/* kqueue (BSD) and event-ports (Solaris) name only the watched directory, not
+ * the child entry that changed, so the recursive emulation cannot report which
+ * nested file moved. There we keep a snapshot of each directory's children and
+ * diff it on every notification to recover the name. Linux/inotify reports the
+ * child name directly and needs no snapshot; macOS/Windows use the native
+ * recursive backend and no emulation node at all. */
+#if !defined(__linux__) && !defined(__APPLE__) && !defined(PHP_WIN32)
+# define ASYNC_FS_EMULATE_DIFF 1
+#else
+# define ASYNC_FS_EMULATE_DIFF 0
+#endif
+
 /* One watched directory in the recursive-emulation subtree. Its uv handle's
  * data points back here; owner reaches the aggregating event. */
 struct _async_fs_watch_dir
@@ -95,6 +107,9 @@ struct _async_fs_watch_dir
 	async_filesystem_event_t *owner;
 	zend_string              *abs_path;    /* absolute path this handle watches */
 	zend_string              *rel_prefix;  /* path relative to the watched root; empty for root */
+#if ASYNC_FS_EMULATE_DIFF
+	HashTable                 entries;     /* set of immediate child names; diffed per event */
+#endif
 };
 
 struct _async_dns_nameinfo_t
