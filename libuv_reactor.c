@@ -2504,8 +2504,7 @@ static zend_async_thread_handle_t libuv_start_thread(
 
 	/* The handle is discarded and nothing ever joins these threads — detach, or
 	 * every exited worker leaks its 8MB stack (per rotation under reload,
-	 * true-async/server#93). uv_thread_detach needs libuv >= 1.50, enforced by
-	 * config.m4. */
+	 * true-async/server#93). */
 	uv_thread_detach(&uv_handle);
 
 	/* Do NOT touch `context` after a successful create: the runner holds the

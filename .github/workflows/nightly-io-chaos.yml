@@ -44,18 +44,13 @@ jobs:
         run: |
           set -x
           sudo apt-get update -y
-          # ubuntu-24.04 apt libuv is 1.48 — TrueAsync needs >= 1.50
-          # (uv_thread_detach), so libuv is built from source like in the
-          # build-linux.yml matrix. libcurl 8.5 from apt is new enough.
+          # ubuntu-24.04 ships libuv 1.48 and libcurl 8.5 — both new enough
+          # for TrueAsync, so no from-source builds are needed here (unlike
+          # the full build-linux.yml matrix).
           sudo apt-get install -y \
-            autoconf bison build-essential re2c pkg-config cmake ninja-build \
+            autoconf bison build-essential re2c pkg-config \
             libxml2-dev libssl-dev libsqlite3-dev libonig-dev \
-            libcurl4-openssl-dev
-          wget --tries=5 --waitretry=10 --retry-connrefused https://github.com/libuv/libuv/archive/v1.52.1.tar.gz
-          tar -xzf v1.52.1.tar.gz
-          cd libuv-1.52.1 && mkdir build && cd build
-          cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
-          ninja && sudo ninja install && sudo ldconfig
+            libcurl4-openssl-dev libuv1-dev
 
       - name: Install Toxiproxy
         run: |

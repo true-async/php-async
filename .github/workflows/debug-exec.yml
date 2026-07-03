@@ -45,7 +45,7 @@ jobs:
             libxml2-dev libxslt1-dev libpq-dev libreadline-dev libldap2-dev libsodium-dev \
             libargon2-dev firebird-dev valgrind cmake
 
-      - name: Cache LibUV 1.52.1
+      - name: Cache LibUV 1.45.0
         id: cache-libuv
         uses: actions/cache@v4
         with:
@@ -53,16 +53,16 @@ jobs:
             /usr/local/lib/libuv*
             /usr/local/include/uv*
             /usr/local/lib/pkgconfig/libuv.pc
-          key: ${{ runner.os }}-libuv-1.52.1-release
+          key: ${{ runner.os }}-libuv-1.45.0-release
 
-      - name: Install LibUV >= 1.50.0
+      - name: Install LibUV >= 1.45.0
         run: |
           if [ "${{ steps.cache-libuv.outputs.cache-hit }}" == "true" ]; then
             sudo ldconfig
           else
-            wget https://github.com/libuv/libuv/archive/v1.52.1.tar.gz
-            tar -xzf v1.52.1.tar.gz
-            cd libuv-1.52.1 && mkdir build && cd build
+            wget https://github.com/libuv/libuv/archive/v1.45.0.tar.gz
+            tar -xzf v1.45.0.tar.gz
+            cd libuv-1.45.0 && mkdir build && cd build
             cmake .. -DCMAKE_BUILD_TYPE=Release
             make -j$(nproc)
             sudo make install

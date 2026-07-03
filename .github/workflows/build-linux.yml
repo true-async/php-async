@@ -123,13 +123,13 @@ jobs:
             libxslt1-dev \
             libicu-dev
           
-          # Build LibUV from source (need >= 1.50.0 (uv_thread_detach))
+          # Build LibUV from source (need >= 1.45.0)
           sudo apt-get install -y cmake ninja-build
           
-          # Download and build LibUV 1.52.1
-          wget --tries=5 --waitretry=10 --retry-connrefused --retry-on-http-error=429,500,502,503,504 https://github.com/libuv/libuv/archive/v1.52.1.tar.gz
-          tar -xzf v1.52.1.tar.gz
-          cd libuv-1.52.1
+          # Download and build LibUV 1.48.0
+          wget --tries=5 --waitretry=10 --retry-connrefused --retry-on-http-error=429,500,502,503,504 https://github.com/libuv/libuv/archive/v1.48.0.tar.gz
+          tar -xzf v1.48.0.tar.gz
+          cd libuv-1.48.0
           mkdir build
           cd build
           cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF

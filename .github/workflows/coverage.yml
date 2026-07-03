@@ -79,10 +79,10 @@ jobs:
             libgdbm-dev liblmdb-dev libsnmp-dev libtidy-dev libxslt1-dev \
             libicu-dev cmake ninja-build
 
-          # libuv >= 1.50 from source (matches the build workflows)
-          wget --tries=5 --waitretry=10 --retry-connrefused https://github.com/libuv/libuv/archive/v1.52.1.tar.gz
-          tar -xzf v1.52.1.tar.gz
-          cd libuv-1.52.1 && mkdir build && cd build
+          # libuv >= 1.45 from source (matches the build workflows)
+          wget --tries=5 --waitretry=10 --retry-connrefused https://github.com/libuv/libuv/archive/v1.48.0.tar.gz
+          tar -xzf v1.48.0.tar.gz
+          cd libuv-1.48.0 && mkdir build && cd build
           cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
           ninja && sudo ninja install && sudo ldconfig
           cd ../..
