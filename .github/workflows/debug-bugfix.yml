@@ -84,15 +84,15 @@ jobs:
           # bison is keg-only on macOS; the system bison (2.3) is too old.
           echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
 
-      - name: Install LibUV >= 1.45.0 (Linux)
+      - name: Install LibUV >= 1.50.0 (Linux)
         if: runner.os == 'Linux'
         run: |
-          if pkg-config --exists libuv && pkg-config --atleast-version=1.45.0 libuv; then
+          if pkg-config --exists libuv && pkg-config --atleast-version=1.50.0 libuv; then
             sudo apt-get install -y libuv1-dev
           else
-            wget https://github.com/libuv/libuv/archive/v1.45.0.tar.gz
-            tar -xzf v1.45.0.tar.gz
-            cd libuv-1.45.0 && mkdir build && cd build
+            wget https://github.com/libuv/libuv/archive/v1.52.1.tar.gz
+            tar -xzf v1.52.1.tar.gz
+            cd libuv-1.52.1 && mkdir build && cd build
             cmake .. -DCMAKE_BUILD_TYPE=Release && make -j"$(nproc)" && sudo make install && sudo ldconfig
           fi
 
