@@ -2504,8 +2504,13 @@ static zend_async_thread_handle_t libuv_start_thread(
 
 	/* The handle is discarded and nothing ever joins these threads — detach, or
 	 * every exited worker leaks its 8MB stack (per rotation under reload,
-	 * true-async/server#93). */
+	 * true-async/server#93). pthread_detach directly: the uv_thread_detach
+	 * wrapper only exists since libuv 1.50, our minimum is 1.45. */
+#ifdef PHP_WIN32
 	uv_thread_detach(&uv_handle);
+#else
+	pthread_detach(uv_handle);
+#endif
 
 	/* Do NOT touch `context` after a successful create: the runner holds the
 	 * only ref (pool workers have no owning Thread object), so a fast-exiting
