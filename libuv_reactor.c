@@ -1354,7 +1354,12 @@ static void libuv_global_signal_callback(uv_signal_t *handle, int signum)
 
 	if (p_sig.handler != SIG_DFL && p_sig.handler != SIG_IGN) {
 		if (p_sig.flags & SA_SIGINFO) {
-			((void (*)(int, siginfo_t *, void *)) p_sig.handler)(signum, NULL, NULL);
+			/* SA_SIGINFO handlers dereference siginfo (pcntl copies it) —
+			 * NULL is not an option here. */
+			siginfo_t siginfo;
+			memset(&siginfo, 0, sizeof(siginfo));
+			siginfo.si_signo = signum;
+			((void (*)(int, siginfo_t *, void *)) p_sig.handler)(signum, &siginfo, NULL);
 		} else {
 			((void (*)(int)) p_sig.handler)(signum);
 		}
@@ -1455,6 +1460,9 @@ static void libuv_add_signal_event(int signum, zend_async_event_t *event)
 		async_throw_error("Failed to store signal event");
 		return;
 	}
+
+	/* Waiters must keep the loop alive (idempotent; undoes a chain-only unref). */
+	uv_ref((uv_handle_t *) handler);
 }
 
 /* }}} */
@@ -1487,12 +1495,18 @@ static void libuv_remove_signal_event(int signum, zend_async_event_t *event)
 		if (can_remove_handler && ASYNC_G(signal_handlers) != NULL) {
 			uv_signal_t *handler = zend_hash_index_find_ptr(ASYNC_G(signal_handlers), signum);
 			if (handler != NULL) {
-				uv_signal_stop(handler);
+				if ((bool) (uintptr_t) handler->data) {
+					/* A Zend-chain subscriber (pcntl etc.) still needs delivery —
+					 * keep the handler armed but stop pinning the loop. */
+					uv_unref((uv_handle_t *) handler);
+				} else {
+					uv_signal_stop(handler);
 #ifdef ZEND_SIGNALS
-				libuv_restore_signal_handler(signum);
+					libuv_restore_signal_handler(signum);
 #endif
-				uv_close((uv_handle_t *) handler, libuv_signal_close_cb);
-				zend_hash_index_del(ASYNC_G(signal_handlers), signum);
+					uv_close((uv_handle_t *) handler, libuv_signal_close_cb);
+					zend_hash_index_del(ASYNC_G(signal_handlers), signum);
+				}
 			}
 		}
 
@@ -1503,6 +1517,66 @@ static void libuv_remove_signal_event(int signum, zend_async_event_t *event)
 }
 
 /* }}} */
+
+#ifdef ZEND_SIGNALS
+/* {{{ libuv_zend_sigaction
+ * zend_sigaction() delegate: instead of the OS sigaction() install, the
+ * reactor takes delivery ownership of the signal. SIGG(handlers) is already
+ * updated by core, and libuv_global_signal_callback forwards every delivery
+ * into that chain — the subscriber keeps firing, through the reactor.
+ * handler->data holds the "Zend-chain subscribed" flag. */
+static bool libuv_zend_sigaction(const int signo)
+{
+	if (!ASYNC_G(reactor_started) || signo <= 0 || signo >= NSIG) {
+		return false;
+	}
+
+	const zend_signal_entry_t entry = SIGG(handlers)[signo - 1];
+	const bool has_handler = entry.handler != (void *) SIG_DFL && entry.handler != (void *) SIG_IGN;
+
+	HashTable *events_list =
+			ASYNC_G(signal_events) != NULL ? zend_hash_index_find_ptr(ASYNC_G(signal_events), signo) : NULL;
+	const bool has_waiters = events_list != NULL && zend_hash_num_elements(events_list) > 0;
+
+	uv_signal_t *owned = ASYNC_G(signal_handlers) != NULL
+			? zend_hash_index_find_ptr(ASYNC_G(signal_handlers), signo)
+			: NULL;
+
+	if (has_handler) {
+		/* Intercept only when the reactor already owns this signal's OS
+		 * handler; a pcntl-only subscription keeps the regular
+		 * zend_signal_handler_defer path (synchronous dispatch semantics). */
+		if (owned == NULL) {
+			return false;
+		}
+
+		owned->data = (void *) (uintptr_t) true;
+		return true;
+	}
+
+	/* SIG_DFL / SIG_IGN: the Zend-chain subscription is gone. */
+	if (owned == NULL) {
+		return false;
+	}
+
+	owned->data = NULL;
+
+	if (has_waiters ||
+		(signo == SIGCHLD && ASYNC_G(process_events) != NULL &&
+		 zend_hash_num_elements(ASYNC_G(process_events)) > 0)) {
+		return true;
+	}
+
+	/* Nobody left — release the signal, core installs its own disposition. */
+	uv_signal_stop(owned);
+	libuv_restore_signal_handler(signo);
+	uv_close((uv_handle_t *) owned, libuv_signal_close_cb);
+	zend_hash_index_del(ASYNC_G(signal_handlers), signo);
+	return false;
+}
+
+/* }}} */
+#endif
 
 /* {{{ libuv_handle_process_events */
 static void libuv_handle_process_events(void)
@@ -6691,6 +6765,10 @@ static unsigned int libuv_available_parallelism(void)
 
 void async_libuv_reactor_register(void)
 {
+#ifdef ZEND_SIGNALS
+	zend_async_sigaction_fn = libuv_zend_sigaction;
+#endif
+
 	zend_async_reactor_register(LIBUV_REACTOR_NAME,
 								false,
 								libuv_reactor_startup,
