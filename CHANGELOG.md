@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.4] - 2026-06-25
 
 ### Added
-- **`FileSystemWatcher`: `recursive: true` now works on Linux/inotify** — emulated with one watch per directory (subtrees auto-added/dropped, symlinks skipped, `$filename` relative to the watched root). New constructor args `debounceMs`/`maxHoldMs`/`extensions` collapse a change burst into a single `filename = null` event (true-async/server#93).
+- **`FileSystemWatcher`: `recursive: true` now works on Linux/inotify and BSD/kqueue** — emulated with one watch per directory (subtrees auto-added/dropped, symlinks skipped, `$filename` relative to the watched root). On kqueue/event-ports backends, which name only the changed directory and not the child entry, each directory keeps a snapshot that is diffed per notification to recover the changed name. New constructor args `debounceMs`/`maxHoldMs`/`extensions` collapse a change burst into a single `filename = null` event (true-async/server#93).
 - **`ThreadPool::reload()`** — rolling blue-green reload of a live pool's workers (fresh cohort on a new task channel, 1:1 replacements as old workers drain; ABI v0.22). Overlapping calls serialize and coalesce into one follow-up rotation; in-flight tasks always complete (true-async/server#93).
 
 ### Fixed

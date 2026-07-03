@@ -2729,6 +2729,32 @@ static void on_filesystem_event(uv_fs_event_t *handle, const char *filename, int
 static void async_fs_watch_walk(async_filesystem_event_t *fs_event, const char *abs_path, const char *rel_prefix);
 static bool async_fs_watch_add_dir(async_filesystem_event_t *fs_event, zend_string *abs_path, zend_string *rel_prefix);
 
+#if ASYNC_FS_EMULATE_DIFF
+/* Record the immediate children (files and directories) of abs_path into set,
+ * used as a whole-directory listing (no '.'/'..') for diffing against later. */
+static void async_fs_snapshot_dir(const char *abs_path, HashTable *set)
+{
+	DIR *dir = opendir(abs_path);
+
+	if (dir == NULL) {
+		return;
+	}
+
+	struct dirent *ent;
+
+	while ((ent = readdir(dir)) != NULL) {
+		if (ent->d_name[0] == '.'
+			&& (ent->d_name[1] == '\0' || (ent->d_name[1] == '.' && ent->d_name[2] == '\0'))) {
+			continue;
+		}
+
+		zend_hash_str_add_empty_element(set, ent->d_name, strlen(ent->d_name));
+	}
+
+	closedir(dir);
+}
+#endif
+
 /* Close cb for a node that failed to start: free the node only, never touch the
  * owner (it may already be tearing down on its own pending_close accounting). */
 static void async_fs_watch_dir_orphan_close_cb(uv_handle_t *handle)
@@ -2742,6 +2768,10 @@ static void async_fs_watch_dir_orphan_close_cb(uv_handle_t *handle)
 	if (node->rel_prefix != NULL) {
 		zend_string_release(node->rel_prefix);
 	}
+
+#if ASYNC_FS_EMULATE_DIFF
+	zend_hash_destroy(&node->entries);
+#endif
 
 	pefree(node, 0);
 }
@@ -2761,6 +2791,10 @@ static void async_fs_watch_dir_close_cb(uv_handle_t *handle)
 	if (node->rel_prefix != NULL) {
 		zend_string_release(node->rel_prefix);
 	}
+
+#if ASYNC_FS_EMULATE_DIFF
+	zend_hash_destroy(&node->entries);
+#endif
 
 	pefree(node, 0);
 
@@ -2799,12 +2833,110 @@ static void async_fs_watch_remove_subtree(async_filesystem_event_t *fs_event, co
 	}
 }
 
+#if ASYNC_FS_EMULATE_DIFF
+/* Fold one changed child (named relative to the watched root) onto the owning
+ * event and wake its consumers. One notification carries exactly one name, so a
+ * burst diff calls this once per added or removed entry. */
+static void async_fs_watch_dir_emit_one(async_fs_watch_dir_t *node, zend_string *name, uint32_t events)
+{
+	async_filesystem_event_t *fs_event = node->owner;
+
+	if (fs_event->event.triggered_filename != NULL) {
+		zend_string_release(fs_event->event.triggered_filename);
+		fs_event->event.triggered_filename = NULL;
+	}
+
+	fs_event->event.triggered_events   = events;
+	fs_event->event.triggered_filename = (ZSTR_LEN(node->rel_prefix) != 0)
+			? zend_strpprintf(0, "%s/%s", ZSTR_VAL(node->rel_prefix), ZSTR_VAL(name))
+			: zend_string_copy(name);
+
+	ZEND_ASYNC_CALLBACKS_NOTIFY(&fs_event->event.base, NULL, NULL);
+
+	IF_EXCEPTION_STOP_REACTOR;
+}
+
+/* kqueue/event-ports report only that this directory changed, never which
+ * child. Re-list the directory, diff it against the stored snapshot, and emit
+ * one event per added or removed entry — recovering the name inotify would have
+ * given directly. New subdirectories gain their own watch, vanished ones lose
+ * theirs, so recursion stays in sync exactly as the inotify path does. */
+static void async_fs_watch_dir_emit_diff(async_fs_watch_dir_t *node, int events)
+{
+	async_filesystem_event_t *fs_event = node->owner;
+
+	HashTable current;
+	zend_hash_init(&current, 8, NULL, NULL, 0);
+	async_fs_snapshot_dir(ZSTR_VAL(node->abs_path), &current);
+
+	uint32_t evt = ZEND_ASYNC_FS_EVENT_RENAME;
+	if (events & UV_CHANGE) {
+		evt |= ZEND_ASYNC_FS_EVENT_CHANGE;
+	}
+
+	zend_string *name;
+
+	/* Added: present now, absent before. A new subdirectory gains a watch. */
+	ZEND_HASH_FOREACH_STR_KEY(&current, name) {
+		if (name == NULL || zend_hash_exists(&node->entries, name)) {
+			continue;
+		}
+
+		async_fs_watch_dir_emit_one(node, name, evt);
+
+		if (fs_event->watch_dir_count >= ASYNC_FS_MAX_WATCH_DIRS) {
+			continue;
+		}
+
+		char child_abs[PATH_MAX];
+
+		if (EXPECTED((size_t) snprintf(child_abs, sizeof(child_abs), "%s/%s",
+				ZSTR_VAL(node->abs_path), ZSTR_VAL(name)) < sizeof(child_abs))) {
+			struct stat st;
+
+			if (lstat(child_abs, &st) == 0 && S_ISDIR(st.st_mode)) {
+				zend_string *child_abs_zs = zend_string_init(child_abs, strlen(child_abs), 0);
+				zend_string *child_rel    = (ZSTR_LEN(node->rel_prefix) != 0)
+						? zend_strpprintf(0, "%s/%s", ZSTR_VAL(node->rel_prefix), ZSTR_VAL(name))
+						: zend_string_copy(name);
+
+				async_fs_watch_add_dir(fs_event, child_abs_zs, child_rel);
+
+				zend_string_release(child_rel);
+				zend_string_release(child_abs_zs);
+			}
+		}
+	} ZEND_HASH_FOREACH_END();
+
+	/* Removed: present before, absent now. A vanished subdirectory (and all it
+	 * held) loses its watch so a later reuse of the path is watched afresh. */
+	ZEND_HASH_FOREACH_STR_KEY(&node->entries, name) {
+		if (name == NULL || zend_hash_exists(&current, name)) {
+			continue;
+		}
+
+		char child_abs[PATH_MAX];
+
+		if (EXPECTED((size_t) snprintf(child_abs, sizeof(child_abs), "%s/%s",
+				ZSTR_VAL(node->abs_path), ZSTR_VAL(name)) < sizeof(child_abs))) {
+			async_fs_watch_remove_subtree(fs_event, child_abs);
+		}
+
+		async_fs_watch_dir_emit_one(node, name, evt);
+	} ZEND_HASH_FOREACH_END();
+
+	/* Adopt the fresh listing as the baseline for the next notification. */
+	zend_hash_destroy(&node->entries);
+	node->entries = current;
+}
+#endif /* ASYNC_FS_EMULATE_DIFF */
+
 /* Per-directory event callback: folds every node's events onto the one owning
  * event and keeps the watch set in sync as subdirectories appear or vanish. */
 static void async_fs_watch_dir_cb(uv_fs_event_t *handle, const char *filename, int events, int status)
 {
-	const async_fs_watch_dir_t *node     = handle->data;
-	async_filesystem_event_t   *fs_event = node->owner;
+	async_fs_watch_dir_t     *node     = handle->data;
+	async_filesystem_event_t *fs_event = node->owner;
 
 	if (fs_event->event.triggered_filename != NULL) {
 		zend_string_release(fs_event->event.triggered_filename);
@@ -2821,6 +2953,9 @@ static void async_fs_watch_dir_cb(uv_fs_event_t *handle, const char *filename, i
 		return;
 	}
 
+#if ASYNC_FS_EMULATE_DIFF
+	async_fs_watch_dir_emit_diff(node, events);
+#else
 	if (events & UV_RENAME) {
 		fs_event->event.triggered_events |= ZEND_ASYNC_FS_EVENT_RENAME;
 	}
@@ -2865,6 +3000,7 @@ static void async_fs_watch_dir_cb(uv_fs_event_t *handle, const char *filename, i
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&fs_event->event.base, NULL, NULL);
 
 	IF_EXCEPTION_STOP_REACTOR;
+#endif /* ASYNC_FS_EMULATE_DIFF */
 }
 
 /* Watch every existing subdirectory of an already-watched directory. lstat (not
@@ -2941,6 +3077,13 @@ static bool async_fs_watch_add_dir(async_filesystem_event_t *fs_event, zend_stri
 	node->owner       = fs_event;
 	node->abs_path    = zend_string_copy(abs_path);
 	node->rel_prefix  = zend_string_copy(rel_prefix);
+
+#if ASYNC_FS_EMULATE_DIFF
+	/* Baseline listing for the diff on the first notification. Initialised
+	 * before start() so the close cb can always destroy it on the error path. */
+	zend_hash_init(&node->entries, 8, NULL, NULL, 0);
+	async_fs_snapshot_dir(ZSTR_VAL(abs_path), &node->entries);
+#endif
 
 	if (UNEXPECTED(uv_fs_event_start(&node->handle, async_fs_watch_dir_cb, ZSTR_VAL(abs_path), 0) < 0)) {
 		uv_close((uv_handle_t *) &node->handle, async_fs_watch_dir_orphan_close_cb);
