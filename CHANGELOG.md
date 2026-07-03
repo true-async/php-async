@@ -5,6 +5,40 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.6] - 2026-07-03
+
+Hardening of the live worker-pool reload path (true-async/server#93), plus a
+worker thread-stack leak fix.
+
+### Added
+- **`ThreadPool` rolling reload matured into a single `reload()` ABI.** The
+  initial `respawnWorker()` / `requestWorkerExit()` primitives were replaced by a
+  channel-swap `reload()` — the pool retires the old cohort onto a fresh task
+  channel and 1:1-replaces workers as they drain — hardened with identity-gated
+  exit tokens (a stale token can no longer retire a fresh worker) and
+  serialized+coalesced handling of overlapping calls (concurrent `reload()`s fold
+  into one follow-up rotation). In-flight tasks always complete
+  (true-async/server#93).
+- **`FileSystemWatcher` recursive watch + built-in debounce.** Recursive watching
+  on Linux/inotify and BSD/kqueue (one watch per directory, subtrees
+  auto-added/dropped; on kqueue, which names only the changed directory, each
+  directory keeps a snapshot diffed per notification to recover the changed name),
+  with `debounceMs` / `maxHoldMs` collapsing a change burst into a single event
+  (true-async/server#93).
+- **`pcntl` / Zend signal handlers routed through the reactor** — signals are
+  delivered on the reactor thread so a handler runs on the main coroutine instead
+  of an arbitrary interrupted context (true-async/server#93).
+
+### Fixed
+- **Every exited pool worker leaked its 8 MB stack.** Worker threads were never
+  detached, so their stacks were retained after exit — a steady leak across reload
+  rotations. Pool workers are now detached (portable: `pthread_detach` on unix,
+  `uv_thread_detach` where libuv ≥ 1.50 is available) (true-async/server#93).
+
+### Changed
+- De-flaked the coroutine-mode `ThreadPool::reload()` bootloader test (075): ZTS
+  `SKIPIF`s and wider CI timing margins (true-async/server#93).
+
 ## [0.7.5] - 2026-07-01
 
 ### Added
