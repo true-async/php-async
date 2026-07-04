@@ -5,6 +5,15 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **#173 Reactor: use-after-free when an IO request is disposed while its libuv operation is still in flight** (seen as an intermittent access violation on Windows process teardown in `io/042`). An awaiter that abandons its request — `stream_set_timeout()` + `fgets()` where the timer wins, or a cancelled coroutine parked on a write/flush/stat/sendfile — called `req->dispose(req)` while libuv still referenced the request, leaving several distinct UAFs:
+  - *Armed stream read* (the `io/042` crash): `libuv_io_req_dispose` freed the request but left `io->active_req` pointing at it with `uv_read_start` still armed. The subsequent `fclose()` took the no-subscribers path in `libuv_io_close` (the timeout had already cleaned the waker), so the stale pointer survived until the `uv_close` callback drained — often as late as request shutdown — where the `active_req` backstop in `libuv_io_event_dispose` called `dispose()` through freed memory. Dispose now stops the reader and detaches `io->active_req`. The same detach was added to `udp_req_dispose` for an abandoned `recvfrom` (armed `uv_udp_recv_start`).
+  - *In-flight `uv_write` / `uv_fs_read` / `uv_fs_write` / `uv_fs_fsync` / `uv_fs_fstat` / sendfile*: these cannot be cancelled synchronously, so dispose now defers the free with an `UV_IN_FLIGHT`/`DISPOSE_PENDING` rendezvous (mirroring the existing UDP-sendto and DNS ones) — the completion callback finishes the deferred dispose and skips the NOTIFY; a queued-but-not-started threadpool op is `uv_cancel`ed outright. `io_file_stat_cb` additionally skips writing the stat result into the vanished awaiter's buffer.
+  - *FILE io freed under a threadpool op*: FILE-type handles have no `uv_close` rendezvous, so an owner dispose could free the `async_io_t` itself while a completion callback still reached through it (offset bookkeeping, event count, write-queue drain). Every fs submission (and `fs_open`'s pending io, and both sendfile ios) now holds an event reference for the duration of the op, released in the callback.
+  - *Latent: disposing a not-yet-closed stream/UDP io*: `libuv_io_event_dispose` ran `libuv_io_close` (which schedules `uv_close` holding a fresh reference) and then freed the io anyway, leaving the pending close callback with a dangling handle. The final teardown is now transferred to `io_close_cb`.
+
 ## [0.7.6] - 2026-07-03
 
 Hardening of the live worker-pool reload path (true-async/server#93), plus a

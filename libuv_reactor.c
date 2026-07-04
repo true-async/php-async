@@ -4537,6 +4537,14 @@ static bool libuv_io_event_dispose(zend_async_event_t *event)
 	/* Close the IO handle if not already closed. */
 	if (!(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
 		libuv_io_close(&io->base);
+		/* For stream/UDP handles under a live reactor, libuv_io_close has
+		 * just scheduled uv_close holding a fresh reference — the final
+		 * teardown belongs to io_close_cb. Freeing the io now would leave
+		 * the pending close callback with a dangling handle. */
+		if (ZEND_ASYNC_EVENT_REFCOUNT(event) > 1) {
+			ZEND_ASYNC_EVENT_DEL_REF(event);
+			return true;
+		}
 	}
 
 	/* Dispose any in-flight request still attached to the io (a one-shot
@@ -4598,6 +4606,30 @@ static bool libuv_io_event_dispose(zend_async_event_t *event)
 static void libuv_io_req_dispose(zend_async_io_req_t *base_req)
 {
 	async_io_req_t *req = (async_io_req_t *) base_req;
+
+	/* Op in flight: it cannot be cancelled synchronously, so defer the free —
+	 * the completion callback re-enters dispose after clearing UV_IN_FLIGHT.
+	 * uv_cancel reaps a threadpool fs op still queued (no-op for uv_write). */
+	if (UNEXPECTED(req->uv_flags & ASYNC_IO_REQ_F_UV_IN_FLIGHT)) {
+		req->uv_flags |= ASYNC_IO_REQ_F_DISPOSE_PENDING;
+		if (EXPECTED(ASYNC_G(reactor_started))) {
+			(void) uv_cancel((uv_req_t *) &req->fs_req);
+		}
+		return;
+	}
+
+	/* Awaiter gone while the read was still armed (plain_wrapper timeout):
+	 * stop the reader and detach, else io_pipe_read_cb / the active_req
+	 * backstop would touch this request after it is freed (#173). */
+	if (req->io != NULL && req->io->active_req == req) {
+		async_io_t *io = req->io;
+		if (ZEND_ASYNC_IO_IS_STREAM(io->base.type)
+				&& !(io->base.state & ZEND_ASYNC_IO_CLOSED)
+				&& EXPECTED(ASYNC_G(reactor_started))) {
+			uv_read_stop(&io->handle.stream);
+		}
+		io->active_req = NULL;
+	}
 
 	/* A file-write request still waiting its turn in the handle's pending
 	 * queue (its coroutine was cancelled before the write was dispatched)
@@ -4759,6 +4791,8 @@ static void io_pipe_write_cb(uv_write_t *write_request, int status)
 	async_io_req_t *req = (async_io_req_t *) write_request->data;
 	async_io_t *io = req->io;
 
+	req->uv_flags &= ~ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+
 	if (status == 0) {
 		req->base.transferred = (ssize_t) req->max_size;
 	} else {
@@ -4789,6 +4823,13 @@ static void io_pipe_write_cb(uv_write_t *write_request, int status)
 		return;
 	}
 
+	/* Awaiter gone mid-write — finish the deferred dispose; no one to NOTIFY. */
+	if (UNEXPECTED(req->uv_flags & ASYNC_IO_REQ_F_DISPOSE_PENDING)) {
+		libuv_io_req_dispose(&req->base);
+		IF_EXCEPTION_STOP_REACTOR;
+		return;
+	}
+
 	/* Own the broadcast exception across the notify (see io_pipe_read_cb):
 	 * a consumer may free the req mid-broadcast while a sibling still uses it. */
 	zend_object *exc = req->base.exception;
@@ -4813,6 +4854,10 @@ static void io_pipe_write_cb(uv_write_t *write_request, int status)
 static void io_pipe_writev_cb(uv_write_t *write_request, int status)
 {
 	async_io_req_t *req = (async_io_req_t *) write_request->data;
+
+	/* Fire-and-forget: this callback always frees below, so DISPOSE_PENDING
+	 * needs no extra handling. */
+	req->uv_flags &= ~ASYNC_IO_REQ_F_UV_IN_FLIGHT;
 
 	if (status == 0) {
 		req->base.transferred = (ssize_t) req->max_size;
@@ -4861,6 +4906,8 @@ static void io_file_read_cb(uv_fs_t *fs_request)
 	async_io_req_t *req = (async_io_req_t *) fs_request->data;
 	async_io_t *io = req->io;
 
+	req->uv_flags &= ~ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+
 	if (fs_request->result >= 0) {
 		req->base.transferred = (ssize_t) fs_request->result;
 		if (fs_request->result > 0) {
@@ -4881,7 +4928,15 @@ static void io_file_read_cb(uv_fs_t *fs_request)
 	req->base.completed = true;
 	uv_fs_req_cleanup(fs_request);
 	ZEND_ASYNC_DECREASE_EVENT_COUNT(&io->base.event);
-	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
+
+	/* Awaiter gone mid-read → finish the deferred dispose, else NOTIFY. */
+	if (UNEXPECTED(req->uv_flags & ASYNC_IO_REQ_F_DISPOSE_PENDING)) {
+		libuv_io_req_dispose(&req->base);
+	} else {
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
+	}
+
+	io->base.event.dispose(&io->base.event); /* drop the op's io ref */
 	IF_EXCEPTION_STOP_REACTOR;
 }
 
@@ -4889,6 +4944,8 @@ static void io_file_write_cb(uv_fs_t *fs_request)
 {
 	async_io_req_t *req = (async_io_req_t *) fs_request->data;
 	async_io_t *io = req->io;
+
+	req->uv_flags &= ~ASYNC_IO_REQ_F_UV_IN_FLIGHT;
 
 	if (fs_request->result >= 0) {
 		req->base.transferred = (ssize_t) fs_request->result;
@@ -4936,7 +4993,14 @@ static void io_file_write_cb(uv_fs_t *fs_request)
 		io->file_write_in_flight = false;
 	}
 
-	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
+	/* Awaiter gone mid-write → finish the deferred dispose, else NOTIFY. */
+	if (UNEXPECTED(req->uv_flags & ASYNC_IO_REQ_F_DISPOSE_PENDING)) {
+		libuv_io_req_dispose(&req->base);
+	} else {
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
+	}
+
+	io->base.event.dispose(&io->base.event); /* drop the op's io ref */
 	IF_EXCEPTION_STOP_REACTOR;
 }
 
@@ -4944,6 +5008,8 @@ static void io_file_flush_cb(uv_fs_t *fs_request)
 {
 	async_io_req_t *req = (async_io_req_t *) fs_request->data;
 	async_io_t *io = req->io;
+
+	req->uv_flags &= ~ASYNC_IO_REQ_F_UV_IN_FLIGHT;
 
 	if (fs_request->result == 0) {
 		req->base.result = 0;
@@ -4956,7 +5022,15 @@ static void io_file_flush_cb(uv_fs_t *fs_request)
 	req->base.completed = true;
 	uv_fs_req_cleanup(fs_request);
 	ZEND_ASYNC_DECREASE_EVENT_COUNT(&io->base.event);
-	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
+
+	/* Awaiter gone mid-flush → finish the deferred dispose, else NOTIFY. */
+	if (UNEXPECTED(req->uv_flags & ASYNC_IO_REQ_F_DISPOSE_PENDING)) {
+		libuv_io_req_dispose(&req->base);
+	} else {
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
+	}
+
+	io->base.event.dispose(&io->base.event); /* drop the op's io ref */
 	IF_EXCEPTION_STOP_REACTOR;
 }
 
@@ -4965,10 +5039,17 @@ static void io_file_stat_cb(uv_fs_t *fs_request)
 	async_io_req_t *req = (async_io_req_t *) fs_request->data;
 	async_io_t *io = req->io;
 
+	req->uv_flags &= ~ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+
+	/* Abandoned: base.buf points into the gone awaiter's frame — don't write. */
+	const bool abandoned = (req->uv_flags & ASYNC_IO_REQ_F_DISPOSE_PENDING) != 0;
+
 	if (fs_request->result == 0) {
 		req->base.result = 0;
 		/* Write stat data to caller's buffer, then clear ptr (not owned by req) */
-		uv_stat_to_zend_stat(&fs_request->statbuf, (zend_stat_t *) req->base.buf);
+		if (EXPECTED(!abandoned)) {
+			uv_stat_to_zend_stat(&fs_request->statbuf, (zend_stat_t *) req->base.buf);
+		}
 		req->base.buf = NULL;
 	} else {
 		req->base.result = -1;
@@ -4980,7 +5061,14 @@ static void io_file_stat_cb(uv_fs_t *fs_request)
 	req->base.completed = true;
 	uv_fs_req_cleanup(fs_request);
 	ZEND_ASYNC_DECREASE_EVENT_COUNT(&io->base.event);
-	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
+
+	if (UNEXPECTED(abandoned)) {
+		libuv_io_req_dispose(&req->base);
+	} else {
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
+	}
+
+	io->base.event.dispose(&io->base.event); /* drop the op's io ref */
 	IF_EXCEPTION_STOP_REACTOR;
 }
 
@@ -5001,6 +5089,18 @@ typedef struct {
 
 static void libuv_sendfile_req_dispose(zend_async_io_req_t *base_req)
 {
+	async_io_req_t *req = (async_io_req_t *) base_req;
+
+	/* Op in flight (uv_fs_sendfile / TransmitFile worker) — defer the free to
+	 * sendfile_complete; see the same rendezvous in libuv_io_req_dispose. */
+	if (UNEXPECTED(req->uv_flags & ASYNC_IO_REQ_F_UV_IN_FLIGHT)) {
+		req->uv_flags |= ASYNC_IO_REQ_F_DISPOSE_PENDING;
+		if (EXPECTED(ASYNC_G(reactor_started))) {
+			(void) uv_cancel((uv_req_t *) &req->fs_req);
+		}
+		return;
+	}
+
 	if (base_req->exception != NULL) {
 		zend_object_release(base_req->exception);
 		base_req->exception = NULL;
@@ -5012,6 +5112,7 @@ static void sendfile_complete(async_sendfile_req_t *req,
                               const int error_code, const char *err_kind)
 {
 	async_io_t *src_io = req->base.io;
+	async_io_t *dst_io = req->dst_io;
 
 	if (error_code == 0) {
 		req->base.base.transferred = (ssize_t) req->transferred;
@@ -5027,8 +5128,17 @@ static void sendfile_complete(async_sendfile_req_t *req,
 
 	req->base.base.completed = true;
 	ZEND_ASYNC_DECREASE_EVENT_COUNT(&src_io->base.event);
-	ZEND_ASYNC_CALLBACKS_NOTIFY(&src_io->base.event, &req->base.base,
-	                            req->base.base.exception);
+
+	if (UNEXPECTED(req->base.uv_flags & ASYNC_IO_REQ_F_DISPOSE_PENDING)) {
+		libuv_sendfile_req_dispose(&req->base.base);
+	} else {
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&src_io->base.event, &req->base.base,
+		                            req->base.base.exception);
+	}
+
+	/* Drop the src/dst io refs held across the op. */
+	src_io->base.event.dispose(&src_io->base.event);
+	dst_io->base.event.dispose(&dst_io->base.event);
 	IF_EXCEPTION_STOP_REACTOR;
 }
 
@@ -5040,6 +5150,14 @@ static void io_sendfile_zc_cb(uv_fs_t *fs_request)
 	async_sendfile_req_t *req = (async_sendfile_req_t *) fs_request->data;
 	const ssize_t result = (ssize_t) fs_request->result;
 	uv_fs_req_cleanup(fs_request);
+
+	req->base.uv_flags &= ~ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+
+	/* Awaiter abandoned the transfer — do not resubmit the remainder. */
+	if (UNEXPECTED(req->base.uv_flags & ASYNC_IO_REQ_F_DISPOSE_PENDING)) {
+		sendfile_complete(req, UV_ECANCELED, NULL);
+		return;
+	}
 
 	if (result < 0) {
 		sendfile_complete(req, (int) result, "Sendfile");
@@ -5064,7 +5182,9 @@ static void io_sendfile_zc_cb(uv_fs_t *fs_request)
 			req->offset, req->remaining, io_sendfile_zc_cb);
 	if (UNEXPECTED(err < 0)) {
 		sendfile_complete(req, err, "Sendfile resubmit");
+		return;
 	}
+	req->base.uv_flags |= ASYNC_IO_REQ_F_UV_IN_FLIGHT;
 }
 
 #ifdef PHP_WIN32
@@ -5172,6 +5292,7 @@ static void io_transmitfile_after_cb(uv_work_t *work, const int status)
 	async_transmitfile_work_t *tw = (async_transmitfile_work_t *) work->data;
 	async_sendfile_req_t *req = tw->req;
 
+	req->base.uv_flags &= ~ASYNC_IO_REQ_F_UV_IN_FLIGHT;
 	req->transferred = tw->transferred;
 
 	if (status == UV_ECANCELED) {
@@ -5261,6 +5382,10 @@ libuv_io_sendfile(zend_async_io_t *out_io_base, zend_async_io_t *in_io_base,
 			return NULL;
 		}
 
+		/* Pin both ios for the op; released in sendfile_complete. */
+		req->base.uv_flags |= ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+		ZEND_ASYNC_EVENT_ADD_REF(&in_io->base.event);
+		ZEND_ASYNC_EVENT_ADD_REF(&out_io->base.event);
 		ZEND_ASYNC_INCREASE_EVENT_COUNT(&in_io->base.event);
 		return &req->base.base;
 	}
@@ -5277,6 +5402,10 @@ libuv_io_sendfile(zend_async_io_t *out_io_base, zend_async_io_t *in_io_base,
 		return NULL;
 	}
 
+	/* See the TransmitFile branch: ios pinned until sendfile_complete. */
+	req->base.uv_flags |= ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+	ZEND_ASYNC_EVENT_ADD_REF(&in_io->base.event);
+	ZEND_ASYNC_EVENT_ADD_REF(&out_io->base.event);
 	ZEND_ASYNC_INCREASE_EVENT_COUNT(&in_io->base.event);
 	return &req->base.base;
 }
@@ -5327,6 +5456,10 @@ static void libuv_fs_open_cb(uv_fs_t *fs_request)
 	if (exception != NULL) {
 		zend_object_release(exception);
 	}
+
+	/* Drop the open's io ref; if the caller abandoned the pending io, this
+	 * frees it here (and closes the fresh OWNS_FD fd) rather than dangling. */
+	io->base.event.dispose(&io->base.event);
 	IF_EXCEPTION_STOP_REACTOR;
 }
 
@@ -5358,6 +5491,8 @@ libuv_fs_open(const char *path, const int flags, const int mode)
 		return NULL;
 	}
 
+	/* Pin the pending io until libuv_fs_open_cb (caller may abandon it). */
+	ZEND_ASYNC_EVENT_ADD_REF(&io->base.event);
 	ZEND_ASYNC_INCREASE_EVENT_COUNT(&io->base.event);
 	return io_base;
 }
@@ -5627,6 +5762,11 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, char *buf, s
 		return NULL;
 	}
 
+	/* Pin the io for the op: FILE ios have no uv_close rendezvous, so an owner
+	 * dispose could free the io while this callback still uses it. Released in
+	 * the cb. */
+	req->uv_flags |= ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+	ZEND_ASYNC_EVENT_ADD_REF(&io->base.event);
 	ZEND_ASYNC_INCREASE_EVENT_COUNT(&io->base.event);
 	return &req->base;
 }
@@ -5674,6 +5814,9 @@ static bool io_file_write_dispatch(async_io_t *io, async_io_req_t *req)
 		return false;
 	}
 
+	/* Pin the io for the duration of the fs op (see libuv_io_read). */
+	req->uv_flags |= ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+	ZEND_ASYNC_EVENT_ADD_REF(&io->base.event);
 	ZEND_ASYNC_INCREASE_EVENT_COUNT(&io->base.event);
 	return true;
 }
@@ -5729,6 +5872,9 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 			return NULL;
 		}
 
+		/* No io pin needed for stream writes: uv_close guarantees pending
+		 * write callbacks (UV_ECANCELED) run before io_close_cb frees the io. */
+		req->uv_flags |= ASYNC_IO_REQ_F_UV_IN_FLIGHT;
 		return &req->base;
 	}
 
@@ -5884,6 +6030,7 @@ static zend_async_io_req_t *libuv_io_writev(zend_async_io_t *io_base,
 		return NULL;
 	}
 
+	req->uv_flags |= ASYNC_IO_REQ_F_UV_IN_FLIGHT;
 	return &req->base;
 }
 
@@ -6031,6 +6178,9 @@ static zend_async_io_req_t *libuv_io_flush(zend_async_io_t *io_base)
 		return NULL;
 	}
 
+	/* Pin the io for the duration of the fs op (see libuv_io_read). */
+	req->uv_flags |= ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+	ZEND_ASYNC_EVENT_ADD_REF(&io->base.event);
 	ZEND_ASYNC_INCREASE_EVENT_COUNT(&io->base.event);
 	return &req->base;
 }
@@ -6128,6 +6278,9 @@ static zend_async_io_req_t *libuv_io_stat(zend_async_io_t *io_base, zend_stat_t 
 		return NULL;
 	}
 
+	/* Pin the io for the duration of the fs op (see libuv_io_read). */
+	req->uv_flags |= ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+	ZEND_ASYNC_EVENT_ADD_REF(&io->base.event);
 	ZEND_ASYNC_INCREASE_EVENT_COUNT(&io->base.event);
 	return &req->base;
 }
@@ -6616,6 +6769,18 @@ udp_recv_cb(uv_udp_t *udp_handle, ssize_t nread, const uv_buf_t *buf, const stru
 static void udp_req_dispose(zend_async_udp_req_t *base_req)
 {
 	async_udp_req_t *req = (async_udp_req_t *) base_req;
+
+	/* Recv abandoned before any datagram arrived is still armed as
+	 * io->active_req (udp_recv_cb detaches only on delivery/terminal): stop
+	 * and detach, like the armed-read case in libuv_io_req_dispose. */
+	if (req->io != NULL && req->io->active_req == (async_io_req_t *) req) {
+		async_io_t *io = req->io;
+		if (!(io->base.state & ZEND_ASYNC_IO_CLOSED)
+				&& EXPECTED(ASYNC_G(reactor_started))) {
+			uv_udp_recv_stop(&io->handle.udp);
+		}
+		io->active_req = NULL;
+	}
 
 	/* Sendto path with the send callback still in flight: defer the free
 	 * until udp_send_cb fires. uv_udp_send is not cancelable (kernel owns

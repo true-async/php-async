@@ -202,12 +202,20 @@ struct _async_io_t
 	} handle;
 };
 
+/* uv_flags on async_io_req_t — dispose()/callback rendezvous for ops that
+ * can't be cancelled synchronously (uv_write, uv_fs_*), mirroring
+ * ZEND_ASYNC_UDP_REQ_F_*: a dispose() arriving mid-flight defers the free to
+ * the completion callback. */
+#define ASYNC_IO_REQ_F_UV_IN_FLIGHT    (1u << 0) /* uv op submitted, callback pending */
+#define ASYNC_IO_REQ_F_DISPOSE_PENDING (1u << 1) /* dispose() arrived while in flight */
+
 struct _async_io_req_t
 {
 	zend_async_io_req_t base;
 	async_io_t *io;
 	size_t max_size;
 	bool buf_owned;
+	uint8_t uv_flags; /* ASYNC_IO_REQ_F_* — reactor-private */
 
 	/* Vectored write ownership: when non-zero, the request was submitted via
 	 * libuv_io_writev and owns `writev_nbufs` zend_string references stored
