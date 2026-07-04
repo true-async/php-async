@@ -164,17 +164,33 @@ typedef struct {
 	async_thread_channel_t *channel;
 } thread_pool_worker_ctx_t;
 
-/* GCC -O2 -Wmaybe-uninitialized misfires across this function's deeply nested
- * zend_try blocks — flagging both loop-local task pointers and the zend_try
- * macro's own __orig_bailout (all set before their SETJMP and never changed,
- * hence defined per C 7.13.2.1). The macro lives in Zend/zend.h and cannot be
- * annotated here, so suppress the false positive for this function only.
- * GCC-only: Clang doesn't have this warning group and MSVC would warn on the
- * unknown pragma (C4068). */
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
-#endif
+/* Call fcall under a bailout guard; returns true on bailout. Kept out of the
+ * worker handler so its outer zend_try does not nest another (GCC -O2 misfires
+ * -Wmaybe-uninitialized on the zend_try macro across nested setjmp). */
+static bool thread_pool_call_guarded(zend_fcall_info *fci, zend_fcall_info_cache *fcc)
+{
+	volatile bool bailed = false;
+	zend_try {
+		zend_call_function(fci, fcc);
+	} zend_catch {
+		bailed = true;
+	} zend_end_try();
+	return bailed;
+}
+
+/* SUSPEND under a bailout guard; returns true on bailout. Same reason as
+ * thread_pool_call_guarded — keeps this zend_try out of the handler's. */
+static bool thread_pool_suspend_guarded(void)
+{
+	volatile bool bailed = false;
+	zend_try {
+		ZEND_ASYNC_SUSPEND();
+	} zend_catch {
+		bailed = true;
+	} zend_end_try();
+	return bailed;
+}
+
 static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *ctx)
 {
 	thread_pool_worker_ctx_t *wc = (thread_pool_worker_ctx_t *) ctx;
@@ -244,11 +260,7 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			volatile bool boot_bailed = false;
 			if (zend_fcall_info_init(&boot_callable, 0, &boot_fci, &boot_fcc, NULL, NULL) == SUCCESS) {
 				boot_fci.retval = &boot_retval;
-				zend_try {
-					zend_call_function(&boot_fci, &boot_fcc);
-				} zend_catch {
-					boot_bailed = true;
-				} zend_end_try();
+				boot_bailed = thread_pool_call_guarded(&boot_fci, &boot_fcc);
 			}
 
 			zval_ptr_dtor(&boot_retval);
@@ -315,7 +327,8 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 
 			const zend_long kind =
 				Z_LVAL_P(zend_hash_index_find(Z_ARRVAL(task), TASK_SLOT_KIND));
-			zend_future_shared_state_t *state =
+			/* volatile: these live across the loop's zend_try longjmp (C 7.13.2.1). */
+			zend_future_shared_state_t * volatile state =
 				(zend_future_shared_state_t *)(uintptr_t) Z_LVAL_P(
 					zend_hash_index_find(Z_ARRVAL(task), TASK_SLOT_STATE));
 
@@ -357,7 +370,7 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			}
 
 			/* TASK_KIND_CLOSURE — original PHP-closure path. */
-			async_thread_snapshot_t *snapshot =
+			async_thread_snapshot_t * volatile snapshot =
 				(async_thread_snapshot_t *)(uintptr_t) Z_LVAL_P(
 					zend_hash_index_find(Z_ARRVAL(task), TASK_SLOT_PAYLOAD_A));
 			const zval *args_zv =
@@ -470,8 +483,8 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			/* Sync mode: run the body as a coroutine in a per-task nursery scope so
 			 * Async\spawn() inside it lands there. Cancel + drain before freeing the
 			 * snapshot so an un-awaited child can't outlive its arena. */
-			zend_coroutine_t *worker_coro = ZEND_ASYNC_CURRENT_COROUTINE;
-			zend_async_scope_t *task_scope =
+			zend_coroutine_t * volatile worker_coro = ZEND_ASYNC_CURRENT_COROUTINE;
+			zend_async_scope_t * volatile task_scope =
 				worker_coro != NULL ? ZEND_ASYNC_NEW_SCOPE(ZEND_ASYNC_CURRENT_SCOPE) : NULL;
 
 			if (UNEXPECTED(task_scope == NULL)) {
@@ -516,15 +529,11 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 
 			/* Await the body; its callback copies result/error into our waker. A
 			 * fatal re-raises zend_bailout() out of the coroutine — caught here. */
-			bool body_bailed = false;
+			volatile bool body_bailed = false;
 			ZEND_ASYNC_WAKER_NEW(worker_coro);
 			zend_async_resume_when(worker_coro, &body->event, false,
 								   zend_async_waker_callback_resolve, NULL);
-			zend_try {
-				ZEND_ASYNC_SUSPEND();
-			} zend_catch {
-				body_bailed = true;
-			} zend_end_try();
+			body_bailed = thread_pool_suspend_guarded();
 
 			/* Decrement running and bump completed BEFORE notifying the awaiter
 			 * via complete/reject — otherwise a coroutine waking from await()
@@ -699,9 +708,6 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 
 	pefree(wc, 1);
 }
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
 
 ///////////////////////////////////////////////////////////
 /// Coroutine-mode task: spawn + extended_dispose
