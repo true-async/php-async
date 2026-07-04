@@ -2324,6 +2324,12 @@ static void op_array_to_emalloc(zend_op_array *op_array)
 			ZSTR_VAL(op_array->doc_comment), ZSTR_LEN(op_array->doc_comment), 0);
 	}
 
+	/* Nested defs carry the snapshot's persistent immutable static_variables
+	 * (refcount 2); dup into a worker-local array destroy_op_array can free. */
+	if (op_array->static_variables) {
+		op_array->static_variables = zend_array_dup(op_array->static_variables);
+	}
+
 	/* dynamic_func_defs — outer closures with nested function/closure
 	 * definitions point into the snapshot's arena via dynamic_func_defs[i].
 	 * Without an emalloc-side copy, async_thread_snapshot_destroy frees those
@@ -2475,6 +2481,12 @@ void async_thread_create_closure(
 		zend_array_destroy(loaded_vars);
 	}
 
+	/* Self-contain the op_array per worker when it has nested defs, else they
+	 * stay shared with the snapshot and race on run_time_cache (#176). */
+	async_zend_closure_t *closure = (async_zend_closure_t *) Z_OBJ_P(closure_zv);
+	if (closure->func.op_array.num_dynamic_func_defs != 0) {
+		op_array_to_emalloc(&closure->func.op_array);
+	}
 }
 
 /**
@@ -3243,10 +3255,12 @@ static zend_object *closure_transfer_obj(
 			return fallback;
 		}
 
-		/* Copy op_array internals from persistent arena into emalloc
-		 * so the closure is fully self-contained */
+		/* Detach the top-level from the snapshot arena. Nested-def closures
+		 * were already fully copied by async_thread_create_closure (#176). */
 		async_zend_closure_t *closure = (async_zend_closure_t *) Z_OBJ(closure_zv);
-		op_array_to_emalloc(&closure->func.op_array);
+		if (closure->func.op_array.num_dynamic_func_defs == 0) {
+			op_array_to_emalloc(&closure->func.op_array);
+		}
 
 		async_thread_snapshot_destroy(snapshot);
 		/* Clear the slot so the persistent shell's later release path
