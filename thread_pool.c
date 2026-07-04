@@ -164,9 +164,7 @@ typedef struct {
 	async_thread_channel_t *channel;
 } thread_pool_worker_ctx_t;
 
-/* Call fcall under a bailout guard; returns true on bailout. Kept out of the
- * worker handler so its outer zend_try does not nest another (GCC -O2 misfires
- * -Wmaybe-uninitialized on the zend_try macro across nested setjmp). */
+/* Own function so the handler's zend_try isn't nested (GCC -Wmaybe-uninitialized). */
 static bool thread_pool_call_guarded(zend_fcall_info *fci, zend_fcall_info_cache *fcc)
 {
 	volatile bool bailed = false;
@@ -178,8 +176,6 @@ static bool thread_pool_call_guarded(zend_fcall_info *fci, zend_fcall_info_cache
 	return bailed;
 }
 
-/* SUSPEND under a bailout guard; returns true on bailout. Same reason as
- * thread_pool_call_guarded — keeps this zend_try out of the handler's. */
 static bool thread_pool_suspend_guarded(void)
 {
 	volatile bool bailed = false;
@@ -327,8 +323,7 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 
 			const zend_long kind =
 				Z_LVAL_P(zend_hash_index_find(Z_ARRVAL(task), TASK_SLOT_KIND));
-			/* volatile: these live across the loop's zend_try longjmp (C 7.13.2.1). */
-			zend_future_shared_state_t * volatile state =
+			zend_future_shared_state_t *state =
 				(zend_future_shared_state_t *)(uintptr_t) Z_LVAL_P(
 					zend_hash_index_find(Z_ARRVAL(task), TASK_SLOT_STATE));
 
@@ -370,7 +365,7 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			}
 
 			/* TASK_KIND_CLOSURE — original PHP-closure path. */
-			async_thread_snapshot_t * volatile snapshot =
+			async_thread_snapshot_t *snapshot =
 				(async_thread_snapshot_t *)(uintptr_t) Z_LVAL_P(
 					zend_hash_index_find(Z_ARRVAL(task), TASK_SLOT_PAYLOAD_A));
 			const zval *args_zv =
@@ -483,8 +478,8 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			/* Sync mode: run the body as a coroutine in a per-task nursery scope so
 			 * Async\spawn() inside it lands there. Cancel + drain before freeing the
 			 * snapshot so an un-awaited child can't outlive its arena. */
-			zend_coroutine_t * volatile worker_coro = ZEND_ASYNC_CURRENT_COROUTINE;
-			zend_async_scope_t * volatile task_scope =
+			zend_coroutine_t *worker_coro = ZEND_ASYNC_CURRENT_COROUTINE;
+			zend_async_scope_t *task_scope =
 				worker_coro != NULL ? ZEND_ASYNC_NEW_SCOPE(ZEND_ASYNC_CURRENT_SCOPE) : NULL;
 
 			if (UNEXPECTED(task_scope == NULL)) {
@@ -529,7 +524,7 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 
 			/* Await the body; its callback copies result/error into our waker. A
 			 * fatal re-raises zend_bailout() out of the coroutine — caught here. */
-			volatile bool body_bailed = false;
+			bool body_bailed = false;
 			ZEND_ASYNC_WAKER_NEW(worker_coro);
 			zend_async_resume_when(worker_coro, &body->event, false,
 								   zend_async_waker_callback_resolve, NULL);
