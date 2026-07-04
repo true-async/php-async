@@ -164,6 +164,17 @@ typedef struct {
 	async_thread_channel_t *channel;
 } thread_pool_worker_ctx_t;
 
+/* GCC -O2 -Wmaybe-uninitialized misfires across this function's deeply nested
+ * zend_try blocks — flagging both loop-local task pointers and the zend_try
+ * macro's own __orig_bailout (all set before their SETJMP and never changed,
+ * hence defined per C 7.13.2.1). The macro lives in Zend/zend.h and cannot be
+ * annotated here, so suppress the false positive for this function only.
+ * GCC-only: Clang doesn't have this warning group and MSVC would warn on the
+ * unknown pragma (C4068). */
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
 static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *ctx)
 {
 	thread_pool_worker_ctx_t *wc = (thread_pool_worker_ctx_t *) ctx;
@@ -620,6 +631,18 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			pool_scope = NULL;
 		}
 
+		/* Backstop for a retiring SYNC-mode worker: its tasks ran inline (no
+		 * per-task coroutine scope), so any coroutine still alive is a straggler
+		 * the bootloader spawned into the main scope (e.g. a DB-pool healthcheck
+		 * timer) that the server-side scope drain never reaches. Its live reactor
+		 * handle would keep AFTER_MAIN — and this worker's reload exit-token —
+		 * hung forever, so force graceful shutdown to cancel it. Coroutine-mode
+		 * pools instead drain their in-flight task coroutines below (see 077),
+		 * so they must not take this path. */
+		if (!pool->coroutine_mode) {
+			start_graceful_shutdown();
+		}
+
 		ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN(false);
 
 		/* AFTER_MAIN drained all task coroutines (and ran their dispose,
@@ -676,6 +699,9 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 
 	pefree(wc, 1);
 }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 ///////////////////////////////////////////////////////////
 /// Coroutine-mode task: spawn + extended_dispose
