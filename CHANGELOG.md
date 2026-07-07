@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.8] - 2026-07-07
+
+### Fixed
+- **Connection-pool healthcheck timer kept the reactor loop alive, blocking a graceful worker shutdown (true-async/server#93).** `pool_start_healthcheck_timer()` armed the pool's background heartbeat as an ordinary reactor event, so it counted toward `active_event_count`. An idle pool — e.g. a warmed PDO pool with `PDO::ATTR_POOL_HEALTHCHECK_INTERVAL > 0` — therefore held `ZEND_ASYNC_REACTOR_LOOP_ALIVE()` true after every coroutine had been cancelled on graceful shutdown. On worker hot-reload the scheduler fiber then tripped `ZEND_ASSERT(REACTOR_LOOP_ALIVE() == false)` in `fiber_entry` (debug build); on release builds the idle heartbeat needlessly kept the retiring worker's loop alive. The timer is now marked `ZEND_ASYNC_EVENT_F_HIDDEN` — its documented purpose ("background timers, e.g. health checks") — so it still fires but no longer counts as application work for loop-alive / deadlock accounting.
+
 ## [0.7.7] - 2026-07-06
 
 ### Fixed
