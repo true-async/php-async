@@ -2216,10 +2216,23 @@ static bool remote_future_dispose(zend_async_event_t *event)
 	zend_future_t *future = &remote->future;
 
 	if (remote->state != NULL) {
+		/* Sever the producer under the mutex before closing the trigger, so a
+		 * concurrent complete() becomes a no-op (mirrors state_object_free). */
+		zend_async_trigger_event_t *trigger_to_dispose = NULL;
+
+		ASYNC_MUTEX_LOCK(remote->state->mutex);
 		if (remote->state->trigger != NULL) {
-			remote->state->trigger->base.dispose(&remote->state->trigger->base);
+			trigger_to_dispose = remote->state->trigger;
 			remote->state->trigger = NULL;
+			zend_atomic_int_store(&remote->state->completed, 1);
 		}
+		remote->state->target_future = NULL;
+		ASYNC_MUTEX_UNLOCK(remote->state->mutex);
+
+		if (trigger_to_dispose != NULL) {
+			trigger_to_dispose->base.dispose(&trigger_to_dispose->base);
+		}
+
 		async_future_shared_state_delref(remote->state);
 		remote->state = NULL;
 	}
