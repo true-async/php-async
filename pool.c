@@ -667,6 +667,12 @@ static void pool_start_healthcheck_timer(async_pool_t *pool)
 		return;
 	}
 
+	/* The healthcheck timer is a background heartbeat, not application work.
+	 * Mark it HIDDEN so it does not count toward active_event_count — otherwise
+	 * an idle pool keeps the reactor loop alive and blocks a graceful worker
+	 * shutdown (e.g. on hot-reload), tripping the scheduler's loop-alive assert. */
+	ZEND_ASYNC_EVENT_SET_HIDDEN(&pool->healthcheck_timer->base);
+
 	/* Use inline callback embedded in pool structure */
 	pool->healthcheck_callback.ref_count = 1;
 	pool->healthcheck_callback.callback = pool_healthcheck_timer_callback;
