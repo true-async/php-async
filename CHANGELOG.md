@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.9] - 2026-07-07
+
+### Fixed
+- **Race-safe `remote_future_dispose`.** Disposing a remote future while its producer thread was still completing it raced: the cross-thread trigger was closed and the state ref dropped without first marking the state completed or detaching `target_future`, so a concurrent `async_future_shared_state_complete()` could ring a closing handle or resolve a freed future. It now mirrors `async_future_state_object_free` — under the shared-state mutex it grabs the trigger, NULLs it, sets `completed=1` and clears `target_future`, then disposes the trigger outside the lock — so a late completion is a clean no-op. Lets an owner dispose an unresolved remote future safely (e.g. the HTTP server reaping per-worker completion futures on pool shutdown, true-async/server#93).
+
 ## [0.7.8] - 2026-07-07
 
 ### Fixed
