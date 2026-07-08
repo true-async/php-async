@@ -428,14 +428,9 @@ static void libuv_debug_dump_handle(uv_handle_t *handle, void *arg)
 }
 #endif
 
-/* {{{ libuv_after_fork_child
- *
- * Runs in a freshly-forked child. The child inherited the parent's libuv loop,
- * whose epoll/kqueue backend fd is shared with the parent — running it here would
- * steal the parent's events and corrupt both. libuv has already reset its global
- * threadpool (its own pthread_atfork child handler), so we only need to give the
- * loop a private backend via uv_loop_fork(). Fork is only permitted with the main
- * coroutine active (see async_before_fork), so no user handles are in flight. */
+/* {{{ libuv_after_fork_child */
+/* Child inherited the parent's libuv loop (shared epoll backend); give it its own
+ * via uv_loop_fork(). libuv already reset the threadpool (its own atfork handler). */
 void libuv_after_fork_child(void)
 {
 	if (!ASYNC_G(reactor_started)) {

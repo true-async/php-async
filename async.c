@@ -1727,11 +1727,9 @@ PHP_INI_END()
 
 /* Module registration */
 
-/* {{{ async_before_fork
- *
- * Runs in the parent before fork(). Forking is only safe when no coroutine other
- * than the main one is alive — an in-flight coroutine's reactor state and worker
- * threads cannot survive fork(). Returns false and throws otherwise. */
+/* {{{ async_before_fork */
+/* Refuse to fork with any non-main coroutine alive: its in-flight reactor state
+ * and worker threads cannot survive fork(). Runs in the parent; throws on refusal. */
 static bool async_before_fork(void)
 {
 	if (ZEND_ASYNC_IS_OFF) {
@@ -1747,9 +1745,8 @@ static bool async_before_fork(void)
 		}
 
 		zend_throw_error(NULL,
-				"Cannot fork(): %u coroutine(s) other than the main one are running. "
-				"fork() is only allowed when just the main coroutine is active.",
-				zend_hash_num_elements(&ASYNC_G(coroutines)) - 1);
+				"Cannot fork() while coroutines other than the main one are running. "
+				"fork() is only allowed when just the main coroutine is active.");
 		return false;
 	}
 	ZEND_HASH_FOREACH_END();

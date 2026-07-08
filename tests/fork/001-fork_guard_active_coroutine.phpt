@@ -26,5 +26,5 @@ try {
 $c->cancel();
 
 ?>
---EXPECTF--
-Cannot fork(): %d coroutine(s) other than the main one are running. fork() is only allowed when just the main coroutine is active.
+--EXPECT--
+Cannot fork() while coroutines other than the main one are running. fork() is only allowed when just the main coroutine is active.
