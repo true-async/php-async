@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.8.0] - 2026-07-08
+## [0.7.10] - 2026-07-08
 
 ### Fixed
 - **`pcntl_fork()` under an active reactor broke the child process (e.g. `php artisan tinker` / any PsySH REPL under laravel-spawn).** The child inherited the parent's libuv loop, whose epoll backend is shared with the parent, so blocking I/O in the child spun on stale/duplicated events and the REPL never processed input — it appeared to exit with no error. `pcntl_fork()` now reinitializes the loop in the child via `uv_loop_fork()` (ABI hook `zend_async_after_fork_child_fn`), giving it an independent, working reactor.
