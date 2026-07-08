@@ -245,6 +245,9 @@ struct _async_udp_req_t
 
 void async_libuv_reactor_register(void);
 
+/* Reinitializes the reactor loop in a freshly-forked child (uv_loop_fork). */
+void libuv_after_fork_child(void);
+
 /* Called by async_thread_run in the child thread after ts_free_thread, so
  * the registry entry vanishes only once the child is past TSRM/Zend access. */
 void async_libuv_thread_registry_remove(zend_async_thread_handle_t handle);
