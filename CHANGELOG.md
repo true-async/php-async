@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-08
+
+### Fixed
+- **`pcntl_fork()` under an active reactor broke the child process (e.g. `php artisan tinker` / any PsySH REPL under laravel-spawn).** The child inherited the parent's libuv loop, whose epoll backend is shared with the parent, so blocking I/O in the child spun on stale/duplicated events and the REPL never processed input — it appeared to exit with no error. `pcntl_fork()` now reinitializes the loop in the child via `uv_loop_fork()` (ABI hook `zend_async_after_fork_child_fn`), giving it an independent, working reactor.
+
+### Changed
+- **`pcntl_fork()` now throws when a coroutine other than the main one is running.** An in-flight coroutine's reactor state and worker threads cannot survive `fork()`, so forking is refused with a clear `Error` instead of silently corrupting the child. Fork is permitted only when just the main coroutine is active (ABI hook `zend_async_before_fork_fn`). Requires ABI v0.24.0.
+
 ## [0.7.9] - 2026-07-07
 
 ### Fixed

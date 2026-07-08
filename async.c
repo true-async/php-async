@@ -1727,6 +1727,34 @@ PHP_INI_END()
 
 /* Module registration */
 
+/* {{{ async_before_fork */
+/* Refuse to fork with any non-main coroutine alive: its in-flight reactor state
+ * and worker threads cannot survive fork(). Runs in the parent; throws on refusal. */
+static bool async_before_fork(void)
+{
+	if (ZEND_ASYNC_IS_OFF) {
+		return true;
+	}
+
+	zend_coroutine_t *coroutine;
+	ZEND_HASH_FOREACH_PTR(&ASYNC_G(coroutines), coroutine)
+	{
+		if (coroutine == NULL || ZEND_COROUTINE_IS_MAIN(coroutine) ||
+			coroutine == ZEND_ASYNC_SCHEDULER) {
+			continue;
+		}
+
+		zend_throw_error(NULL,
+				"Cannot fork() while coroutines other than the main one are running. "
+				"fork() is only allowed when just the main coroutine is active.");
+		return false;
+	}
+	ZEND_HASH_FOREACH_END();
+
+	return true;
+}
+/* }}} */
+
 ZEND_MINIT_FUNCTION(async)
 {
 	REGISTER_INI_ENTRIES();
@@ -1754,6 +1782,7 @@ ZEND_MINIT_FUNCTION(async)
 	async_api_register();
 	async_pool_api_register();
 	async_libuv_reactor_register();
+	zend_async_fork_register(async_before_fork, libuv_after_fork_child);
 
 	return SUCCESS;
 }

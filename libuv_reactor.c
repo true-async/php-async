@@ -428,6 +428,19 @@ static void libuv_debug_dump_handle(uv_handle_t *handle, void *arg)
 }
 #endif
 
+/* {{{ libuv_after_fork_child */
+/* Child inherited the parent's libuv loop (shared epoll backend); give it its own
+ * via uv_loop_fork(). libuv already reset the threadpool (its own atfork handler). */
+void libuv_after_fork_child(void)
+{
+	if (!ASYNC_G(reactor_started)) {
+		return;
+	}
+
+	uv_loop_fork(UVLOOP);
+}
+/* }}} */
+
 /* {{{ libuv_reactor_shutdown */
 bool libuv_reactor_shutdown(void)
 {
