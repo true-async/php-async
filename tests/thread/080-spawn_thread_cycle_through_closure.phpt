@@ -2,7 +2,8 @@
 spawn_thread: cycle that runs through a closure's captured variable
 --SKIPIF--
 <?php
-if (!extension_loaded('true_async')) die('skip true_async not loaded');
+if (!PHP_ZTS) die('skip ZTS required');
+if (!function_exists('Async\spawn_thread')) die('skip spawn_thread not available');
 ?>
 --FILE--
 <?php
