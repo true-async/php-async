@@ -73,7 +73,6 @@ async_thread_snapshot_t *async_thread_snapshot_create(
 /* As above, but joins a transfer already in progress: `parent_transfer` carries
  * the already-copied table, so a cycle running through this closure's captured
  * variables terminates instead of recursing. NULL == top-level. */
-typedef struct _zend_async_thread_transfer_ctx_s zend_async_thread_transfer_ctx_t_fwd;
 async_thread_snapshot_t *async_thread_snapshot_create_ex(
 	const zend_fcall_t *entry, const zend_fcall_t *bootloader, bool entry_is_bootloader,
 	zend_async_thread_transfer_ctx_t *parent_transfer);
