@@ -70,6 +70,14 @@ typedef struct _async_thread_snapshot_t {
 async_thread_snapshot_t *async_thread_snapshot_create(
 	const zend_fcall_t *entry, const zend_fcall_t *bootloader, bool entry_is_bootloader);
 
+/* As above, but joins a transfer already in progress: `parent_transfer` carries
+ * the already-copied table, so a cycle running through this closure's captured
+ * variables terminates instead of recursing. NULL == top-level. */
+typedef struct _zend_async_thread_transfer_ctx_s zend_async_thread_transfer_ctx_t_fwd;
+async_thread_snapshot_t *async_thread_snapshot_create_ex(
+	const zend_fcall_t *entry, const zend_fcall_t *bootloader, bool entry_is_bootloader,
+	zend_async_thread_transfer_ctx_t *parent_transfer);
+
 /**
  * Free a snapshot and all its resources.
  */
@@ -114,6 +122,11 @@ void async_thread_request_shutdown(void);
  * @param copy         The deep-copied closure (from snapshot)
  * @param closure_zv   Output: the created Closure zval
  */
+/* As below, but joins a load already in progress — see async_thread_snapshot_create_ex. */
+void async_thread_create_closure_ex(
+	const async_thread_closure_copy_t *copy, zval *closure_zv,
+	zend_async_thread_transfer_ctx_t *parent_ctx);
+
 void async_thread_create_closure(
 	const async_thread_closure_copy_t *copy, zval *closure_zv);
 

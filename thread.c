@@ -742,6 +742,8 @@ static HashTable *thread_transfer_hash_table(thread_transfer_ctx_t *ctx, const H
 static zend_object *thread_transfer_object(thread_transfer_ctx_t *ctx, const zend_object *src);
 typedef struct _thread_release_ctx_t thread_release_ctx_t;
 static void thread_release_transferred_zval(thread_release_ctx_t *ctx, zval *z);
+void async_thread_snapshot_destroy_ex(async_thread_snapshot_t *snapshot,
+                                      thread_release_ctx_t *parent_ctx);
 /* Refcount-based, for build-error partial releases only; see definition. */
 static void thread_release_subgraph_zval(zval *z);
 
@@ -1375,7 +1377,7 @@ static void thread_release_transferred_object(thread_release_ctx_t *ctx, zend_ob
 	 * resets the field; if LOAD never ran (future rejected without an
 	 * awaiter) we still own the snapshot and must free it here. */
 	if (obj->properties != NULL && zend_string_equals_literal(class_name, "Closure")) {
-		async_thread_snapshot_destroy((async_thread_snapshot_t *) obj->properties);
+		async_thread_snapshot_destroy_ex((async_thread_snapshot_t *) obj->properties, ctx);
 		obj->properties = NULL;
 	}
 
@@ -1446,6 +1448,7 @@ static void thread_release_subgraph_obj(zend_object *obj)
 	const uint32_t prop_count = (uint32_t)(uintptr_t) obj->handlers;
 	zend_string * const class_name = (zend_string *) obj->ce;
 
+	/* Refcounted walk — no visited set to share. */
 	if (obj->properties != NULL && zend_string_equals_literal(class_name, "Closure")) {
 		async_thread_snapshot_destroy((async_thread_snapshot_t *) obj->properties);
 		obj->properties = NULL;
@@ -1560,7 +1563,7 @@ static bool async_thread_check_op_array(zend_op_array *op_array)
  */
 static void thread_copy_callable(
 	thread_copy_ctx_t *ctx, const zend_fcall_t *fcall, async_thread_closure_copy_t *dst,
-	bool strip_scope)
+	bool strip_scope, thread_transfer_ctx_t *parent_transfer)
 {
 	zend_op_array *src_op = &fcall->fci_cache.function_handler->op_array;
 
@@ -1617,9 +1620,20 @@ static void thread_copy_callable(
 	}
 
 	/* One transfer_ctx for both bound vars and $this — xlat preserves identity
-	 * when the same object is captured via use() and as $this. */
-	thread_transfer_ctx_t transfer_ctx;
-	thread_transfer_ctx_init(&transfer_ctx);
+	 * when the same object is captured via use() and as $this.
+	 *
+	 * Join the caller's ctx when there is one. A cycle can run through a closure
+	 * — $o->handler = function () use ($o) — and a private xlat would not know
+	 * $o was already copied: it would copy it again, reach the closure again,
+	 * and recurse until the stack ran out. The load and release walks share
+	 * their ctx for the same reason. */
+	thread_transfer_ctx_t  own_ctx;
+	thread_transfer_ctx_t *transfer = parent_transfer;
+
+	if (transfer == NULL) {
+		thread_transfer_ctx_init(&own_ctx);
+		transfer = &own_ctx;
+	}
 
 	/* bound_vars use pemalloc (not arena) — released individually in
 	 * thread_release_closure_copy. */
@@ -1632,8 +1646,8 @@ static void thread_copy_callable(
 		zval *val;
 		ZEND_HASH_FOREACH_STR_KEY_VAL(static_vars, key, val) {
 			zval transferred;
-			thread_transfer_zval_inner(&transfer_ctx, &transferred, val);
-			if (UNEXPECTED(transfer_ctx.error)) {
+			thread_transfer_zval_inner(transfer, &transferred, val);
+			if (UNEXPECTED(transfer->error)) {
 				thread_release_subgraph_zval(&transferred);
 				break;
 			}
@@ -1646,17 +1660,17 @@ static void thread_copy_callable(
 		} ZEND_HASH_FOREACH_END();
 	}
 
-	if (!transfer_ctx.error && bound_obj != NULL) {
+	if (!transfer->error && bound_obj != NULL) {
 		zval src_this;
 		ZVAL_OBJ(&src_this, bound_obj);
-		thread_transfer_zval_inner(&transfer_ctx, &dst->bound_this, &src_this);
-		if (UNEXPECTED(transfer_ctx.error)) {
+		thread_transfer_zval_inner(transfer, &dst->bound_this, &src_this);
+		if (UNEXPECTED(transfer->error)) {
 			thread_release_subgraph_zval(&dst->bound_this);
 			ZVAL_UNDEF(&dst->bound_this);
 		}
 	}
 
-	if (UNEXPECTED(transfer_ctx.error)) {
+	if (UNEXPECTED(transfer->error)) {
 		if (dst->bound_vars) {
 			zval *v;
 			ZEND_HASH_FOREACH_VAL(dst->bound_vars, v) {
@@ -1666,13 +1680,13 @@ static void thread_copy_callable(
 			pefree(dst->bound_vars, 1);
 			dst->bound_vars = NULL;
 		}
-		const char *err = transfer_ctx.error;
-		zend_throw_error(NULL, "%s", err);
-		thread_transfer_ctx_destroy(&transfer_ctx);
-		return;
+		zend_throw_error(NULL, "%s", transfer->error);
 	}
 
-	thread_transfer_ctx_destroy(&transfer_ctx);
+	/* A borrowed ctx is the caller's to tear down; its error is already there. */
+	if (transfer == &own_ctx) {
+		thread_transfer_ctx_destroy(&own_ctx);
+	}
 }
 
 /**
@@ -1720,18 +1734,19 @@ static void thread_release_closure_copy(thread_release_ctx_t *ctx, async_thread_
  * entry_is_bootloader: the entry slot holds a bootloader (pool case) and is
  * copied unscoped, like the regular bootloader slot.
  */
-async_thread_snapshot_t *async_thread_snapshot_create(
-	const zend_fcall_t *entry, const zend_fcall_t *bootloader, bool entry_is_bootloader)
+async_thread_snapshot_t *async_thread_snapshot_create_ex(
+	const zend_fcall_t *entry, const zend_fcall_t *bootloader, bool entry_is_bootloader,
+	thread_transfer_ctx_t *parent_transfer)
 {
 	async_thread_snapshot_t *snapshot = pecalloc(1, sizeof(async_thread_snapshot_t), 1);
 
 	thread_copy_ctx_t ctx;
 	thread_copy_ctx_init(&ctx);
 
-	thread_copy_callable(&ctx, entry, &snapshot->entry, entry_is_bootloader);
+	thread_copy_callable(&ctx, entry, &snapshot->entry, entry_is_bootloader, parent_transfer);
 
 	if (bootloader != NULL && !EG(exception)) {
-		thread_copy_callable(&ctx, bootloader, &snapshot->bootloader, true);
+		thread_copy_callable(&ctx, bootloader, &snapshot->bootloader, true, parent_transfer);
 	}
 
 	/* Store arena block list in snapshot — needed even for the failure path
@@ -1748,6 +1763,13 @@ async_thread_snapshot_t *async_thread_snapshot_create(
 	}
 
 	return snapshot;
+}
+
+/* Top-level: no transfer in progress, so the closure gets its own ctx. */
+async_thread_snapshot_t *async_thread_snapshot_create(
+	const zend_fcall_t *entry, const zend_fcall_t *bootloader, bool entry_is_bootloader)
+{
+	return async_thread_snapshot_create_ex(entry, bootloader, entry_is_bootloader, NULL);
 }
 
 /* Heap-copy the op_array's interned (arena-backed) name strings so holders that
@@ -1775,24 +1797,38 @@ void async_thread_snapshot_materialize_entry(async_thread_snapshot_t *snapshot)
 /**
  * Free snapshot resources.
  */
-void async_thread_snapshot_destroy(async_thread_snapshot_t *snapshot)
+void async_thread_snapshot_destroy_ex(async_thread_snapshot_t *snapshot,
+                                      thread_release_ctx_t *parent_ctx)
 {
-	thread_release_ctx_t ctx;
-	thread_release_ctx_init(&ctx);
+	/* Join the caller's visited set — see thread_copy_callable. */
+	thread_release_ctx_t  own_ctx;
+	thread_release_ctx_t *rel = parent_ctx;
 
-	thread_release_closure_copy(&ctx, &snapshot->entry);
-
-	if (snapshot->bootloader.func != NULL) {
-		thread_release_closure_copy(&ctx, &snapshot->bootloader);
+	if (rel == NULL) {
+		thread_release_ctx_init(&own_ctx);
+		rel = &own_ctx;
 	}
 
-	thread_release_ctx_destroy(&ctx);
+	thread_release_closure_copy(rel, &snapshot->entry);
+
+	if (snapshot->bootloader.func != NULL) {
+		thread_release_closure_copy(rel, &snapshot->bootloader);
+	}
+
+	if (rel == &own_ctx) {
+		thread_release_ctx_destroy(&own_ctx);
+	}
 
 	/* Free all arena blocks at once */
 	thread_copy_arena_free(snapshot->arena_blocks);
 	snapshot->arena_blocks = NULL;
 
 	pefree(snapshot, 1);
+}
+
+void async_thread_snapshot_destroy(async_thread_snapshot_t *snapshot)
+{
+	async_thread_snapshot_destroy_ex(snapshot, NULL);
 }
 
 /**
@@ -2379,8 +2415,9 @@ static zend_class_entry *thread_resolve_scope_class(const zend_string *name)
 	return ce;
 }
 
-void async_thread_create_closure(
-	const async_thread_closure_copy_t *copy, zval *closure_zv)
+void async_thread_create_closure_ex(
+	const async_thread_closure_copy_t *copy, zval *closure_zv,
+	thread_transfer_ctx_t *parent_ctx)
 {
 	ZEND_ASSERT(copy->func != NULL);
 
@@ -2420,9 +2457,15 @@ void async_thread_create_closure(
 	 * and destroy_op_array returns early without freeing pemalloc'd data. */
 	func.op_array.refcount = NULL;
 
-	/* One load_ctx for both bound vars and $this — see transfer side. */
-	thread_transfer_ctx_t load_ctx;
-	thread_transfer_ctx_init(&load_ctx);
+	/* One load_ctx for both bound vars and $this, joining the caller's when a
+	 * load is already in progress — see thread_copy_callable. */
+	thread_transfer_ctx_t  own_load_ctx;
+	thread_transfer_ctx_t *load = parent_ctx;
+
+	if (load == NULL) {
+		thread_transfer_ctx_init(&own_load_ctx);
+		load = &own_load_ctx;
+	}
 
 	HashTable *loaded_vars = NULL;
 	if (copy->bound_vars) {
@@ -2433,7 +2476,7 @@ void async_thread_create_closure(
 		zval *val;
 		ZEND_HASH_FOREACH_STR_KEY_VAL(copy->bound_vars, key, val) {
 			zval loaded;
-			thread_load_zval_inner(&load_ctx, &loaded, val);
+			thread_load_zval_inner(load, &loaded, val);
 			zend_string *local_key = zend_string_init(ZSTR_VAL(key), ZSTR_LEN(key), 0);
 			zend_hash_add(loaded_vars, local_key, &loaded);
 			zend_string_release(local_key);
@@ -2447,10 +2490,12 @@ void async_thread_create_closure(
 	zval loaded_this;
 	ZVAL_UNDEF(&loaded_this);
 	if (!Z_ISUNDEF(copy->bound_this)) {
-		thread_load_zval_inner(&load_ctx, &loaded_this, &copy->bound_this);
+		thread_load_zval_inner(load, &loaded_this, &copy->bound_this);
 	}
 
-	thread_transfer_ctx_destroy(&load_ctx);
+	if (load == &own_load_ctx) {
+		thread_transfer_ctx_destroy(&own_load_ctx);
+	}
 
 	/* Detach from persistent static_variables — we already loaded them
 	 * into loaded_vars / static_variables_ptr above */
@@ -2487,6 +2532,13 @@ void async_thread_create_closure(
 	if (closure->func.op_array.num_dynamic_func_defs != 0) {
 		op_array_to_emalloc(&closure->func.op_array);
 	}
+}
+
+/* Top-level: no load in progress, so the closure gets its own ctx. */
+void async_thread_create_closure(
+	const async_thread_closure_copy_t *copy, zval *closure_zv)
+{
+	async_thread_create_closure_ex(copy, closure_zv, NULL);
 }
 
 /**
@@ -3217,7 +3269,10 @@ static zend_object *closure_transfer_obj(
 			fcall.fci_cache.object = Z_OBJ_P(bound_this);
 		}
 
-		async_thread_snapshot_t *snapshot = async_thread_snapshot_create(&fcall, NULL, false);
+		/* Share our ctx: the captured vars may point back at an object this
+		 * transfer already copied — see thread_copy_callable. */
+		async_thread_snapshot_t *snapshot =
+			async_thread_snapshot_create_ex(&fcall, NULL, false, ctx);
 		if (snapshot == NULL) {
 			return NULL;
 		}
@@ -3240,8 +3295,9 @@ static zend_object *closure_transfer_obj(
 		/* Destination thread → emalloc: recreate closure from snapshot */
 		async_thread_snapshot_t *snapshot = (async_thread_snapshot_t *) object->properties;
 
+		/* Share our ctx — mirror of the store side. */
 		zval closure_zv;
-		async_thread_create_closure(&snapshot->entry, &closure_zv);
+		async_thread_create_closure_ex(&snapshot->entry, &closure_zv, ctx);
 
 		if (UNEXPECTED(EG(exception) != NULL)) {
 			/* Scope class missing here or a bound value failed to load.
@@ -3262,10 +3318,9 @@ static zend_object *closure_transfer_obj(
 			op_array_to_emalloc(&closure->func.op_array);
 		}
 
-		async_thread_snapshot_destroy(snapshot);
-		/* Clear the slot so the persistent shell's later release path
-		 * doesn't double-free the snapshot. */
-		object->properties = NULL;
+		/* Not freed here: with a cycle the snapshot's captured vars include an
+		 * object still being loaded above us. The shell's release walk frees it
+		 * afterwards, and its visited set makes that happen exactly once. */
 
 		return Z_OBJ(closure_zv);
 	}

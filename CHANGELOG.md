@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Segfault transferring an object graph whose cycle runs through a closure.** `$o->handler = function () use ($o) { … }` — an object owning a closure that captured it — crashed the process the moment the object was handed to a thread (`spawn_thread`, `ThreadPool::submit`), with no error, just a stack overflow. Object-to-object cycles were already handled (`$o->self = $o`), because they resolve through the already-copied table of one transfer context. But a closure's captured variables were copied under a **fresh** context, so a back-edge into the object that owns the closure did not find it there: the object was copied again, its closure reached again, and the walk recursed until the stack ran out. The depth limit lives on that context, so it reset with every new one and never tripped. The copy (`thread_copy_callable`), the load (`async_thread_create_closure`) and the release (`async_thread_snapshot_destroy`) now join the walk already in progress instead of starting their own, so the cycle terminates and the object stays a single instance on both sides of the capture. Loading a closure also no longer frees its snapshot on the spot — with a cycle the snapshot's captured vars include an object still being loaded further up the stack; the release walk frees it afterwards, exactly once.
+
 ## [0.7.10] - 2026-07-08
 
 ### Fixed
