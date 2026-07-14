@@ -880,11 +880,25 @@ PHP_FUNCTION(Async_root_context)
 	THROW_IF_ASYNC_OFF;
 	THROW_IF_SCHEDULER_CONTEXT;
 
-	if (ASYNC_G(root_context) == NULL) {
-		ASYNC_G(root_context) = (zend_async_context_t *) async_context_new();
+	// The root context is the context of the main scope. Holding it in a global of its own put it outside
+	// the scope tree, where find() -- which walks scope->parent_scope -- could never reach it.
+	SCHEDULER_LAUNCH;
+
+	zend_async_scope_t *scope = ZEND_ASYNC_MAIN_SCOPE;
+
+	if (UNEXPECTED(scope == NULL)) {
+		async_throw_error("The main scope is not defined");
+		RETURN_THROWS();
 	}
 
-	async_context_t *context = (async_context_t *) ASYNC_G(root_context);
+	if (scope->context == NULL) {
+		async_context_t *context = async_context_new();
+		context->scope = scope;
+		scope->context = &context->base;
+		RETURN_OBJ_COPY(&context->std);
+	}
+
+	async_context_t *context = (async_context_t *) scope->context;
 	RETURN_OBJ_COPY(&context->std);
 }
 
@@ -1695,7 +1709,6 @@ static PHP_GINIT_FUNCTION(async)
 	async_globals->signal_handlers = NULL;
 	async_globals->signal_events = NULL;
 	async_globals->process_events = NULL;
-	async_globals->root_context = NULL;
 	/* Maximum number of coroutines in the concurrent iterator */
 	async_globals->default_concurrency = 32;
 
@@ -1813,12 +1826,6 @@ PHP_MINFO_FUNCTION(async)
 
 PHP_RSHUTDOWN_FUNCTION(async)
 {
-	if (ASYNC_G(root_context) != NULL) {
-		async_context_t *root_context = (async_context_t *) ASYNC_G(root_context);
-		ASYNC_G(root_context) = NULL;
-		OBJ_RELEASE(&root_context->std);
-	}
-
 	async_cpu_usage_reset_state();
 
 	return SUCCESS;

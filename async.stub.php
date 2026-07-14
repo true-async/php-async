@@ -181,8 +181,19 @@ function loadavg(): ?array {}
 
 function timeout(int $ms): Awaitable {}
 
+/**
+ * Returns the context of the current Scope.
+ *
+ * Values set here are visible to every coroutine below this Scope, because find() walks up the Scope
+ * chain. At top level this is the main Scope, so it returns the same object as root_context().
+ */
 function current_context(): Context {}
 
+/**
+ * Returns the context of the current coroutine.
+ *
+ * Unlike current_context(), this one belongs to the coroutine alone and is not inherited by anybody.
+ */
 function coroutine_context(): Context {}
 
 /**
@@ -196,7 +207,11 @@ function current_coroutine(): Coroutine {}
 //function finally(\Closure $callback): void {}
 
 /**
- * Returns the root Scope.
+ * Returns the context of the main Scope, the root of the Scope tree.
+ *
+ * Values set here are reachable through find() from every coroutine that inherits from the main Scope,
+ * which is all of them except those in a deliberately detached `new Scope()`. Those still reach it by
+ * calling root_context() directly.
  */
 function root_context(): Context {}
 
