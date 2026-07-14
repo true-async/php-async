@@ -53,7 +53,8 @@ struct _async_iterator_t
 	ZEND_ASYNC_ITERATOR_FIELDS
 	/* The current state of the iterator. See async_iterator_state_t */
 	async_iterator_state_t state;
-	/* The number of active coroutines that are currently executing */
+	/* Handler slots in use. Reserved when a coroutine is spawned, not when it starts running, so that
+	 * the concurrency gate cannot admit a worker past the limit while a spawn is still in flight. */
 	unsigned int active_coroutines;
 	/* The internal handler */
 	async_iterator_handler_t handler;
