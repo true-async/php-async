@@ -73,6 +73,29 @@ zend_async_event_t *async_iterator_completion_event_create(void)
 ///////////////////////////////////////////////////////////////////
 
 /**
+ * Returns the slot taken at spawn time, on either way out: coroutine_entry() once the coroutine has
+ * iterated, or coroutine_extended_dispose() if it was cancelled before it ever started.
+ * The last coroutine to leave completes the iterator, so completion cannot hang off the entry path alone.
+ */
+static void iterator_release_coroutine(async_iterator_t *iterator)
+{
+	if (iterator->active_coroutines > 1) {
+		iterator->active_coroutines--;
+		return;
+	}
+
+	iterator->active_coroutines = 0;
+	iterator->state = ASYNC_ITERATOR_FINISHED;
+
+	if (iterator->completion_event != NULL) {
+		zend_async_event_t *event = iterator->completion_event;
+		iterator->completion_event = NULL;
+		ZEND_ASYNC_CALLBACKS_NOTIFY_AND_CLOSE(event, NULL, iterator->exception);
+		ZEND_ASYNC_EVENT_RELEASE(event);
+	}
+}
+
+/**
  *  An additional coroutine destructor that frees the iterator if the coroutine never started.
  */
 void coroutine_extended_dispose(zend_coroutine_t *coroutine)
@@ -83,6 +106,9 @@ void coroutine_extended_dispose(zend_coroutine_t *coroutine)
 
 	async_iterator_t *iterator = coroutine->extended_data;
 	coroutine->extended_data = NULL;
+
+	// Before the dtor: it may drop the last reference and free the iterator.
+	iterator_release_coroutine(iterator);
 	iterator->microtask.dtor(&iterator->microtask);
 }
 
@@ -504,20 +530,7 @@ static void coroutine_entry(void)
 
 	async_iterator_run(iterator);
 
-	if (iterator->active_coroutines > 1) {
-		iterator->active_coroutines--;
-	} else {
-		iterator->active_coroutines = 0;
-		iterator->state = ASYNC_ITERATOR_FINISHED;
-
-		if (iterator->completion_event != NULL) {
-			zend_async_event_t *event = iterator->completion_event;
-			iterator->completion_event = NULL;
-			ZEND_ASYNC_CALLBACKS_NOTIFY_AND_CLOSE(event, NULL, iterator->exception);
-			ZEND_ASYNC_EVENT_RELEASE(event);
-		}
-	}
-
+	iterator_release_coroutine(iterator);
 	iterator->microtask.dtor(&iterator->microtask);
 }
 
@@ -568,6 +581,10 @@ void async_iterator_run_in_coroutine(async_iterator_t *iterator, int32_t priorit
 	if (UNEXPECTED(iterator_coroutine == NULL || EG(exception))) {
 		return;
 	}
+
+	// This coroutine runs the iteration loop, so it executes the handler just like an iterator_microtask()
+	// worker and takes a slot on the same terms: active_coroutines reserves slots at spawn time.
+	iterator->active_coroutines++;
 
 	iterator_coroutine->extended_data = iterator;
 	iterator_coroutine->internal_entry = coroutine_entry;
