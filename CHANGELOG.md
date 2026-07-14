@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`iterate()` ignored `concurrency` for every `Traversable`.** Generators, `Iterator` and `IteratorAggregate` ran strictly one callback at a time (arrays were fine): advancing a `zend_iterator` cancelled the spawning microtask and only uncancelled it if the move had suspended, so after the first non-suspending move no worker was ever spawned again.
+
 - **`current_context()` silently discarded everything written before the first coroutine.** With no scope to anchor to, every top-level call returned a fresh detached context, so `set()` wrote where nobody could read it. The scheduler is now started on demand, as `spawn()` already does.
 
 - **`iterate()` ran `concurrency + 1` callbacks at once and silently cancelled the last one still working.** The coroutine driving the iteration loop executes the callback but did not take a slot, so a callback slower than its peers was killed with `AsyncCancellation` and lost without a trace.
