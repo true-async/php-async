@@ -1,5 +1,5 @@
-/* This is a generated file, edit the .stub.php file instead.
- * Stub hash: a93e0b70e865dea520f8d9d22e73b6640e1c0ebc */
+/* This is a generated file, edit scope.stub.php instead.
+ * Stub hash: c2099c980283b2ef42817380a270d7e1f5c3919a */
 
 ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_class_Async_ScopeProvider_provideScope, 0, 0, Async\\Scope, 1)
 ZEND_END_ARG_INFO()
@@ -159,9 +159,9 @@ static zend_class_entry *register_class_Async_Scope(zend_class_entry *class_entr
 	zend_class_implements(class_entry, 1, class_entry_Async_ScopeProvider);
 
 
-	zend_string *attribute_name_Override_func_providescope_0 = zend_string_init_interned("Override", sizeof("Override") - 1, 1);
+	zend_string *attribute_name_Override_func_providescope_0 = zend_string_init_interned("Override", sizeof("Override") - 1, true);
 	zend_add_function_attribute(zend_hash_str_find_ptr(&class_entry->function_table, "providescope", sizeof("providescope") - 1), attribute_name_Override_func_providescope_0, 0);
-	zend_string_release(attribute_name_Override_func_providescope_0);
+	zend_string_release_ex(attribute_name_Override_func_providescope_0, true);
 
 	return class_entry;
 }
