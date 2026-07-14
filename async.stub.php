@@ -179,6 +179,17 @@ function cpu_usage(): array {}
  */
 function loadavg(): ?array {}
 
+/**
+ * Creates a cancellation token that trips after $ms.
+ *
+ * The token does nothing on its own — calling timeout() and letting the time pass throws nothing. It only
+ * has an effect once it is handed to an operation as a cancellation argument:
+ *
+ *     await($coroutine, timeout(2000));
+ *
+ * When it trips, the awaited operation is cancelled, so the caller sees OperationCanceledException with a
+ * TimeoutException as its getPrevious(). It is not a TimeoutException itself.
+ */
 function timeout(int $ms): Awaitable {}
 
 /**

@@ -46,9 +46,15 @@ final class Pool implements \Countable, CircuitBreaker
      *
      * Waits if no resource available and pool is at max capacity.
      *
+     * A timeout is not a pool failure — the pool is healthy, it is merely busy — so it is reported as
+     * TimeoutException, the same way every other deadline in the extension is. PoolException is reserved
+     * for the pool itself being unusable. Note that TimeoutException extends Exception, not
+     * PoolException, so catching PoolException alone will not catch a timeout.
+     *
      * @param int $timeout Max wait time in ms (0 = infinite)
      * @return mixed The acquired resource
-     * @throws PoolException If pool is closed or timeout
+     * @throws PoolException If the pool is closed or was never initialised
+     * @throws TimeoutException If no resource became available within $timeout
      */
     public function acquire(int $timeout = 0): mixed {}
 

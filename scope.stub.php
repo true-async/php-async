@@ -57,6 +57,17 @@ final class Scope implements ScopeProvider
 
     public function cancel(?AsyncCancellation $cancellationError = null): void {}
 
+    /**
+     * Waits until every coroutine in this Scope has finished.
+     *
+     * The cancellation token is mandatory, not optional: a Scope has no deadline of its own, so without one
+     * a stuck child would hang the caller forever. Pass timeout() to bound the wait:
+     *
+     *     $scope->awaitCompletion(timeout(5000));
+     *
+     * @param Awaitable $cancellation Token that aborts the wait; when it trips, OperationCanceledException
+     *                                is thrown and the Scope itself keeps running.
+     */
     public function awaitCompletion(Awaitable $cancellation): void {}
 
     public function awaitAfterCancellation(?callable $errorHandler = null, ?Awaitable $cancellation = null): void {}
@@ -69,6 +80,14 @@ final class Scope implements ScopeProvider
 
     /**
      * Sets an error handler that is called when an exception is passed to the Scope from one of its child coroutines.
+     *
+     * The handler receives three arguments, not just the exception:
+     *
+     *     $scope->setExceptionHandler(function (Scope $scope, Coroutine $coroutine, \Throwable $error) { … });
+     *
+     * A single-parameter closure type-errors on the first failure, when it is far too late to notice.
+     *
+     * @param callable $exceptionHandler fn(Scope $scope, Coroutine $coroutine, \Throwable $error): void
      */
     public function setExceptionHandler(callable $exceptionHandler): void {}
 

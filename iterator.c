@@ -219,10 +219,16 @@ void iterator_dtor(zend_async_microtask_t *microtask)
 //
 // End of the block for safe iterator modification.
 //
+// The microtask is uncancelled unconditionally: the move is over, so spawning is safe again. Tying this
+// to ref_count would leave the microtask cancelled forever whenever the move did not suspend -- which is
+// the usual case -- and no worker would ever be spawned again.
+// A changed ref_count means the scheduler consumed the microtask while it was cancelled, so it is no
+// longer queued and has to be queued again.
+//
 #define ITERATOR_SAFE_MOVING_END(iterator) \
 	(iterator)->state = ASYNC_ITERATOR_STARTED; \
+	(iterator)->microtask.is_cancelled = false; \
 	if (prev_ref_count != (iterator)->microtask.ref_count) { \
-		(iterator)->microtask.is_cancelled = false; \
 		ZEND_ASYNC_ADD_MICROTASK(&(iterator)->microtask); \
 	}
 

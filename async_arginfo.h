@@ -1,5 +1,5 @@
 /* This is a generated file, edit async.stub.php instead.
- * Stub hash: 73a3f3a9a874ef0399809a77256792435ef5086e */
+ * Stub hash: f55fed172505a7cb1745b8080b2597e5cb3ec825 */
 
 ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_Async_spawn, 0, 1, Async\\Coroutine, 0)
 	ZEND_ARG_TYPE_INFO(0, task, IS_CALLABLE, 0)
