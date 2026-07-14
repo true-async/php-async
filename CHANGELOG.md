@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`foreach` over a `Channel` broke on the ordinary producer/consumer pattern.** Closing a channel while a consumer was parked in the loop left the wake-up `ChannelException` pending, so it escaped `foreach` uncaught — and surfaced against the producer's `close()`, which had done nothing wrong. An explicit `close()` now ends the iteration cleanly, while a deadlock or a disposal still propagates.
+
+- **Segfault: `foreach` over a `Channel` as the first async operation.** The loop reaches the iterator straight from `FE_RESET`, bypassing the guard `send()`/`recv()` run, so with no main coroutine yet it parked a `NULL` coroutine. It now starts the scheduler like every other blocking channel operation.
+
 - **`root_context()` was not the main Scope's context and could not be seen by `find()`.** It lived in a global of its own, outside the Scope tree, so `find()` — which walks the Scope chain — never reached it. It is now the main Scope's context: `root_context() === current_context()` at top level, and values set on it are visible from every coroutine that inherits from the main Scope.
 
 - **`iterate()` ignored `concurrency` for every `Traversable`.** Generators, `Iterator` and `IteratorAggregate` ran strictly one callback at a time (arrays were fine): advancing a `zend_iterator` cancelled the spawning microtask and only uncancelled it if the move had suspended, so after the first non-suspending move no worker was ever spawned again.
