@@ -803,12 +803,14 @@ PHP_FUNCTION(Async_current_context)
 	THROW_IF_ASYNC_OFF;
 	THROW_IF_SCHEDULER_CONTEXT;
 
+	// The context is anchored to a scope, and no scope exists until the scheduler launches.
+	SCHEDULER_LAUNCH;
+
 	zend_async_scope_t *scope = ZEND_ASYNC_CURRENT_SCOPE;
 
-	if (scope == NULL) {
-		// No current scope - return new independent context
-		async_context_t *context = async_context_new();
-		RETURN_OBJ(&context->std);
+	if (UNEXPECTED(scope == NULL)) {
+		async_throw_error("The current scope is not defined");
+		RETURN_THROWS();
 	}
 
 	if (scope->context == NULL) {
@@ -831,12 +833,14 @@ PHP_FUNCTION(Async_coroutine_context)
 	THROW_IF_ASYNC_OFF;
 	THROW_IF_SCHEDULER_CONTEXT;
 
+	// The context is anchored to the coroutine, and no coroutine exists until the scheduler launches.
+	SCHEDULER_LAUNCH;
+
 	async_coroutine_t *coroutine = (async_coroutine_t *) ZEND_ASYNC_CURRENT_COROUTINE;
 
-	if (coroutine == NULL) {
-		// No current coroutine - return new context
-		async_context_t *context = async_context_new();
-		RETURN_OBJ(&context->std);
+	if (UNEXPECTED(coroutine == NULL)) {
+		async_throw_error("The current coroutine is not defined");
+		RETURN_THROWS();
 	}
 
 	if (coroutine->coroutine.context == NULL) {
