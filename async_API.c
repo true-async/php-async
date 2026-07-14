@@ -221,12 +221,6 @@ static bool engine_shutdown(void)
 	zend_hash_destroy(&ASYNC_G(deadlock_channels));
 	zend_hash_destroy(&ASYNC_G(thread_channels));
 
-	if (ASYNC_G(root_context) != NULL) {
-		async_context_t *root_context = (async_context_t *) ASYNC_G(root_context);
-		ASYNC_G(root_context) = NULL;
-		OBJ_RELEASE(&root_context->std);
-	}
-
 	// async_host_name_list_dtor();
 	return true;
 }

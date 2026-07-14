@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`root_context()` was not the main Scope's context and could not be seen by `find()`.** It lived in a global of its own, outside the Scope tree, so `find()` — which walks the Scope chain — never reached it. It is now the main Scope's context: `root_context() === current_context()` at top level, and values set on it are visible from every coroutine that inherits from the main Scope.
+
 - **`iterate()` ignored `concurrency` for every `Traversable`.** Generators, `Iterator` and `IteratorAggregate` ran strictly one callback at a time (arrays were fine): advancing a `zend_iterator` cancelled the spawning microtask and only uncancelled it if the move had suspended, so after the first non-suspending move no worker was ever spawned again.
 
 - **`current_context()` silently discarded everything written before the first coroutine.** With no scope to anchor to, every top-level call returned a fresh detached context, so `set()` wrote where nobody could read it. The scheduler is now started on demand, as `spawn()` already does.

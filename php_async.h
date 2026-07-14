@@ -92,8 +92,6 @@ HashTable coroutines;
 zend_fiber_transfer *main_transfer;
 /* The main flow stack */
 zend_vm_stack main_vm_stack;
-/* System root context */
-zend_async_context_t *root_context;
 /* The default concurrency */
 int default_concurrency;
 
