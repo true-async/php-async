@@ -798,9 +798,8 @@ retry:
 	CHANNEL_WAIT_FOR_DATA(channel, 0);
 
 	if (EG(exception)) {
-		// An explicit close() is how iteration ends, not a failure, so the exception the waiter was woken
-		// with is consumed here and foreach() finishes cleanly. Anything else -- a deadlock, a disposal, a
-		// cancellation -- is left pending and propagates out of the loop, where it belongs.
+		// An explicit close() ends the iteration and is not a failure, so the wake-up exception is consumed
+		// here. A deadlock, a disposal or a cancellation stays pending and propagates out of foreach().
 		if (EG(exception)->ce == async_ce_channel_exception && channel->close_reason == CHANNEL_CLOSE_EXPLICIT) {
 			zend_clear_exception();
 		}
@@ -837,9 +836,8 @@ static zend_object_iterator *channel_get_iterator(zend_class_entry *ce, zval *ob
 		return NULL;
 	}
 
-	// foreach() reaches this handler straight from FE_RESET, bypassing send()/recv() and the
-	// ENSURE_COROUTINE_CONTEXT they run. Iterating parks the caller on the channel just like recv() does,
-	// so the main coroutine has to exist first -- otherwise channel_wait_for() suspends a NULL coroutine.
+	// FE_RESET reaches this handler directly, bypassing the ENSURE_COROUTINE_CONTEXT that send()/recv() run,
+	// yet iterating parks on the channel exactly as recv() does -- so the coroutine has to exist first.
 	if (UNEXPECTED(ZEND_ASYNC_CURRENT_COROUTINE == NULL)) {
 		async_scheduler_launch();
 
