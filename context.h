@@ -42,6 +42,7 @@ void async_context_dispose(async_context_t *context);
 
 // Class entry
 PHP_ASYNC_API extern zend_class_entry *async_ce_context;
+PHP_ASYNC_API extern zend_class_entry *async_ce_context_exception;
 void async_register_context_ce(void);
 
 

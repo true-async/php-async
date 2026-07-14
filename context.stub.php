@@ -5,6 +5,11 @@
 namespace Async;
 
 /**
+ * Thrown when a mandatory Context key is missing.
+ */
+class ContextException extends AsyncException {}
+
+/**
  * @strict-properties
  * @not-serializable
  */
@@ -12,11 +17,17 @@ final class Context
 {
     /**
      * Find a value by key in the current or parent Context.
+     *
+     * Returns null when the key is absent. Use get() when the value is mandatory.
      */
     public function find(string|object $key): mixed {}
 
     /**
-     * Get a value by key in the current Context.
+     * Get a value by key in the current or parent Context.
+     *
+     * Unlike find(), a missing key is an error rather than a null.
+     *
+     * @throws ContextException If the key is not found at any level.
      */
     public function get(string|object $key): mixed {}
 
@@ -27,11 +38,17 @@ final class Context
 
     /**
      * Find a value by key only in the local Context.
+     *
+     * Returns null when the key is absent. Use getLocal() when the value is mandatory.
      */
     public function findLocal(string|object $key): mixed {}
 
     /**
      * Get a value by key only in the local Context.
+     *
+     * Unlike findLocal(), a missing key is an error rather than a null.
+     *
+     * @throws ContextException If the key is not found in the local Context.
      */
     public function getLocal(string|object $key): mixed {}
 

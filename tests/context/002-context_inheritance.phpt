@@ -7,6 +7,15 @@ use function Async\spawn;
 use function Async\current_context;
 use function Async\await;
 
+function get_local_or_throws(\Async\Context $context, string $key): string
+{
+    try {
+        return (string) $context->getLocal($key);
+    } catch (\Async\ContextException) {
+        return 'throws';
+    }
+}
+
 echo "start\n";
 
 // Create parent scope
@@ -53,9 +62,9 @@ $child_coroutine = $child_scope->spawn(function() {
     echo "findLocal parent_key: " . ($context->findLocal('parent_key') ?: 'null') . "\n";
     echo "findLocal shared_key: " . ($context->findLocal('shared_key') ?: 'null') . "\n";
     
-    // Test getLocal() - should NOT find parent values
-    echo "getLocal parent_key: " . ($context->getLocal('parent_key') ?: 'null') . "\n";
-    echo "getLocal shared_key: " . ($context->getLocal('shared_key') ?: 'null') . "\n";
+    // Test getLocal() - should NOT find parent values, and a miss is an error rather than a null
+    echo "getLocal parent_key: " . get_local_or_throws($context, 'parent_key') . "\n";
+    echo "getLocal shared_key: " . get_local_or_throws($context, 'shared_key') . "\n";
     
     // Test hasLocal() - should NOT find parent values
     echo "hasLocal parent_key: " . ($context->hasLocal('parent_key') ? 'true' : 'false') . "\n";
@@ -100,8 +109,8 @@ has parent_key: true
 has shared_key: true
 findLocal parent_key: null
 findLocal shared_key: null
-getLocal parent_key: null
-getLocal shared_key: null
+getLocal parent_key: throws
+getLocal shared_key: throws
 hasLocal parent_key: false
 hasLocal shared_key: false
 child context values set
