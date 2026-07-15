@@ -1066,6 +1066,13 @@ static bool libuv_timer_start(zend_async_event_t *event)
 
 	async_timer_event_t *timer = (async_timer_event_t *) (event);
 
+	// Relative userland timeouts (delay()/timeout()) may be armed mid-tick after
+	// synchronous CPU work left loop->time stale; refresh it so uv_timer_start does
+	// not compute an already-past deadline. I/O deadline timers skip this refresh.
+	if (ZEND_ASYNC_TIMER_IS_REFRESH_CLOCK(&timer->event)) {
+		uv_update_time(UVLOOP);
+	}
+
 	const int error = uv_timer_start(&timer->uv_handle,
 									 on_timer_event,
 									 timer->event.timeout,

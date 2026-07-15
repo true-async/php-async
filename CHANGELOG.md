@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Context::get()` and `getLocal()` now throw `Async\ContextException` when the key is missing, instead of returning `null`.** They were exact duplicates of `find()`/`findLocal()`, which made them pointless. `get()` is the mandatory-value form; `find()` remains the one that answers `null`.
 
 ### Fixed
+- **`delay()`/`timeout()` fired almost instantly after synchronous CPU work in the same coroutine (#185).** libuv computes a timer's deadline from `loop->time`, its clock cached once per loop iteration. A coroutine that burned CPU without yielding for longer than the timeout it then armed left that clock stale, so the deadline was already in the past and the timer fired at once — silently skipping the wait. Relative userland timeouts now refresh the reactor clock at arm time; hot per-I/O deadline timers are unaffected.
+
 - **`foreach` over a `Channel` broke on the ordinary producer/consumer pattern.** Closing a channel while a consumer was parked in the loop left the wake-up `ChannelException` pending, so it escaped `foreach` uncaught — and surfaced against the producer's `close()`, which had done nothing wrong. An explicit `close()` now ends the iteration cleanly, while a deadlock or a disposal still propagates.
 
 - **Segfault: `foreach` over a `Channel` as the first async operation.** The loop reaches the iterator straight from `FE_RESET`, bypassing the guard `send()`/`recv()` run, so with no main coroutine yet it parked a `NULL` coroutine. It now starts the scheduler like every other blocking channel operation.
