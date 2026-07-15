@@ -5,7 +5,7 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.0] - 2026-07-15
 
 ### Changed
 - **`Context::get()` and `getLocal()` now throw `Async\ContextException` when the key is missing, instead of returning `null`.** They were exact duplicates of `find()`/`findLocal()`, which made them pointless. `get()` is the mandatory-value form; `find()` remains the one that answers `null`.
