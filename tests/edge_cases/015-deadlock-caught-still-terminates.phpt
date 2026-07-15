@@ -25,6 +25,5 @@ after catch
 
 Fatal error: Uncaught Async\DeadlockError: Deadlock detected: no active coroutines, %d coroutines in waiting in %s:%d
 Stack trace:
-#0 %s(%d): Async\Channel->recv()
-#1 {main}
+%A
   thrown in %s on line %d
