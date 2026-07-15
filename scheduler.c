@@ -1403,6 +1403,10 @@ bool async_scheduler_main_coroutine_suspend(const bool with_bailout)
 	if (EG(exception) != NULL && exit_exception != NULL) {
 		if (UNEXPECTED(EG(exception) != exit_exception)) {
 			zend_exception_set_previous(EG(exception), exit_exception);
+		} else {
+			// Already the pending exception, so there is nobody to hand the global's reference to.
+			// The other two branches consume it; this one drops it.
+			OBJ_RELEASE(exit_exception);
 		}
 	} else if (exit_exception != NULL) {
 		async_rethrow_exception(exit_exception);
@@ -2050,10 +2054,15 @@ to_bailout_all_coroutines:
 		if (UNEXPECTED(EG(exception) != exit_exception)) {
 			zend_exception_set_previous(EG(exception), exit_exception);
 		}
-		exit_exception = EG(exception);
-		GC_ADDREF(exit_exception);
+
+		// ZEND_ASYNC_EXIT_EXCEPTION owns its reference: the new exit exception goes into the global, not
+		// into the local, otherwise the added reference has no owner.
+		ZEND_ASYNC_EXIT_EXCEPTION = EG(exception);
+		GC_ADDREF(EG(exception));
 		zend_clear_exception();
 	} else if (exit_exception != NULL) {
+		// The rethrow moves the global's reference into EG(exception), so the global must let it go.
+		ZEND_ASYNC_EXIT_EXCEPTION = NULL;
 		async_rethrow_exception(exit_exception);
 	}
 
