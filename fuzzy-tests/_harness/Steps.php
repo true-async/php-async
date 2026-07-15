@@ -3526,8 +3526,12 @@ final class StandardSteps {
                         && $cc->get($key) === $value
                         && $cc->has($key) === true;
                     $ctx->inc($inheritOk ? "inherit_hit_$coro" : "inherit_miss_$coro");
+                    // getLocal() throws on a missing key; findLocal() is the null-returning form.
+                    $getLocalThrew = false;
+                    try { $cc->getLocal($key); }
+                    catch (\Async\ContextException $e) { $getLocalThrew = true; }
                     $localAbsent = $cc->findLocal($key) === null
-                        && $cc->getLocal($key) === null
+                        && $getLocalThrew
                         && $cc->hasLocal($key) === false;
                     $ctx->inc($localAbsent ? "local_absent_$coro" : "local_present_$coro");
                 });
@@ -3576,7 +3580,11 @@ final class StandardSteps {
                         $cc->unset($key);
                         if ($cc->has($key) !== false) $pass = false;
                         if ($cc->hasLocal($key) !== false) $pass = false;
-                        if ($cc->get($key) !== null) $pass = false;
+                        // After unset the key is gone, so get() must throw rather than answer null.
+                        $getThrew = false;
+                        try { $cc->get($key); }
+                        catch (\Async\ContextException $e) { $getThrew = true; }
+                        if (!$getThrew) $pass = false;
                     } catch (\Throwable $e) {
                         $pass = false;
                     }

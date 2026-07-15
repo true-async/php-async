@@ -1779,8 +1779,9 @@ ZEND_MINIT_FUNCTION(async)
 	async_register_timeout_ce();
 	async_register_scope_ce();
 	async_register_coroutine_ce();
-	async_register_context_ce();
+	// Must follow the exceptions: ContextException derives from AsyncException.
 	async_register_exceptions_ce();
+	async_register_context_ce();
 	async_register_channel_ce();
 	async_register_thread_channel_ce();
 	async_register_thread_pool_ce();

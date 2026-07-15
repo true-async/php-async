@@ -17,6 +17,7 @@
 
 #include "exceptions.h"
 #include "context_arginfo.h"
+#include "zend_exceptions.h"
 
 //////////////////////////////////////////////////////////////////////
 /// Context API Implementation
@@ -197,6 +198,7 @@ void async_context_dispose(async_context_t *context)
 //////////////////////////////////////////////////////////////////////
 
 zend_class_entry *async_ce_context = NULL;
+zend_class_entry *async_ce_context_exception = NULL;
 
 #define METHOD(name) ZEND_METHOD(Async_Context, name)
 #define ZEND_OBJECT_TO_CONTEXT(obj) ((async_context_t *) ((char *) (obj) - (obj)->handlers->offset))
@@ -209,6 +211,19 @@ zend_class_entry *async_ce_context = NULL;
 			RETURN_THROWS(); \
 		} \
 	} while (0)
+
+/**
+ * get()/getLocal() are the mandatory-value forms; find()/findLocal() are the ones that answer null.
+ */
+static void context_throw_missing_key(const zval *key)
+{
+	if (Z_TYPE_P(key) == IS_STRING) {
+		zend_throw_exception_ex(async_ce_context_exception, 0, "Context key \"%s\" not found", Z_STRVAL_P(key));
+	} else {
+		zend_throw_exception_ex(
+				async_ce_context_exception, 0, "Context key of type %s not found", ZSTR_VAL(Z_OBJCE_P(key)->name));
+	}
+}
 
 METHOD(find)
 {
@@ -239,7 +254,8 @@ METHOD(get)
 		return;
 	}
 
-	RETURN_NULL();
+	context_throw_missing_key(key);
+	RETURN_THROWS();
 }
 
 METHOD(has)
@@ -283,7 +299,8 @@ METHOD(getLocal)
 		return;
 	}
 
-	RETURN_NULL();
+	context_throw_missing_key(key);
+	RETURN_THROWS();
 }
 
 METHOD(hasLocal)
@@ -362,6 +379,7 @@ static void context_free(zend_object *object)
 
 void async_register_context_ce(void)
 {
+	async_ce_context_exception = register_class_Async_ContextException(async_ce_async_exception);
 	async_ce_context = register_class_Async_Context();
 
 	async_ce_context->create_object = context_object_create;

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **`Context::get()` and `getLocal()` now throw `Async\ContextException` when the key is missing, instead of returning `null`.** They were exact duplicates of `find()`/`findLocal()`, which made them pointless. `get()` is the mandatory-value form; `find()` remains the one that answers `null`.
+
 ### Fixed
 - **`foreach` over a `Channel` broke on the ordinary producer/consumer pattern.** Closing a channel while a consumer was parked in the loop left the wake-up `ChannelException` pending, so it escaped `foreach` uncaught — and surfaced against the producer's `close()`, which had done nothing wrong. An explicit `close()` now ends the iteration cleanly, while a deadlock or a disposal still propagates.
 
