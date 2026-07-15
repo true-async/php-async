@@ -17,6 +17,7 @@
 
 #include "exceptions.h"
 #include "context_arginfo.h"
+#include "zend_exceptions.h"
 
 //////////////////////////////////////////////////////////////////////
 /// Context API Implementation
