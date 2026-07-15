@@ -1657,6 +1657,10 @@ static zend_object *async_timeout_create(const zend_ulong ms, const bool is_peri
 		return NULL;
 	}
 
+	// A timeout() may be armed mid-tick after synchronous CPU work; refresh the
+	// reactor clock at arm time so its deadline is not computed from a stale clock.
+	ZEND_ASYNC_TIMER_SET_REFRESH_CLOCK((zend_async_timer_event_t *) event);
+
 	ZEND_ASYNC_EVENT_REF_SET(object, offsetof(async_timeout_object_t, std), (zend_async_timer_event_t *) event);
 	// A special flag is set to indicate that the event will contain a reference to a Zend object.
 	ZEND_ASYNC_EVENT_WITH_OBJECT_REF(event);
