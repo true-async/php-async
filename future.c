@@ -497,6 +497,13 @@ static bool zend_future_resolve(zend_async_event_t *event, void *iterator)
 	// Notify resolve_callbacks (map/catch/finally chains) with iterator
 	zend_async_callbacks_vector_notify(&future->resolve_callbacks, event, iterator);
 
+	// The chain has been handed to the mapper iterator (which now holds its own ref on each source),
+	// so dispose the subscriptions now instead of at future teardown. Their dispose drops the strong
+	// ref on the source Future, breaking the source <-> event cycle that the GC cannot see -- without
+	// this a temporary source would be kept alive to end of request. A completed future takes no new
+	// resolve_callbacks (map/catch/finally then spawn immediately), so freeing here loses nothing.
+	zend_async_callbacks_vector_free(&future->resolve_callbacks, event);
+
 	if (ZEND_ASYNC_EVENT_IS_EXCEPTION_HANDLED(event)) {
 		ZEND_FUTURE_SET_EXCEPTION_CAUGHT(future);
 	}
@@ -1609,7 +1616,8 @@ static void async_future_callback_dispose(zend_async_event_callback_t *callback,
 	async_future_callback_t *future_callback = (async_future_callback_t *) callback;
 
 	if (future_callback->future_obj != NULL) {
-		// No OBJ_RELEASE(&future_callback->future_obj->std);
+		// Release the strong ref taken in async_future_create_mapper().
+		OBJ_RELEASE(&future_callback->future_obj->std);
 		future_callback->future_obj = NULL;
 	}
 
@@ -1735,8 +1743,11 @@ static void async_future_create_mapper(INTERNAL_FUNCTION_PARAMETERS, async_futur
 		callback->base.dispose = async_future_callback_dispose;
 		callback->future_obj = source;
 		callback->scope = ZEND_ASYNC_CURRENT_SCOPE;
-		// We do not increment the object's reference count because this is a "weak reference".
-		// No GC_ADDREF(&source->std);
+		// Strong ref: the child futures live in source->child_futures, so source must outlive the
+		// subscription. Without it a temporary source (e.g. (new Future($s))->map(...)) is freed
+		// right after the call, its child table is destroyed, and the chain is silently lost.
+		// Released in async_future_callback_dispose().
+		GC_ADDREF(&source->std);
 
 		// Add to resolve_callbacks (not regular callbacks) for chain processing
 		if (UNEXPECTED(!zend_async_callbacks_vector_push(&source_future->resolve_callbacks, &callback->base))) {
