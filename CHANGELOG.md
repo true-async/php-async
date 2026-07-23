@@ -5,7 +5,7 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.1] - 2026-07-23
 
 ### Fixed
 - **Session state leaked from one coroutine to the next through a pooled `PDO` connection (#203).** Two coroutines run on the same physical connection one after the other, so everything the first left behind was visible to the second: user variables, `sql_mode` (which changes what identical SQL means), `time_zone`, temporary tables, and a held `GET_LOCK()` that only that connection could release. A slot touched this way now stays with its coroutine and is cleaned before anyone else gets it — for `pdo_mysql` with `COM_RESET_CONNECTION`, added to mysqlnd for the purpose. A slot that was not touched pays no round trip and keeps its prepared-statement cache.
@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Segfault: a coroutine finalizing with an open transaction after its `PDO` was destroyed (#202).** Handing the still-pinned connection back performs driver I/O, which suspends the finalizing coroutine; the `PDO` could be torn down while it was parked, leaving the callback to dereference a handle that teardown had already cleared. The callback now re-checks the handle after the release.
 
 - **`PDO::ATTR_POOL_STMT_CACHE_SIZE` opened a pooled connection merely by being passed to the constructor.** It sat outside the range of pool attributes consumed by pool setup, so it was dispatched to the driver as an ordinary attribute — and that dispatch acquires a slot.
+
+- **Pooled connection count was wrong while a connection was in flight (#212).** A resource pulled from the idle set for a suspending acquire/release/healthcheck was counted nowhere until it returned, so `PDO::getPool()->count()` and the pool's active/idle stats could report 0 with a live connection. A resource that exists but is momentarily unavailable for acquisition is now counted as active.
 
 ## [0.8.0] - 2026-07-15
 
