@@ -5,6 +5,18 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **`PDO::ATTR_POOL_ENABLED` now rejects driver-specific constructor options instead of dropping them (#203).** The pool factory creates its connections without the option array, so options such as `Pdo\Mysql::ATTR_SSL_CA` never reached the wire and enabling the pool silently turned a TLS-configured connection into a plaintext one. Passing any option at or above `PDO::ATTR_DRIVER_SPECIFIC` together with the pool now throws, until per-slot configuration is implemented.
+
+### Fixed
+- **Segfault: `Pdo\Mysql::getWarningCount()` under `PDO::ATTR_POOL_ENABLED` (#201).** In pool mode the userland `PDO` is a template whose `driver_data` is always `NULL`, and the method dereferenced it unconditionally — one line of userland code was enough. It now reads the slot bound to the current coroutine and reports `0` when no slot is held. The mysqlnd reverse-API entry point had the same defect.
+
+- **Segfault: a coroutine finalizing with an open transaction after its `PDO` was destroyed (#202).** Handing the still-pinned connection back performs driver I/O, which suspends the finalizing coroutine; the `PDO` could be torn down while it was parked, leaving the callback to dereference a handle that teardown had already cleared. The callback now re-checks the handle after the release.
+
+- **`PDO::ATTR_POOL_STMT_CACHE_SIZE` opened a pooled connection merely by being passed to the constructor.** It sat outside the range of pool attributes consumed by pool setup, so it was dispatched to the driver as an ordinary attribute — and that dispatch acquires a slot.
+
 ## [0.8.0] - 2026-07-15
 
 ### Changed
