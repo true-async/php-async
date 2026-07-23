@@ -53,9 +53,9 @@ echo "Done\n";
 ?>
 --EXPECT--
 Pool created with healthcheck
-Initial count: 0
+Initial count: 2
 Query: test
 After healthcheck delay
-Pool count: 1
+Pool count: 2
 PDO destroyed (no crash)
 Done

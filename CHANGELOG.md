@@ -7,10 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-- **`PDO::ATTR_POOL_ENABLED` now rejects driver-specific constructor options instead of dropping them (#203).** The pool factory creates its connections without the option array, so options such as `Pdo\Mysql::ATTR_SSL_CA` never reached the wire and enabling the pool silently turned a TLS-configured connection into a plaintext one. Passing any option at or above `PDO::ATTR_DRIVER_SPECIFIC` together with the pool now throws, until per-slot configuration is implemented.
-
 ### Fixed
+- **Pooled `PDO` connections silently ignored the TLS options the constructor asked for (#203).** The pool factory created every connection without the option array, so `Pdo\Mysql::ATTR_SSL_CA` and the rest of the `SSL_*` family never reached the wire: enabling the pool turned a TLS-configured connection into a plaintext one, with no error and nothing in the logs. The same path re-enabled `ATTR_MULTI_STATEMENTS` for users who had switched it off. Constructor options are now kept on the template and applied to every connection the pool creates.
+
+- **`PDO::setAttribute()` reached only one pooled connection (#203).** The driver wrote the value onto whichever slot was bound at the time, so slots created later kept the value they were born with. With `ATTR_AUTOCOMMIT` that lost data — coroutines landing on a fresh slot committed rows their `rollBack()` was meant to undo, while `getAttribute()` reported `false` the whole time. Accepted attributes are now recorded and re-applied per slot.
+
+- **`PDO::inTransaction()` took a pooled connection it did not need (#203).** A transaction pins the slot that opened it, so with no slot bound there is nothing to be inside of. Acquiring one for a call that answers "no transaction" left it pinned for the rest of the request in the main flow, and frameworks that check defensively hit `ATTR_POOL_MAX` far sooner than the workload warranted.
+
+- **`PDO::ATTR_POOL_MIN` created no connections at all (#203).** The pool pre-warms inside its own constructor, before the PDO template it builds connections from is attached, so the warm-up always failed silently whatever the value was.
 - **Segfault: `Pdo\Mysql::getWarningCount()` under `PDO::ATTR_POOL_ENABLED` (#201).** In pool mode the userland `PDO` is a template whose `driver_data` is always `NULL`, and the method dereferenced it unconditionally — one line of userland code was enough. It now reads the slot bound to the current coroutine and reports `0` when no slot is held. The mysqlnd reverse-API entry point had the same defect.
 
 - **Segfault: a coroutine finalizing with an open transaction after its `PDO` was destroyed (#202).** Handing the still-pinned connection back performs driver I/O, which suspends the finalizing coroutine; the `PDO` could be torn down while it was parked, leaving the callback to dereference a handle that teardown had already cleared. The callback now re-checks the handle after the release.
