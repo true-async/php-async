@@ -615,9 +615,20 @@ static void pool_healthcheck_timer_callback(zend_async_event_t *timer_event,
 			break;
 		}
 
+		/* The check yields: keep the resource counted while it is out. */
+		pool->active_count++;
+
 		bool is_healthy = pool_call_healthcheck(pool, &resource);
 
+		pool->active_count--;
+
 		if (is_healthy) {
+			/* Closed while we checked: close already drained idle. */
+			if (ZEND_ASYNC_POOL_IS_CLOSED(pool)) {
+				pool_destroy_resource(pool, &resource);
+				break;
+			}
+
 			/* Resource is healthy - return to buffer */
 			zval_circular_buffer_push(&pool->idle, &resource, true);
 			zval_ptr_dtor(&resource);
@@ -828,18 +839,24 @@ retry:
 		zval resource;
 		zval_circular_buffer_pop(&pool->idle, &resource);
 
+		/* Reserve before beforeAcquire: it may yield, and until then the
+		 * resource is in neither idle nor active_count. */
+		pool->active_count++;
+
 		/* beforeAcquire check (if set) */
 		if (!pool_call_before_acquire(pool, &resource)) {
 			/* Check failed - destroy and try next */
+			pool->active_count--;
 			pool_destroy_resource(pool, &resource);
 			if (UNEXPECTED(EG(exception))) {
+				/* Capacity freed: a waiter would never be woken otherwise. */
+				pool_wake_waiter(pool);
 				return false;
 			}
 			goto retry;
 		}
 
 		ZVAL_COPY_VALUE(result, &resource);
-		pool->active_count++;
 		return true;
 	}
 
@@ -899,14 +916,21 @@ retry:
 		zval resource;
 		zval_circular_buffer_pop(&pool->idle, &resource);
 
+		/* Reserve before a hook that may yield. */
+		pool->active_count++;
+
 		/* beforeAcquire check */
 		if (!pool_call_before_acquire(pool, &resource)) {
+			pool->active_count--;
 			pool_destroy_resource(pool, &resource);
+			if (UNEXPECTED(EG(exception))) {
+				pool_wake_waiter(pool);
+				return false;
+			}
 			goto retry;
 		}
 
 		ZVAL_COPY_VALUE(result, &resource);
-		pool->active_count++;
 		return true;
 	}
 
@@ -926,11 +950,14 @@ retry:
 
 void zend_async_pool_release(async_pool_t *pool, zval *resource)
 {
-	pool->active_count--;
-
 	/* beforeRelease callback (if set) */
 	/* Returns false = resource is broken, destroy it */
-	if (!pool_call_before_release(pool, resource)) {
+	const bool reusable = pool_call_before_release(pool, resource);
+
+	/* After the hook, which may yield. Exactly one decrement. */
+	pool->active_count--;
+
+	if (!reusable) {
 		/* Report failure to strategy */
 		pool_strategy_report_failure(pool, NULL);
 		pool_destroy_resource(pool, resource);
