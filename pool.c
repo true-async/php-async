@@ -208,6 +208,10 @@ static bool pool_call_before_acquire(async_pool_t *pool, zval *resource)
 		return true;
 	}
 
+	/* Park an in-flight exception: collect only the callback's own */
+	zend_object *parked = NULL;
+	zend_exception_save_fast(&EG(exception), &parked);
+
 	zval retval;
 	ZVAL_UNDEF(&retval);
 
@@ -233,6 +237,7 @@ static bool pool_call_before_acquire(async_pool_t *pool, zval *resource)
 	}
 
 	zval_ptr_dtor(&retval);
+	zend_exception_restore_fast(&EG(exception), &parked);
 	return result;
 }
 
@@ -253,6 +258,10 @@ static bool pool_call_before_release(async_pool_t *pool, zval *resource)
 	if (base->before_release.fcall == NULL) {
 		return true;
 	}
+
+	/* Park an in-flight exception: collect only the callback's own */
+	zend_object *parked = NULL;
+	zend_exception_save_fast(&EG(exception), &parked);
 
 	zval retval;
 	ZVAL_UNDEF(&retval);
@@ -279,6 +288,7 @@ static bool pool_call_before_release(async_pool_t *pool, zval *resource)
 	}
 
 	zval_ptr_dtor(&retval);
+	zend_exception_restore_fast(&EG(exception), &parked);
 	return result;
 }
 
@@ -300,6 +310,10 @@ static void pool_strategy_report_success(async_pool_t *pool)
 		return;
 	}
 
+	/* Park an in-flight exception: clear only the strategy's own */
+	zend_object *parked = NULL;
+	zend_exception_save_fast(&EG(exception), &parked);
+
 	zval retval, source;
 	ZVAL_UNDEF(&retval);
 
@@ -316,6 +330,7 @@ static void pool_strategy_report_success(async_pool_t *pool)
 	}
 
 	zval_ptr_dtor(&retval);
+	zend_exception_restore_fast(&EG(exception), &parked);
 }
 
 /* Call strategy reportFailure */
@@ -335,6 +350,10 @@ static void pool_strategy_report_failure(async_pool_t *pool, zend_object *error)
 	if (base->strategy.object == NULL) {
 		return;
 	}
+
+	/* Park an in-flight exception: clear only the strategy's own */
+	zend_object *parked = NULL;
+	zend_exception_save_fast(&EG(exception), &parked);
 
 	zval retval, source, error_zval;
 	bool owns_error = false;
@@ -372,6 +391,7 @@ static void pool_strategy_report_failure(async_pool_t *pool, zend_object *error)
 	if (owns_error) {
 		zval_ptr_dtor(&error_zval);
 	}
+	zend_exception_restore_fast(&EG(exception), &parked);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
