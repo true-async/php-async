@@ -5,6 +5,12 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **An exception in flight was lost when a pooled `PDO` died during stack unwinding.** Destroying a local pooled `PDO` while an exception unwinds its frame closes the pool, and the close mistook that in-flight exception for a resource destructor's failure: it stole it from `EG(exception)` and rethrew it from C context — past the `catch` it was flying to, which never fired. The close now parks an in-flight exception for its duration and collects only what resource destructors actually threw.
+
 ## [0.8.1] - 2026-07-23
 
 ### Fixed

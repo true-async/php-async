@@ -997,6 +997,13 @@ void zend_async_pool_close(async_pool_t *pool)
 		return;
 	}
 
+	/* Park an in-flight exception (a dtor can close the pool mid-unwind):
+	 * the destroy loop below must collect only what resource dtors threw. */
+	zend_object **exception_ptr = &EG(exception);
+	zend_object *parked_exception = NULL;
+	zend_object **parked_exception_ptr = &parked_exception;
+	zend_exception_save_fast(exception_ptr, parked_exception_ptr);
+
 	ZEND_ASYNC_EVENT_SET_CLOSED(&base->event);
 
 	/* Stop healthcheck timer */
@@ -1034,6 +1041,8 @@ void zend_async_pool_close(async_pool_t *pool)
 		ZVAL_OBJ(&ex_zval, first_exception);
 		zend_throw_exception_object(&ex_zval);
 	}
+
+	zend_exception_restore_fast(exception_ptr, parked_exception_ptr);
 }
 
 void zend_async_pool_destroy(async_pool_t *pool)
