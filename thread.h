@@ -176,6 +176,7 @@ void async_thread_load_zval(zval *dst, const zval *src);
  * Free a persistent zval created by async_thread_transfer_zval().
  */
 void async_thread_release_transferred_zval(zval *z);
+void async_thread_release_transferred_zvals(zval **roots, size_t count);
 
 /* Recursion helpers passed to zend_async_thread_pool_register() — expose
  * thread_transfer_zval_inner / thread_load_zval_inner / xlat_put / a lazy
