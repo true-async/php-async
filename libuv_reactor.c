@@ -7161,4 +7161,8 @@ void async_libuv_reactor_register(void)
 			async_thread_transfer_zval, async_thread_load_zval,
 			async_thread_release_transferred_zval,
 			async_thread_xlat_put_ctx, async_thread_defer_release_ctx);
+
+	/* Batched multi-root release (one visited set). Additive; set directly rather
+	 * than widening zend_async_thread_pool_register's signature. */
+	zend_async_thread_release_transferred_zvals_fn = async_thread_release_transferred_zvals;
 }

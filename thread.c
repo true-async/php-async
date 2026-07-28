@@ -1401,6 +1401,20 @@ void async_thread_release_transferred_zval(zval *z)
 	ZVAL_UNDEF(z);
 }
 
+/* One release ctx (one visited set) across all roots — unlike the single-zval call,
+ * which builds a fresh set each time — so an object xlat-deduped into more than one
+ * root is freed once. Contract and rationale: the typedef in zend_async_API.h. */
+void async_thread_release_transferred_zvals(zval **roots, size_t count)
+{
+	thread_release_ctx_t ctx;
+	thread_release_ctx_init(&ctx);
+	for (size_t i = 0; i < count; i++) {
+		thread_release_transferred_zval(&ctx, roots[i]);
+		ZVAL_UNDEF(roots[i]);
+	}
+	thread_release_ctx_destroy(&ctx);
+}
+
 /* Partial-release for build-error paths: refcount-based so xlat-shared
  * sub-pieces still owned by the half-built snapshot survive; the snapshot's
  * full release frees them shortly afterwards. */
