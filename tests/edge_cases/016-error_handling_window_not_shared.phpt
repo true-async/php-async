@@ -1,7 +1,7 @@
 --TEST--
-An EH_THROW window opened by another coroutine does not repaint our warnings
+An EH_THROW window does not follow a coroutine spawned inside it
 --EXTENSIONS--
-pdo_mysql
+zlib
 --SKIPIF--
 <?php
 if (!function_exists('Async\spawn')) die("skip TrueAsync runtime not available\n");
@@ -13,38 +13,63 @@ use function Async\spawn;
 use function Async\await;
 use function Async\delay;
 
-/* PDO::__construct replaces the error handling mode for the duration of the
- * connect (zend_replace_error_handling(EH_THROW, pdo_exception_ce)), and the
- * connect parks the coroutine. While it sleeps, a warning raised anywhere else
- * must stay a warning: if the window were global, the engine would turn it into
- * a PDOException carrying someone else's message. 10.255.255.1 is unroutable, so
- * the connect stays parked until it times out. */
-$connector = spawn(function () {
-    try {
-        new PDO('mysql:host=10.255.255.1;port=3306;dbname=x', 'u', 'p', [PDO::ATTR_TIMEOUT => 3]);
-    } catch (Throwable $e) {
-        return 'connect ended';
+/* DirectoryIterator::__construct turns warnings into UnexpectedValueException for
+ * the duration of the directory open (zend_replace_error_handling), and the open
+ * goes through a userland wrapper — so a coroutine can be spawned, and the holder
+ * can park, while that mode is in force. The spawned coroutine is a separate flow
+ * of control: its own warning must stay a warning, whatever the holder is doing.
+ * PDO::__construct holds the same kind of window across its connect, which is how
+ * this surfaced downstream, but a wrapper reproduces it without a database. */
+
+class WindowedDirectory
+{
+    public static ?object $spawned = null;
+
+    public $context;
+
+    public function dir_opendir(string $path, int $options): bool
+    {
+        self::$spawned = spawn(static function (): string {
+            try {
+                return 'suppressed, got ' . var_export(@gzdecode(''), true);
+            } catch (Throwable $e) {
+                return 'leaked ' . $e::class . ': ' . $e->getMessage();
+            }
+        });
+
+        delay(50);
+
+        return false;
     }
 
-    return 'connect ended';
-});
-
-$victim = spawn(function () {
-    delay(50);
-
-    try {
-        $decoded = @gzdecode('');
-        return 'suppressed, got ' . var_export($decoded, true);
-    } catch (Throwable $e) {
-        return 'leaked ' . $e::class . ': ' . $e->getMessage();
+    public function dir_readdir(): string|false
+    {
+        return false;
     }
+
+    public function dir_closedir(): bool
+    {
+        return true;
+    }
+}
+
+stream_wrapper_register('windowed', WindowedDirectory::class);
+
+$holder = spawn(static function (): string {
+    try {
+        new DirectoryIterator('windowed://dir');
+    } catch (Throwable $e) {
+        return 'holder: ' . $e::class;
+    }
+
+    return 'holder: no exception';
 });
 
-echo await($victim), "\n";
-echo await($connector), "\n";
+echo await($holder), "\n";
+echo await(WindowedDirectory::$spawned), "\n";
 echo "Done\n";
 ?>
 --EXPECT--
+holder: UnexpectedValueException
 suppressed, got false
-connect ended
 Done
