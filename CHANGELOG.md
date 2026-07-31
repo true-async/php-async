@@ -5,6 +5,12 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A warning raised in one coroutine could come back as another coroutine's exception class.** `zend_replace_error_handling(EH_THROW, $class)` makes the engine turn warnings into exceptions of `$class` instead of reporting them, and that window was global rather than per-fiber. `PDO::__construct` opens one around the connect, which parks the coroutine, so any warning raised meanwhile — in unrelated code, under `@`, with nothing to do with a database — surfaced as a `PDOException` carrying that warning's message. Twelve other extensions open the same kind of window (`spl_directory`, `date`, `spl_iterators`, `tidy`, `fileinfo`). The window now travels with the fiber, and a coroutine starts outside any of them. Needs php-src `Zend/zend_fibers.c` from the matching build.
+
 ## [0.8.3] - 2026-07-31
 
 ### Fixed
