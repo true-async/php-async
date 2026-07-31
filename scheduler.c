@@ -1811,11 +1811,6 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 		EG(current_execute_data) = execute_data;
 		EG(jit_trace_num) = 0;
 		EG(error_reporting) = (int) error_reporting;
-		/* A fiber starts outside anyone's EH_THROW window (zend_replace_error_handling):
-		 * inheriting one would paint this coroutine's warnings with a foreign
-		 * exception class. */
-		EG(error_handling) = EH_NORMAL;
-		EG(exception_class) = NULL;
 
 #ifdef ZEND_CHECK_STACK_LIMIT
 		EG(stack_base) = zend_fiber_stack_base(internal_fiber_context->stack);
