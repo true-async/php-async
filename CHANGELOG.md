@@ -5,6 +5,12 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.3] - 2026-07-31
+
+### Fixed
+
+- **An embedder that stored several roots of one transfer and released them separately freed a shared copy twice.** A transfer deep-copies the object graph under one translation table, so roots that share an object (a closure and the object it captures) point at the same copy, while release deduplicated only within a single `async_thread_release_transferred_zval()` call. Added `async_thread_release_transferred_zvals(roots, n)`, which runs one visited set across all roots and frees a shared copy exactly once, and registered it on the reactor's thread-pool API.
+
 ## [0.8.2] - 2026-07-24
 
 ### Fixed
