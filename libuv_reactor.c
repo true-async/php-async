@@ -1083,6 +1083,14 @@ static bool libuv_timer_start(zend_async_event_t *event)
 		return false;
 	}
 
+	// A hidden timer is a background heartbeat — a connection pool healthcheck,
+	// say. Keeping it out of active_event_count is not enough: the uv handle
+	// still holds a loop reference, so uv_run never returns and the process
+	// hangs with no work left to do.
+	if (ZEND_ASYNC_EVENT_IS_HIDDEN(event)) {
+		uv_unref((uv_handle_t *) &timer->uv_handle);
+	}
+
 	event->loop_ref_count++;
 	ZEND_ASYNC_INCREASE_EVENT_COUNT(event);
 	return true;
@@ -1655,6 +1663,10 @@ static void libuv_handle_process_events(void)
 			ZEND_ASYNC_CALLBACKS_NOTIFY(event, NULL, NULL);
 			// Process event will be removed when stopped
 		}
+		/* ECHILD is deliberately not treated as "settle this event": a notified
+		 * event stays in the table until its waiter resumes, so a second sweep
+		 * before that sees ECHILD for the child this sweep just reaped, and
+		 * settling again would overwrite the exit code with a made-up one. */
 #endif
 	}
 
@@ -1694,6 +1706,58 @@ static void libuv_add_process_event(zend_async_event_t *event)
 
 /* }}} */
 
+/* {{{ libuv_release_process_watch
+ *
+ * Drops the SIGCHLD machinery once the last process event is gone.
+ *
+ * Called from every path that empties the table, not just the stop path: an
+ * event released while already stopped is deleted straight from the hash, and
+ * without this the handler outlives the last watcher. Nothing raises it again,
+ * yet it holds the reactor loop, so the process runs out of work and still
+ * refuses to exit. */
+static void libuv_release_process_watch(void)
+{
+	if (ASYNC_G(process_events) == NULL || zend_hash_num_elements(ASYNC_G(process_events)) > 0) {
+		return;
+	}
+
+	bool has_sigchld_signal_events = false;
+
+	if (ASYNC_G(signal_events) != NULL) {
+		HashTable *sigchld_events = zend_hash_index_find_ptr(ASYNC_G(signal_events), SIGCHLD);
+		if (sigchld_events != NULL && zend_hash_num_elements(sigchld_events) > 0) {
+			has_sigchld_signal_events = true;
+		}
+	}
+
+	// A plain signal() subscriber on SIGCHLD owns the handler for as long as it waits.
+	if (!has_sigchld_signal_events && ASYNC_G(signal_handlers) != NULL) {
+		uv_signal_t *handler = zend_hash_index_find_ptr(ASYNC_G(signal_handlers), SIGCHLD);
+		if (handler != NULL) {
+			if ((bool) (uintptr_t) handler->data) {
+				/* A Zend-chain subscriber (pcntl etc.) still needs delivery —
+				 * keep the handler armed but stop pinning the loop, exactly as
+				 * libuv_remove_signal_event does. Closing it here would revert
+				 * the OS disposition and leave that subscriber permanently deaf. */
+				uv_unref((uv_handle_t *) handler);
+			} else {
+				uv_signal_stop(handler);
+#ifdef ZEND_SIGNALS
+				libuv_restore_signal_handler(SIGCHLD);
+#endif
+				uv_close((uv_handle_t *) handler, libuv_signal_close_cb);
+				zend_hash_index_del(ASYNC_G(signal_handlers), SIGCHLD);
+			}
+		}
+	}
+
+	zend_hash_destroy(ASYNC_G(process_events));
+	pefree(ASYNC_G(process_events), 0);
+	ASYNC_G(process_events) = NULL;
+}
+
+/* }}} */
+
 /* {{{ libuv_remove_process_event */
 static void libuv_remove_process_event(zend_async_event_t *event)
 {
@@ -1706,32 +1770,7 @@ static void libuv_remove_process_event(zend_async_event_t *event)
 
 	zend_hash_index_del(ASYNC_G(process_events), (uintptr_t) process_event->event.process);
 
-	// Only remove SIGCHLD handler if no more process events AND no regular signal events for SIGCHLD
-	if (zend_hash_num_elements(ASYNC_G(process_events)) == 0) {
-		bool has_sigchld_signal_events = false;
-
-		// Check if there are regular signal events for SIGCHLD
-		if (ASYNC_G(signal_events) != NULL) {
-			HashTable *sigchld_events = zend_hash_index_find_ptr(ASYNC_G(signal_events), SIGCHLD);
-			if (sigchld_events != NULL && zend_hash_num_elements(sigchld_events) > 0) {
-				has_sigchld_signal_events = true;
-			}
-		}
-
-		// Only remove handler if no signal events exist for SIGCHLD
-		if (!has_sigchld_signal_events && ASYNC_G(signal_handlers) != NULL) {
-			uv_signal_t *handler = zend_hash_index_find_ptr(ASYNC_G(signal_handlers), SIGCHLD);
-			if (handler != NULL) {
-				uv_signal_stop(handler);
-				uv_close((uv_handle_t *) handler, libuv_signal_close_cb);
-				zend_hash_index_del(ASYNC_G(signal_handlers), SIGCHLD);
-			}
-		}
-
-		zend_hash_destroy(ASYNC_G(process_events));
-		pefree(ASYNC_G(process_events), 0);
-		ASYNC_G(process_events) = NULL;
-	}
+	libuv_release_process_watch();
 }
 
 /* }}} */
@@ -2170,6 +2209,7 @@ static bool libuv_process_event_dispose(zend_async_event_t *event)
 	const zend_process_t proc_handle = ((zend_async_process_event_t *) event)->process;
 	if ((uintptr_t) proc_handle != 0 && ASYNC_G(process_events) != NULL) {
 		zend_hash_index_del(ASYNC_G(process_events), (zend_ulong) (uintptr_t) proc_handle);
+		libuv_release_process_watch();
 	}
 
 #ifdef PHP_WIN32
