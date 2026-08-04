@@ -5,6 +5,12 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.5] - 2026-08-04
+
+### Fixed
+
+- **A worker that had finished its work would not exit.** Two independent causes, each leaving the process alive with nothing left to do. `libuv_process_event_dispose()` deleted its entry from the process-event table directly, bypassing the SIGCHLD teardown that lives in `libuv_remove_process_event()`; an event released while already stopped therefore emptied the table and left the handler armed, and that handler pinned the reactor loop although nothing would raise it again. Separately, a hidden timer — a connection pool healthcheck, say — was kept out of `active_event_count`, but its libuv handle stayed referenced and `uv_run` never returned. Hidden timers now drop that reference: they keep firing while the loop turns, and stop being a reason for it to turn. Measured on a queue worker with a pool healthcheck: 8 hangs in 8 runs before, none in 30 after.
+
 ## [0.8.4] - 2026-07-31
 
 ### Fixed
