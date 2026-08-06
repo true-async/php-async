@@ -5,6 +5,12 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-08-06
+
+### Changed
+
+- **Rebased on current php-src master.** The engine side picked up the new stream error API, the descriptor-level copy API behind `stream_copy_to_stream()`, and reworked curl callbacks. On the async side, a descriptor the reactor keeps non-blocking no longer offers itself for a raw `splice()` copy, a `CURLOPT_READFUNCTION` returning an integer follows the same contract as in synchronous curl (`0`, `CURL_READFUNC_ABORT` or `CURL_READFUNC_PAUSE`, anything else is a `ValueError`), and an exception thrown from `CURLOPT_SEEKFUNCTION` reaches the awaiting coroutine instead of escaping as an uncaught fatal. Requires php-src from the matching build.
+
 ## [0.8.5] - 2026-08-04
 
 ### Fixed
