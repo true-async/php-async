@@ -60,6 +60,7 @@ async_test_server_stop($server);
 echo "Done\n";
 ?>
 --EXPECTF--
+Warning: Unknown: Send of %d bytes failed with errno=%d %s in Unknown on line 0
 Transfer result: CURLE_WRITE_ERROR
 curl_errno: CURLE_WRITE_ERROR
 Done
