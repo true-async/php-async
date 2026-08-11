@@ -3033,6 +3033,26 @@ static void thread_object_free(zend_object *object)
 {
 	async_thread_object_t *thread = async_thread_object_from_obj(object);
 
+	/* A fatal error skips dtor_obj entirely: php_error_cb marks every live
+	 * object as destructed before it bails out. The event would then keep its
+	 * libuv notify handle open past reactor shutdown (uv_loop_close => EBUSY)
+	 * and leak the persistent thread context, so dispose it here as well.
+	 * Dispatching finally handlers stays in the dtor — running user code on
+	 * the fatal path is not safe; here the array is only released. */
+	if (thread->thread_event != NULL) {
+		zend_async_event_t *event = &thread->thread_event->base;
+		thread->thread_event = NULL;
+
+		if (event->dispose != NULL) {
+			event->dispose(event);
+		}
+	}
+
+	if (thread->finally_handlers != NULL) {
+		zend_array_destroy(thread->finally_handlers);
+		thread->finally_handlers = NULL;
+	}
+
 	/* Release the scope ref captured at spawn time. This runs after the
 	 * dtor has finished (and after any delayed finally-handlers kept the
 	 * Thread alive via GC_ADDREF), so the scope outlives every handler
