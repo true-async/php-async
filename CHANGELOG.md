@@ -5,6 +5,12 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A fatal error left every live `Async\Thread` holding an open libuv handle.** `Thread` disposed its event from `dtor_obj` alone, and the engine marks all objects as destructed before it bails out, so a fatal error skipped that dispose entirely. The cross-thread notify handle then survived reactor shutdown: `uv_loop_close()` returned `EBUSY`, the loop's internals and the persistent thread context leaked, and a debug build printed one "leftover libuv handle" line per thread. The dispose now also runs from `free_obj`, which the engine always calls.
+
 ## [0.9.0] - 2026-08-06
 
 ### Changed
