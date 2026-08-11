@@ -10,15 +10,14 @@ memory_limit=64M
 --FILE--
 <?php
 /*
- * Regression: php_error_cb marks every live object as destructed before it
- * bails out, so dtor_obj never runs for a Thread still held by a variable.
- * Thread released its event — and with it closed the uv_async notify handle —
- * only from dtor_obj, so after any fatal error those handles stayed open:
- * uv_loop_close returned EBUSY and the persistent thread context leaked.
+ * A fatal error bails out without dtor_obj, so a Thread still held by a
+ * variable must release its uv_async notify handle from free_obj. An open
+ * handle fails uv_loop_close() and leaks the persistent thread context.
  *
- * A debug build names every survivor on stderr ("leftover libuv handle"),
- * which run-tests folds into the compared output, so the bug appears as extra
- * lines behind the fatal error. Hence no trailing %A here.
+ * A debug build prints one "leftover libuv handle" line per survivor on
+ * stderr, and run-tests compares stderr together with stdout, so the leak
+ * appears as extra lines after the fatal error. No trailing %A for that
+ * reason: it would match them.
  */
 use function Async\spawn_thread;
 use function Async\await_all;
@@ -32,7 +31,7 @@ for ($i = 0; $i < 4; $i++) {
 await_all($threads);
 echo "threads joined\n";
 
-// $threads stays live: the Thread objects are still reachable at bailout.
+// $threads is never unset: the Thread objects must be reachable at bailout.
 $data = [];
 
 while (true) {

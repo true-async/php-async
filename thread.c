@@ -3033,12 +3033,10 @@ static void thread_object_free(zend_object *object)
 {
 	async_thread_object_t *thread = async_thread_object_from_obj(object);
 
-	/* A fatal error skips dtor_obj entirely: php_error_cb marks every live
-	 * object as destructed before it bails out. The event would then keep its
-	 * libuv notify handle open past reactor shutdown (uv_loop_close => EBUSY)
-	 * and leak the persistent thread context, so dispose it here as well.
-	 * Dispatching finally handlers stays in the dtor — running user code on
-	 * the fatal path is not safe; here the array is only released. */
+	/* php_error_cb() marks every object as destructed before a fatal bails out,
+	 * so dtor_obj never runs and free_obj is the last chance to dispose the
+	 * event. An undisposed one keeps its notify handle open, which fails
+	 * uv_loop_close() at reactor shutdown and leaks the thread context. */
 	if (thread->thread_event != NULL) {
 		zend_async_event_t *event = &thread->thread_event->base;
 		thread->thread_event = NULL;
@@ -3048,6 +3046,7 @@ static void thread_object_free(zend_object *object)
 		}
 	}
 
+	/* Only the dtor dispatches the handlers: they are user code. */
 	if (thread->finally_handlers != NULL) {
 		zend_array_destroy(thread->finally_handlers);
 		thread->finally_handlers = NULL;
