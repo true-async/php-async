@@ -29,7 +29,7 @@ $worker = spawn(function() {
     echo "worker: running\n";
 });
 
-// Let coroutines run — worker should complete, locker should be blocked in thread pool
+// Let coroutines run — worker should complete, locker should still be waiting for the lock
 Async\delay(50);
 
 echo "main: unlocking\n";
