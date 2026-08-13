@@ -1824,9 +1824,9 @@ static void libuv_cleanup_process_events(void)
 	}
 
 #ifdef PHP_WIN32
-	/* Belt for the descriptor count: an event released without passing through
-	 * stop() would leave the watcher running, and the thread outliving the
-	 * globals it reads is a crash at shutdown rather than a leak. */
+	/* The descriptor count is the usual way the watcher is retired; this is the
+	 * last one. An event released without passing through stop() leaves the count
+	 * above zero, and a watcher that outlives these globals reads freed memory. */
 	libuv_stop_process_watcher();
 #endif
 }
@@ -1920,12 +1920,9 @@ static void on_process_event(uv_async_t *handle)
 
 		process_event->event.exit_code = exit_code;
 
-		/* stop() below gives the descriptor back — it is the one place that retires
-		 * a process event, whichever way the event ends, so a cancelled or disposed
-		 * one retires the watcher too. The order carries weight: a callback that
-		 * starts a new process claims its descriptor before this one is given back,
-		 * so the count cannot reach zero between the two and the watcher is not
-		 * stopped and started again underneath it. */
+		/* Notify before stop(): a callback that starts a process takes its
+		 * descriptor before this event gives its own back, so the count never
+		 * passes through zero and the watcher is not stopped and started again. */
 		ZEND_ASYNC_CALLBACKS_NOTIFY(&process_event->event.base, NULL, NULL);
 		process_event->event.base.stop(&process_event->event.base);
 		IF_EXCEPTION_STOP_REACTOR;
@@ -2019,12 +2016,12 @@ static void libuv_stop_process_watcher(void)
 
 	/* The watcher may sit anywhere in its loop — between the isRunning check and
 	 * circular_buffer_push, or on its way to uv_async_send — so the queue, the
-	 * wakeup handle and the port stay alive until it has left. The packet posted
-	 * here is what releases it from GetQueuedCompletionStatus. */
+	 * wakeup handle and the port are released only after it has left. The packet
+	 * posted here is what returns it from GetQueuedCompletionStatus. */
 	if (UNEXPECTED(!PostQueuedCompletionStatus(reactor->ioCompletionPort, 0, (ULONG_PTR) 0, NULL))) {
-		/* Nothing will wake the watcher now, and a join would hold the loop thread
+		/* Nothing can wake the watcher now, so a join would hold the loop thread
 		 * for the life of the process. It keeps its port, its queue and its wakeup
-		 * handle instead: a leak the process ends, rather than a hang. */
+		 * handle, which leak until the process exits. */
 		uv_thread_detach(WATCHER);
 		pefree(WATCHER, 0);
 		WATCHER = NULL;
