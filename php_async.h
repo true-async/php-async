@@ -17,6 +17,7 @@
 #define PHP_ASYNC_H
 
 #include <php.h>
+#include <Zend/zend_atomic.h>
 
 #ifdef PHP_WIN32
 #include "libuv/uv.h"
@@ -112,7 +113,11 @@ HashTable *process_events;  /* dedicated for SIGCHLD process events */
 uv_thread_t *watcherThread;
 HANDLE ioCompletionPort;
 unsigned int countWaitingDescriptors;
-bool isRunning;
+/* Read by the watcher thread on every turn of its loop and written by the reactor
+ * thread that retires it, with no lock between them: the store has to reach the
+ * watcher, or the join in libuv_stop_process_watcher (libuv_reactor.c) waits for
+ * a thread that never leaves. */
+zend_atomic_bool isRunning;
 uv_async_t *uvloop_wakeup;
 /* Circular buffer of libuv_process_t ptr */
 circular_buffer_t *pid_queue;

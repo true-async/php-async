@@ -83,6 +83,9 @@ static void libuv_signal_close_cb(uv_handle_t *handle);
 static void libuv_cleanup_signal_handlers(void);
 static void libuv_cleanup_signal_events(void);
 static void libuv_cleanup_process_events(void);
+#ifdef PHP_WIN32
+static void libuv_stop_process_watcher(void);
+#endif
 static void uv_stat_to_zend_stat(const uv_stat_t *uv_statbuf, zend_stat_t *zend_statbuf);
 
 ///////////////////////////////////////////////////////////
@@ -1819,6 +1822,13 @@ static void libuv_cleanup_process_events(void)
 		zend_array_destroy(ASYNC_G(process_events));
 		ASYNC_G(process_events) = NULL;
 	}
+
+#ifdef PHP_WIN32
+	/* Belt for the descriptor count: an event released without passing through
+	 * stop() would leave the watcher running, and the thread outliving the
+	 * globals it reads is a crash at shutdown rather than a leak. */
+	libuv_stop_process_watcher();
+#endif
 }
 
 /* }}} */
@@ -1834,7 +1844,7 @@ static void process_watcher_thread(void *args)
 
 	ULONG_PTR completionKey;
 
-	while (reactor->isRunning && reactor->ioCompletionPort != NULL) {
+	while (zend_atomic_bool_load(&reactor->isRunning) && reactor->ioCompletionPort != NULL) {
 
 		DWORD lpNumberOfBytesTransferred;
 		// OVERLAPPED overlapped = {0};
@@ -1850,7 +1860,7 @@ static void process_watcher_thread(void *args)
 			continue;
 		}
 
-		if (reactor->isRunning == false) {
+		if (zend_atomic_bool_load(&reactor->isRunning) == false) {
 			break;
 		}
 
@@ -1874,12 +1884,12 @@ static void process_watcher_thread(void *args)
 
 			unsigned int delay = 1;
 
-			while (reactor->isRunning && circular_buffer_is_full(reactor->pid_queue)) {
+			while (zend_atomic_bool_load(&reactor->isRunning) && circular_buffer_is_full(reactor->pid_queue)) {
 				usleep(delay);
 				delay = MIN(delay << 1, 1000);
 			}
 
-			if (false == reactor->isRunning) {
+			if (false == zend_atomic_bool_load(&reactor->isRunning)) {
 				break;
 			}
 		}
@@ -1910,14 +1920,12 @@ static void on_process_event(uv_async_t *handle)
 
 		process_event->event.exit_code = exit_code;
 
-		if (reactor->countWaitingDescriptors > 0) {
-			reactor->countWaitingDescriptors--;
-
-			if (reactor->countWaitingDescriptors == 0) {
-				libuv_stop_process_watcher();
-			}
-		}
-
+		/* stop() below gives the descriptor back — it is the one place that retires
+		 * a process event, whichever way the event ends, so a cancelled or disposed
+		 * one retires the watcher too. The order carries weight: a callback that
+		 * starts a new process claims its descriptor before this one is given back,
+		 * so the count cannot reach zero between the two and the watcher is not
+		 * stopped and started again underneath it. */
 		ZEND_ASYNC_CALLBACKS_NOTIFY(&process_event->event.base, NULL, NULL);
 		process_event->event.base.stop(&process_event->event.base);
 		IF_EXCEPTION_STOP_REACTOR;
@@ -1948,7 +1956,7 @@ static void libuv_start_process_watcher(void)
 		return;
 	}
 
-	reactor->isRunning = true;
+	zend_atomic_bool_store(&reactor->isRunning, true);
 	reactor->countWaitingDescriptors = 0;
 
 	int error = uv_thread_create(thread, process_watcher_thread, reactor);
@@ -1956,7 +1964,7 @@ static void libuv_start_process_watcher(void)
 	if (error < 0) {
 		uv_thread_detach(thread);
 		pefree(thread, 0);
-		reactor->isRunning = false;
+		zend_atomic_bool_store(&reactor->isRunning, false);
 		php_error_docref(NULL, E_CORE_ERROR, "Failed to create process watcher thread: %s", uv_strerror(error));
 		return;
 	}
@@ -1969,10 +1977,26 @@ static void libuv_start_process_watcher(void)
 	circular_buffer_ctor(reactor->pid_queue, 64, sizeof(async_process_event_t *), NULL);
 
 	if (error < 0) {
-		uv_thread_detach(thread);
-		reactor->isRunning = false;
+		/* The watcher is already blocked on the port. Clearing WATCHER leaves
+		 * nothing that could ever retire it, so it has to be woken and waited for
+		 * here — a detached thread reading these globals outlives them. */
+		zend_atomic_bool_store(&reactor->isRunning, false);
+		PostQueuedCompletionStatus(reactor->ioCompletionPort, 0, (ULONG_PTR) 0, NULL);
+		uv_thread_join(thread);
 		pefree(thread, 0);
 		WATCHER = NULL;
+
+		CloseHandle(reactor->ioCompletionPort);
+		reactor->ioCompletionPort = NULL;
+
+		/* uv_async_init failed, so the handle carries no loop state: it is plain
+		 * memory here, not something uv_close may touch. */
+		pefree(reactor->uvloop_wakeup, 0);
+		reactor->uvloop_wakeup = NULL;
+
+		circular_buffer_destroy(reactor->pid_queue);
+		reactor->pid_queue = NULL;
+
 		php_error_docref(NULL, E_CORE_ERROR, "Failed to initialize async handle: %s", uv_strerror(error));
 	}
 }
@@ -1991,16 +2015,28 @@ static void libuv_stop_process_watcher(void)
 
 	LIBUV_REACTOR_VAR;
 
-	reactor->isRunning = false;
+	zend_atomic_bool_store(&reactor->isRunning, false);
+
+	/* The watcher may sit anywhere in its loop — between the isRunning check and
+	 * circular_buffer_push, or on its way to uv_async_send — so the queue, the
+	 * wakeup handle and the port stay alive until it has left. The packet posted
+	 * here is what releases it from GetQueuedCompletionStatus. */
+	if (UNEXPECTED(!PostQueuedCompletionStatus(reactor->ioCompletionPort, 0, (ULONG_PTR) 0, NULL))) {
+		/* Nothing will wake the watcher now, and a join would hold the loop thread
+		 * for the life of the process. It keeps its port, its queue and its wakeup
+		 * handle instead: a leak the process ends, rather than a hang. */
+		uv_thread_detach(WATCHER);
+		pefree(WATCHER, 0);
+		WATCHER = NULL;
+		return;
+	}
+
+	uv_thread_join(WATCHER);
+	pefree(WATCHER, 0);
+	WATCHER = NULL;
 
 	uv_close((uv_handle_t *) reactor->uvloop_wakeup, libuv_wakeup_close_cb);
 	reactor->uvloop_wakeup = NULL;
-
-	// send wake up event to stop the thread
-	PostQueuedCompletionStatus(reactor->ioCompletionPort, 0, (ULONG_PTR) 0, NULL);
-	uv_thread_detach(WATCHER);
-	pefree(WATCHER, 0);
-	WATCHER = NULL;
 
 	// Stop IO completion port
 	CloseHandle(reactor->ioCompletionPort);
@@ -2103,6 +2139,18 @@ static bool libuv_process_event_stop(zend_async_event_t *event)
 	if (process->hJob != NULL) {
 		CloseHandle(process->hJob);
 		process->hJob = NULL;
+	}
+
+	/* Counterpart of the increment in start(): the last event to go retires the
+	 * watcher thread. The prologue above returns early for an event already
+	 * closed, so this runs once per event however it ends — exit packet,
+	 * cancellation or shutdown. */
+	if (LIBUV_REACTOR->countWaitingDescriptors > 0) {
+		LIBUV_REACTOR->countWaitingDescriptors--;
+
+		if (LIBUV_REACTOR->countWaitingDescriptors == 0) {
+			libuv_stop_process_watcher();
+		}
 	}
 
 	ZEND_ASYNC_DECREASE_EVENT_COUNT(event);
