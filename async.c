@@ -1726,7 +1726,7 @@ static PHP_GINIT_FUNCTION(async)
 	async_globals->watcherThread = NULL;
 	async_globals->ioCompletionPort = NULL;
 	async_globals->countWaitingDescriptors = 0;
-	async_globals->isRunning = false;
+	zend_atomic_bool_init(&async_globals->isRunning, false);
 	async_globals->uvloop_wakeup = NULL;
 	async_globals->pid_queue = NULL;
 #endif

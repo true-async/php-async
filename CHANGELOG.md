@@ -5,6 +5,12 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A script that ran child processes could die with an access violation on Windows after its work was done.** The reactor watches child processes on a dedicated thread; retiring that watcher detached it and then closed its completion port and freed the queue it pushes into, so a watcher caught mid-push wrote into released memory. The exit code was `0xC0000005` and the output was complete, which made it read as a shutdown crash with no cause. The watcher is now woken and waited for before any of that is released. Two ways it outlived the reactor go with the fix: a process event that ends by cancellation or dispose now gives its descriptor back like one that ends by an exit packet, and reactor shutdown retires the watcher outright. Measured on `run-tests -j4` over `tests/exec` and `tests/io`: 5 crashes in 10 runs before, 0 in 20 after.
+
 ## [0.9.2] - 2026-08-13
 
 ### Fixed
