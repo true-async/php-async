@@ -1,0 +1,145 @@
+# Repeat one test on Windows until it crashes, and bring back the stack.
+#
+# The Windows job of the normal build reports STATUS_ACCESS_VIOLATION (Termsig
+# -1073741819) after a test has already printed its expected output, so the crash
+# happens at shutdown and the run-tests diff says nothing about where. This job
+# runs a single test in a loop with WER local dumps armed, then symbolises the
+# first dump with cdb, so one dispatch answers both how often it crashes and in
+# which frame.
+#
+# Point php_src_ref at two engines in turn to tell an engine regression from a
+# defect that was always there.
+
+name: Debug Windows crash
+
+on:
+  workflow_dispatch:
+    inputs:
+      php_src_ref:
+        description: 'php-src ref to build the engine from'
+        default: 'true-async-stable'
+      test:
+        description: 'test to repeat'
+        default: 'ext/async/tests/exec/011-proc_open_handle_reuse_uaf.phpt'
+      iterations:
+        description: 'how many times to run it'
+        default: '40'
+
+jobs:
+  CRASH:
+    name: WINDOWS_X64_ZTS_CRASH
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 90
+    env:
+      PHP_BUILD_CACHE_BASE_DIR: C:\build-cache
+      PHP_BUILD_OBJ_DIR: C:\obj
+      PHP_BUILD_CACHE_SDK_DIR: C:\build-cache\sdk
+      PHP_BUILD_SDK_BRANCH: php-sdk-2.7.1
+      PHP_BUILD_CRT: vs18
+      PLATFORM: x64
+      THREAD_SAFE: "1"
+      INTRINSICS: AVX2
+      PARALLEL: -j2
+      OPCACHE: "1"
+    steps:
+      - name: git config
+        run: git config --global core.autocrlf false && git config --global core.eol lf
+
+      - name: Checkout php-src to root
+        uses: actions/checkout@v4
+        with:
+          repository: true-async/php-src
+          ref: ${{ github.event.inputs.php_src_ref }}
+
+      - name: Report the engine under test
+        shell: powershell
+        run: |
+          Write-Host "php-src $(git rev-parse HEAD)"
+          git log -1 --format='%ci %s'
+
+      - name: Checkout async extension
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          path: async
+
+      - name: Copy async extension to ext/async
+        shell: cmd
+        run: |
+          if not exist ext\async mkdir ext\async
+          xcopy /E /I /H /Y async ext\async
+
+      - name: Replace all modified GitHub Actions files
+        shell: cmd
+        run: |
+          xcopy /E /I /H /Y async\.github .github
+
+      - name: Setup LibUV
+        shell: powershell
+        run: |
+          if (!(Test-Path "C:\vcpkg")) {
+            git clone https://github.com/Microsoft/vcpkg.git C:\vcpkg
+            C:\vcpkg\bootstrap-vcpkg.bat
+          }
+          C:\vcpkg\vcpkg.exe install libuv:x64-windows
+
+      - name: Setup
+        uses: ./.github/actions/setup-windows
+
+      - name: Build
+        run: .github/scripts/windows/build.bat
+
+      - name: Arm WER local dumps
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\dumps | Out-Null
+          $key = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps'
+          New-Item -Path $key -Force | Out-Null
+          Set-ItemProperty -Path $key -Name DumpFolder -Value 'C:\dumps' -Type ExpandString
+          Set-ItemProperty -Path $key -Name DumpCount -Value 10 -Type DWord
+          # 2 = full dump: the faulting thread's stack is not enough, the race is
+          # between threads and the other stacks are the evidence.
+          Set-ItemProperty -Path $key -Name DumpType -Value 2 -Type DWord
+
+      - name: Repeat the test
+        shell: cmd
+        env:
+          CRASH_TEST: ${{ github.event.inputs.test }}
+          CRASH_ITERATIONS: ${{ github.event.inputs.iterations }}
+        run: .github/scripts/windows/crash.bat
+
+      - name: Symbolise the first dump
+        if: always()
+        shell: powershell
+        run: |
+          $dumps = Get-ChildItem C:\dumps -Filter *.dmp -ErrorAction SilentlyContinue
+          if (-not $dumps) {
+            Write-Host 'no dump: the test did not crash in this run'
+            exit 0
+          }
+
+          Write-Host "$($dumps.Count) dump(s): $($dumps.Name -join ', ')"
+
+          $cdb = 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe'
+          if (!(Test-Path $cdb)) {
+            choco install windbg -y --no-progress | Out-Null
+            $found = Get-ChildItem 'C:\Program Files*' -Recurse -Filter cdb.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $found) {
+              Write-Host 'cdb not available; the dumps are in the artifact'
+              exit 0
+            }
+            $cdb = $found.FullName
+          }
+
+          # PDBs sit next to the binaries the build produced; the Microsoft symbol
+          # server covers ntdll and kernel32.
+          $env:_NT_SYMBOL_PATH = "srv*C:\symbols*https://msdl.microsoft.com/download/symbols;C:\obj\Release_TS"
+          & $cdb -z $dumps[0].FullName -c '!analyze -v; ~*k; q' | Tee-Object -FilePath C:\dumps\analysis.txt
+
+      - name: Upload dumps and analysis
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-crash-dumps
+          path: C:\dumps
+          if-no-files-found: ignore
