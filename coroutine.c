@@ -690,6 +690,13 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 			dispose(&coroutine->coroutine);
 		}
 
+		/* extended_dispose runs after the notify window, and a thread-pool task
+		 * claims its exception from there: unconverted, coroutine_object_destroy()
+		 * rethrows it into the worker and the scheduler shuts that thread down. */
+		if (exception != NULL && ZEND_COROUTINE_IS_EXCEPTION_HANDLED(&coroutine->coroutine)) {
+			ZEND_ASYNC_EVENT_SET_EXC_CAUGHT(&coroutine->coroutine.event);
+		}
+
 		zend_exception_restore_fast(exception_ptr, prev_exception_ptr);
 
 		// If the exception was handled by any handler, we do not propagate it further.
