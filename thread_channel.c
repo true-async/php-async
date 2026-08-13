@@ -104,6 +104,14 @@ static bool thread_channel_send(zend_async_channel_t *channel, zval *value)
 	zval persistent_copy;
 	async_thread_transfer_zval(&persistent_copy, value);
 
+	if (UNEXPECTED(Z_TYPE(persistent_copy) == IS_UNDEF)) {
+		/* The value is not transferable between threads. async_thread_transfer_zval
+		 * has already released the partial graph and thrown; leave the buffer
+		 * untouched, because a receiver has no way to tell an undefined slot from
+		 * a real message and every reader asserts on the type it expects. */
+		return false;
+	}
+
 retry:
 	ASYNC_MUTEX_LOCK(ch->mutex);
 

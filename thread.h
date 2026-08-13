@@ -163,6 +163,10 @@ typedef zend_async_thread_transfer_ctx_t thread_transfer_ctx_t;
  * Copy a zval into persistent memory for cross-thread transfer.
  * Deep copies strings, arrays, and objects. Preserves identity
  * (shared references → shared copies) and handles cycles.
+ *
+ * A value it cannot copy (resource, object with dynamic properties) is refused:
+ * the partial copy is released, *dst is left IS_UNDEF and an exception thrown.
+ * Test *dst, not EG(exception): one may have been pending before the call.
  */
 void async_thread_transfer_zval(zval *dst, const zval *src);
 

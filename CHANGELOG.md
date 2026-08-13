@@ -5,6 +5,12 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Sending a value that cannot cross a thread boundary aborted the process instead of only throwing.** `ThreadChannel::send()` transfers its argument into persistent memory before it takes the lock, and the transfer refuses what it cannot copy — a resource, an object with dynamic properties — by releasing the partial graph, leaving the destination `IS_UNDEF` and throwing. The send did not check for that: it pushed the undefined slot into the buffer and reported success, so the caller got the right exception while the buffer held a value no receiver can interpret. `ThreadPool` reads the task as an array, so a debug build died on the assertion at `thread_pool.c:347` and a release build, where that assertion is compiled out, reads array fields from a value that is not one. The send now leaves the buffer untouched and returns false, which every caller already handles: `ThreadChannel::send()` rethrows, and `ThreadPool::submit()` and `map()` release the snapshot and the future first. Reproduced with `$pool->submit(fn () => 1, fopen('php://memory', 'r'))`: SIGABRT before, a caught `Error` and exit 0 after.
+
 ## [0.9.3] - 2026-08-13
 
 ### Fixed
