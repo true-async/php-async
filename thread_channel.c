@@ -39,6 +39,12 @@
 		} \
 	}
 
+/* Mark Future token as used (non-blocking path) and throw if already fired. */
+#define CANCELLATION_TOKEN_PREPARE(ct) \
+	if ((ct) != NULL && UNEXPECTED(async_resolve_cancel_token(ct))) { \
+		RETURN_THROWS(); \
+	}
+
 zend_class_entry *async_ce_thread_channel = NULL;
 zend_class_entry *async_ce_thread_channel_exception = NULL;
 static zend_object_handlers async_thread_channel_handlers;
@@ -95,7 +101,11 @@ void async_thread_channel_close_owned(void)
 static bool thread_channel_send(zend_async_channel_t *channel, zval *value);
 static bool thread_channel_receive(zend_async_channel_t *channel, zval *result, zend_async_event_t *cancellation);
 
-static bool thread_channel_send(zend_async_channel_t *channel, zval *value)
+/* Send, with an optional event that ends a wait on a full buffer. False means the
+ * value was refused, the channel is closed, or the event fired; EG(exception) does
+ * not tell them apart (a timeout token leaves one pending), the event's state does. */
+static bool thread_channel_send_ex(
+	zend_async_channel_t *channel, zval *value, zend_async_event_t *cancellation)
 {
 	async_thread_channel_t *ch = (async_thread_channel_t *) channel;
 	zend_async_trigger_event_t *trigger = NULL;
@@ -105,10 +115,8 @@ static bool thread_channel_send(zend_async_channel_t *channel, zval *value)
 	async_thread_transfer_zval(&persistent_copy, value);
 
 	if (UNEXPECTED(Z_TYPE(persistent_copy) == IS_UNDEF)) {
-		/* The value is not transferable between threads. async_thread_transfer_zval
-		 * has already released the partial graph and thrown; leave the buffer
-		 * untouched, because a receiver has no way to tell an undefined slot from
-		 * a real message and every reader asserts on the type it expects. */
+		/* Not transferable; async_thread_transfer_zval already threw. Nothing goes
+		 * into the buffer: a receiver cannot tell an undefined slot from a message. */
 		return false;
 	}
 
@@ -147,6 +155,25 @@ retry:
 	zend_async_resume_when(ZEND_ASYNC_CURRENT_COROUTINE,
 		&trigger->base, false, zend_async_waker_callback_resolve, NULL);
 
+	if (cancellation != NULL) {
+		if (UNEXPECTED(ZEND_ASYNC_EVENT_IS_CLOSED(cancellation))) {
+			/* zend_async_resume_when refuses a closed event, so suspending would arm
+			 * the channel trigger alone and never time out. No race with the register
+			 * below: an event closes from a loop callback, and the loop is not running. */
+			ASYNC_MUTEX_LOCK(ch->mutex);
+			zend_hash_index_del(&ch->sender_triggers, (zend_ulong)(uintptr_t) trigger);
+			ASYNC_MUTEX_UNLOCK(ch->mutex);
+			ZEND_ASYNC_WAKER_DESTROY(ZEND_ASYNC_CURRENT_COROUTINE);
+			async_thread_release_transferred_zval(&persistent_copy);
+			trigger->base.dispose(&trigger->base);
+
+			return false;
+		}
+
+		zend_async_resume_when(ZEND_ASYNC_CURRENT_COROUTINE,
+			cancellation, false, zend_async_waker_callback_resolve, NULL);
+	}
+
 	/* A bailout through SUSPEND would skip the dispose paths below and leak the
 	 * trigger (open uv_async blocks uv_loop_close). Catch, dispose, re-raise. */
 	bool channel_bailed = false;
@@ -171,6 +198,8 @@ retry:
 	/* Woke up — remove from sender queue */
 	ASYNC_MUTEX_LOCK(ch->mutex);
 	zend_hash_index_del(&ch->sender_triggers, (zend_ulong)(uintptr_t) trigger);
+	const bool closed = ZEND_ASYNC_EVENT_IS_CLOSED(&ch->channel.event);
+	const bool still_full = circular_buffer_count(&ch->buffer) >= (size_t) ch->capacity;
 	ASYNC_MUTEX_UNLOCK(ch->mutex);
 
 	if (EG(exception)) {
@@ -179,7 +208,20 @@ retry:
 		return false;
 	}
 
+	if (cancellation != NULL && ZEND_ASYNC_EVENT_IS_CLOSED(cancellation) && closed == false && still_full) {
+		/* One freed slot wakes every parked sender, so the buffer alone cannot say
+		 * this call was cancelled: the losers of that race retry instead of reporting. */
+		async_thread_release_transferred_zval(&persistent_copy);
+		trigger->base.dispose(&trigger->base);
+		return false;
+	}
+
 	goto retry;
+}
+
+static bool thread_channel_send(zend_async_channel_t *channel, zval *value)
+{
+	return thread_channel_send_ex(channel, value, NULL);
 }
 
 static bool thread_channel_receive(
@@ -231,7 +273,20 @@ retry:
 
 	zend_async_resume_when(ZEND_ASYNC_CURRENT_COROUTINE,
 		&trigger->base, false, zend_async_waker_callback_resolve, NULL);
+
 	if (cancellation != NULL) {
+		if (UNEXPECTED(ZEND_ASYNC_EVENT_IS_CLOSED(cancellation))) {
+			/* Same guard as in thread_channel_send_ex: zend_async_resume_when refuses
+			 * a closed event, and suspending without it never times out. */
+			ASYNC_MUTEX_LOCK(ch->mutex);
+			zend_hash_index_del(&ch->receiver_triggers, (zend_ulong)(uintptr_t) trigger);
+			ASYNC_MUTEX_UNLOCK(ch->mutex);
+			ZEND_ASYNC_WAKER_DESTROY(ZEND_ASYNC_CURRENT_COROUTINE);
+			trigger->base.dispose(&trigger->base);
+
+			return false;
+		}
+
 		zend_async_resume_when(ZEND_ASYNC_CURRENT_COROUTINE,
 			cancellation, false, zend_async_waker_callback_resolve, NULL);
 	}
@@ -274,14 +329,14 @@ retry:
 		return !closed;
 	}
 
-	if (cancellation != NULL && closed == false) {
-		/* Non-wait_only call: data still wasn't ready (else the retry's
-		 * pop branch would have caught it), and channel isn't closed, so
-		 * the cancellation event is what woke us. Return false without
-		 * exception — caller distinguishes from the closed-channel path. */
+	if (cancellation != NULL && ZEND_ASYNC_EVENT_IS_CLOSED(cancellation) && closed == false) {
+		/* Non-wait_only call: return false without an exception, which the caller
+		 * distinguishes from the closed-channel path. One send wakes every parked
+		 * receiver, so the losers of that race park again instead of reporting. */
 		ASYNC_MUTEX_LOCK(ch->mutex);
 		const bool still_empty = !circular_buffer_is_not_empty(&ch->buffer);
 		ASYNC_MUTEX_UNLOCK(ch->mutex);
+
 		if (still_empty) {
 			trigger->base.dispose(&trigger->base);
 			return false;
@@ -498,6 +553,30 @@ METHOD(__construct)
 	obj->channel = async_thread_channel_create((int32_t) capacity);
 }
 
+/* Throw what `Channel::recv()` throws for a fired token: OperationCanceledException
+ * with the token's own exception as previous, so one catch covers both channel
+ * classes. A token that never fired is left alone — that wait ended some other way. */
+static void report_cancellation(zend_object *token)
+{
+	if (token == NULL || !ZEND_ASYNC_EVENT_IS_CLOSED(ZEND_ASYNC_OBJECT_TO_EVENT(token))) {
+		return;
+	}
+
+	/* A timeout token leaves its TimeoutException in EG() rather than on the event,
+	 * where async_resolve_cancel_token would not find it and would replace it. */
+	zend_object *raised = EG(exception);
+
+	if (raised != NULL) {
+		GC_ADDREF(raised);
+		zend_clear_exception();
+	}
+
+	async_resolve_cancel_token(token);
+
+	ZEND_ASSERT(EG(exception) != NULL);
+	zend_exception_set_previous(EG(exception), raised);
+}
+
 METHOD(send)
 {
 	zval *value;
@@ -511,7 +590,13 @@ METHOD(send)
 
 	ENSURE_COROUTINE_CONTEXT
 
-	if (!THIS_CHANNEL()->channel.send(&THIS_CHANNEL()->channel, value)) {
+	CANCELLATION_TOKEN_PREPARE(cancellation_token)
+
+	zend_async_event_t *cancellation =
+		cancellation_token != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation_token) : NULL;
+
+	if (!thread_channel_send_ex(&THIS_CHANNEL()->channel, value, cancellation)) {
+		report_cancellation(cancellation_token);
 		RETURN_THROWS();
 	}
 }
@@ -527,7 +612,13 @@ METHOD(recv)
 
 	ENSURE_COROUTINE_CONTEXT
 
-	if (!THIS_CHANNEL()->channel.receive(&THIS_CHANNEL()->channel, return_value, NULL)) {
+	CANCELLATION_TOKEN_PREPARE(cancellation_token)
+
+	zend_async_event_t *cancellation =
+		cancellation_token != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation_token) : NULL;
+
+	if (!THIS_CHANNEL()->channel.receive(&THIS_CHANNEL()->channel, return_value, cancellation)) {
+		report_cancellation(cancellation_token);
 		RETURN_THROWS();
 	}
 }
