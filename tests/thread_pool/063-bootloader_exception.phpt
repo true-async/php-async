@@ -28,5 +28,9 @@ spawn(function() {
     $pool->close();
 });
 ?>
---EXPECT--
+--EXPECTF--
+Fatal error: Uncaught RuntimeException: boot failed! in %s:%d
+Stack trace:
+%A
+  thrown in %s on line %d
 boot failed!
