@@ -46,7 +46,7 @@ async_test_server_stop($server);
 echo "Done\n";
 ?>
 --EXPECTF--
-Warning: Unknown: Send of %d bytes failed with errno=%d %s in Unknown on line 0
+Warning: %sSend of %d bytes failed with errno=%d %s in %s on line %d
 curl_exec returned: false
 errno: 23
 is write error: yes
