@@ -5,6 +5,12 @@ All notable changes to the Async extension for PHP will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A `ThreadPool` bootloader that threw was never reported.** The worker kept the message for a later `submit()` and rejected the tasks already queued; that was its only trace. A pool driven as a set of long-lived workers reads neither channel — an HTTP server submits one task per worker and awaits it only for completion — so the exception was lost, and a bootloader that failed on its first `require` looked like a pool that started and did nothing. The worker now reports the exception through its own error stream, so `display_errors`, `log_errors` and `error_log` apply, and then closes the pool and rejects the queued tasks as before.
+
 ## [0.9.1] - 2026-08-11
 
 ### Fixed

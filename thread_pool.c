@@ -106,6 +106,27 @@ static zend_object *thread_pool_wrap_transfer_error(zend_object *src)
 		(msg != NULL && Z_TYPE_P(msg) == IS_STRING) ? Z_STRVAL_P(msg) : "thread transfer failed");
 }
 
+/* Report the bootloader's uncaught exception through this worker's own error
+ * stream — display_errors and error_log, the same route an uncaught exception
+ * takes in any other request — and consume EG(exception).
+ *
+ * The rejection of pending tasks is the pool's only other channel for a failed
+ * bootloader, and it reaches nobody when the pool serves as a set of long-lived
+ * workers (an HTTP server submits one task per worker and never awaits it) or
+ * when the failure happens before anything is submitted. Without this the whole
+ * pool dies with no diagnostic at all. */
+static void thread_pool_report_boot_failure(void)
+{
+	if (EG(exception) == NULL) {
+		return;
+	}
+
+	/* E_ERROR is reported, not raised: zend_exception_error adds E_DONT_BAIL,
+	 * so the worker keeps running and reaches the reject/close path below. */
+	zend_exception_error(EG(exception), E_ERROR);
+	zend_clear_exception();
+}
+
 /* task_channel is swapped by reload() and read cross-thread on bailout paths —
  * always go through the atomic load. */
 #define POOL_TASK_CHANNEL(pool) \
@@ -242,7 +263,7 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 				 * as a clean transfer exception (the raw Error's backtrace reaches
 				 * into worker-local load state and crashes the awaiter if copied). */
 				zend_object *boot_ex = thread_pool_wrap_transfer_error(EG(exception));
-				zend_clear_exception();
+				thread_pool_report_boot_failure();
 				zval_ptr_dtor(&boot_callable);
 				thread_pool_record_bootloader_error(pool, boot_ex);
 				thread_pool_close(pool);
@@ -269,7 +290,9 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 				/* Bootloader called exit()/die() (unwind-exit token) or hit a fatal
 				 * error (bailout). Convert into a transfer exception for every
 				 * pending task instead of leaking the token through reject or
-				 * re-raising zend_bailout(), either of which crashes the worker fiber. */
+				 * re-raising zend_bailout(), either of which crashes the worker fiber.
+				 * Nothing is reported here: a fatal error printed itself on the way
+				 * to the bailout, and exit() is not an error. */
 				if (EG(exception) != NULL) {
 					zend_clear_exception();
 				}
@@ -286,7 +309,9 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 				 * pending task's awaiter instead of a generic cancellation. */
 				zend_object *boot_ex = EG(exception);
 				GC_ADDREF(boot_ex);
-				zend_clear_exception();
+				/* Takes over the reference EG(exception) held; ours keeps boot_ex
+				 * alive for the reject below. */
+				thread_pool_report_boot_failure();
 				thread_pool_record_bootloader_error(pool, boot_ex);
 				thread_pool_close(pool);
 				thread_pool_drain_tasks(pool, true, boot_ex);
