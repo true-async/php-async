@@ -765,6 +765,12 @@ static zend_object *async_future_state_transfer_obj(
 	zend_object *object, zend_async_thread_transfer_ctx_t *ctx,
 	zend_object_transfer_kind_t kind, zend_object_transfer_default_fn default_fn)
 {
+	if (kind == ZEND_OBJECT_TRANSFER_RELEASE) {
+		/* The shell's shared_state ownership moves to the destination under the
+		 * future protocol; reworking that is a change of its own. */
+		return NULL;
+	}
+
 	if (kind == ZEND_OBJECT_TRANSFER) {
 		/* Source thread: create shared_state, bind to original future */
 		async_future_state_t *src = FUTURE_STATE_FROM_OBJ(object);
