@@ -1381,6 +1381,21 @@ static void thread_release_transferred_object(thread_release_ctx_t *ctx, zend_ob
 		obj->properties = NULL;
 	}
 
+	/* Whatever TRANSFER put in the C prefix of this shell is reachable only
+	 * through the class: free_obj never runs for a shell. Resolved by name
+	 * without autoload — a release runs outside a request. */
+	zend_string *lookup_name = zend_string_init(
+		ZSTR_VAL(class_name), ZSTR_LEN(class_name), 0);
+	zend_class_entry *ce = zend_lookup_class_ex(
+		lookup_name, NULL, ZEND_FETCH_CLASS_NO_AUTOLOAD);
+	zend_string_release(lookup_name);
+
+	if (ce != NULL && ce->default_object_handlers != NULL
+		&& ce->default_object_handlers->transfer_obj != NULL) {
+		ce->default_object_handlers->transfer_obj(
+			obj, NULL, ZEND_OBJECT_TRANSFER_RELEASE, NULL);
+	}
+
 	for (uint32_t i = 0; i < prop_count; i++) {
 		thread_release_transferred_zval(ctx, &obj->properties_table[i]);
 	}
@@ -3279,6 +3294,12 @@ static zend_object *closure_transfer_obj(
 	zend_object *object, zend_async_thread_transfer_ctx_t *ctx,
 	zend_object_transfer_kind_t kind, zend_object_transfer_default_fn default_fn)
 {
+	if (kind == ZEND_OBJECT_TRANSFER_RELEASE) {
+		/* The snapshot is freed by thread_release_transferred_object, which
+		 * recognises a closure shell by its non-NULL `properties`. */
+		return NULL;
+	}
+
 	if (kind == ZEND_OBJECT_TRANSFER) {
 		/* Source thread → persistent: deep-copy closure via snapshot */
 		const zend_function *func = zend_get_closure_method_def(object);

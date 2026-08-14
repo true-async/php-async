@@ -492,6 +492,12 @@ static zend_object *async_thread_channel_transfer_obj(
 	zend_object *object, zend_async_thread_transfer_ctx_t *ctx,
 	zend_object_transfer_kind_t kind, zend_object_transfer_default_fn default_fn)
 {
+	if (kind == ZEND_OBJECT_TRANSFER_RELEASE) {
+		/* The shell's channel reference outlives it; dropping one needs the
+		 * channel's event dispose protocol, which is a change of its own. */
+		return NULL;
+	}
+
 	if (kind == ZEND_OBJECT_TRANSFER) {
 		/* Transfer: pemalloc wrapper via default, then copy channel pointer */
 		zend_object *dst = default_fn(object, ctx, sizeof(thread_channel_object_t));
