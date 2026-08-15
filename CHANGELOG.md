@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-08-15
+
+### Added
+
+- **A transferred object's C state is reachable at release.** `thread_release_transferred_object()` walked the transit shell's properties, dropped the class name and freed the allocation; anything a `transfer_obj` handler had put in the shell's C prefix was never reached, because `free_obj` does not run for a shell. The TrueAsync server leaked a topic-hub reference for every room carried into another thread this way — 21,608 bytes of hub and the persistent topic string. The walk now resolves the shell's class by name and calls its handler with `ZEND_OBJECT_TRANSFER_RELEASE` before the generic cleanup, without autoload: a release runs outside a request, and a class that is not loaded owns nothing here. Requires php-src from the matching build, which defines the kind. The three handlers in this extension refuse the new kind explicitly — each branches on `TRANSFER` and treats everything else as `LOAD`, so reaching that branch with a `NULL` default would crash; the closure's snapshot is freed by the walk itself, and the channel reference and the future's shared state move under protocols of their own.
+
 ### Fixed
 
 - **One task that threw took down the `ThreadPool` worker thread that ran it, and the pool went on reporting that worker as alive.** In coroutine mode a task's exception is claimed by `pool_task_dispose()`, which rejects the task's Future and calls `ZEND_COROUTINE_SET_EXCEPTION_HANDLED`. That claim was discarded: the only place converting it into the durable `EXC_CAUGHT` flag ran in the callback-notify window, and `extended_dispose` — where the pool makes the claim — runs after that window closes. `coroutine_object_destroy()` then found no claim and rethrew the exception into the worker's `EG(exception)`, where the scheduler's exception check turned one failed task into a graceful shutdown of the whole thread. The printed `Fatal error` was the shutdown report, not the cause. The claim is now converted after `extended_dispose` too. Measured with `workers: 2`: two distinct workers before, one after the first throw and none after the second, `getWorkerCount()` reporting 2 throughout and the process hanging on the next submit; after the fix both workers serve every following task. Sync-mode pools were never affected, because there the claim is made inside the window.
