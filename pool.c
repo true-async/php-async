@@ -87,28 +87,41 @@ static void pool_queue_push(zend_async_callbacks_vector_t *queue, zend_async_poo
 	queue->data[queue->length++] = (zend_async_event_callback_t *) waiter;
 }
 
-static zend_async_pool_waiter_t *pool_queue_pop(zend_async_callbacks_vector_t *queue)
-{
-	if (queue->length == 0) {
-		return NULL;
-	}
-	zend_async_pool_waiter_t *waiter = (zend_async_pool_waiter_t *) queue->data[0];
-	queue->length--;
-	/* Swap with last element - O(1) */
-	queue->data[0] = queue->data[queue->length];
-	return waiter;
-}
-
+/* Arrival order is the service order: swapping the last element into the hole
+ * would serve the newest waiter first. */
 static bool pool_queue_remove(zend_async_callbacks_vector_t *queue, zend_async_pool_waiter_t *waiter)
 {
 	for (uint32_t i = 0; i < queue->length; i++) {
 		if (queue->data[i] == (zend_async_event_callback_t *) waiter) {
 			queue->length--;
-			queue->data[i] = queue->data[queue->length];
+			memmove(queue->data + i,
+					queue->data + i + 1,
+					(queue->length - i) * sizeof(zend_async_event_callback_t *));
 			return true;
 		}
 	}
 	return false;
+}
+
+/* Ignores arrival order; only for callers that drain the whole queue. */
+static zend_async_pool_waiter_t *pool_queue_pop_last(zend_async_callbacks_vector_t *queue)
+{
+	if (queue->length == 0) {
+		return NULL;
+	}
+	return (zend_async_pool_waiter_t *) queue->data[--queue->length];
+}
+
+/* Oldest waiter with no reservation, or NULL when every waiter has one. */
+static zend_async_pool_waiter_t *pool_queue_first_unreserved(zend_async_callbacks_vector_t *queue)
+{
+	for (uint32_t i = 0; i < queue->length; i++) {
+		zend_async_pool_waiter_t *waiter = (zend_async_pool_waiter_t *) queue->data[i];
+		if (!waiter->reserved) {
+			return waiter;
+		}
+	}
+	return NULL;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -184,6 +197,15 @@ static void pool_destroy_resource(async_pool_t *pool, zval *resource)
 	}
 
 	zval_ptr_dtor(resource);
+}
+
+/* release() borrows its argument and pool_destroy_resource drops a reference:
+ * take one of our own, or the caller's variable is freed out from under it. */
+static void pool_destroy_borrowed_resource(async_pool_t *pool, zval *resource)
+{
+	zval owned;
+	ZVAL_COPY(&owned, resource);
+	pool_destroy_resource(pool, &owned);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -398,7 +420,17 @@ static void pool_strategy_report_failure(async_pool_t *pool, zend_object *error)
 // Wait/Wake operations (like channel)
 ///////////////////////////////////////////////////////////////////////////////
 
-static void pool_wait_for_resource(async_pool_t *pool, zend_long timeout_ms)
+static bool pool_wake_waiter(async_pool_t *pool);
+
+/**
+ * Parks the current coroutine until the pool has an idle resource or free
+ * capacity for it.
+ *
+ * Returns true when the pool reserved a place for this waiter, which only it
+ * may take; false on timeout, cancellation and pool close. A caller that
+ * returns without taking a reserved place must wake the next waiter.
+ */
+static bool pool_wait_for_resource(async_pool_t *pool, zend_long timeout_ms)
 {
 	zend_async_pool_t *base = &pool->base;
 	zend_async_pool_waiter_t *waiter = ecalloc(1, sizeof(zend_async_pool_waiter_t));
@@ -422,35 +454,65 @@ static void pool_wait_for_resource(async_pool_t *pool, zend_long timeout_ms)
 
 	ZEND_ASYNC_SUSPEND();
 
+	const bool had_reservation = waiter->reserved;
+
 	/* Cleanup after waking up */
 	if (pool_queue_remove(&pool->waiters, waiter)) {
-		/* Was still in queue (timeout/close case) - release queue's ref */
+		/* Was still in queue (every path but pool close) - release queue's ref */
 		ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
 	}
+
+	if (had_reservation) {
+		/* Spent by the caller's retry after we return, or handed on below. */
+		ZEND_ASSERT(pool->reserved_count > 0 && "A reservation was consumed twice");
+		pool->reserved_count--;
+	}
+
+	/* An unspent reservation would leave an idle resource or free capacity with
+	 * no waiter assigned, and nothing else wakes the queue afterwards. */
+	if (had_reservation && UNEXPECTED(EG(exception)) && !ZEND_ASYNC_POOL_IS_CLOSED(pool)) {
+		pool_wake_waiter(pool);
+	}
+
 	/* Release our initial ref */
 	ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
+
+	return had_reservation;
 }
 
+/**
+ * Reserves an idle resource or free capacity for the oldest waiter without one
+ * and queues its resumption. Returns false when every waiter already holds a
+ * reservation, or when nobody waits.
+ *
+ * The waiter stays in the queue on purpose: until it runs, reserved_count is
+ * what stops any other coroutine — the releasing one included — from taking
+ * the place reserved for it.
+ */
 static bool pool_wake_waiter(async_pool_t *pool)
 {
-	zend_async_pool_t *base = &pool->base;
-	zend_async_pool_waiter_t *waiter = pool_queue_pop(&pool->waiters);
+	zend_async_pool_waiter_t *waiter = pool_queue_first_unreserved(&pool->waiters);
 	if (waiter == NULL) {
 		return false;
 	}
 
-	base->event.del_callback(&base->event, &waiter->callback.base);
-	waiter->callback.base.callback(&base->event, &waiter->callback.base, NULL, NULL);
-	ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
+	/* The event callback stays registered; the waker's event cleanup drops it
+	 * on resume. */
+	ZEND_ASSERT(!waiter->reserved && "pool_queue_first_unreserved returned a reserved waiter");
+	waiter->reserved = true;
+	pool->reserved_count++;
+	waiter->callback.base.callback(&pool->base.event, &waiter->callback.base, NULL, NULL);
 
 	return true;
 }
 
+/* Drains the queue from the tail: order does not matter when every waiter gets
+ * the same exception, and head removal would shift the rest each time. */
 static void pool_wake_all_with_exception(async_pool_t *pool, zend_object *exception)
 {
 	zend_async_pool_t *base = &pool->base;
 	zend_async_pool_waiter_t *waiter;
-	while ((waiter = pool_queue_pop(&pool->waiters)) != NULL) {
+	while ((waiter = pool_queue_pop_last(&pool->waiters)) != NULL) {
 		base->event.del_callback(&base->event, &waiter->callback.base);
 		waiter->callback.base.callback(&base->event, &waiter->callback.base, NULL, exception);
 		ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
@@ -529,10 +591,12 @@ static zend_string *pool_info(zend_async_event_t *event)
 {
 	const async_pool_t *pool = (async_pool_t *) event;
 
+	/* Without reserved, idle > 0 with coroutines queued reads as a lost wakeup. */
 	return zend_strpprintf(0,
-						   "Pool(idle=%zu, active=%u, max=%u)",
+						   "Pool(idle=%zu, active=%u, reserved=%u, max=%u)",
 						   circular_buffer_count(&pool->idle),
 						   pool->active_count,
+						   pool->reserved_count,
 						   pool->base.max_size);
 }
 
@@ -635,7 +699,8 @@ static void pool_healthcheck_timer_callback(zend_async_event_t *timer_event,
 			break;
 		}
 
-		/* The check yields: keep the resource counted while it is out. */
+		/* During the hook the resource is neither idle nor active, and the hook is
+		 * PHP code that may inspect the pool: count it as active. */
 		pool->active_count++;
 
 		bool is_healthy = pool_call_healthcheck(pool, &resource);
@@ -667,12 +732,19 @@ static void pool_healthcheck_timer_callback(zend_async_event_t *timer_event,
 				if (pool_create_resource(pool, &new_resource)) {
 					zval_circular_buffer_push(&pool->idle, &new_resource, true);
 					zval_ptr_dtor(&new_resource);
-				} else if (UNEXPECTED(EG(exception))) {
+					continue;
+				}
+
+				if (UNEXPECTED(EG(exception))) {
 					break;
 				}
 			}
 		}
 	}
+
+	/* Destroying a resource frees capacity and no release follows to report it.
+	 * Placed after the loop to cover the exits a throwing hook takes. */
+	pool_wake_waiter(pool);
 }
 
 static void pool_start_healthcheck_timer(async_pool_t *pool)
@@ -840,24 +912,32 @@ async_pool_t *zend_async_pool_create_internal(zend_async_pool_factory_fn factory
 bool zend_async_pool_acquire(async_pool_t *pool, zval *result, zend_long timeout_ms)
 {
 	const zend_async_pool_t *base = &pool->base;
+	/* Set when the last wakeup reserved a resource or capacity for this one. */
+	bool has_reservation = false;
 
 retry:
 	/* 1. Closed? */
 	if (ZEND_ASYNC_POOL_IS_CLOSED(pool)) {
 		zend_throw_exception(async_ce_pool_exception, "Pool is closed", 0);
-		return false;
+		goto give_up;
 	}
 
 	/* 2. Circuit breaker check */
 	if (base->circuit_state == ZEND_ASYNC_CIRCUIT_STATE_INACTIVE) {
 		async_throw_service_unavailable("Service is unavailable (circuit breaker is open)");
-		return false;
+		goto give_up;
 	}
 
+	/* Take only what is reserved for nobody, or what is reserved for us. Without
+	 * the rule a coroutine that releases and re-acquires takes back the slot its
+	 * own release just handed to a parked waiter. */
+	const bool may_serve_self = has_reservation || ASYNC_POOL_UNRESERVED(pool) > 0;
+
 	/* 2. Have idle resource? */
-	if (!circular_buffer_is_empty(&pool->idle)) {
+	if (!circular_buffer_is_empty(&pool->idle) && may_serve_self) {
 		zval resource;
 		zval_circular_buffer_pop(&pool->idle, &resource);
+		has_reservation = false;
 
 		/* Reserve before beforeAcquire: it may yield, and until then the
 		 * resource is in neither idle nor active_count. */
@@ -869,7 +949,7 @@ retry:
 			pool->active_count--;
 			pool_destroy_resource(pool, &resource);
 			if (UNEXPECTED(EG(exception))) {
-				/* Capacity freed: a waiter would never be woken otherwise. */
+				/* Capacity freed: no other path wakes a waiter for it. */
 				pool_wake_waiter(pool);
 				return false;
 			}
@@ -881,9 +961,11 @@ retry:
 	}
 
 	/* 3. Can create new? Reserve slot BEFORE factory call — factory may yield,
-	 * allowing other coroutines to pass the same check concurrently. */
+	 * allowing other coroutines to pass the same check concurrently. Capacity is
+	 * reserved for waiters the same way an idle resource is. */
 	const uint32_t total = ASYNC_POOL_TOTAL(pool);
-	if (total < base->max_size) {
+	if (total < base->max_size && may_serve_self) {
+		has_reservation = false;
 		pool->active_count++;
 		if (pool_create_resource(pool, result)) {
 			return true;
@@ -908,13 +990,21 @@ retry:
 	}
 
 	/* 4. Wait - like channel */
-	pool_wait_for_resource(pool, timeout_ms);
+	has_reservation = pool_wait_for_resource(pool, timeout_ms);
 
 	if (UNEXPECTED(EG(exception))) {
 		return false;
 	}
 
 	goto retry;
+
+give_up:
+	/* Leaving without spending the reservation: hand it back to the queue. */
+	if (has_reservation) {
+		pool_wake_waiter(pool);
+	}
+
+	return false;
 }
 
 bool zend_async_pool_try_acquire(async_pool_t *pool, zval *result)
@@ -931,8 +1021,11 @@ retry:
 		return false;
 	}
 
+	/* Same rule as the blocking path: never take a reserved place. */
+	const bool may_serve_self = ASYNC_POOL_UNRESERVED(pool) > 0;
+
 	/* Have idle? */
-	if (!circular_buffer_is_empty(&pool->idle)) {
+	if (!circular_buffer_is_empty(&pool->idle) && may_serve_self) {
 		zval resource;
 		zval_circular_buffer_pop(&pool->idle, &resource);
 
@@ -956,12 +1049,16 @@ retry:
 
 	/* Can create new? Reserve slot before factory (may yield). */
 	const uint32_t total = ASYNC_POOL_TOTAL(pool);
-	if (total < base->max_size) {
+	if (total < base->max_size && may_serve_self) {
 		pool->active_count++;
 		if (pool_create_resource(pool, result)) {
 			return true;
 		}
 		pool->active_count--;
+
+		/* Nothing else reports the freed capacity to the queue — same reason as
+		 * in zend_async_pool_acquire. */
+		pool_wake_waiter(pool);
 	}
 
 	/* No resource available */
@@ -980,7 +1077,7 @@ void zend_async_pool_release(async_pool_t *pool, zval *resource)
 	if (!reusable) {
 		/* Report failure to strategy */
 		pool_strategy_report_failure(pool, NULL);
-		pool_destroy_resource(pool, resource);
+		pool_destroy_borrowed_resource(pool, resource);
 		/* Slot is now free (total dropped) but no idle resource was returned.
 		 * Wake one waiter so it can try to create a fresh resource instead of
 		 * parking forever — without this the pool deadlocks when every
@@ -994,19 +1091,14 @@ void zend_async_pool_release(async_pool_t *pool, zval *resource)
 
 	/* Closed? Destroy resource */
 	if (ZEND_ASYNC_POOL_IS_CLOSED(pool)) {
-		pool_destroy_resource(pool, resource);
+		pool_destroy_borrowed_resource(pool, resource);
 		return;
 	}
 
-	/* Have waiters? Wake first one - it will take resource in retry */
-	if (pool_wake_waiter(pool)) {
-		/* Return resource to buffer, waiter will take it */
-		zval_circular_buffer_push(&pool->idle, resource, true);
-		return;
-	}
-
-	/* No waiters - just return to buffer */
+	/* Buffer first: the woken waiter must find the resource in place, and until
+	 * it runs the reservation keeps everyone else off. */
 	zval_circular_buffer_push(&pool->idle, resource, true);
+	pool_wake_waiter(pool);
 }
 
 void zend_async_pool_close(async_pool_t *pool)
