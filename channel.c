@@ -111,8 +111,10 @@ typedef struct
 {
 	zend_coroutine_event_callback_t callback; /* inherits from coroutine callback */
 	zend_future_t *future;                    /* NULL for coroutine waiter */
-	bool reserved;                            /* a value (receiver) or a free slot (sender) is held for it */
-	bool delivering;                          /* rendezvous sender parked on its own value: wants delivery, not a slot */
+	/* A value (receiver) or a free slot (sender) is held for this waiter. */
+	bool reserved : 1;
+	/* Rendezvous sender parked on its own value: wants delivery, not a slot. */
+	bool delivering : 1;
 } channel_waiter_t;
 
 /* Extra payload appended to the Future returned by recvAsync().
@@ -270,7 +272,9 @@ static channel_waiter_t *channel_queue_first_unreserved(zend_async_callbacks_vec
 	return NULL;
 }
 
-/* The single rendezvous sender parked on the value in the slot, if any. */
+/* The rendezvous sender parked on the value in the slot. At most one exists:
+ * the slot holds one value, and a sender leaves the queue when its value is
+ * taken. */
 static channel_waiter_t *channel_queue_delivering(zend_async_callbacks_vector_t *queue)
 {
 	for (uint32_t i = 0; i < queue->length; i++) {
@@ -476,6 +480,12 @@ static bool channel_wake_receiver(async_channel_t *channel)
  * Wakes the rendezvous sender whose value has just been taken. It is owed an
  * acknowledgement, not a slot, so this costs no reservation; the slot its value
  * left behind goes to the next sender when this one runs its cleanup.
+ *
+ * It leaves the queue here, unlike a reserved waiter: its send() has succeeded
+ * the moment the value was taken, and a close() arriving before it runs would
+ * otherwise fail a sender whose message the receiver already holds. Leaving
+ * also keeps at most one delivering waiter queued, which is what makes
+ * channel_queue_delivering() unambiguous.
  */
 static bool channel_wake_delivered_sender(async_channel_t *channel)
 {
@@ -488,9 +498,11 @@ static bool channel_wake_delivered_sender(async_channel_t *channel)
 		return false;
 	}
 
+	channel_queue_remove(&channel->waiting_senders, waiter);
 	channel->channel.event.del_callback(&channel->channel.event, &waiter->callback.base);
 	waiter->callback.base.callback(&channel->channel.event, &waiter->callback.base, NULL, NULL);
 	channel_refresh_deadlock_timer(channel);
+	ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
 	return true;
 }
 
@@ -525,8 +537,9 @@ static bool channel_wake_sender(async_channel_t *channel)
  * A receiver holding a reservation is left alone: it was already woken, the
  * value it was promised is still in the channel, and recv() takes what it was
  * given before it looks at the closed flag. Failing it here would drop a value
- * the sender was told had been delivered. A sender holding a reservation has
- * delivered nothing, so it is failed like the rest.
+ * the sender was told had been delivered. Every sender still queued is waiting
+ * for something — a sender whose value was taken has left the queue already —
+ * so senders are failed without exception.
  *
  * The queues are walked from the tail: every removal shifts what follows, and
  * going backwards leaves the untouched part of the walk in place.
