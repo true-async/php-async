@@ -66,9 +66,13 @@ struct _async_channel_s
 	/* For rendezvous channels (capacity = 0): single value storage */
 	zval rendezvous_value;
 	bool rendezvous_has_value : 1;
-	/* True once a receiver has been matched & woken for rendezvous_value but
-	 * has not yet run recv() to take it. The rendezvous is committed — close()
-	 * must let that receiver complete instead of dropping the value. */
+	/* True once send() has matched a receiver for rendezvous_value and returned
+	 * success to its caller. It records what the sender was told, which is why
+	 * it is not the same fact as reserved_receivers > 0 and does not follow it:
+	 * a matched receiver that is cancelled with nobody behind it drops its
+	 * reservation, and the value stays committed to the channel for whichever
+	 * receiver comes next. close() rolls back an uncommitted value and keeps a
+	 * committed one, so a delivery already reported is never undone. */
 	bool rendezvous_committed : 1;
 
 	/* Waiting queues (like Go's recvq/sendq) */

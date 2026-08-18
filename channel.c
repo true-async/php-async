@@ -747,10 +747,14 @@ static bool channel_wait_for(async_channel_t *channel,
 	/* Leaving without spending it would strand the value or the slot: nobody
 	 * else is allowed to take it and no further wakeup is coming. A rendezvous
 	 * sender holds no reservation, but its value has just left the slot and
-	 * only it stands between that slot and the next sender. */
+	 * only it stands between that slot and the next sender. A closed channel
+	 * has nobody left to hand anything to — close() failed every waiter that
+	 * was still waiting — and its remaining values are drained by the fast
+	 * path of the next recv(). */
 	const bool spent = had_reservation && EXPECTED(EG(exception) == NULL);
 
-	if (waiter->delivering || (had_reservation && !spent)) {
+	if ((waiter->delivering || (had_reservation && !spent)) &&
+		!ZEND_ASYNC_EVENT_IS_CLOSED(&channel->channel.event)) {
 		if (is_receiver) {
 			channel_wake_receiver(channel);
 		} else {
