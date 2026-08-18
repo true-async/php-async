@@ -4,7 +4,7 @@ Channel: recvAsync() Future dropped, then channel closes — close path skips fr
 <?php
 
 use function Async\spawn;
-use function Async\delay;
+use function Async\await;
 
 $ch = new Async\Channel(0);
 
@@ -15,14 +15,15 @@ echo "future dropped\n";
 
 // channel_close() walks all queued future waiters and rejects them. With the
 // fix, the dropped future already removed its waiter from the queue, so the
-// close-time iteration is empty.
-spawn(function () use ($ch) {
-    delay(20);
+// close-time iteration is empty. The close runs in a coroutine of its own and
+// is awaited rather than timed: what matters is that it happens after the
+// future is gone, not how long either takes.
+$closer = spawn(function () use ($ch) {
     $ch->close();
     echo "channel closed\n";
 });
 
-delay(40);
+await($closer);
 echo "ok\n";
 
 ?>
