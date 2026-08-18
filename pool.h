@@ -30,6 +30,9 @@
 typedef struct
 {
 	zend_coroutine_event_callback_t callback;
+	/* An idle resource or free capacity is reserved for this waiter. A waiter
+	 * that leaves without taking its place wakes the next one. */
+	bool reserved;
 } zend_async_pool_waiter_t;
 
 /**
@@ -44,6 +47,9 @@ typedef struct _async_pool_s
 	/* Storage */
 	circular_buffer_t idle; /* idle resources (zval) */
 	uint32_t active_count;  /* resources currently in use */
+	/* Waiters holding a reservation that have not run yet. No other coroutine
+	 * may take their places until they do. */
+	uint32_t reserved_count;
 
 	/* Waiters queue - like waiting_receivers in channel */
 	zend_async_callbacks_vector_t waiters;
@@ -56,6 +62,12 @@ typedef struct _async_pool_s
 
 /* Helper macros */
 #define ASYNC_POOL_TOTAL(pool) (circular_buffer_count(&(pool)->idle) + (pool)->active_count)
+
+/* Places open to a caller right now — an idle resource or the capacity to
+ * create one — with the reserved ones already subtracted. Since idle + active
+ * never exceeds max_size, the places are max_size minus what is held. */
+#define ASYNC_POOL_UNRESERVED(pool) \
+	((pool)->base.max_size - (pool)->active_count - (pool)->reserved_count)
 
 #define ZEND_ASYNC_POOL_IS_CLOSED(pool) ZEND_ASYNC_EVENT_IS_CLOSED(&(pool)->base.event)
 

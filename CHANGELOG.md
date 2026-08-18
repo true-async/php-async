@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A coroutine that acquires and releases a pool resource in a loop starved every other one.** `release()` woke a waiter and pushed the resource into the shared idle buffer, but a wakeup only queues the coroutine: the releasing one kept running and took its own slot back before the woken waiter ever ran, so parked coroutines were served only when a holder left its loop for good — the 10-60 s latency outliers reported under `PDO::ATTR_POOL_ENABLED` with per-query release. A released resource is now reserved for the waiter it wakes, and no other coroutine may take it until that waiter runs. Measured with 16 coroutines over `max: 5`: the last one waited 663 ms for its first acquire before, 3 ms after.
+- **A waiter cancelled before its wakeup ran left the pool deadlocked with an idle resource.** The wakeup went to one waiter and to it alone, so a cancellation or a timeout arriving before it ran left the resource idle with no waiter assigned and the rest parked with no wakeup coming — `Async\DeadlockError` on a live pool reporting `idle=1`. A waiter that leaves without its place now hands the reservation on, whether the place was a resource or the capacity to create one, and whether it leaves through a cancellation, a timeout or an open circuit breaker.
+- **Waiters were not served in arrival order.** Removing a waiter moved the last element of the queue into the freed head, so the newest waiter was served second and the ones in the middle stalled. Removal now shifts the tail.
+- **`Pool::release()` freed the caller's own reference to the resource.** When `beforeRelease` rejected the resource, or when the pool was already closed, the destroy path dropped a reference it had never taken, so the variable the caller had just passed in was freed under it — a use-after-free that showed up as `zend_mm_heap corrupted`. The pool now takes a reference of its own before destroying.
+- **A pool with queued waiters kept its surplus idle resources unusable.** With one coroutine queued, `acquire()` and `tryAcquire()` refused every idle resource, including the ones reserved for nobody. The pool now counts reserved places and gives out only the surplus. Deadlock reports include the count: `Pool(idle=1, active=0, reserved=1, max=1)`.
+
 ## [0.9.4] - 2026-08-15
 
 ### Added
