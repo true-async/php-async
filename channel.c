@@ -426,7 +426,7 @@ static void channel_refresh_deadlock_timer(async_channel_t *channel)
 ///////////////////////////////////////////////////////////////////////////////
 
 /* Forward declarations */
-static bool channel_wake_sender(async_channel_t *channel);
+static void channel_wake_sender(async_channel_t *channel);
 
 /* Gives one unpromised value to the oldest receiver without a reservation, or
  * returns false when there is no such value or no such receiver.
@@ -492,24 +492,24 @@ static bool channel_wake_delivered_sender(async_channel_t *channel)
 	return true;
 }
 
-/* Wakes the sender whose value was just taken, or else the oldest one waiting
- * for a free slot — channel_wake_receiver() read over slots. Senders are always
- * coroutine waiters, so a slot given out here is always reserved. */
-static bool channel_wake_sender(async_channel_t *channel)
+/* Pays both debts a freed slot creates: the sender whose value was taken hears
+ * so, and the oldest sender waiting for a slot is given this one. Senders are
+ * always coroutine waiters, so a slot given out here is always reserved. */
+static void channel_wake_sender(async_channel_t *channel)
 {
 	/* Two different debts, both due here: one sender is owed the answer that its
 	 * value was taken, another is owed the slot that answer frees. Paying only
 	 * the first would leave that slot unreserved for a tick, and a sender
 	 * arriving in between would take it ahead of the one already waiting. */
-	const bool acknowledged = channel_wake_delivered_sender(channel);
+	channel_wake_delivered_sender(channel);
 
 	if (!channel_has_free_slot(channel)) {
-		return acknowledged;
+		return;
 	}
 
 	channel_waiter_t *waiter = channel_queue_first_unreserved(&channel->waiting_senders);
 	if (waiter == NULL) {
-		return acknowledged;
+		return;
 	}
 
 	channel->channel.event.del_callback(&channel->channel.event, &waiter->callback.base);
@@ -517,7 +517,6 @@ static bool channel_wake_sender(async_channel_t *channel)
 	channel->reserved_senders++;
 	waiter->callback.base.callback(&channel->channel.event, &waiter->callback.base, NULL, NULL);
 	channel_refresh_deadlock_timer(channel);
-	return true;
 }
 
 /* Fails every waiter, walking from the tail so a removal never shifts what the
@@ -729,15 +728,28 @@ static bool channel_wait_for(async_channel_t *channel,
 		ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
 	}
 
-	/* A rendezvous sender that leaves without hearing its value was taken takes
-	 * the value with it: send() is about to throw, and a value left in the slot
-	 * would reach a receiver the caller was told it never reached. Still queued
-	 * and still uncommitted is what makes the value in the slot its own. */
-	if (waiter->delivering && was_queued && UNEXPECTED(EG(exception) != NULL) &&
-		channel->rendezvous_has_value && !channel->rendezvous_committed) {
-		zval_ptr_dtor(&channel->rendezvous_value);
-		ZVAL_UNDEF(&channel->rendezvous_value);
-		channel->rendezvous_has_value = false;
+	/* A rendezvous sender leaves its queue only when its value has been taken, so
+	 * whether it is still there says which of two opposite things happened, and
+	 * both are decided here rather than by whatever woke it. */
+	if (waiter->delivering && UNEXPECTED(EG(exception) != NULL)) {
+		if (was_queued) {
+			/* Nobody took it. send() is about to throw, and a value left in the
+			 * slot would reach a receiver the caller was told it never reached.
+			 * Still queued and still uncommitted makes that value its own. */
+			if (channel->rendezvous_has_value && !channel->rendezvous_committed) {
+				zval_ptr_dtor(&channel->rendezvous_value);
+				ZVAL_UNDEF(&channel->rendezvous_value);
+				channel->rendezvous_has_value = false;
+			}
+		}
+
+		/* The other case — the value was taken and the cancellation arrived after
+		 * that — is deliberately left alone: send() reports the cancellation even
+		 * though the message went through. Swallowing it here to report success
+		 * was tried and is wrong; the coroutine keeps ZEND_COROUTINE_F_CANCELLED
+		 * but nothing raises it again, so it runs to completion uncancellable.
+		 * A side effect that already happened outliving its caller's cancellation
+		 * is the runtime's cancellation semantics, not this channel's to redefine. */
 	}
 
 	if (had_reservation) {
@@ -757,7 +769,7 @@ static bool channel_wait_for(async_channel_t *channel,
 	 * channel has nobody to pass to — close() failed everyone still waiting. */
 	const bool spent = had_reservation && EXPECTED(EG(exception) == NULL);
 
-	if ((waiter->delivering || (had_reservation && !spent)) &&
+	if (((waiter->delivering && was_queued) || (had_reservation && !spent)) &&
 		!ZEND_ASYNC_EVENT_IS_CLOSED(&channel->channel.event)) {
 		if (is_receiver) {
 			channel_wake_receiver(channel);
