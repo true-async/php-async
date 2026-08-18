@@ -722,6 +722,12 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 		}
 	}
 
+	/* Out of the count before the token, not after: reload() sizes its next
+	 * cohort from this number, and a worker that has already answered with a
+	 * token would otherwise be counted into a cohort it cannot answer for
+	 * again, leaving that rotation waiting forever. */
+	zend_atomic_int_dec(&pool->live_workers);
+
 	/* Rolling reload: post one exit token iff OUR cohort channel is the one the
 	 * active rotation retired (identity check before any notify dereference —
 	 * dying replacements and stragglers don't send). Past zend_end_try so
@@ -738,11 +744,6 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			zend_clear_exception();
 		}
 	}
-
-	/* Leave the live cohort only after the exit token is posted: reload() sizes
-	 * its cohort from this counter, so a worker whose token is still pending
-	 * must still be counted when the rotation reads it. */
-	zend_atomic_int_dec(&pool->live_workers);
 
 	/* Release worker's ref on pool */
 	ZEND_THREAD_POOL_DELREF(&pool->base);
