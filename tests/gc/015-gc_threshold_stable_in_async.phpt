@@ -30,14 +30,18 @@ $before = gc_status()['threshold'];
 // Four full root buffers, each one collected by the GC coroutine.
 await(spawn(fn() => make_cycles(40000)));
 
-$after = gc_status()['threshold'];
+$status = gc_status();
 
+// The counts are asserted too: a threshold that never moves also describes an
+// engine whose deferred collection never happens at all.
 echo "threshold before: $before\n";
-echo "threshold after: $after\n";
-echo "grew: ", var_export($after > $before, true), "\n";
+echo "threshold after: ", $status['threshold'], "\n";
+echo "runs: ", $status['runs'], "\n";
+echo "collected: ", $status['collected'], "\n";
 
 ?>
 --EXPECT--
 threshold before: 10001
 threshold after: 10001
-grew: false
+runs: 4
+collected: 80000

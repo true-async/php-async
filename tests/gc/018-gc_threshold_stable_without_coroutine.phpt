@@ -22,10 +22,15 @@ for ($i = 1; $i <= 40000; $i++) {
 
 $status = gc_status();
 
+// Not one collection runs: the GC coroutine is spawned and never scheduled,
+// because nothing here suspends. That is what made the old ratchet visible -
+// the threshold climbed without a single run behind it.
 echo "threshold before: $before\n";
 echo "threshold after: ", $status['threshold'], "\n";
+echo "runs: ", $status['runs'], "\n";
 
 ?>
 --EXPECT--
 threshold before: 10001
 threshold after: 10001
+runs: 0
