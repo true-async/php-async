@@ -1141,17 +1141,22 @@ final class ThreadChannel implements Awaitable, \Countable
     public function capacity(): int {}
 
     /**
-     * Return the number of values currently buffered.
+     * Return the number of values currently buffered, including values already
+     * promised to woken receivers. A diagnostic snapshot, not an admission test.
      */
     public function count(): int {}
 
     /**
-     * Return true if no values are currently buffered.
+     * Return true if no values are currently buffered. A false result does not
+     * promise a non-blocking recv(): every buffered value may already be
+     * promised to a woken receiver.
      */
     public function isEmpty(): bool {}
 
     /**
-     * Return true if the buffer is at capacity.
+     * Return true if the buffer is at capacity. A false result does not promise
+     * sendAsync() will succeed: every free slot may already be promised to a
+     * woken sender.
      */
     public function isFull(): bool {}
 }
