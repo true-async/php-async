@@ -1141,22 +1141,17 @@ final class ThreadChannel implements Awaitable, \Countable
     public function capacity(): int {}
 
     /**
-     * Return the number of values currently buffered, including values already
-     * promised to woken receivers. A diagnostic snapshot, not an admission test.
+     * Return the number of values currently buffered.
      */
     public function count(): int {}
 
     /**
-     * Return true if no values are currently buffered. A false result does not
-     * promise a non-blocking recv(): every buffered value may already be
-     * promised to a woken receiver.
+     * Return true if no values are currently buffered.
      */
     public function isEmpty(): bool {}
 
     /**
-     * Return true if the buffer is at capacity. A false result does not promise
-     * sendAsync() will succeed: every free slot may already be promised to a
-     * woken sender.
+     * Return true if the buffer is at capacity.
      */
     public function isFull(): bool {}
 }
@@ -1402,17 +1397,23 @@ final class Channel implements Awaitable, \IteratorAggregate, \Countable
     public function capacity(): int {}
 
     /**
-     * Return the number of values currently buffered.
+     * Return the number of values the channel currently holds, including values
+     * already promised to woken receivers. A diagnostic snapshot, not an
+     * admission test.
      */
     public function count(): int {}
 
     /**
-     * Return true if no values are currently buffered.
+     * Return true if the channel holds no values. A false result does not
+     * promise a non-blocking recv(): every held value may already be promised
+     * to a woken receiver.
      */
     public function isEmpty(): bool {}
 
     /**
-     * Return true if the buffer is at capacity.
+     * Return true if the buffer holds capacity() values. A false result does not
+     * promise sendAsync() will succeed: every free slot may already be promised
+     * to a woken sender.
      */
     public function isFull(): bool {}
 

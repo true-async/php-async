@@ -113,7 +113,8 @@ typedef struct
 	zend_future_t *future;                    /* NULL for coroutine waiter */
 	/* A value (receiver) or a free slot (sender) is held for this waiter. */
 	bool reserved : 1;
-	/* Rendezvous sender parked on its own value: wants delivery, not a slot. */
+	/* Rendezvous sender parked on its own value: it waits for the value to be
+	 * taken, not for a free slot, so no reservation is made for it. */
 	bool delivering : 1;
 } channel_waiter_t;
 
@@ -247,9 +248,13 @@ static void channel_queue_push(zend_async_callbacks_vector_t *queue, channel_wai
 	queue->data[queue->length++] = (zend_async_event_callback_t *) waiter;
 }
 
-/* Shifts the tail down instead of swapping the last element in: which waiter a
- * handed-on reservation reaches has to follow arrival order, otherwise it
- * depends on who left the queue last. */
+/* Removes the entry at index, keeping the queue in arrival order. The queue's
+ * reference on the waiter is not released here; the caller owns that.
+ *
+ * The tail is shifted rather than the last element swapped into the hole: which
+ * waiter a handed-on reservation reaches has to follow arrival order, otherwise
+ * it depends on who left the queue last. The price is O(n) in the length of the
+ * tail instead of the O(1) of a swap. */
 static void channel_queue_remove_at(zend_async_callbacks_vector_t *queue, uint32_t index)
 {
 	queue->length--;
@@ -258,9 +263,9 @@ static void channel_queue_remove_at(zend_async_callbacks_vector_t *queue, uint32
 	}
 }
 
-/* Oldest waiter that still wants what the channel is handing out: one holding a
- * reservation has been served already, and a rendezvous sender waiting for its
- * own value to be taken wants no slot at all. */
+/* Oldest waiter the channel may still serve: one holding a reservation has been
+ * served already, and a rendezvous sender waiting for its own value to be taken
+ * is parked for that and not for a slot. */
 static channel_waiter_t *channel_queue_first_unreserved(zend_async_callbacks_vector_t *queue)
 {
 	for (uint32_t i = 0; i < queue->length; i++) {
@@ -397,10 +402,10 @@ static void channel_arm_deadlock_timer(async_channel_t *channel, channel_close_r
 	channel->pending_timeout_reason = reason;
 }
 
-/* A waiter holding a reservation is not starving — its value or its slot is
- * kept for it — so it does not arm the timer. Both counts can be non-zero at
- * once: a reserved receiver stays queued until it runs, and a sender can fill
- * the buffer meanwhile. */
+/* A waiter holding a reservation is not starving (its value or its slot is kept
+ * for it), so it does not arm the timer. Both counts can be non-zero at once: a
+ * reserved receiver stays queued until it runs, and a sender can fill the buffer
+ * meanwhile. */
 static void channel_refresh_deadlock_timer(async_channel_t *channel)
 {
 	const bool has_recv = channel->waiting_receivers.length > channel->reserved_receivers;
@@ -506,8 +511,13 @@ static bool channel_wake_delivered_sender(async_channel_t *channel)
 	return true;
 }
 
-/* The mirror image over free slots. Senders are always coroutine waiters, so
- * every wake here reserves. */
+/* Wakes one sender: the one whose value has just been taken if there is such a
+ * sender, otherwise the oldest one waiting for a free slot. Returns false when
+ * every slot is already promised, or when nobody waits for one.
+ *
+ * The second case is channel_wake_receiver() read over free slots instead of
+ * values. Senders are always coroutine waiters, so a slot handed out there is
+ * always reserved; the first case costs no reservation. */
 static bool channel_wake_sender(async_channel_t *channel)
 {
 	if (channel_wake_delivered_sender(channel)) {
@@ -538,8 +548,8 @@ static bool channel_wake_sender(async_channel_t *channel)
  * value it was promised is still in the channel, and recv() takes what it was
  * given before it looks at the closed flag. Failing it here would drop a value
  * the sender was told had been delivered. Every sender still queued is waiting
- * for something — a sender whose value was taken has left the queue already —
- * so senders are failed without exception.
+ * for something, because a sender whose value was taken has left the queue
+ * already, so senders are failed without exception.
  *
  * The queues are walked from the tail: every removal shifts what follows, and
  * going backwards leaves the untouched part of the walk in place.
@@ -693,7 +703,9 @@ bool async_channel_resolve_deadlocks(void)
 
 /**
  * Parks the current coroutine until the channel reserves a value (receivers) or
- * a free slot (senders) for it.
+ * a free slot (senders) for it. With delivering set, the caller is a rendezvous
+ * sender whose value already sits in the slot: it is parked until a receiver
+ * takes that value, and nothing is reserved for it.
  *
  * Returns true when the caller came back holding that reservation and has to
  * spend it on the retry that follows. False covers three cases: it was woken
@@ -742,12 +754,13 @@ static bool channel_wait_for(async_channel_t *channel,
 
 	/* Cleanup after waking up */
 	if (channel_queue_remove(queue, waiter)) {
-		/* Still queued unless close() drained it - release the queue's ref */
+		/* Still queued unless close() drained it or the delivery wakeup took it
+		 * out - release the queue's ref */
 		ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
 	}
 
 	if (had_reservation) {
-		/* Spent by the caller's retry below, or handed on right here. */
+		/* Spent by the caller's retry after this returns, or handed on right here. */
 		if (is_receiver) {
 			ZEND_ASSERT(channel->reserved_receivers > 0 && "A receiver reservation was released twice");
 			channel->reserved_receivers--;
@@ -760,10 +773,10 @@ static bool channel_wait_for(async_channel_t *channel,
 	/* Leaving without spending it would strand the value or the slot: nobody
 	 * else is allowed to take it and no further wakeup is coming. A rendezvous
 	 * sender holds no reservation, but its value has just left the slot and
-	 * only it stands between that slot and the next sender. A closed channel
-	 * has nobody left to hand anything to — close() failed every waiter that
-	 * was still waiting — and its remaining values are drained by the fast
-	 * path of the next recv(). */
+	 * only it stands between that slot and the next sender. A closed channel has
+	 * nobody left to hand anything to, because close() failed every waiter that
+	 * was still waiting, and its remaining values are drained by the fast path of
+	 * the next recv(). */
 	const bool spent = had_reservation && EXPECTED(EG(exception) == NULL);
 
 	if ((waiter->delivering || (had_reservation && !spent)) &&

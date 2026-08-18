@@ -81,7 +81,7 @@ struct _async_channel_s
 
 	/* Values and free slots promised to waiters that were woken but have not run
 	 * yet: a wakeup only queues a coroutine, so until it runs its place has to
-	 * stay out of everyone else's reach -- including the coroutine that gave it.
+	 * stay out of everyone else's reach — including the coroutine that gave it.
 	 * Invariants: reserved_receivers <= count, reserved_senders <= free space. */
 	uint32_t reserved_receivers;
 	uint32_t reserved_senders;
