@@ -47,6 +47,15 @@ final class Scope implements ScopeProvider
 
     #[\Override] public function provideScope(): Scope {}
 
+    /**
+     * Create a root Scope: no parent Scope stands above it.
+     *
+     * Context lookup from inside stops here, so current_context()->find() never reaches the main
+     * Scope and request_context() returns null; root_context() still returns the main Scope's
+     * Context. Disposal is not safe by default: coroutines still running when the Scope is
+     * disposed are cancelled, until allowZombies() opts back in. Use Scope::inherit() for a Scope
+     * that continues the current one.
+     */
     public function __construct() {}
 
     public function asNotSafely(): Scope {}

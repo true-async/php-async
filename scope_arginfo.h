@@ -1,5 +1,5 @@
 /* This is a generated file, edit scope.stub.php instead.
- * Stub hash: c2099c980283b2ef42817380a270d7e1f5c3919a */
+ * Stub hash: 2dca5e7fff027450cd4dc2c610726060ca46a627 */
 
 ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_class_Async_ScopeProvider_provideScope, 0, 0, Async\\Scope, 1)
 ZEND_END_ARG_INFO()
