@@ -66,14 +66,25 @@ struct _async_channel_s
 	/* For rendezvous channels (capacity = 0): single value storage */
 	zval rendezvous_value;
 	bool rendezvous_has_value : 1;
-	/* True once a receiver has been matched & woken for rendezvous_value but
-	 * has not yet run recv() to take it. The rendezvous is committed — close()
-	 * must let that receiver complete instead of dropping the value. */
+	/* True once send() has matched a receiver for rendezvous_value and returned
+	 * success to its caller. It records what the sender was told, which is why
+	 * it is not the same fact as reserved_receivers > 0 and does not follow it:
+	 * a matched receiver that is cancelled with nobody behind it drops its
+	 * reservation, and the value stays committed to the channel for whichever
+	 * receiver comes next. close() rolls back an uncommitted value and keeps a
+	 * committed one, so a delivery already reported is never undone. */
 	bool rendezvous_committed : 1;
 
 	/* Waiting queues (like Go's recvq/sendq) */
 	zend_async_callbacks_vector_t waiting_receivers; /* coroutines waiting for data */
 	zend_async_callbacks_vector_t waiting_senders;   /* coroutines waiting for space */
+
+	/* Values and free slots promised to woken waiters that have not run yet: a
+	 * wakeup only queues a coroutine, and until it runs its place stays out of
+	 * everyone else's reach, the coroutine that gave it included.
+	 * Invariants: reserved_receivers <= count, reserved_senders <= free space. */
+	uint32_t reserved_receivers;
+	uint32_t reserved_senders;
 
 	/* Per-channel deadlock timer. */
 	int32_t no_producer_timeout_ms;

@@ -1,5 +1,5 @@
 /* This is a generated file, edit channel.stub.php instead.
- * Stub hash: ae7f8892c84ce03165caca0a9bdfdfe230cfb548 */
+ * Stub hash: 527bb6e4de47c309fbf0b5bbf68114733da142b5 */
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Async_Channel___construct, 0, 0, 0)
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, capacity, IS_LONG, 0, "0")
