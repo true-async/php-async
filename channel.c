@@ -111,6 +111,8 @@ typedef struct
 {
 	zend_coroutine_event_callback_t callback; /* inherits from coroutine callback */
 	zend_future_t *future;                    /* NULL for coroutine waiter */
+	bool reserved;                            /* a value (receiver) or a free slot (sender) is held for it */
+	bool delivering;                          /* rendezvous sender parked on its own value: wants delivery, not a slot */
 } channel_waiter_t;
 
 /* Extra payload appended to the Future returned by recvAsync().
@@ -169,6 +171,44 @@ static zend_always_inline size_t channel_count(async_channel_t *channel)
 	return channel->rendezvous_has_value ? 1 : 0;
 }
 
+static zend_always_inline size_t channel_free_space(async_channel_t *channel)
+{
+	if (channel_is_buffered(channel)) {
+		return (size_t) channel->capacity - circular_buffer_count(&channel->buffer);
+	}
+	return channel->rendezvous_has_value ? 0 : 1;
+}
+
+/* A value no woken receiver has been promised. Anyone but the waiter holding
+ * the reservation may take a value only while this is true. */
+static zend_always_inline bool channel_has_free_value(async_channel_t *channel)
+{
+	return channel_count(channel) > channel->reserved_receivers;
+}
+
+/* The same rule for the other side: a slot no woken sender has been promised. */
+static zend_always_inline bool channel_has_free_slot(async_channel_t *channel)
+{
+	return channel_free_space(channel) > channel->reserved_senders;
+}
+
+/* Moves one value out of the channel. The caller establishes first that the
+ * value is theirs to take: channel_has_free_value(), or a reservation of its
+ * own. */
+static void channel_take_value(async_channel_t *channel, zval *result)
+{
+	if (channel_is_buffered(channel)) {
+		zval_circular_buffer_pop(&channel->buffer, result);
+		return;
+	}
+
+	ZVAL_COPY(result, &channel->rendezvous_value);
+	zval_ptr_dtor(&channel->rendezvous_value);
+	ZVAL_UNDEF(&channel->rendezvous_value);
+	channel->rendezvous_has_value = false;
+	channel->rendezvous_committed = false;
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // Queue operations
 ///////////////////////////////////////////////////////////////////////////////
@@ -205,24 +245,48 @@ static void channel_queue_push(zend_async_callbacks_vector_t *queue, channel_wai
 	queue->data[queue->length++] = (zend_async_event_callback_t *) waiter;
 }
 
-static channel_waiter_t *channel_queue_pop(zend_async_callbacks_vector_t *queue)
+/* Shifts the tail down instead of swapping the last element in: which waiter a
+ * handed-on reservation reaches has to follow arrival order, otherwise it
+ * depends on who left the queue last. */
+static void channel_queue_remove_at(zend_async_callbacks_vector_t *queue, uint32_t index)
 {
-	if (queue->length == 0) {
-		return NULL;
-	}
-	channel_waiter_t *waiter = (channel_waiter_t *) queue->data[0];
 	queue->length--;
-	/* Swap with last element - O(1) instead of memmove O(n) */
-	queue->data[0] = queue->data[queue->length];
-	return waiter;
+	if (index < queue->length) {
+		memmove(queue->data + index, queue->data + index + 1, (queue->length - index) * sizeof(void *));
+	}
+}
+
+/* Oldest waiter that still wants what the channel is handing out: one holding a
+ * reservation has been served already, and a rendezvous sender waiting for its
+ * own value to be taken wants no slot at all. */
+static channel_waiter_t *channel_queue_first_unreserved(zend_async_callbacks_vector_t *queue)
+{
+	for (uint32_t i = 0; i < queue->length; i++) {
+		channel_waiter_t *waiter = (channel_waiter_t *) queue->data[i];
+		if (!waiter->reserved && !waiter->delivering) {
+			return waiter;
+		}
+	}
+	return NULL;
+}
+
+/* The single rendezvous sender parked on the value in the slot, if any. */
+static channel_waiter_t *channel_queue_delivering(zend_async_callbacks_vector_t *queue)
+{
+	for (uint32_t i = 0; i < queue->length; i++) {
+		channel_waiter_t *waiter = (channel_waiter_t *) queue->data[i];
+		if (waiter->delivering) {
+			return waiter;
+		}
+	}
+	return NULL;
 }
 
 static bool channel_queue_remove(zend_async_callbacks_vector_t *queue, channel_waiter_t *waiter)
 {
 	for (uint32_t i = 0; i < queue->length; i++) {
 		if (queue->data[i] == (zend_async_event_callback_t *) waiter) {
-			queue->length--;
-			queue->data[i] = queue->data[queue->length];
+			channel_queue_remove_at(queue, i);
 			return true;
 		}
 	}
@@ -329,12 +393,14 @@ static void channel_arm_deadlock_timer(async_channel_t *channel, channel_close_r
 	channel->pending_timeout_reason = reason;
 }
 
-/* Invariant: at most one of waiting_receivers/waiting_senders is non-empty —
- * a sender and receiver match up immediately. */
+/* A waiter holding a reservation is not starving — its value or its slot is
+ * kept for it — so it does not arm the timer. Both counts can be non-zero at
+ * once: a reserved receiver stays queued until it runs, and a sender can fill
+ * the buffer meanwhile. */
 static void channel_refresh_deadlock_timer(async_channel_t *channel)
 {
-	const bool has_recv = channel->waiting_receivers.length > 0;
-	const bool has_send = channel->waiting_senders.length > 0;
+	const bool has_recv = channel->waiting_receivers.length > channel->reserved_receivers;
+	const bool has_send = channel->waiting_senders.length > channel->reserved_senders;
 
 	if (!has_recv && !has_send) {
 		channel_disarm_deadlock_timer(channel);
@@ -361,43 +427,63 @@ static void channel_refresh_deadlock_timer(async_channel_t *channel)
 /* Forward declarations */
 static bool channel_wake_sender(async_channel_t *channel);
 
+/**
+ * Gives one free value to the oldest receiver without a reservation. Returns
+ * false when every value is already promised, or when nobody waits for one.
+ *
+ * A coroutine waiter stays in the queue on purpose: a wakeup only queues the
+ * coroutine, and until it runs reserved_receivers is what keeps the value out
+ * of everyone else's reach. A future has no coroutine to run later, so it is
+ * served here and needs no reservation.
+ */
 static bool channel_wake_receiver(async_channel_t *channel)
 {
-	channel_waiter_t *waiter = channel_queue_pop(&channel->waiting_receivers);
+	if (!channel_has_free_value(channel)) {
+		return false;
+	}
+
+	channel_waiter_t *waiter = channel_queue_first_unreserved(&channel->waiting_receivers);
 	if (waiter == NULL) {
 		return false;
 	}
 
-	channel->channel.event.del_callback(&channel->channel.event, &waiter->callback.base);
-
 	if (waiter->future != NULL) {
-		/* Future waiter: take value from channel and complete future */
+		channel_queue_remove(&channel->waiting_receivers, waiter);
+		channel->channel.event.del_callback(&channel->channel.event, &waiter->callback.base);
+
 		zval value;
-		if (channel_is_buffered(channel)) {
-			zval_circular_buffer_pop(&channel->buffer, &value);
-		} else {
-			ZVAL_COPY(&value, &channel->rendezvous_value);
-			zval_ptr_dtor(&channel->rendezvous_value);
-			ZVAL_UNDEF(&channel->rendezvous_value);
-			channel->rendezvous_has_value = false;
-			channel->rendezvous_committed = false;
-		}
+		channel_take_value(channel, &value);
 		ZEND_FUTURE_COMPLETE(waiter->future, &value);
 		zval_ptr_dtor(&value);
 		channel_wake_sender(channel);
-	} else {
-		/* Coroutine waiter: just wake up */
-		waiter->callback.base.callback(&channel->channel.event, &waiter->callback.base, NULL, NULL);
+		channel_refresh_deadlock_timer(channel);
+		ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
+		return true;
 	}
 
+	/* Off the event, still in the queue: a later close() notifies the event with
+	 * its exception, and this receiver already has a value of its own. The queue
+	 * entry is what channel_wait_for() removes when the receiver runs. */
+	channel->channel.event.del_callback(&channel->channel.event, &waiter->callback.base);
+	waiter->reserved = true;
+	channel->reserved_receivers++;
+	waiter->callback.base.callback(&channel->channel.event, &waiter->callback.base, NULL, NULL);
 	channel_refresh_deadlock_timer(channel);
-	ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
 	return true;
 }
 
-static bool channel_wake_sender(async_channel_t *channel)
+/**
+ * Wakes the rendezvous sender whose value has just been taken. It is owed an
+ * acknowledgement, not a slot, so this costs no reservation; the slot its value
+ * left behind goes to the next sender when this one runs its cleanup.
+ */
+static bool channel_wake_delivered_sender(async_channel_t *channel)
 {
-	channel_waiter_t *waiter = channel_queue_pop(&channel->waiting_senders);
+	if (channel_is_buffered(channel) || channel->rendezvous_has_value) {
+		return false;
+	}
+
+	channel_waiter_t *waiter = channel_queue_delivering(&channel->waiting_senders);
 	if (waiter == NULL) {
 		return false;
 	}
@@ -405,15 +491,57 @@ static bool channel_wake_sender(async_channel_t *channel)
 	channel->channel.event.del_callback(&channel->channel.event, &waiter->callback.base);
 	waiter->callback.base.callback(&channel->channel.event, &waiter->callback.base, NULL, NULL);
 	channel_refresh_deadlock_timer(channel);
-	ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
 	return true;
 }
 
+/* The mirror image over free slots. Senders are always coroutine waiters, so
+ * every wake here reserves. */
+static bool channel_wake_sender(async_channel_t *channel)
+{
+	if (channel_wake_delivered_sender(channel)) {
+		return true;
+	}
+
+	if (!channel_has_free_slot(channel)) {
+		return false;
+	}
+
+	channel_waiter_t *waiter = channel_queue_first_unreserved(&channel->waiting_senders);
+	if (waiter == NULL) {
+		return false;
+	}
+
+	channel->channel.event.del_callback(&channel->channel.event, &waiter->callback.base);
+	waiter->reserved = true;
+	channel->reserved_senders++;
+	waiter->callback.base.callback(&channel->channel.event, &waiter->callback.base, NULL, NULL);
+	channel_refresh_deadlock_timer(channel);
+	return true;
+}
+
+/**
+ * Fails every waiter that is still waiting for something.
+ *
+ * A receiver holding a reservation is left alone: it was already woken, the
+ * value it was promised is still in the channel, and recv() takes what it was
+ * given before it looks at the closed flag. Failing it here would drop a value
+ * the sender was told had been delivered. A sender holding a reservation has
+ * delivered nothing, so it is failed like the rest.
+ *
+ * The queues are walked from the tail: every removal shifts what follows, and
+ * going backwards leaves the untouched part of the walk in place.
+ */
 static void channel_wake_all(async_channel_t *channel, zend_object *exception)
 {
-	channel_waiter_t *waiter;
+	uint32_t index = channel->waiting_receivers.length;
+	while (index > 0) {
+		index--;
+		channel_waiter_t *waiter = (channel_waiter_t *) channel->waiting_receivers.data[index];
+		if (waiter->reserved) {
+			continue;
+		}
 
-	while ((waiter = channel_queue_pop(&channel->waiting_receivers)) != NULL) {
+		channel_queue_remove_at(&channel->waiting_receivers, index);
 		channel->channel.event.del_callback(&channel->channel.event, &waiter->callback.base);
 		if (waiter->future != NULL) {
 			ZEND_FUTURE_REJECT(waiter->future, exception);
@@ -423,7 +551,12 @@ static void channel_wake_all(async_channel_t *channel, zend_object *exception)
 		ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
 	}
 
-	while ((waiter = channel_queue_pop(&channel->waiting_senders)) != NULL) {
+	index = channel->waiting_senders.length;
+	while (index > 0) {
+		index--;
+		channel_waiter_t *waiter = (channel_waiter_t *) channel->waiting_senders.data[index];
+
+		channel_queue_remove_at(&channel->waiting_senders, index);
 		channel->channel.event.del_callback(&channel->channel.event, &waiter->callback.base);
 		waiter->callback.base.callback(&channel->channel.event, &waiter->callback.base, NULL, exception);
 		ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
@@ -545,11 +678,23 @@ bool async_channel_resolve_deadlocks(void)
 // Wait operations
 ///////////////////////////////////////////////////////////////////////////////
 
-static void
-channel_wait_for(async_channel_t *channel, zend_async_callbacks_vector_t *queue, zend_object *cancellation_token)
+/**
+ * Parks the current coroutine until the channel reserves a value (receivers) or
+ * a free slot (senders) for it.
+ *
+ * Returns true when the caller came back holding that reservation and has to
+ * spend it on the retry that follows. False covers three cases: it was woken
+ * without one (a rendezvous sender waiting for delivery), it was failed by a
+ * cancellation or a close, or its reservation has just been handed to the next
+ * waiter — in none of them may the caller take anything.
+ */
+static bool channel_wait_for(async_channel_t *channel,
+							 zend_async_callbacks_vector_t *queue,
+							 zend_object *cancellation_token,
+							 bool delivering)
 {
 	if (cancellation_token != NULL && UNEXPECTED(async_resolve_cancel_token(cancellation_token))) {
-		return;
+		return false;
 	}
 
 	channel_waiter_t *waiter = ecalloc(1, sizeof(channel_waiter_t));
@@ -558,6 +703,7 @@ channel_wait_for(async_channel_t *channel, zend_async_callbacks_vector_t *queue,
 	waiter->callback.coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 	waiter->callback.event = &channel->channel.event;
 	waiter->future = NULL;
+	waiter->delivering = delivering;
 
 	channel_queue_push(queue, waiter);
 	channel_refresh_deadlock_timer(channel);
@@ -578,19 +724,54 @@ channel_wait_for(async_channel_t *channel, zend_async_callbacks_vector_t *queue,
 
 	ZEND_ASYNC_SUSPEND();
 
+	const bool is_receiver = (queue == &channel->waiting_receivers);
+	const bool had_reservation = waiter->reserved;
+
 	/* Cleanup after waking up */
 	if (channel_queue_remove(queue, waiter)) {
-		/* Was still in queue (cancellation/close case) - release queue's ref */
+		/* Still queued unless close() drained it - release the queue's ref */
 		ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
 	}
+
+	if (had_reservation) {
+		/* Spent by the caller's retry below, or handed on right here. */
+		if (is_receiver) {
+			ZEND_ASSERT(channel->reserved_receivers > 0 && "A receiver reservation was released twice");
+			channel->reserved_receivers--;
+		} else {
+			ZEND_ASSERT(channel->reserved_senders > 0 && "A sender reservation was released twice");
+			channel->reserved_senders--;
+		}
+	}
+
+	/* Leaving without spending it would strand the value or the slot: nobody
+	 * else is allowed to take it and no further wakeup is coming. A rendezvous
+	 * sender holds no reservation, but its value has just left the slot and
+	 * only it stands between that slot and the next sender. */
+	const bool spent = had_reservation && EXPECTED(EG(exception) == NULL);
+
+	if (waiter->delivering || (had_reservation && !spent)) {
+		if (is_receiver) {
+			channel_wake_receiver(channel);
+		} else {
+			channel_wake_sender(channel);
+		}
+	}
+
 	channel_refresh_deadlock_timer(channel);
 	/* Release our initial ref */
 	ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
+
+	return spent;
 }
 
-#define CHANNEL_WAIT_FOR_DATA(ch, ct) channel_wait_for((ch), &(ch)->waiting_receivers, (ct))
+#define CHANNEL_WAIT_FOR_DATA(ch, ct) channel_wait_for((ch), &(ch)->waiting_receivers, (ct), false)
 
-#define CHANNEL_WAIT_FOR_SPACE(ch, ct) channel_wait_for((ch), &(ch)->waiting_senders, (ct))
+#define CHANNEL_WAIT_FOR_SPACE(ch, ct) channel_wait_for((ch), &(ch)->waiting_senders, (ct), false)
+
+/* Rendezvous only: the value is already in the slot and this waits for a
+ * receiver to take it. */
+#define CHANNEL_WAIT_FOR_DELIVERY(ch, ct) channel_wait_for((ch), &(ch)->waiting_senders, (ct), true)
 
 ///////////////////////////////////////////////////////////////////////////////
 // Event handlers (for Awaitable interface)
@@ -626,10 +807,12 @@ static zend_string *channel_info(zend_async_event_t *event)
 	const async_channel_t *channel = (async_channel_t *) event;
 
 	return zend_strpprintf(0,
-						   "Channel(capacity=%d, receivers=%u, senders=%u)",
+						   "Channel(capacity=%d, receivers=%u, senders=%u, reserved=%u/%u)",
 						   channel->capacity,
 						   channel->waiting_receivers.length,
-						   channel->waiting_senders.length);
+						   channel->waiting_senders.length,
+						   channel->reserved_receivers,
+						   channel->reserved_senders);
 }
 
 static void channel_event_init(async_channel_t *channel)
@@ -687,6 +870,8 @@ static zend_object *async_channel_create_object(zend_class_entry *ce)
 	ZVAL_UNDEF(&channel->rendezvous_value);
 	channel->rendezvous_has_value = false;
 	channel->rendezvous_committed = false;
+	channel->reserved_receivers = 0;
+	channel->reserved_senders = 0;
 
 	channel->no_producer_timeout_ms = 0;
 	channel->no_consumer_timeout_ms = 0;
@@ -774,17 +959,11 @@ static void channel_iterator_move_forward(zend_object_iterator *iter)
 	zval_ptr_dtor(&iterator->current);
 	ZVAL_UNDEF(&iterator->current);
 
+	bool has_reservation = false;
+
 retry:
-	if (!channel_is_empty(channel)) {
-		if (channel_is_buffered(channel)) {
-			zval_circular_buffer_pop(&channel->buffer, &iterator->current);
-		} else {
-			ZVAL_COPY(&iterator->current, &channel->rendezvous_value);
-			zval_ptr_dtor(&channel->rendezvous_value);
-			ZVAL_UNDEF(&channel->rendezvous_value);
-			channel->rendezvous_has_value = false;
-			channel->rendezvous_committed = false;
-		}
+	if (has_reservation || channel_has_free_value(channel)) {
+		channel_take_value(channel, &iterator->current);
 		channel_wake_sender(channel);
 		iterator->valid = true;
 		return;
@@ -795,7 +974,7 @@ retry:
 		return;
 	}
 
-	CHANNEL_WAIT_FOR_DATA(channel, 0);
+	has_reservation = CHANNEL_WAIT_FOR_DATA(channel, 0);
 
 	if (EG(exception)) {
 		// An explicit close() is how iteration ends, not a failure, so the exception the waiter was woken
@@ -927,47 +1106,44 @@ METHOD(send)
 
 	async_channel_t *channel = THIS_CHANNEL;
 
+	/* Set when the last wakeup kept a free slot for this sender alone. */
+	bool has_reservation = false;
+
 retry:
 	THROW_IF_CLOSED(channel)
 
-	if (channel_is_buffered(channel)) {
-		if (!channel_is_full(channel)) {
+	if (has_reservation || channel_has_free_slot(channel)) {
+		if (channel_is_buffered(channel)) {
 			zval_circular_buffer_push(&channel->buffer, value, false);
 			channel_wake_receiver(channel);
 			return;
 		}
-	} else {
-		if (!channel->rendezvous_has_value) {
-			ZVAL_COPY(&channel->rendezvous_value, value);
-			channel->rendezvous_has_value = true;
-			channel->rendezvous_committed = false;
 
-			if (channel_wake_receiver(channel)) {
-				/* A receiver was matched & woken: the rendezvous is committed
-				 * even though the value is still in the slot until recv() runs. */
-				channel->rendezvous_committed = channel->rendezvous_has_value;
-				return;
-			}
+		ZEND_ASSERT(!channel->rendezvous_has_value && "A reserved rendezvous slot was filled by someone else");
+		ZVAL_COPY(&channel->rendezvous_value, value);
+		channel->rendezvous_has_value = true;
+		channel->rendezvous_committed = false;
 
-			CHANNEL_WAIT_FOR_SPACE(channel, cancellation_token);
-
-			if (UNEXPECTED(EG(exception))) {
-				RETURN_THROWS();
-			}
-
-			if (channel->waiting_receivers.length > 0 && channel->waiting_senders.length > 0) {
-				channel_wake_sender(channel);
-			}
-
-			if (UNEXPECTED(EG(exception))) {
-				RETURN_THROWS();
-			}
-
+		if (channel_wake_receiver(channel)) {
+			/* A receiver was matched & woken: the rendezvous is committed
+			 * even though the value is still in the slot until recv() runs. */
+			channel->rendezvous_committed = channel->rendezvous_has_value;
 			return;
 		}
+
+		/* The value is in the slot and belongs to the channel; this waits for a
+		 * receiver to take it. The freed slot goes to the next sender from the
+		 * cleanup inside the wait, so nothing is left to do here. */
+		CHANNEL_WAIT_FOR_DELIVERY(channel, cancellation_token);
+
+		if (UNEXPECTED(EG(exception))) {
+			RETURN_THROWS();
+		}
+
+		return;
 	}
 
-	CHANNEL_WAIT_FOR_SPACE(channel, cancellation_token);
+	has_reservation = CHANNEL_WAIT_FOR_SPACE(channel, cancellation_token);
 
 	if (EG(exception)) {
 		RETURN_THROWS();
@@ -990,17 +1166,16 @@ METHOD(sendAsync)
 		RETURN_FALSE;
 	}
 
+	/* Same rule as the blocking path: a slot kept for a woken sender is not
+	 * free for this one. */
+	if (!channel_has_free_slot(channel)) {
+		RETURN_FALSE;
+	}
+
 	if (channel_is_buffered(channel)) {
-		if (channel_is_full(channel)) {
-			RETURN_FALSE;
-		}
 		zval_circular_buffer_push(&channel->buffer, value, false);
 		channel_wake_receiver(channel);
 		RETURN_TRUE;
-	}
-
-	if (channel->rendezvous_has_value) {
-		RETURN_FALSE;
 	}
 
 	ZVAL_COPY(&channel->rendezvous_value, value);
@@ -1026,24 +1201,20 @@ METHOD(recv)
 
 	async_channel_t *channel = THIS_CHANNEL;
 
+	/* Set when the last wakeup kept a value for this receiver alone. */
+	bool has_reservation = false;
+
 retry:
-	if (!channel_is_empty(channel)) {
-		if (channel_is_buffered(channel)) {
-			zval_circular_buffer_pop(&channel->buffer, return_value);
-		} else {
-			ZVAL_COPY(return_value, &channel->rendezvous_value);
-			zval_ptr_dtor(&channel->rendezvous_value);
-			ZVAL_UNDEF(&channel->rendezvous_value);
-			channel->rendezvous_has_value = false;
-			channel->rendezvous_committed = false;
-		}
+	if (has_reservation || channel_has_free_value(channel)) {
+		ZEND_ASSERT(!channel_is_empty(channel) && "A reservation outlived the value it was made for");
+		channel_take_value(channel, return_value);
 		channel_wake_sender(channel);
 		return;
 	}
 
 	THROW_IF_CLOSED(channel)
 
-	CHANNEL_WAIT_FOR_DATA(channel, cancellation_token);
+	has_reservation = CHANNEL_WAIT_FOR_DATA(channel, cancellation_token);
 
 	if (EG(exception)) {
 		RETURN_THROWS();
@@ -1071,17 +1242,10 @@ METHOD(recvAsync)
 	future_extra->prev_dispose = future->event.dispose;
 	future->event.dispose = channel_recv_future_dispose;
 
-	if (!channel_is_empty(channel)) {
+	/* A value kept for a woken receiver is not free for this future either. */
+	if (channel_has_free_value(channel)) {
 		zval result;
-		if (channel_is_buffered(channel)) {
-			zval_circular_buffer_pop(&channel->buffer, &result);
-		} else {
-			ZVAL_COPY(&result, &channel->rendezvous_value);
-			zval_ptr_dtor(&channel->rendezvous_value);
-			ZVAL_UNDEF(&channel->rendezvous_value);
-			channel->rendezvous_has_value = false;
-			channel->rendezvous_committed = false;
-		}
+		channel_take_value(channel, &result);
 		channel_wake_sender(channel);
 		ZEND_FUTURE_COMPLETE(future, &result);
 		zval_ptr_dtor(&result);

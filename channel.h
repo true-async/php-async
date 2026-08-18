@@ -75,6 +75,13 @@ struct _async_channel_s
 	zend_async_callbacks_vector_t waiting_receivers; /* coroutines waiting for data */
 	zend_async_callbacks_vector_t waiting_senders;   /* coroutines waiting for space */
 
+	/* Values and free slots promised to waiters that were woken but have not run
+	 * yet: a wakeup only queues a coroutine, so until it runs its place has to
+	 * stay out of everyone else's reach -- including the coroutine that gave it.
+	 * Invariants: reserved_receivers <= count, reserved_senders <= free space. */
+	uint32_t reserved_receivers;
+	uint32_t reserved_senders;
+
 	/* Per-channel deadlock timer. */
 	int32_t no_producer_timeout_ms;
 	int32_t no_consumer_timeout_ms;
