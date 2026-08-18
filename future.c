@@ -1984,6 +1984,10 @@ void async_future_shared_state_destroy(zend_future_shared_state_t *state)
 		state->trigger = NULL;
 	}
 
+	/* Borrowed, so it is not disposed here. A state reaching destruction with
+	 * one still bound means a producer left without unbinding. */
+	ZEND_ASSERT(state->cancel_trigger == NULL);
+
 	ASYNC_MUTEX_DESTROY(state->mutex);
 	pefree(state, 1);
 }
@@ -2079,8 +2083,10 @@ zend_future_shared_state_t *async_future_shared_state_create(void)
 	ZEND_ATOMIC_INT_INIT(&state->completed, 0);
 	ZEND_ATOMIC_INT_INIT(&state->ref_count, 0);
 	ASYNC_MUTEX_INIT(state->mutex);
+	ZEND_ATOMIC_INT_INIT(&state->cancel_requested, 0);
 	state->trigger = NULL;
 	state->target_future = NULL;
+	state->cancel_trigger = NULL;
 
 	return state;
 }
@@ -2169,6 +2175,57 @@ void async_future_shared_state_reject(zend_future_shared_state_t *state, zend_ob
 	ASYNC_MUTEX_UNLOCK(state->mutex);
 }
 
+/** @copydoc async_future_shared_state_request_cancel */
+void async_future_shared_state_request_cancel(zend_future_shared_state_t *state)
+{
+	if (zend_atomic_int_load(&state->completed)) {
+		return;
+	}
+
+	ASYNC_MUTEX_LOCK(state->mutex);
+
+	if (zend_atomic_int_load(&state->completed)) {
+		ASYNC_MUTEX_UNLOCK(state->mutex);
+		return;
+	}
+
+	zend_atomic_int_store(&state->cancel_requested, 1);
+
+	/* Fired under the mutex, as results are in the other direction: holding it
+	 * with a non-NULL trigger excludes a concurrent unbind, and with it the
+	 * dispose that follows one. */
+	if (state->cancel_trigger != NULL) {
+		state->cancel_trigger->trigger(state->cancel_trigger);
+	}
+
+	ASYNC_MUTEX_UNLOCK(state->mutex);
+}
+
+/** @copydoc async_future_shared_state_bind_cancel */
+bool async_future_shared_state_bind_cancel(
+	zend_future_shared_state_t *state, zend_async_trigger_event_t *trigger)
+{
+	ASYNC_MUTEX_LOCK(state->mutex);
+
+	const bool bound = zend_atomic_int_load(&state->cancel_requested) == 0;
+
+	if (bound) {
+		state->cancel_trigger = trigger;
+	}
+
+	ASYNC_MUTEX_UNLOCK(state->mutex);
+
+	return bound;
+}
+
+/** @copydoc async_future_shared_state_unbind_cancel */
+void async_future_shared_state_unbind_cancel(zend_future_shared_state_t *state)
+{
+	ASYNC_MUTEX_LOCK(state->mutex);
+	state->cancel_trigger = NULL;
+	ASYNC_MUTEX_UNLOCK(state->mutex);
+}
+
 /** @copydoc async_future_shared_state_source_cb */
 
 zend_async_event_callback_t *async_future_shared_state_source_cb(zend_future_shared_state_t *state)
@@ -2227,10 +2284,45 @@ static bool remote_future_stop(zend_async_event_t *event)
  * Disposes the trigger, releases the shared state reference,
  * cleans up the base future, and frees the remote future.
  */
+/* Anything subscribing marks the future watched: from here on its death means
+ * an awaiter went away, not that nobody ever wanted the result. */
+static bool remote_future_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
+{
+	((zend_future_remote_t *) event)->observed = true;
+
+	return zend_future_add_callback(event, callback);
+}
+
+/* Rejecting this side with a cancellation is a request to the producer: the
+ * local future settles either way, and the work it stands for stops too. */
+static bool remote_future_resolve(zend_async_event_t *event, void *iterator)
+{
+	zend_future_remote_t *remote = (zend_future_remote_t *) event;
+	const zend_future_t *future = &remote->future;
+
+	if (remote->state != NULL && future->exception != NULL
+		&& instanceof_function(future->exception->ce, async_ce_cancellation_exception)) {
+		async_future_shared_state_request_cancel(remote->state);
+	}
+
+	return zend_future_resolve(event, iterator);
+}
+
 static bool remote_future_dispose(zend_async_event_t *event)
 {
 	zend_future_remote_t *remote = (zend_future_remote_t *) event;
 	zend_future_t *future = &remote->future;
+
+	/* An awaiter that went away without a result takes the work with it: a
+	 * cancelled scope or an expired timeout unwinds the waiting coroutine and
+	 * drops this future, and nothing else would ever tell the producer. A
+	 * future nobody subscribed to is the opposite case — fire-and-forget, which
+	 * submit() supports on purpose — and ignore() opts out explicitly. The
+	 * chained form subscribes past add_callback, so it is read from the vector. */
+	if (remote->state != NULL && !ZEND_FUTURE_IS_IGNORED(future)
+		&& (remote->observed || future->resolve_callbacks.length > 0)) {
+		async_future_shared_state_request_cancel(remote->state);
+	}
 
 	if (remote->state != NULL) {
 		/* Sever the producer under the mutex before closing the trigger, so a
@@ -2289,7 +2381,7 @@ zend_future_remote_t *async_new_remote_future(zend_future_shared_state_t *state)
 	ZVAL_UNDEF(&future->result);
 
 	/* Standard future handlers */
-	event->add_callback = zend_future_add_callback;
+	event->add_callback = remote_future_add_callback;
 	event->del_callback = zend_future_del_callback;
 	event->replay = zend_future_replay;
 	event->info = zend_future_info;
@@ -2302,7 +2394,7 @@ zend_future_remote_t *async_new_remote_future(zend_future_shared_state_t *state)
 
 	ZEND_ASYNC_EVENT_SET_ZVAL_RESULT(event);
 
-	future->resolve = zend_future_resolve;
+	future->resolve = remote_future_resolve;
 	future->resolve_callbacks.data = NULL;
 	future->resolve_callbacks.length = 0;
 	future->resolve_callbacks.capacity = 0;
@@ -2312,6 +2404,7 @@ zend_future_remote_t *async_new_remote_future(zend_future_shared_state_t *state)
 	future->completed_lineno = 0;
 
 	/* Bind to shared state */
+	remote->observed = false;
 	remote->state = state;
 	async_future_shared_state_addref(state);
 
