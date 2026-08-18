@@ -24,8 +24,11 @@ spawn(function () {
         $ch->recv();
     }
     $elapsed = (int) ((microtime(true) - $start) * 1000);
-    // ~1500ms total; if the timer accumulated it would have fired at 1000ms
-    $ok = ($elapsed >= 1400) ? "yes" : "no ($elapsed)";
+    // ~1500ms total; if the timer accumulated it would have fired at 1000ms.
+    // The upper bound is loose because a memory checker multiplies the work
+    // between the delays, but it is a bound: without one the check passes on
+    // any run slow enough, whatever the timer did.
+    $ok = ($elapsed >= 1400 && $elapsed < 6000) ? "yes" : "no ($elapsed)";
     echo "no_premature_fire=", $ok, "\n";
     echo "closed=", $ch->isClosed() ? "true" : "false", "\n";
 });
