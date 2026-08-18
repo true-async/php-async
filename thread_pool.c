@@ -775,6 +775,16 @@ static void pool_task_dispose(zend_coroutine_t *coroutine)
 		OBJ_RELEASE(bex);
 	}
 
+	/* Cancel what the task left behind. The nursery flag alone never fires here:
+	 * the scope stays alive exactly while an un-awaited child runs, so its
+	 * disposal is never reached. The sync path cancels at task end for the
+	 * same reason. */
+	zend_async_scope_t *task_scope = coroutine->scope;
+
+	if (task_scope != NULL && !ZEND_ASYNC_SCOPE_IS_CLOSED(task_scope)) {
+		ZEND_ASYNC_SCOPE_CANCEL(task_scope, NULL, false, false);
+	}
+
 	async_future_shared_state_delref(ctx->state);
 	async_thread_snapshot_destroy(ctx->snapshot);
 
@@ -810,6 +820,11 @@ static bool thread_pool_spawn_task_coroutine(
 	if (UNEXPECTED(task_scope == NULL)) {
 		return false;
 	}
+
+	/* The task scope is a nursery: leftovers are cancelled, not left to run.
+	 * Inherited DISPOSE_SAFELY would zombie them instead, and a zombie is out
+	 * of the active count, so it can outlive the worker's drain. */
+	ZEND_ASYNC_SCOPE_CLR_DISPOSE_SAFELY(task_scope);
 
 	zend_coroutine_t *coroutine = ZEND_ASYNC_SPAWN_WITH(task_scope);
 	if (UNEXPECTED(coroutine == NULL)) {
