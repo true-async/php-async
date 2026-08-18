@@ -473,15 +473,15 @@ static bool channel_wake_receiver(async_channel_t *channel)
  * answer, not a slot, so it reserves nothing — its caller grants the freed slot
  * in the same call. It leaves the queue here, or a close() arriving before it
  * runs would fail a message the receiver already holds. */
-static bool channel_wake_delivered_sender(async_channel_t *channel)
+static void channel_wake_delivered_sender(async_channel_t *channel)
 {
 	if (channel_is_buffered(channel) || channel->rendezvous_has_value) {
-		return false;
+		return;
 	}
 
 	channel_waiter_t *waiter = channel_queue_delivering(&channel->waiting_senders);
 	if (waiter == NULL) {
-		return false;
+		return;
 	}
 
 	channel_queue_remove(&channel->waiting_senders, waiter);
@@ -489,7 +489,6 @@ static bool channel_wake_delivered_sender(async_channel_t *channel)
 	waiter->callback.base.callback(&channel->channel.event, &waiter->callback.base, NULL, NULL);
 	channel_refresh_deadlock_timer(channel);
 	ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&waiter->callback.base);
-	return true;
 }
 
 /* Pays both debts a freed slot creates: the sender whose value was taken hears
@@ -744,12 +743,13 @@ static bool channel_wait_for(async_channel_t *channel,
 		}
 
 		/* The other case — the value was taken and the cancellation arrived after
-		 * that — is deliberately left alone: send() reports the cancellation even
-		 * though the message went through. Swallowing it here to report success
-		 * was tried and is wrong; the coroutine keeps ZEND_COROUTINE_F_CANCELLED
-		 * but nothing raises it again, so it runs to completion uncancellable.
-		 * A side effect that already happened outliving its caller's cancellation
-		 * is the runtime's cancellation semantics, not this channel's to redefine. */
+		 * that — is left alone: send() reports the cancellation even though the
+		 * message went through. By the time this sender runs, the receiver may
+		 * already have acted on the value, so the delivery cannot be taken back
+		 * and the cancellation is the later fact of the two. Reporting success
+		 * instead was tried by clearing the exception here, and measured: the
+		 * coroutine then keeps ZEND_COROUTINE_F_CANCELLED with nothing left to
+		 * raise it and runs to completion uncancellable. */
 	}
 
 	if (had_reservation) {
