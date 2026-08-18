@@ -59,6 +59,15 @@ struct _async_thread_pool_s {
 	 * preempted out of zend_call_function, so they ignore it. */
 	zend_atomic_int cancel_requested;
 
+	/* Workers that entered thread_pool_worker_handler and have not returned
+	 * from it. Incremented on the spawning thread before the new thread can
+	 * run and decremented by the worker itself just before it returns, so this
+	 * count is never larger than the number of threads able to serve a task.
+	 * Atomic because PHP-land reads it while workers exit on other threads.
+	 * base.worker_count keeps the constructed cohort size and the length of
+	 * base.workers; the two disagree once a worker dies. */
+	zend_atomic_int live_workers;
+
 	/* Bootloader-failure message (persistent), set once by the first worker
 	 * whose bootloader fails, before it closes the channel. A submit() that
 	 * loses the race against the close reports THIS real reason instead of a
