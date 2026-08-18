@@ -53,8 +53,10 @@ bool async_context_find(async_context_t *context, zval *key, zval *result, bool 
 	// Start from parent scope since we already checked current context
 	scope = scope->parent_scope;
 
-	while (scope != NULL && scope->context != NULL) {
-		if (async_context_find_local((async_context_t *) scope->context, key, result)) {
+	// A scope carries a context only after someone asked for one, so gaps in the chain are normal
+	// and must not stop the walk: an empty middle scope still has ancestors that may hold the key.
+	while (scope != NULL) {
+		if (scope->context != NULL && async_context_find_local((async_context_t *) scope->context, key, result)) {
 			return true;
 		}
 

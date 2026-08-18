@@ -1,5 +1,5 @@
 /* This is a generated file, edit context.stub.php instead.
- * Stub hash: 9cee158f24f5c73feaca9c17d8b82fba15e506de */
+ * Stub hash: c8a27e09c0bea36dc6718959dc5af764c56cb8b6 */
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_Context_find, 0, 1, IS_MIXED, 0)
 	ZEND_ARG_TYPE_MASK(0, key, MAY_BE_STRING|MAY_BE_OBJECT, NULL)

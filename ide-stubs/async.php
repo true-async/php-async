@@ -340,32 +340,38 @@ enum Signal: int
 // ---------------------------------------------------------------------------
 
 /**
- * Immutable key-value store propagated through a coroutine hierarchy.
+ * Key-value store owned by a Scope and shared by every coroutine running in it.
  *
- * Each coroutine inherits the context of its parent. Calling {@see set()}
- * or {@see unset()} returns a new Context instance; the original is not
- * modified.
+ * {@see find()}, {@see get()} and {@see has()} read this Context first and then the
+ * Contexts of the Scopes above it. A Scope receives a Context only when someone asks
+ * for one, so scopes without a Context are skipped rather than ending the search; the
+ * search ends at a Scope with no parent, which is the main Scope or one created by
+ * `new Scope()`. {@see set()} and {@see unset()} modify this Context in place and
+ * return it.
  *
  * @since 8.6
  */
 final class Context
 {
     /**
-     * Find a value by key, searching the current context and all ancestors.
+     * Find a value by key in this Context, then in the Contexts of the Scopes above it.
+     *
+     * Returns null when no level holds the key.
      *
      * @param string|object $key
      */
     public function find(string|object $key): mixed {}
 
     /**
-     * Get a value by key from the current context only.
+     * Get a value by key in this Context, then in the Contexts of the Scopes above it.
      *
      * @param string|object $key
+     * @throws ContextException If the key is not found at any level.
      */
     public function get(string|object $key): mixed {}
 
     /**
-     * Check if a key exists in the current context or any ancestor.
+     * Check if a key exists in this Context or in the Contexts of the Scopes above it.
      *
      * @param string|object $key
      */
@@ -393,20 +399,23 @@ final class Context
     public function hasLocal(string|object $key): bool {}
 
     /**
-     * Return a new Context with the given key-value pair set.
+     * Set a value by key in this Context.
+     *
+     * A key already held by this Context is an error unless $replace is true; a key
+     * inherited from a Scope above does not count as held.
      *
      * @param string|object $key
      * @param mixed         $value
-     * @param bool          $replace Allow replacing an existing key.
-     * @return Context A new Context instance.
+     * @param bool          $replace Allow replacing a key already held by this Context.
+     * @return Context This same Context.
      */
     public function set(string|object $key, mixed $value, bool $replace = false): Context {}
 
     /**
-     * Return a new Context with the given key removed.
+     * Delete a value by key from this Context; keys held by the Scopes above are left alone.
      *
      * @param string|object $key
-     * @return Context A new Context instance.
+     * @return Context This same Context.
      */
     public function unset(string|object $key): Context {}
 }
@@ -576,7 +585,13 @@ final class Scope implements ScopeProvider
     public function provideScope(): Scope {}
 
     /**
-     * Create a new root Scope.
+     * Create a root Scope: no parent Scope stands above it.
+     *
+     * Context lookup from inside stops here, so {@see current_context()}->find() never
+     * reaches the main Scope and {@see request_context()} returns null; {@see root_context()}
+     * still returns the main Scope's Context. Disposal is not safe by default: coroutines
+     * still running when the Scope is disposed are cancelled, until {@see allowZombies()}
+     * opts back in. Use {@see inherit()} for a Scope that continues the current one.
      */
     public function __construct() {}
 
@@ -2084,14 +2099,21 @@ function delay(int $ms): void {}
 function timeout(int $ms): Awaitable {}
 
 /**
- * Return the current coroutine's context.
+ * Return the Context of the current Scope.
+ *
+ * Values set here are read by every coroutine below this Scope, because Context::find()
+ * walks up the Scope chain. At top level this is the main Scope, so the returned Context
+ * is the one {@see root_context()} returns.
  *
  * @return Context
  */
 function current_context(): Context {}
 
 /**
- * Return the context of the root coroutine in the current coroutine hierarchy.
+ * Return the Context of the current coroutine.
+ *
+ * Unlike {@see current_context()}, this Context belongs to the coroutine alone: no other
+ * coroutine reads it.
  *
  * @return Context
  */
@@ -2105,7 +2127,11 @@ function coroutine_context(): Context {}
 function current_coroutine(): Coroutine {}
 
 /**
- * Return the root context of the scheduler.
+ * Return the Context of the main Scope, the root of the Scope tree.
+ *
+ * Values set here are read through Context::find() by every coroutine whose Scope descends
+ * from the main Scope, which is all of them except those under a `new Scope()`. Those reach
+ * the values by calling root_context() directly.
  *
  * @return Context
  */
