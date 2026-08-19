@@ -2436,6 +2436,11 @@ static void op_array_to_emalloc(zend_op_array *op_array)
 				 * string carries it so the source side skips refcounting, and
 				 * a literal that looks interned dies with the arena. */
 				op_array_emalloc_copy_value(&new_literals[i], &orig_literals[i]);
+
+				/* u2 is not part of the value: for a literal it holds the
+				 * runtime cache slot the VM reads through Z_CACHE_SLOT_P, so
+				 * losing it sends that read to an arbitrary offset. */
+				new_literals[i].u2 = orig_literals[i].u2;
 			}
 		}
 		op_array->literals = new_literals;

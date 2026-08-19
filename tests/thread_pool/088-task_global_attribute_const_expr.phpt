@@ -21,10 +21,9 @@ use function Async\spawn;
 use function Async\await;
 
 // Such an argument is kept as an unevaluated tree until something asks for it,
-// and that tree lived in the snapshot arena. Unlike the plain cases this one
-// does not fail on the old code — the freed tree still read as itself, and
-// valgrind reported nothing — so it records the contract rather than catching
-// the defect.
+// and the table holding it lived in the snapshot arena. What this catches is
+// the attribute table, the same defect as the test before it; the tree of the
+// argument is the part it states rather than catches.
 spawn(function() {
     $pool = new ThreadPool(workers: 1, coroutine: true);
 

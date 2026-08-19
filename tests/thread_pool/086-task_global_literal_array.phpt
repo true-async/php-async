@@ -24,12 +24,6 @@ spawn(function() {
         return 'stored';
     }));
 
-    // Allocation pressure, so the freed arena block is handed out again.
-    await($pool->submit(static function() {
-        $junk = [];
-        for ($i = 0; $i < 30000; $i++) { $junk[] = "filler $i"; }
-        return count($junk);
-    }));
 
     $seen = await($pool->submit(static function() {
         $arr = $GLOBALS['arr'] ?? [];

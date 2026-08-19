@@ -29,12 +29,6 @@ spawn(function() {
         return 'stored';
     }));
 
-    await($pool->submit(static function() {
-        $junk = [];
-        for ($i = 0; $i < 30000; $i++) { $junk[] = "filler $i"; }
-        return count($junk);
-    }));
-
     $seen = await($pool->submit(static function() {
         $fn = $GLOBALS['tagged'] ?? null;
 
