@@ -1543,6 +1543,45 @@ void async_thread_defer_release_ctx(
  * reproduce. Recurses into dynamic_func_defs. Throws on first illegal
  * opcode; sets ASYNC_FN_FLAG_THREAD_TRANSFER_OK on success so subsequent
  * transfers (ThreadPool resubmits, channel resends) skip the scan. */
+/* True when the tree holds a first-class callable anywhere inside it. */
+static bool async_thread_ast_has_callable_convert(const zend_ast *ast)
+{
+	if (ast == NULL) {
+		return false;
+	}
+
+	if (ast->kind == ZEND_AST_CALLABLE_CONVERT) {
+		return true;
+	}
+
+	if (ast->kind == ZEND_AST_ZVAL || ast->kind == ZEND_AST_CONSTANT
+		|| ast->kind == ZEND_AST_OP_ARRAY) {
+		return false;
+	}
+
+	if (zend_ast_is_list((zend_ast *) ast)) {
+		const zend_ast_list *list = zend_ast_get_list((zend_ast *) ast);
+
+		for (uint32_t i = 0; i < list->children; i++) {
+			if (async_thread_ast_has_callable_convert(list->child[i])) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	const uint32_t children = zend_ast_get_num_children((zend_ast *) ast);
+
+	for (uint32_t i = 0; i < children; i++) {
+		if (async_thread_ast_has_callable_convert(ast->child[i])) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
 static bool async_thread_check_op_array(zend_op_array *op_array)
 {
 	if (op_array->type != ZEND_USER_FUNCTION
@@ -1574,6 +1613,22 @@ static bool async_thread_check_op_array(zend_op_array *op_array)
 			op_array->filename ? ZSTR_VAL(op_array->filename) : "(closure)",
 			it->lineno);
 		return false;
+	}
+
+	/* A first-class callable written into a default value stays an unevaluated
+	 * tree, and that tree names a function resolved against the thread that
+	 * compiled it, alongside strings and a cached function pointer of that
+	 * thread. The worker cannot be given ones of its own, so the closure is
+	 * refused here, where the caller still has a stack to catch it. */
+	for (uint32_t i = 0; i < op_array->last_literal; i++) {
+		if (Z_TYPE(op_array->literals[i]) == IS_CONSTANT_AST
+			&& async_thread_ast_has_callable_convert(Z_ASTVAL(op_array->literals[i]))) {
+			zend_throw_error(NULL,
+				"Cannot transfer closure to another thread: first-class callable in a "
+				"constant expression at %s",
+				op_array->filename ? ZSTR_VAL(op_array->filename) : "(closure)");
+			return false;
+		}
 	}
 
 	for (uint32_t i = 0; i < op_array->num_dynamic_func_defs; i++) {
@@ -2223,8 +2278,8 @@ static HashTable *op_array_emalloc_copy_array(const HashTable *src)
  * it. zend_ast_copy gives the tree its own block but carries leaf values over
  * as they are, so the leaves are rebuilt here.
  *
- * A tree holding an op_array of its own — a closure inside a constant
- * expression — keeps that op_array in the arena. */
+ * A tree of its own kind: a closure or a first-class callable written inside a
+ * constant expression is not localized, because neither form reaches a worker. */
 static void op_array_emalloc_localize_ast(zend_ast *ast)
 {
 	if (ast == NULL) {
@@ -2302,10 +2357,16 @@ static HashTable *op_array_emalloc_copy_attributes(const HashTable *src)
 
 		zend_string_release(name);
 
+		/* zend_add_attribute leaves this NULL. A target error deferred by
+		 * DelayedTargetValidation is raised from this string when the attribute
+		 * is instantiated, and losing it turns the error into silence. */
+		if (attr->validation_error != NULL) {
+			copy->validation_error = op_array_emalloc_copy_string(attr->validation_error);
+		}
+
 		for (uint32_t i = 0; i < attr->argc; i++) {
 			if (attr->args[i].name != NULL) {
-				copy->args[i].name = zend_string_init(
-					ZSTR_VAL(attr->args[i].name), ZSTR_LEN(attr->args[i].name), 0);
+				copy->args[i].name = op_array_emalloc_copy_string(attr->args[i].name);
 			}
 
 			op_array_emalloc_copy_value(&copy->args[i].value, &attr->args[i].value);
