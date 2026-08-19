@@ -15,11 +15,12 @@ spawn(function() {
     $pool = new ThreadPool(4);
     $pool->cancel();
     echo "closed=" . ($pool->isClosed() ? "yes" : "no") . "\n";
-    echo "workers=" . $pool->getWorkerCount() . "\n";
+    // The live worker count is not asserted here: cancel() has told the
+    // threads to leave and does not wait for them, so the number depends on
+    // how far they got. 082-worker_liveness.phpt covers what the count means.
     echo "done\n";
 });
 ?>
 --EXPECT--
 closed=yes
-workers=4
 done
