@@ -14,7 +14,10 @@ use function Async\await;
 use function Async\delay;
 
 spawn(function() {
-    $pool = new ThreadPool(workers: 1, coroutine: true);
+    // concurrency: 1 holds the worker to one task at a time. Without it the
+    // worker takes the next task off the channel while the first is still
+    // running, and the second task is no longer queued when cancel() reaches it.
+    $pool = new ThreadPool(workers: 1, concurrency: 1, coroutine: true);
 
     // The only worker is busy, so the second task waits in the channel.
     $busy = $pool->submit(function() { delay(400); return 'busy'; });
