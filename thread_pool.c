@@ -207,7 +207,6 @@ typedef struct {
 	async_thread_channel_t *channel;
 } thread_pool_worker_ctx_t;
 
-/* Own function so the handler's zend_try isn't nested (GCC -Wmaybe-uninitialized). */
 /* The answer for a task that never ran, and the one the drain path already
  * gives, so a cancelled task reads the same whichever side dropped it. */
 static void thread_pool_reject_cancelled(zend_future_shared_state_t *state)
@@ -218,6 +217,7 @@ static void thread_pool_reject_cancelled(zend_future_shared_state_t *state)
 	OBJ_RELEASE(cancelled);
 }
 
+/* Own function so the handler's zend_try isn't nested (GCC -Wmaybe-uninitialized). */
 static bool thread_pool_call_guarded(zend_fcall_info *fci, zend_fcall_info_cache *fcc)
 {
 	volatile bool bailed = false;
@@ -259,9 +259,9 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 	 * bailout handler below, so it must survive the longjmp. */
 	int32_t active_count = 0;
 	zend_async_trigger_event_t * volatile slot_event = NULL;
-	/* Cancellation mailbox of this worker, created on the first coroutine-mode
-	 * task. Volatile for the same reason as slot_event: the bailout handler
-	 * below reads it after a longjmp. */
+	/* Cancellation mailbox of this worker, created on its first closure task and
+	 * used by both modes. Volatile for the same reason as slot_event: the
+	 * bailout handler below reads it after a longjmp. */
 	pool_worker_cancel_t * volatile worker_cancel = NULL;
 
 	ZEND_ASSERT(event == NULL);
@@ -395,7 +395,12 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 				/* C-handler task — payload_a is handler ptr, payload_b is
 				 * caller's pemalloc'd ctx. Handler frees ctx itself before
 				 * returning; pool only takes ownership when dispatch fails
-				 * (handled in drain path). */
+				 * (handled in drain path).
+				 *
+				 * Deliberately outside the cancellation protocol: the handler
+				 * owns its ctx and frees it on the way out, so a task skipped
+				 * here would leak it. A consumer that gives up on such a task
+				 * raises the flag and nobody reads it. */
 				zend_thread_pool_internal_handler_t handler =
 					(zend_thread_pool_internal_handler_t)(uintptr_t) Z_LVAL_P(
 						zend_hash_index_find(Z_ARRVAL(task), TASK_SLOT_PAYLOAD_A));
@@ -457,9 +462,18 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 					zend_atomic_int_dec(&pool->base.running_count);
 					zend_atomic_int_inc(&pool->base.completed_count);
 
+					/* Settled whether or not the reactor left a reason behind:
+					 * a task that leaves here unsettled is an awaiter waiting
+					 * forever. */
 					if (EG(exception)) {
 						async_future_shared_state_reject(state, EG(exception));
 						zend_clear_exception();
+					} else {
+						zend_object *failed = async_new_exception(
+							async_ce_thread_pool_exception,
+							"ThreadPool worker could not create its cancellation handle");
+						async_future_shared_state_reject(state, failed);
+						OBJ_RELEASE(failed);
 					}
 
 					async_future_shared_state_delref(state);

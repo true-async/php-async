@@ -2288,9 +2288,16 @@ static bool remote_future_stop(zend_async_event_t *event)
  * an awaiter went away, not that nobody ever wanted the result. */
 static bool remote_future_add_callback(zend_async_event_t *event, zend_async_event_callback_t *callback)
 {
+	/* Marked only once the subscription took: a callback that failed to attach
+	 * leaves nobody watching, and cancelling on its behalf would stop work that
+	 * nobody was waiting for. */
+	if (false == zend_future_add_callback(event, callback)) {
+		return false;
+	}
+
 	((zend_future_remote_t *) event)->observed = true;
 
-	return zend_future_add_callback(event, callback);
+	return true;
 }
 
 /* Rejecting this side with a cancellation is a request to the producer: the
