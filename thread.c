@@ -611,9 +611,9 @@ static void thread_copy_op_array_ex(thread_copy_ctx_t *ctx, zend_op_array *op_ar
 			if (arg_info[i].name) {
 				arg_info[i].name = thread_copy_string(ctx, arg_info[i].name);
 			}
-			/* A parameter may carry a doc comment, and the memcpy above brought
-			 * the source thread's string with it. Left as it was, the worker
-			 * releases a string of another thread when it frees the op_array. */
+			/* The doc comment of a parameter is an ordinary string of the
+			 * submitting thread, and arg_info holds only a pointer to it. The
+			 * worker frees arg_info with its op_array, so it needs its own. */
 			if (arg_info[i].doc_comment) {
 				arg_info[i].doc_comment = thread_copy_string(ctx, arg_info[i].doc_comment);
 			}
@@ -2262,8 +2262,8 @@ static void op_array_emalloc_localize_ast(zend_ast *ast)
 	}
 }
 
-/* The one entry point: strings, arrays and constant expressions are rebuilt,
- * scalars carry no payload and are taken as they are. */
+/* The single localizer. What it writes into `dst` belongs to the caller and is
+ * freed with the op_array it goes into. */
 static void op_array_emalloc_copy_value(zval *dst, const zval *src)
 {
 	switch (Z_TYPE_P(src)) {
@@ -2676,14 +2676,10 @@ void async_thread_create_closure_ex(
 		zend_array_destroy(loaded_vars);
 	}
 
-	/* Self-contain the op_array in this thread's heap, always. Two reasons, and
-	 * the second is why there is no condition: nested defs shared with the
-	 * snapshot race on run_time_cache (#176), and anything left pointing into
-	 * the snapshot arena outlives it — the arena is freed when the task ends,
-	 * while what the body stored elsewhere is not. `$GLOBALS['x'] = 1` is
-	 * enough: the key is this op_array's literal, marked interned so the symbol
-	 * table keeps it without a reference, and shutdown then releases a string
-	 * the allocator never handed out (#251). */
+	/* Self-contained, always. A nested def shared with the snapshot races on
+	 * run_time_cache (#176), and anything still pointing into the arena
+	 * outlives it: the arena goes with the task, what the body left in the
+	 * thread's state does not (#251). */
 	async_zend_closure_t *closure = (async_zend_closure_t *) Z_OBJ_P(closure_zv);
 	op_array_to_emalloc(&closure->func.op_array);
 }
