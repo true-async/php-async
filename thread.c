@@ -2228,6 +2228,12 @@ static void op_array_emalloc_copy_value(zval *dst, const zval *src)
 		case IS_ARRAY:
 			ZVAL_ARR(dst, op_array_emalloc_copy_array(Z_ARR_P(src)));
 			break;
+		case IS_CONSTANT_AST:
+			/* An argument written as a constant expression stays unevaluated
+			 * until something asks for it, and the tree it is kept as lives in
+			 * the arena like everything else. */
+			ZVAL_AST(dst, zend_ast_copy(Z_ASTVAL_P(src)));
+			break;
 		default:
 			ZVAL_COPY(dst, src);
 			break;
@@ -2239,8 +2245,8 @@ static void op_array_emalloc_copy_value(zval *dst, const zval *src)
  * it dies with the arena — after which reflection reads a freed header. The
  * rebuilt one is owned by this op_array and freed with it.
  *
- * An argument given as a constant expression stays an AST pointing into the
- * arena; that one is not localized here. */
+ * Arguments are localized by op_array_emalloc_copy_value, including the tree of
+ * one written as a constant expression. */
 static HashTable *op_array_emalloc_copy_attributes(const HashTable *src)
 {
 	HashTable *dst = NULL;
