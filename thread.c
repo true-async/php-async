@@ -2171,6 +2171,103 @@ static void op_array_emalloc_copy_type(zend_type *type)
  * After this call, the op_array is fully self-contained in emalloc
  * and the persistent source (snapshot arena) can be freed.
  */
+/* Rebuild a literal array with strings this thread owns. zend_array_dup copies
+ * the buckets and stops there: keys and string values keep pointing into the
+ * snapshot arena, and an interned string is never refcounted, so nothing keeps
+ * them alive once that arena is gone. */
+static HashTable *op_array_emalloc_copy_array(const HashTable *src)
+{
+	HashTable *dst = zend_new_array(zend_hash_num_elements(src));
+
+	zend_string *key;
+	zend_ulong idx;
+	zval *val;
+
+	ZEND_HASH_FOREACH_KEY_VAL((HashTable *) src, idx, key, val) {
+		zval copy;
+
+		switch (Z_TYPE_P(val)) {
+			case IS_STRING: {
+				zend_string *value = zend_string_init(Z_STRVAL_P(val), Z_STRLEN_P(val), 0);
+				zend_string_hash_val(value);
+				ZVAL_NEW_STR(&copy, value);
+				break;
+			}
+			case IS_ARRAY:
+				ZVAL_ARR(&copy, op_array_emalloc_copy_array(Z_ARR_P(val)));
+				break;
+			default:
+				ZVAL_COPY(&copy, val);
+				break;
+		}
+
+		if (key != NULL) {
+			zend_string *local = zend_string_init(ZSTR_VAL(key), ZSTR_LEN(key), 0);
+			zend_string_hash_val(local);
+			zend_hash_add_new(dst, local, &copy);
+			zend_string_release(local);
+		} else {
+			zend_hash_index_add_new(dst, idx, &copy);
+		}
+	} ZEND_HASH_FOREACH_END();
+
+	return dst;
+}
+
+/* Localize a literal value: a string or an array from the snapshot arena is
+ * rebuilt in this thread's heap, everything else is copied as it is. */
+static void op_array_emalloc_copy_value(zval *dst, const zval *src)
+{
+	switch (Z_TYPE_P(src)) {
+		case IS_STRING: {
+			zend_string *value = zend_string_init(Z_STRVAL_P(src), Z_STRLEN_P(src), 0);
+			zend_string_hash_val(value);
+			ZVAL_NEW_STR(dst, value);
+			break;
+		}
+		case IS_ARRAY:
+			ZVAL_ARR(dst, op_array_emalloc_copy_array(Z_ARR_P(src)));
+			break;
+		default:
+			ZVAL_COPY(dst, src);
+			break;
+	}
+}
+
+/* Rebuild the attribute table in this thread's heap. The snapshot's table is
+ * marked immutable with no destructor, so zend_hash_release leaves it alone and
+ * it dies with the arena — after which reflection reads a freed header. The
+ * rebuilt one is owned by this op_array and freed with it.
+ *
+ * An argument given as a constant expression stays an AST pointing into the
+ * arena; that one is not localized here. */
+static HashTable *op_array_emalloc_copy_attributes(const HashTable *src)
+{
+	HashTable *dst = NULL;
+	zval *v;
+
+	ZEND_HASH_PACKED_FOREACH_VAL((HashTable *) src, v) {
+		const zend_attribute *attr = Z_PTR_P(v);
+		zend_string *name = zend_string_init(ZSTR_VAL(attr->name), ZSTR_LEN(attr->name), 0);
+
+		zend_attribute *copy = zend_add_attribute(&dst, name, attr->argc,
+			attr->flags & ~ZEND_ATTRIBUTE_PERSISTENT, attr->offset, attr->lineno);
+
+		zend_string_release(name);
+
+		for (uint32_t i = 0; i < attr->argc; i++) {
+			if (attr->args[i].name != NULL) {
+				copy->args[i].name = zend_string_init(
+					ZSTR_VAL(attr->args[i].name), ZSTR_LEN(attr->args[i].name), 0);
+			}
+
+			op_array_emalloc_copy_value(&copy->args[i].value, &attr->args[i].value);
+		}
+	} ZEND_HASH_FOREACH_END();
+
+	return dst;
+}
+
 static void op_array_to_emalloc(zend_op_array *op_array)
 {
 	/* refcount — own copy */
@@ -2252,7 +2349,7 @@ static void op_array_to_emalloc(zend_op_array *op_array)
 						break;
 					}
 					case IS_ARRAY:
-						ZVAL_ARR(dst, zend_array_dup(Z_ARR_P(src)));
+						ZVAL_ARR(dst, op_array_emalloc_copy_array(Z_ARR_P(src)));
 						break;
 					default:
 						/* Scalars (long/double/bool/null) and IS_CONSTANT_AST:
@@ -2367,6 +2464,11 @@ static void op_array_to_emalloc(zend_op_array *op_array)
 				ZSTR_VAL(op_array->vars[i]), ZSTR_LEN(op_array->vars[i]), 0);
 		}
 		op_array->vars = new_vars;
+	}
+
+	/* attributes */
+	if (op_array->attributes) {
+		op_array->attributes = op_array_emalloc_copy_attributes(op_array->attributes);
 	}
 
 	/* live_range */
