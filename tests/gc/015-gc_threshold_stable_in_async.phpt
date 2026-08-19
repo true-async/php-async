@@ -19,6 +19,8 @@ function make_cycles(int $count): void
         unset($a, $b);
 
         // Give the GC coroutine a chance to run between full root buffers.
+        // The last iteration lands on this branch too, which is what leaves
+        // nothing uncollected by the time gc_status() below is read.
         if ($i % 10000 === 0) {
             delay(1);
         }
@@ -32,16 +34,19 @@ await(spawn(fn() => make_cycles(40000)));
 
 $status = gc_status();
 
-// The counts are asserted too: a threshold that never moves also describes an
-// engine whose deferred collection never happens at all.
+// What was collected is asserted too: a threshold that never moves also
+// describes an engine whose deferred collection never happens at all, and a
+// collected count proves the collection ran. How many runs it took is not
+// asserted — that says how often the GC coroutine got scheduled, which the
+// code under test does not decide. Measured on this very body: a delay every
+// 10000 cycles gives four runs, one every 40000 gives one, and no delay at all
+// gives one, while the collected count is 80000 in each case.
 echo "threshold before: $before\n";
 echo "threshold after: ", $status['threshold'], "\n";
-echo "runs: ", $status['runs'], "\n";
 echo "collected: ", $status['collected'], "\n";
 
 ?>
 --EXPECT--
 threshold before: 10001
 threshold after: 10001
-runs: 4
 collected: 80000
