@@ -197,6 +197,22 @@ static void thread_pool_throw_closed(async_thread_pool_t *pool, const char *fall
 	}
 }
 
+/* Guard for every enqueue path. An open pool with no live worker still accepts
+ * a task into the channel, where nothing receives it and its future never
+ * settles. Returns true after throwing, so the caller stops; returns false
+ * while at least one worker can serve. */
+static bool thread_pool_throw_if_no_workers(async_thread_pool_t *pool)
+{
+	if (EXPECTED(zend_atomic_int_load(&pool->live_workers) > 0)) {
+		return false;
+	}
+
+	zend_throw_exception(async_ce_thread_pool_exception,
+			"ThreadPool has no live worker threads", 0);
+
+	return true;
+}
+
 /* event is always NULL for pool workers (started via ZEND_ASYNC_START_THREAD) */
 /* Per-spawn worker context: the cohort channel is captured SYNCHRONOUSLY at
  * spawn time (in start_worker), not read lazily here — so a worker started by
@@ -832,6 +848,12 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 		}
 	}
 
+	/* Out of the count before the token, not after: reload() sizes its next
+	 * cohort from this number, and a worker that has already answered with a
+	 * token would otherwise be counted into a cohort it cannot answer for
+	 * again, leaving that rotation waiting forever. */
+	zend_atomic_int_dec(&pool->live_workers);
+
 	/* Rolling reload: post one exit token iff OUR cohort channel is the one the
 	 * active rotation retired (identity check before any notify dereference —
 	 * dying replacements and stragglers don't send). Past zend_end_try so
@@ -1171,9 +1193,15 @@ static bool thread_pool_start_worker(async_thread_pool_t *pool, int32_t index)
 	 * pool to zero and frees it before we store the handle below. */
 	ZEND_THREAD_POOL_ADDREF(&pool->base);
 
+	/* Counted before the spawn for the same reason as the ref above: the worker
+	 * can run to its exit, and to its own decrement, before
+	 * ZEND_ASYNC_START_THREAD returns here. */
+	zend_atomic_int_inc(&pool->live_workers);
+
 	zend_async_thread_handle_t handle = ZEND_ASYNC_START_THREAD(entry, context);
 
 	if (UNEXPECTED(handle == 0)) {
+		zend_atomic_int_dec(&pool->live_workers);
 		ZEND_THREAD_POOL_DELREF(&pool->base);
 		pefree(wc, 1);
 		pefree(entry, 1);
@@ -1276,7 +1304,10 @@ static void thread_pool_reload(zend_async_thread_pool_t *base)
 		}
 	}
 
-	const int32_t n = base->worker_count;
+	/* Cohort size comes from the live count, not from the constructed one:
+	 * only a worker that is still running will ever post an exit token, so a
+	 * pool that lost a thread would otherwise wait here forever. */
+	const int32_t n = zend_atomic_int_load(&pool->live_workers);
 
 	if (UNEXPECTED(n <= 0)) {
 		return;
@@ -1326,12 +1357,13 @@ static void thread_pool_reload(zend_async_thread_pool_t *base)
 	async_thread_channel_close(old_channel);
 
 	bool aborted = false;
+	int32_t replacements = 0;
 
 	for (int32_t i = 0; i < n; i++) {
 		/* Spawn failure or a pool closed mid-rotation degrade the replacement
 		 * count, never the token accounting — old exits are still collected. */
-		if (!zend_atomic_int_load(&base->closed)) {
-			thread_pool_start_worker(pool, i);
+		if (!zend_atomic_int_load(&base->closed) && thread_pool_start_worker(pool, i)) {
+			replacements++;
 		}
 
 		zval token;
@@ -1368,6 +1400,15 @@ static void thread_pool_reload(zend_async_thread_pool_t *base)
 
 	pool->reload_in_progress = false;
 	thread_pool_reload_fire_waiters(pool);
+
+	/* Every replacement failed while the pool stayed open: the old cohort has
+	 * left and nothing took its place. Report it here rather than let the next
+	 * submit() queue work for threads that no longer exist. */
+	if (UNEXPECTED(replacements == 0 && !aborted && !zend_atomic_int_load(&base->closed))) {
+		zend_throw_exception(async_ce_thread_pool_exception,
+				"ThreadPool::reload() left the pool without workers: no replacement thread started", 0);
+	}
+
 	/* On abort the cancellation exception propagates to the caller. */
 }
 
@@ -1386,6 +1427,10 @@ static zend_async_event_t *thread_pool_submit_internal_impl(
 
 	if (UNEXPECTED(zend_atomic_int_load(&pool->base.closed))) {
 		thread_pool_throw_closed(pool, "ThreadPool is closed");
+		return NULL;
+	}
+
+	if (UNEXPECTED(thread_pool_throw_if_no_workers(pool))) {
 		return NULL;
 	}
 
@@ -1438,6 +1483,7 @@ zend_async_thread_pool_t *async_thread_pool_create(
 	pool->coroutine_mode = coroutine_mode;
 	pool->concurrency = concurrency;
 	ZEND_ATOMIC_INT_INIT(&pool->cancel_requested, 0);
+	ZEND_ATOMIC_INT_INIT(&pool->live_workers, 0);
 	zend_atomic_ptr_init(&pool->task_channel, NULL);
 	zend_atomic_ptr_init(&pool->reload_notify, NULL);
 	zend_atomic_ptr_init(&pool->reload_old, NULL);
@@ -1769,6 +1815,10 @@ METHOD(submit)
 		RETURN_THROWS();
 	}
 
+	if (UNEXPECTED(thread_pool_throw_if_no_workers(pool))) {
+		RETURN_THROWS();
+	}
+
 	/* channel.send may suspend on a full buffer — needs a live coroutine. */
 	ZEND_ASYNC_SCHEDULER_INIT();
 
@@ -1861,6 +1911,10 @@ METHOD(map)
 
 	if (UNEXPECTED(zend_atomic_int_load(&pool->base.closed))) {
 		thread_pool_throw_closed(pool, "ThreadPool is closed");
+		RETURN_THROWS();
+	}
+
+	if (UNEXPECTED(thread_pool_throw_if_no_workers(pool))) {
 		RETURN_THROWS();
 	}
 
@@ -2046,7 +2100,7 @@ METHOD(getWorkerCount)
 	ZEND_PARSE_PARAMETERS_NONE();
 
 	async_thread_pool_t *pool = THIS_POOL();
-	RETURN_LONG(pool ? pool->base.worker_count : 0);
+	RETURN_LONG(pool ? zend_atomic_int_load(&pool->live_workers) : 0);
 }
 
 METHOD(reload)
