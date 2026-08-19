@@ -1582,6 +1582,71 @@ static bool async_thread_ast_has_callable_convert(const zend_ast *ast)
 	return false;
 }
 
+/* A constant expression is stored either as the tree itself or nested inside an
+ * array value. */
+static bool async_thread_zval_has_callable_convert(const zval *value)
+{
+	if (Z_TYPE_P(value) == IS_CONSTANT_AST) {
+		return async_thread_ast_has_callable_convert(Z_ASTVAL_P(value));
+	}
+
+	if (Z_TYPE_P(value) == IS_ARRAY) {
+		const zval *item;
+
+		ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(value), item) {
+			if (async_thread_zval_has_callable_convert(item)) {
+				return true;
+			}
+		} ZEND_HASH_FOREACH_END();
+	}
+
+	return false;
+}
+
+/* A first-class callable written into a constant expression stays an unevaluated
+ * tree, and that tree names a function resolved against the thread that compiled
+ * it, alongside strings and a cached function pointer of that thread. The worker
+ * cannot be given ones of its own, so a closure carrying one is refused on
+ * transfer, while the caller still has a stack to catch it.
+ *
+ * Three tables of an op_array can hold a constant expression: a parameter
+ * default lands in the literals, the initializer of a static variable in the
+ * static variables, an attribute argument in the attributes. */
+static bool async_thread_op_array_has_callable_convert(const zend_op_array *op_array)
+{
+	for (uint32_t i = 0; i < op_array->last_literal; i++) {
+		if (async_thread_zval_has_callable_convert(&op_array->literals[i])) {
+			return true;
+		}
+	}
+
+	if (op_array->static_variables != NULL) {
+		const zval *value;
+
+		ZEND_HASH_FOREACH_VAL(op_array->static_variables, value) {
+			if (async_thread_zval_has_callable_convert(value)) {
+				return true;
+			}
+		} ZEND_HASH_FOREACH_END();
+	}
+
+	if (op_array->attributes != NULL) {
+		const zval *slot;
+
+		ZEND_HASH_PACKED_FOREACH_VAL(op_array->attributes, slot) {
+			const zend_attribute *attr = Z_PTR_P(slot);
+
+			for (uint32_t i = 0; i < attr->argc; i++) {
+				if (async_thread_zval_has_callable_convert(&attr->args[i].value)) {
+					return true;
+				}
+			}
+		} ZEND_HASH_FOREACH_END();
+	}
+
+	return false;
+}
+
 static bool async_thread_check_op_array(zend_op_array *op_array)
 {
 	if (op_array->type != ZEND_USER_FUNCTION
@@ -1615,20 +1680,12 @@ static bool async_thread_check_op_array(zend_op_array *op_array)
 		return false;
 	}
 
-	/* A first-class callable written into a default value stays an unevaluated
-	 * tree, and that tree names a function resolved against the thread that
-	 * compiled it, alongside strings and a cached function pointer of that
-	 * thread. The worker cannot be given ones of its own, so the closure is
-	 * refused here, where the caller still has a stack to catch it. */
-	for (uint32_t i = 0; i < op_array->last_literal; i++) {
-		if (Z_TYPE(op_array->literals[i]) == IS_CONSTANT_AST
-			&& async_thread_ast_has_callable_convert(Z_ASTVAL(op_array->literals[i]))) {
-			zend_throw_error(NULL,
-				"Cannot transfer closure to another thread: first-class callable in a "
-				"constant expression at %s",
-				op_array->filename ? ZSTR_VAL(op_array->filename) : "(closure)");
-			return false;
-		}
+	if (UNEXPECTED(async_thread_op_array_has_callable_convert(op_array))) {
+		zend_throw_error(NULL,
+			"Cannot transfer closure to another thread: first-class callable in a "
+			"constant expression at %s",
+			op_array->filename ? ZSTR_VAL(op_array->filename) : "(closure)");
+		return false;
 	}
 
 	for (uint32_t i = 0; i < op_array->num_dynamic_func_defs; i++) {
