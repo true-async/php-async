@@ -906,7 +906,9 @@ struct _pool_worker_cancel_s {
 
 typedef struct {
 	async_thread_pool_t *pool;
-	async_thread_snapshot_t *snapshot;
+	/* The task's own scope, borrowed: the coroutine owns it and dispose runs
+	 * while the coroutine is still in it. */
+	zend_async_scope_t *task_scope;
 	zend_future_shared_state_t *state;
 	/* Slot accounting (both NULL when concurrency=0). Pointers point into
 	 * the worker handler's stack — safe because dispose runs in the same
@@ -1019,6 +1021,35 @@ static void pool_worker_cancel_destroy(pool_worker_cancel_t *cancel)
 	efree(cancel);
 }
 
+/* Ties the task snapshot to the task scope instead of to the task coroutine.
+ * The arena backs the op_arrays of everything the task spawned, so it may only
+ * be freed once that scope holds nobody: the scope frees its callbacks as it is
+ * torn down, and this dispose is where the arena goes. */
+typedef struct {
+	zend_async_event_callback_t base;
+	async_thread_snapshot_t *snapshot;
+} pool_snapshot_guard_t;
+
+/* The scope reports completion whenever its last coroutine finishes, and may
+ * report it more than once, so the arena is not freed from here — teardown is
+ * the single point, and that is dispose below. */
+static void pool_snapshot_guard_fire(zend_async_event_t *event,
+	zend_async_event_callback_t *callback, void *result, zend_object *exception)
+{
+}
+
+static void pool_snapshot_guard_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event)
+{
+	pool_snapshot_guard_t *guard = (pool_snapshot_guard_t *) callback;
+
+	if (guard->snapshot != NULL) {
+		async_thread_snapshot_destroy(guard->snapshot);
+		guard->snapshot = NULL;
+	}
+
+	efree(guard);
+}
+
 /* Coroutine extended_dispose — invoked by the runtime after the task
  * coroutine finishes (return or throw). At this point coroutine->result
  * and coroutine->exception are populated; event callbacks have already
@@ -1054,8 +1085,14 @@ static void pool_task_dispose(zend_coroutine_t *coroutine)
 	 * this worker still pointing at its trigger. */
 	pool_worker_cancel_forget(ctx->cancel, ctx->state);
 
+	/* Cancel what the task left behind. Waiting for it here is impossible and
+	 * unnecessary: the arena outlives this call, because the guard registered on
+	 * the scope frees it only once the scope is torn down. */
+	if (!ZEND_ASYNC_SCOPE_IS_CLOSED(ctx->task_scope)) {
+		ZEND_ASYNC_SCOPE_CANCEL(ctx->task_scope, NULL, false, false);
+	}
+
 	async_future_shared_state_delref(ctx->state);
-	async_thread_snapshot_destroy(ctx->snapshot);
 
 	/* Release the slot: decrement and wake the worker. notify is a no-op
 	 * if no waker is registered. The active < limit invariant always holds
@@ -1098,6 +1135,11 @@ static pool_task_spawn_t thread_pool_spawn_task_coroutine(
 		goto spawn_failed;
 	}
 
+	/* The task scope is a nursery: leftovers are cancelled, not left to run.
+	 * Inherited DISPOSE_SAFELY would zombie them instead, and a zombie is out
+	 * of the active count, so it can outlive the worker's drain. */
+	ZEND_ASYNC_SCOPE_CLR_DISPOSE_SAFELY(task_scope);
+
 	zend_coroutine_t *coroutine = ZEND_ASYNC_SPAWN_WITH(task_scope);
 	if (UNEXPECTED(coroutine == NULL)) {
 		/* No coroutine took ownership; the task scope was freshly created
@@ -1120,7 +1162,7 @@ static pool_task_spawn_t thread_pool_spawn_task_coroutine(
 
 	pool_task_ctx_t *ctx = emalloc(sizeof(pool_task_ctx_t));
 	ctx->pool = pool;
-	ctx->snapshot = snapshot;
+	ctx->task_scope = task_scope;
 	ctx->state = state;
 	ctx->active_count = active_count;
 	ctx->slot_event = slot_event;
@@ -1130,6 +1172,18 @@ static pool_task_spawn_t thread_pool_spawn_task_coroutine(
 	coroutine->extended_dispose = pool_task_dispose;
 
 	zend_hash_index_update_ptr(&cancel->inflight, (zend_ulong)(uintptr_t) state, coroutine);
+
+	/* Hand the arena to the scope, last of all: until this line the caller still
+	 * owns the snapshot and frees it on its own error paths. The guard is
+	 * registered before the cancellation below, which can tear the scope down
+	 * immediately. */
+	pool_snapshot_guard_t *guard = emalloc(sizeof(pool_snapshot_guard_t));
+	guard->base.ref_count = 1;
+	guard->base.callback = pool_snapshot_guard_fire;
+	guard->base.dispose = pool_snapshot_guard_dispose;
+	guard->snapshot = snapshot;
+
+	task_scope->event.add_callback(&task_scope->event, &guard->base);
 
 	/* The flag may have been raised while this task held PREPARING, and the
 	 * callback passes those by. Read it once more now that the coroutine is

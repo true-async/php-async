@@ -15,18 +15,21 @@ require_once __DIR__ . '/inc/async_pdo_mysql_test.inc';
 
 use function Async\spawn;
 use function Async\await;
+use function Async\delay;
 use function Async\timeout;
 
 echo "start\n";
 
 // Test 1: Manual cancellation
 echo "starting long query\n";
-$coroutine = spawn(function() {
+$queryStarted = false;
+$coroutine = spawn(function() use (&$queryStarted) {
     try {
         $pdo = AsyncPDOMySQLTest::factory();
         
         // This query should take several seconds
         echo "echo\n";
+        $queryStarted = true;
         $stmt = $pdo->query("SELECT SLEEP(5), 'long query completed' as message");
         $result = $stmt->fetch(PDO::FETCH_ASSOC);
         
@@ -36,8 +39,12 @@ $coroutine = spawn(function() {
     }
 });
 
-// Wait a bit, then cancel the coroutine
-usleep(100000); // 0.1 seconds
+// Wait for the query to be under way. A fixed sleep here would be a bet that
+// connecting finishes inside it, and a loaded machine loses that bet: the
+// cancellation then lands during connect, before the line above is reached.
+while (!$queryStarted) {
+    delay(5);
+}
 
 echo "cancelling long query\n";
 $coroutine->cancel();
