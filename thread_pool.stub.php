@@ -78,7 +78,10 @@ final class ThreadPool
     public function getCompletedCount(): int {}
 
     /**
-     * Number of worker threads.
+     * Number of worker threads that are running now. A worker leaves the count
+     * when its thread returns, so a closed pool reports 0 once its workers have
+     * drained, and a pool that lost a thread reports one less than it was
+     * constructed with.
      */
     public function getWorkerCount(): int {}
 
