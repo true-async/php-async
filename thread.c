@@ -2555,12 +2555,16 @@ void async_thread_create_closure_ex(
 		zend_array_destroy(loaded_vars);
 	}
 
-	/* Self-contain the op_array per worker when it has nested defs, else they
-	 * stay shared with the snapshot and race on run_time_cache (#176). */
+	/* Self-contain the op_array in this thread's heap, always. Two reasons, and
+	 * the second is why there is no condition: nested defs shared with the
+	 * snapshot race on run_time_cache (#176), and anything left pointing into
+	 * the snapshot arena outlives it — the arena is freed when the task ends,
+	 * while what the body stored elsewhere is not. `$GLOBALS['x'] = 1` is
+	 * enough: the key is this op_array's literal, marked interned so the symbol
+	 * table keeps it without a reference, and shutdown then releases a string
+	 * the allocator never handed out (#251). */
 	async_zend_closure_t *closure = (async_zend_closure_t *) Z_OBJ_P(closure_zv);
-	if (closure->func.op_array.num_dynamic_func_defs != 0) {
-		op_array_to_emalloc(&closure->func.op_array);
-	}
+	op_array_to_emalloc(&closure->func.op_array);
 }
 
 /* Top-level: no load in progress, so the closure gets its own ctx. */
@@ -3362,13 +3366,6 @@ static zend_object *closure_transfer_obj(
 			zend_object *fallback = zend_objects_new(zend_standard_class_def);
 			object_properties_init(fallback, zend_standard_class_def);
 			return fallback;
-		}
-
-		/* Detach the top-level from the snapshot arena. Nested-def closures
-		 * were already fully copied by async_thread_create_closure (#176). */
-		async_zend_closure_t *closure = (async_zend_closure_t *) Z_OBJ(closure_zv);
-		if (closure->func.op_array.num_dynamic_func_defs == 0) {
-			op_array_to_emalloc(&closure->func.op_array);
 		}
 
 		/* Not freed here: with a cycle the snapshot's captured vars include an
