@@ -2534,6 +2534,23 @@ static void op_array_to_emalloc(zend_op_array *op_array)
 
 		memcpy(new_opcodes, orig_opcodes, sizeof(zend_op) * op_array->last);
 
+		for (uint32_t i = 0; i < op_array->last; i++) {
+			if (new_opcodes[i].opcode != ZEND_DECLARE_LAMBDA_FUNCTION) {
+				continue;
+			}
+
+			/* The cache slot of this opcode memoizes the Closure object and
+			 * pins it in EG(lambda_cache), which is drained when the request
+			 * ends. A worker's request outlives every task it runs, so the
+			 * pinned object holds the task's nested body at refcount 1 and
+			 * destroy_op_array leaves it behind. The memo is worthless here
+			 * anyway: a task gets a copy of the op_array with a cache of its
+			 * own, so nothing carries over to the next one. This is the
+			 * decision zend_compile_func_decl already makes for the top level
+			 * of a script, and for the same reason. */
+			new_opcodes[i].extended_value = (uint32_t) -1;
+		}
+
 		if (op_array->last_literal) {
 			for (uint32_t i = 0; i < op_array->last_literal; i++) {
 				/* Deep-copy refcounted literals into the worker's heap.
