@@ -2332,15 +2332,17 @@ static zend_string *op_array_emalloc_copy_string(const zend_string *src)
 
 /* Rebuilds a literal array or the static variables of a nested definition.
  *
- * The bucket order carries meaning for the second of those: BIND_LEXICAL
- * addresses a captured variable by a byte offset into arData, computed when the
- * closure was compiled. The rebuild keeps the order but cannot keep a hole, and
- * the compiler leaves none — it seeds every slot — which is what the assert
- * states. */
+ * The rebuild keeps the bucket order, which carries meaning for the second of
+ * those: BIND_LEXICAL addresses a captured variable by a byte offset into
+ * arData, computed when the closure was compiled. It cannot keep a hole — the
+ * iteration skips an UNDEF slot — so the caller that needs the offsets asserts
+ * there is none; see the static_variables branch of op_array_to_emalloc.
+ *
+ * A literal array may hold one: [0 => 'a', 2 => 'b'] compiles to a packed hash
+ * whose slot 1 is UNDEF. Rebuilding it by key gives the same array back, since
+ * the keys are what the VM reads, so the hole costs nothing here. */
 static HashTable *op_array_emalloc_copy_array(const HashTable *src)
 {
-	ZEND_ASSERT(zend_hash_num_elements(src) == src->nNumUsed);
-
 	HashTable *dst = zend_new_array(zend_hash_num_elements(src));
 
 	zend_string *key;
@@ -2708,8 +2710,14 @@ static void op_array_to_emalloc(zend_op_array *op_array)
 	}
 
 	/* Nested defs carry the snapshot's persistent immutable static_variables
-	 * (refcount 2); dup into a worker-local array destroy_op_array can free. */
+	 * (refcount 2); dup into a worker-local array destroy_op_array can free.
+	 *
+	 * BIND_LEXICAL reaches a captured variable by a byte offset into arData,
+	 * so a rebuild that dropped a slot would shift every offset past it. The
+	 * compiler seeds every slot and leaves no hole, which is what this states. */
 	if (op_array->static_variables) {
+		ZEND_ASSERT(zend_hash_num_elements(op_array->static_variables)
+				== op_array->static_variables->nNumUsed);
 		op_array->static_variables = op_array_emalloc_copy_array(op_array->static_variables);
 	}
 
