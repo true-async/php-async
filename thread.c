@@ -291,7 +291,14 @@ static void thread_copy_zval(thread_copy_ctx_t *ctx, zval *z)
 			} else {
 				zend_ast_ref *old_ref = Z_AST_P(z);
 				Z_AST_P(z) = thread_persist_copy_xlat(ctx, Z_AST_P(z), sizeof(zend_ast_ref));
-				thread_copy_ast(ctx, GC_AST(old_ref));
+
+				/* GC_AST reads the tree from just past the header, so the two
+				 * allocations have to be neighbours. The arena bumps a pointer
+				 * and normally makes them so; it opens a fresh block when a
+				 * request does not fit, and a header landing in the last bytes
+				 * of a block would leave the root behind in the old one. */
+				const zend_ast *root = thread_copy_ast(ctx, GC_AST(old_ref));
+				ZEND_ASSERT(root == GC_AST(Z_AST_P(z)));
 				Z_TYPE_FLAGS_P(z) = 0;
 				GC_SET_REFCOUNT(Z_COUNTED_P(z), 1);
 				GC_ADD_FLAGS(Z_COUNTED_P(z), GC_IMMUTABLE);
@@ -1538,85 +1545,93 @@ void async_thread_defer_release_ctx(
 /// 1. Snapshot — transfer callable between threads
 ///////////////////////////////////////////////////////////
 
-/* Reject opcodes whose snapshot replay would assert in the worker:
- * class/function declarations need compile-time class_table state we don't
- * reproduce. Recurses into dynamic_func_defs. Throws on first illegal
- * opcode; sets ASYNC_FN_FLAG_THREAD_TRANSFER_OK on success so subsequent
- * transfers (ThreadPool resubmits, channel resends) skip the scan. */
-/* True when the tree holds a first-class callable anywhere inside it. */
-static bool async_thread_ast_has_callable_convert(const zend_ast *ast)
+/* A function value written into a constant expression belongs to the thread
+ * that compiled it: a first-class callable names a function resolved against
+ * that thread's function table and caches its zend_function beside the name,
+ * and a closure is an op_array the tree points at rather than owns. Neither
+ * can be given to the worker, so a closure carrying one is refused on
+ * transfer, while the caller still has a stack to catch it.
+ *
+ * The three below answer with the word for the error message, or NULL when the
+ * tree holds neither form. */
+static const char *async_thread_ast_unshareable_function(const zend_ast *ast)
 {
 	if (ast == NULL) {
-		return false;
+		return NULL;
 	}
 
 	if (ast->kind == ZEND_AST_CALLABLE_CONVERT) {
-		return true;
+		return "first-class callable";
 	}
 
-	if (ast->kind == ZEND_AST_ZVAL || ast->kind == ZEND_AST_CONSTANT
-		|| ast->kind == ZEND_AST_OP_ARRAY) {
-		return false;
+	if (ast->kind == ZEND_AST_OP_ARRAY) {
+		return "closure";
+	}
+
+	if (ast->kind == ZEND_AST_ZVAL || ast->kind == ZEND_AST_CONSTANT) {
+		return NULL;
 	}
 
 	if (zend_ast_is_list((zend_ast *) ast)) {
 		const zend_ast_list *list = zend_ast_get_list((zend_ast *) ast);
 
 		for (uint32_t i = 0; i < list->children; i++) {
-			if (async_thread_ast_has_callable_convert(list->child[i])) {
-				return true;
+			const char *found = async_thread_ast_unshareable_function(list->child[i]);
+
+			if (found != NULL) {
+				return found;
 			}
 		}
 
-		return false;
+		return NULL;
 	}
 
 	const uint32_t children = zend_ast_get_num_children((zend_ast *) ast);
 
 	for (uint32_t i = 0; i < children; i++) {
-		if (async_thread_ast_has_callable_convert(ast->child[i])) {
-			return true;
+		const char *found = async_thread_ast_unshareable_function(ast->child[i]);
+
+		if (found != NULL) {
+			return found;
 		}
 	}
 
-	return false;
+	return NULL;
 }
 
 /* A constant expression is stored either as the tree itself or nested inside an
  * array value. */
-static bool async_thread_zval_has_callable_convert(const zval *value)
+static const char *async_thread_zval_unshareable_function(const zval *value)
 {
 	if (Z_TYPE_P(value) == IS_CONSTANT_AST) {
-		return async_thread_ast_has_callable_convert(Z_ASTVAL_P(value));
+		return async_thread_ast_unshareable_function(Z_ASTVAL_P(value));
 	}
 
 	if (Z_TYPE_P(value) == IS_ARRAY) {
 		const zval *item;
 
 		ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(value), item) {
-			if (async_thread_zval_has_callable_convert(item)) {
-				return true;
+			const char *found = async_thread_zval_unshareable_function(item);
+
+			if (found != NULL) {
+				return found;
 			}
 		} ZEND_HASH_FOREACH_END();
 	}
 
-	return false;
+	return NULL;
 }
 
-/* A first-class callable written into a constant expression stays an unevaluated
- * tree, and that tree names a function resolved against the thread that compiled
- * it, alongside strings and a cached function pointer of that thread. The worker
- * cannot be given ones of its own, so a closure carrying one is refused on
- * transfer, while the caller still has a stack to catch it.
- *
- * Three tables of an op_array can hold a constant expression: a parameter
+/* Three tables of an op_array can hold a constant expression: a parameter
  * default lands in the literals, the initializer of a static variable in the
  * static variables, an attribute argument in the attributes. */
-static bool async_thread_op_array_has_callable_convert(const zend_op_array *op_array)
+static const char *async_thread_op_array_unshareable_function(const zend_op_array *op_array)
 {
 	for (uint32_t i = 0; i < op_array->last_literal; i++) {
-		if (async_thread_zval_has_callable_convert(&op_array->literals[i])) {
-			return true;
+		const char *found = async_thread_zval_unshareable_function(&op_array->literals[i]);
+
+		if (found != NULL) {
+			return found;
 		}
 	}
 
@@ -1624,8 +1639,10 @@ static bool async_thread_op_array_has_callable_convert(const zend_op_array *op_a
 		const zval *value;
 
 		ZEND_HASH_FOREACH_VAL(op_array->static_variables, value) {
-			if (async_thread_zval_has_callable_convert(value)) {
-				return true;
+			const char *found = async_thread_zval_unshareable_function(value);
+
+			if (found != NULL) {
+				return found;
 			}
 		} ZEND_HASH_FOREACH_END();
 	}
@@ -1637,16 +1654,23 @@ static bool async_thread_op_array_has_callable_convert(const zend_op_array *op_a
 			const zend_attribute *attr = Z_PTR_P(slot);
 
 			for (uint32_t i = 0; i < attr->argc; i++) {
-				if (async_thread_zval_has_callable_convert(&attr->args[i].value)) {
-					return true;
+				const char *found = async_thread_zval_unshareable_function(&attr->args[i].value);
+
+				if (found != NULL) {
+					return found;
 				}
 			}
 		} ZEND_HASH_FOREACH_END();
 	}
 
-	return false;
+	return NULL;
 }
 
+/* Reject opcodes whose snapshot replay would assert in the worker:
+ * class/function declarations need compile-time class_table state we don't
+ * reproduce. Recurses into dynamic_func_defs. Throws on first illegal
+ * opcode; sets ASYNC_FN_FLAG_THREAD_TRANSFER_OK on success so subsequent
+ * transfers (ThreadPool resubmits, channel resends) skip the scan. */
 static bool async_thread_check_op_array(zend_op_array *op_array)
 {
 	if (op_array->type != ZEND_USER_FUNCTION
@@ -1680,10 +1704,12 @@ static bool async_thread_check_op_array(zend_op_array *op_array)
 		return false;
 	}
 
-	if (UNEXPECTED(async_thread_op_array_has_callable_convert(op_array))) {
+	const char *unshareable = async_thread_op_array_unshareable_function(op_array);
+
+	if (UNEXPECTED(unshareable != NULL)) {
 		zend_throw_error(NULL,
-			"Cannot transfer closure to another thread: first-class callable in a "
-			"constant expression at %s",
+			"Cannot transfer closure to another thread: %s in a constant expression at %s",
+			unshareable,
 			op_array->filename ? ZSTR_VAL(op_array->filename) : "(closure)");
 		return false;
 	}
@@ -2284,11 +2310,6 @@ static void op_array_emalloc_copy_type(zend_type *type)
 	}
 }
 
-/**
- * Copy op_array internals from persistent/arena memory into emalloc.
- * After this call, the op_array is fully self-contained in emalloc
- * and the persistent source (snapshot arena) can be freed.
- */
 /* Everything below rebuilds, in this thread's heap, the parts of a materialized
  * op_array that would otherwise keep pointing into the snapshot arena. The
  * arena is freed whole when its owner is done with it, and every string it
@@ -2300,15 +2321,26 @@ static zend_string *op_array_emalloc_copy_string(const zend_string *src)
 {
 	zend_string *copy = zend_string_init(ZSTR_VAL(src), ZSTR_LEN(src), 0);
 
-	/* Precomputed: opcodes that look a literal up by known hash trust key->h
-	 * and never recompute it. */
+	/* Precomputed: INIT_FCALL_SPEC_CONST and its kin look a literal up with
+	 * zend_hash_find_known_hash, which trusts key->h and never recomputes it.
+	 * A fresh string carries h == 0 and would send every such lookup to bucket
+	 * 0, onto whatever pointer lives there. */
 	zend_string_hash_val(copy);
 
 	return copy;
 }
 
+/* Rebuilds a literal array or the static variables of a nested definition.
+ *
+ * The bucket order carries meaning for the second of those: BIND_LEXICAL
+ * addresses a captured variable by a byte offset into arData, computed when the
+ * closure was compiled. The rebuild keeps the order but cannot keep a hole, and
+ * the compiler leaves none — it seeds every slot — which is what the assert
+ * states. */
 static HashTable *op_array_emalloc_copy_array(const HashTable *src)
 {
+	ZEND_ASSERT(zend_hash_num_elements(src) == src->nNumUsed);
+
 	HashTable *dst = zend_new_array(zend_hash_num_elements(src));
 
 	zend_string *key;
@@ -2335,8 +2367,9 @@ static HashTable *op_array_emalloc_copy_array(const HashTable *src)
  * it. zend_ast_copy gives the tree its own block but carries leaf values over
  * as they are, so the leaves are rebuilt here.
  *
- * A tree of its own kind: a closure or a first-class callable written inside a
- * constant expression is not localized, because neither form reaches a worker. */
+ * Two leaf kinds are passed over: a closure and a first-class callable written
+ * inside a constant expression name a function of the compiling thread, and
+ * async_thread_check_op_array refuses the transfer before a worker sees one. */
 static void op_array_emalloc_localize_ast(zend_ast *ast)
 {
 	if (ast == NULL) {
@@ -2433,6 +2466,11 @@ static HashTable *op_array_emalloc_copy_attributes(const HashTable *src)
 	return dst;
 }
 
+/**
+ * Copy op_array internals from persistent/arena memory into emalloc.
+ * After this call, the op_array is fully self-contained in emalloc
+ * and the persistent source (snapshot arena) can be freed.
+ */
 static void op_array_to_emalloc(zend_op_array *op_array)
 {
 	/* refcount — own copy */
