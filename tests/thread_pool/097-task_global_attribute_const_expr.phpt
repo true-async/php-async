@@ -11,8 +11,6 @@ if (!class_exists('Async\ThreadPool')) die('skip ThreadPool not available');
 #[Attribute]
 class Marker
 {
-    public const LABEL = 'const-expr-label';
-
     public function __construct(public string $label = '') {}
 }
 
@@ -21,14 +19,19 @@ use function Async\spawn;
 use function Async\await;
 
 // Such an argument is kept as an unevaluated tree until something asks for it,
-// and the table holding it lived in the snapshot arena. What this catches is
-// the attribute table, the same defect as the test before it; the tree of the
-// argument is the part it states rather than catches.
+// and the table holding it lived in the snapshot arena. The name the tree holds
+// is a constant defined at run time, which the compiler cannot fold away, and
+// the bootloader gives the worker the same constant, so what reaches the tree
+// is the worker's own value.
 spawn(function() {
-    $pool = new ThreadPool(workers: 1, coroutine: true);
+    $pool = new ThreadPool(
+        workers: 1,
+        bootloader: static fn() => define('TP_CONST_EXPR_LABEL', 'const-expr-label'),
+        coroutine: true,
+    );
 
     await($pool->submit(static function() {
-        $GLOBALS['tagged'] = #[Marker(Marker::LABEL . '-suffix')] static function() { return 1; };
+        $GLOBALS['tagged'] = #[Marker(TP_CONST_EXPR_LABEL . '-suffix')] static function() { return 1; };
         return 'stored';
     }));
 
