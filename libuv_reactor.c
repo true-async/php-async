@@ -6057,7 +6057,31 @@ static zend_async_io_req_t *libuv_io_writev(zend_async_io_t *io_base,
 	const bool iov_mode = (flags & ZEND_ASYNC_IO_WRITEV_MODE_MASK) == ZEND_ASYNC_IO_WRITEV_IOV;
 	const bool awaited  = (flags & ZEND_ASYNC_IO_WRITEV_AWAIT) != 0;
 
-	ZEND_ASSERT((flags & ~(ZEND_ASYNC_IO_WRITEV_MODE_MASK | ZEND_ASYNC_IO_WRITEV_AWAIT)) == 0);
+	/* Refuse rather than assert: a caller from a newer header would otherwise
+	 * abort on a debug build and, on a release one, get whatever the unknown
+	 * bit happens to mean here — the quiet outcome being the dangerous one.
+	 * AWAIT is ZSTR-only, because the awaited completion hands the request to
+	 * its awaiter and so cannot also promise the IOV contract that free_cb
+	 * runs at completion. The release below is the CLOSED branch's. */
+	if (UNEXPECTED((flags & ~(ZEND_ASYNC_IO_WRITEV_MODE_MASK | ZEND_ASYNC_IO_WRITEV_AWAIT)) != 0)
+	    || UNEXPECTED(iov_mode && awaited)) {
+		if (nbufs > 0) {
+			if (iov_mode) {
+				if (free_cb != NULL) {
+					free_cb(user_data, io_base);
+				}
+			} else {
+				zend_string **zbufs = (zend_string **) bufs;
+
+				for (unsigned i = 0; i < nbufs; i++) {
+					zend_string_release(zbufs[i]);
+				}
+			}
+		}
+
+		async_throw_error("Unsupported writev flags 0x%x", flags);
+		return NULL;
+	}
 
 	if (UNEXPECTED(nbufs == 0)) {
 		if (iov_mode && free_cb != NULL) {
