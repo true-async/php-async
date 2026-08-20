@@ -2494,28 +2494,47 @@ static void op_array_to_emalloc(zend_op_array *op_array)
 
 	/* opcodes + literals
 	 *
-	 * Under !ZEND_USE_ABS_CONST_ADDR (64-bit) RT_CONSTANT stores the literal
-	 * as an int32_t offset from the opline. emalloc may place independent
-	 * allocations several GB apart, so we cannot call emalloc separately for
-	 * opcodes and literals — the offset would overflow and the VM would
-	 * read from unrelated memory. Mirror pass_two()'s layout: allocate one
-	 * block with opcodes first (16-byte aligned) and literals immediately
-	 * after. destroy_op_array() already knows this layout via the
-	 * ZEND_ACC_DONE_PASS_TWO flag, which we leave set. */
+	 * The layout is the one pass_two() leaves behind, and it differs by
+	 * platform, because destroy_op_array() frees the two by that same rule:
+	 * one block on 64-bit, where the literals live inside the opcode block and
+	 * only the opcode block is freed, and two blocks under
+	 * ZEND_USE_ABS_CONST_ADDR, where op_array->literals is freed on its own
+	 * and must therefore be an allocation of its own. */
 	const zval *orig_literals = op_array->literals;
 	const zend_op *orig_opcodes = op_array->opcodes;
 
 	if (op_array->opcodes) {
-		const size_t opcodes_size =
-			ZEND_MM_ALIGNED_SIZE_EX(sizeof(zend_op) * op_array->last, 16);
 		const size_t literals_size = sizeof(zval) * op_array->last_literal;
 
-		zend_op *new_opcodes = (zend_op *) emalloc(opcodes_size + literals_size);
-		memcpy(new_opcodes, orig_opcodes, sizeof(zend_op) * op_array->last);
-
+		zend_op *new_opcodes;
 		zval *new_literals = NULL;
+
+#if ZEND_USE_ABS_CONST_ADDR
+		new_opcodes = (zend_op *) emalloc(sizeof(zend_op) * op_array->last);
+
+		if (op_array->last_literal) {
+			new_literals = (zval *) emalloc(literals_size);
+		}
+#else
+		/* RT_CONSTANT stores the literal as an int32_t offset from the opline.
+		 * emalloc may place independent allocations several GB apart, so
+		 * separate blocks would overflow the offset and send the VM into
+		 * unrelated memory. Opcodes first, 16-byte aligned, literals
+		 * immediately after; destroy_op_array() reads that layout from the
+		 * ZEND_ACC_DONE_PASS_TWO flag, which we leave set. */
+		const size_t opcodes_size =
+			ZEND_MM_ALIGNED_SIZE_EX(sizeof(zend_op) * op_array->last, 16);
+
+		new_opcodes = (zend_op *) emalloc(opcodes_size + literals_size);
+
 		if (op_array->last_literal) {
 			new_literals = (zval *) ((char *) new_opcodes + opcodes_size);
+		}
+#endif
+
+		memcpy(new_opcodes, orig_opcodes, sizeof(zend_op) * op_array->last);
+
+		if (op_array->last_literal) {
 			for (uint32_t i = 0; i < op_array->last_literal; i++) {
 				/* Deep-copy refcounted literals into the worker's heap.
 				 * ZVAL_COPY alone only bumps the refcount and leaves the
