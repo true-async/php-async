@@ -43,13 +43,35 @@ static zend_object_handlers thread_pool_handlers;
 static void thread_pool_destroy(async_thread_pool_t *pool);
 static void thread_pool_close(async_thread_pool_t *pool);
 static void thread_pool_drain_tasks(async_thread_pool_t *pool, bool reject, zend_object *reject_with);
-static bool thread_pool_spawn_task_coroutine(
+
+typedef struct _pool_worker_cancel_s pool_worker_cancel_t;
+
+/* What became of a task the worker took off the channel. CANCELLED means the
+ * consumer asked for it before the coroutine existed: nothing ran, and the
+ * caller settles the task itself. */
+typedef enum {
+	POOL_TASK_SPAWNED,
+	POOL_TASK_SPAWN_FAILED,
+	POOL_TASK_CANCELLED
+} pool_task_spawn_t;
+
+static pool_task_spawn_t thread_pool_spawn_task_coroutine(
 	async_thread_pool_t *pool, zend_async_scope_t *pool_scope,
 	zval *callable,
 	zend_fcall_info *fci, zend_fcall_info_cache *fcc,
 	zval *params, uint32_t param_count,
 	async_thread_snapshot_t *snapshot, zend_future_shared_state_t *state,
-	int32_t *active_count, zend_async_trigger_event_t *slot_event);
+	int32_t *active_count, zend_async_trigger_event_t *slot_event,
+	pool_worker_cancel_t *cancel);
+static pool_worker_cancel_t *pool_worker_cancel_create(void);
+static void pool_worker_cancel_destroy(pool_worker_cancel_t *cancel);
+/* `entry` is the coroutine serving the state, or POOL_TASK_PREPARING while it
+ * does not exist yet. Tracking and binding go together, so that "listed here"
+ * and "bound to this worker" stay the same statement. */
+static bool pool_worker_cancel_track(
+	pool_worker_cancel_t *cancel, zend_future_shared_state_t *state, void *entry);
+static void pool_worker_cancel_forget(
+	pool_worker_cancel_t *cancel, zend_future_shared_state_t *state);
 
 ///////////////////////////////////////////////////////////
 /// Worker entry — C handler called inside spawned thread
@@ -201,6 +223,16 @@ typedef struct {
 	async_thread_channel_t *channel;
 } thread_pool_worker_ctx_t;
 
+/* The answer for a task that never ran, and the one the drain path already
+ * gives, so a cancelled task reads the same whichever side dropped it. */
+static void thread_pool_reject_cancelled(zend_future_shared_state_t *state)
+{
+	zend_object *cancelled = async_new_exception(
+		async_ce_cancellation_exception, "ThreadPool task was cancelled before execution");
+	async_future_shared_state_reject(state, cancelled);
+	OBJ_RELEASE(cancelled);
+}
+
 /* Own function so the handler's zend_try isn't nested (GCC -Wmaybe-uninitialized). */
 static bool thread_pool_call_guarded(zend_fcall_info *fci, zend_fcall_info_cache *fcc)
 {
@@ -243,6 +275,10 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 	 * bailout handler below, so it must survive the longjmp. */
 	int32_t active_count = 0;
 	zend_async_trigger_event_t * volatile slot_event = NULL;
+	/* Cancellation mailbox of this worker, created on its first closure task and
+	 * used by both modes. Volatile for the same reason as slot_event: the
+	 * bailout handler below reads it after a longjmp. */
+	pool_worker_cancel_t * volatile worker_cancel = NULL;
 
 	ZEND_ASSERT(event == NULL);
 
@@ -375,7 +411,12 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 				/* C-handler task — payload_a is handler ptr, payload_b is
 				 * caller's pemalloc'd ctx. Handler frees ctx itself before
 				 * returning; pool only takes ownership when dispatch fails
-				 * (handled in drain path). */
+				 * (handled in drain path).
+				 *
+				 * Deliberately outside the cancellation protocol: the handler
+				 * owns its ctx and frees it on the way out, so a task skipped
+				 * here would leak it. A consumer that gives up on such a task
+				 * raises the flag and nobody reads it. */
 				zend_thread_pool_internal_handler_t handler =
 					(zend_thread_pool_internal_handler_t)(uintptr_t) Z_LVAL_P(
 						zend_hash_index_find(Z_ARRVAL(task), TASK_SLOT_PAYLOAD_A));
@@ -411,6 +452,52 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 					zend_hash_index_find(Z_ARRVAL(task), TASK_SLOT_PAYLOAD_A));
 			const zval *args_zv =
 				zend_hash_index_find(Z_ARRVAL(task), TASK_SLOT_PAYLOAD_B);
+
+			/* Dropped before it began. Read before the closure is unpacked, so a
+			 * task nobody waits for costs a flag read instead of a materialized
+			 * op_array and a copy of every captured value. */
+			if (UNEXPECTED(async_future_shared_state_is_cancel_requested(state))) {
+				zend_atomic_int_dec(&pool->base.running_count);
+				zend_atomic_int_inc(&pool->base.completed_count);
+				thread_pool_reject_cancelled(state);
+				async_future_shared_state_delref(state);
+				async_thread_snapshot_destroy(snapshot);
+				zval_ptr_dtor(&task);
+				continue;
+			}
+
+			/* Both modes cancel through this mailbox, so it is created here once
+			 * rather than in each branch. A reactor that refuses the handle is a
+			 * sick worker: reporting that on the task is louder than running it
+			 * uncancellable, which would leave cancel() silently doing nothing
+			 * exactly on the loaded worker where it is needed most. */
+			if (worker_cancel == NULL) {
+				worker_cancel = pool_worker_cancel_create();
+
+				if (UNEXPECTED(worker_cancel == NULL)) {
+					zend_atomic_int_dec(&pool->base.running_count);
+					zend_atomic_int_inc(&pool->base.completed_count);
+
+					/* Settled whether or not the reactor left a reason behind:
+					 * a task that leaves here unsettled is an awaiter waiting
+					 * forever. */
+					if (EG(exception)) {
+						async_future_shared_state_reject(state, EG(exception));
+						zend_clear_exception();
+					} else {
+						zend_object *failed = async_new_exception(
+							async_ce_thread_pool_exception,
+							"ThreadPool worker could not create its cancellation handle");
+						async_future_shared_state_reject(state, failed);
+						OBJ_RELEASE(failed);
+					}
+
+					async_future_shared_state_delref(state);
+					async_thread_snapshot_destroy(snapshot);
+					zval_ptr_dtor(&task);
+					continue;
+				}
+			}
 
 			zval callable, retval;
 			zval *params = NULL;
@@ -489,10 +576,12 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 					task_active = &active_count;
 					task_event = slot_event;
 				}
-				if (thread_pool_spawn_task_coroutine(
+				const pool_task_spawn_t spawned = thread_pool_spawn_task_coroutine(
 						pool, pool_scope, &callable, &fci, &fcc, params,
 						param_count, snapshot, state,
-						task_active, task_event)) {
+						task_active, task_event, worker_cancel);
+
+				if (spawned == POOL_TASK_SPAWNED) {
 					if (pool->concurrency > 0) {
 						active_count++;
 					}
@@ -505,10 +594,19 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 					zval_ptr_dtor(&task);
 					continue;
 				}
-				/* Spawn failed — fall through to reject the future with the
-				 * pending exception (if any) and free everything synchronously. */
+
 				zend_atomic_int_dec(&pool->base.running_count);
 				zend_atomic_int_inc(&pool->base.completed_count);
+
+				if (spawned == POOL_TASK_CANCELLED) {
+					/* Asked for between the read above and the bind: nothing
+					 * ran, so the answer is the one the early path gives. */
+					thread_pool_reject_cancelled(state);
+					goto task_cleanup;
+				}
+
+				/* Spawn failed — reject the future with the pending exception
+				 * (if any) and free everything synchronously. */
 				if (EG(exception)) {
 					async_future_shared_state_reject(state, EG(exception));
 					zend_clear_exception();
@@ -563,6 +661,21 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			body->fcall = fcall;
 			params = NULL;
 
+			/* The body is a coroutine here too, so a consumer that gives up
+			 * reaches it the same way as in coroutine mode: the trigger fires
+			 * while this worker sleeps on the body's event, the body unwinds
+			 * with the cancellation, and it arrives below as body_error. */
+			if (UNEXPECTED(false == pool_worker_cancel_track(worker_cancel, state, body))) {
+				/* Asked for between the read at the top of the loop and this
+				 * bind. The body has its fcall already, so it is cancelled
+				 * rather than skipped; awaiting it below unwinds it at once. */
+				ZEND_ASYNC_CANCEL(body, NULL, false);
+
+				if (UNEXPECTED(EG(exception))) {
+					zend_clear_exception();
+				}
+			}
+
 			/* Await the body; its callback copies result/error into our waker. A
 			 * fatal re-raises zend_bailout() out of the coroutine — caught here. */
 			bool body_bailed = false;
@@ -570,6 +683,9 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			zend_async_resume_when(worker_coro, &body->event, false,
 								   zend_async_waker_callback_resolve, NULL);
 			body_bailed = thread_pool_suspend_guarded();
+
+			/* Off the trigger before anything can settle or free the state. */
+			pool_worker_cancel_forget(worker_cancel, state);
 
 			/* Decrement running and bump completed BEFORE notifying the awaiter
 			 * via complete/reject — otherwise a coroutine waking from await()
@@ -697,6 +813,9 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			slot_event = NULL;
 		}
 
+		pool_worker_cancel_destroy(worker_cancel);
+		worker_cancel = NULL;
+
 	} zend_catch {
 		bailout = 1;
 	} zend_end_try();
@@ -705,6 +824,13 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 	EG(current_execute_data) = fake_frame.prev_execute_data;
 
 	if (bailout) {
+		/* Before anything that can bail out again — thread_pool_drain_tasks
+		 * allocates and is not guarded — take every state off this worker's
+		 * trigger. A state left pointing at it becomes a cross-thread
+		 * use-after-free as soon as its consumer cancels. */
+		pool_worker_cancel_destroy(worker_cancel);
+		worker_cancel = NULL;
+
 		/* A bailout escaped the per-task/bootloader guards (e.g. during the
 		 * scheduler drain). Re-raising zend_bailout() inside the worker fiber
 		 * crashes it, so reject any still-pending tasks and exit cleanly. Done
@@ -755,6 +881,29 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 /// Coroutine-mode task: spawn + extended_dispose
 ///////////////////////////////////////////////////////////
 
+/* Per-worker cancellation. One trigger serves every task of this worker: a
+ * consumer that gives up raises the flag on its own shared state and fires this
+ * trigger, and the callback below looks for whoever is flagged. Per-task
+ * triggers would double the loop handles a task costs, and the pool exists to
+ * be cheap per task.
+ *
+ * `inflight` maps a shared state to the coroutine running for it. An entry
+ * appears before the trigger is bound and disappears in pool_task_dispose, so
+ * "bound to this worker" and "listed here" mean the same thing — which is what
+ * makes the sweep on the way out complete. A task between its entry and its
+ * coroutine holds POOL_TASK_PREPARING; the callback passes it by, and the
+ * spawn re-reads the flag once the coroutine is listed.
+ *
+ * No lock: every touch — spawn, dispose, this callback, the sweep — runs on
+ * the worker's own thread. */
+#define POOL_TASK_PREPARING ((void *) (uintptr_t) 1)
+
+struct _pool_worker_cancel_s {
+	zend_async_trigger_event_t *event;
+	zend_async_event_callback_t callback;
+	HashTable inflight;
+};
+
 typedef struct {
 	async_thread_pool_t *pool;
 	/* The task's own scope, borrowed: the coroutine owns it and dispose runs
@@ -766,7 +915,111 @@ typedef struct {
 	 * scheduler as the worker. */
 	int32_t *active_count;
 	zend_async_trigger_event_t *slot_event;
+	pool_worker_cancel_t *cancel;
 } pool_task_ctx_t;
+
+/* Runs in the worker's loop while the worker itself sleeps in receive(). Cancels
+ * every task whose consumer has asked for it. Exceptions are swallowed on
+ * purpose: the reactor stops on a pending exception, and one task that refused
+ * to be cancelled must not take the worker's other tasks with it. */
+static void pool_worker_cancel_notify(zend_async_event_t *event,
+	zend_async_event_callback_t *callback, void *result, zend_object *exception)
+{
+	pool_worker_cancel_t *cancel =
+		(pool_worker_cancel_t *) ((char *) callback - offsetof(pool_worker_cancel_t, callback));
+
+	zend_ulong key;
+	void *entry;
+
+	ZEND_HASH_FOREACH_NUM_KEY_PTR(&cancel->inflight, key, entry) {
+		if (entry == POOL_TASK_PREPARING) {
+			continue;
+		}
+
+		zend_future_shared_state_t *state = (zend_future_shared_state_t *) (uintptr_t) key;
+
+		if (async_future_shared_state_is_cancel_requested(state)) {
+			ZEND_ASYNC_CANCEL((zend_coroutine_t *) entry, NULL, false);
+
+			if (UNEXPECTED(EG(exception))) {
+				zend_clear_exception();
+			}
+		}
+	} ZEND_HASH_FOREACH_END();
+}
+
+/* The callback is embedded in the worker's cancel object and freed with it, so
+ * there is nothing to release when the trigger drops its callback list. Still
+ * required: the list calls dispose unconditionally. */
+static void pool_worker_cancel_callback_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event)
+{
+}
+
+/* Called once per worker, lazily. NULL means this worker runs without in-flight
+ * cancellation: the reactor refused a handle, which is a sick worker, and the
+ * caller reports that on the task instead of running it uncancellable. */
+static pool_worker_cancel_t *pool_worker_cancel_create(void)
+{
+	zend_async_trigger_event_t *trigger = ZEND_ASYNC_NEW_TRIGGER_EVENT();
+
+	if (UNEXPECTED(trigger == NULL)) {
+		return NULL;
+	}
+
+	pool_worker_cancel_t *cancel = emalloc(sizeof(pool_worker_cancel_t));
+	cancel->event = trigger;
+	cancel->callback.ref_count = 1;
+	cancel->callback.callback = pool_worker_cancel_notify;
+	cancel->callback.dispose = pool_worker_cancel_callback_dispose;
+	zend_hash_init(&cancel->inflight, 8, NULL, NULL, 0);
+
+	trigger->base.add_callback(&trigger->base, &cancel->callback);
+
+	return cancel;
+}
+
+/* Returns false when cancellation was already requested: nothing is listed and
+ * nothing is bound, and the caller must not let the task run. */
+static bool pool_worker_cancel_track(
+	pool_worker_cancel_t *cancel, zend_future_shared_state_t *state, void *entry)
+{
+	zend_hash_index_update_ptr(&cancel->inflight, (zend_ulong)(uintptr_t) state, entry);
+
+	if (UNEXPECTED(false == async_future_shared_state_bind_cancel(state, cancel->event))) {
+		zend_hash_index_del(&cancel->inflight, (zend_ulong)(uintptr_t) state);
+		return false;
+	}
+
+	return true;
+}
+
+static void pool_worker_cancel_forget(
+	pool_worker_cancel_t *cancel, zend_future_shared_state_t *state)
+{
+	zend_hash_index_del(&cancel->inflight, (zend_ulong)(uintptr_t) state);
+	async_future_shared_state_unbind_cancel(state);
+}
+
+/* Unbind every state still listed, then drop the trigger. Callable twice, and
+ * called on both ways out of the worker, because a state left pointing at a
+ * disposed trigger is a cross-thread use-after-free the moment its consumer
+ * cancels. */
+static void pool_worker_cancel_destroy(pool_worker_cancel_t *cancel)
+{
+	if (cancel == NULL) {
+		return;
+	}
+
+	zend_ulong key;
+
+	ZEND_HASH_FOREACH_NUM_KEY(&cancel->inflight, key) {
+		async_future_shared_state_unbind_cancel((zend_future_shared_state_t *) (uintptr_t) key);
+	} ZEND_HASH_FOREACH_END();
+
+	zend_hash_destroy(&cancel->inflight);
+	cancel->event->base.dispose(&cancel->event->base);
+	efree(cancel);
+}
 
 /* Ties the task snapshot to the task scope instead of to the task coroutine.
  * The arena backs the op_arrays of everything the task spawned, so it may only
@@ -828,6 +1081,10 @@ static void pool_task_dispose(zend_coroutine_t *coroutine)
 		OBJ_RELEASE(bex);
 	}
 
+	/* Off the worker's books before the state can go: the state must not outlive
+	 * this worker still pointing at its trigger. */
+	pool_worker_cancel_forget(ctx->cancel, ctx->state);
+
 	/* Cancel what the task left behind. Waiting for it here is impossible and
 	 * unnecessary: the arena outlives this call, because the guard registered on
 	 * the scope frees it only once the scope is torn down. */
@@ -856,18 +1113,26 @@ static void pool_task_dispose(zend_coroutine_t *coroutine)
  * Each task runs in its own child scope of `pool_scope` so cancellation of
  * one task doesn't disturb siblings, and cancelling `pool_scope` cascades
  * to every in-flight task. */
-static bool thread_pool_spawn_task_coroutine(
+static pool_task_spawn_t thread_pool_spawn_task_coroutine(
 	async_thread_pool_t *pool, zend_async_scope_t *pool_scope,
 	zval *callable,
 	zend_fcall_info *fci, zend_fcall_info_cache *fcc,
 	zval *params, uint32_t param_count,
 	async_thread_snapshot_t *snapshot, zend_future_shared_state_t *state,
-	int32_t *active_count, zend_async_trigger_event_t *slot_event)
+	int32_t *active_count, zend_async_trigger_event_t *slot_event,
+	pool_worker_cancel_t *cancel)
 {
 	(void) callable;
+
+	/* Listed before the trigger is bound, so a bailout anywhere below still
+	 * leaves this state visible to the sweep on the way out. */
+	if (UNEXPECTED(false == pool_worker_cancel_track(cancel, state, POOL_TASK_PREPARING))) {
+		return POOL_TASK_CANCELLED;
+	}
+
 	zend_async_scope_t *task_scope = ZEND_ASYNC_NEW_SCOPE(pool_scope);
 	if (UNEXPECTED(task_scope == NULL)) {
-		return false;
+		goto spawn_failed;
 	}
 
 	/* The task scope is a nursery: leftovers are cancelled, not left to run.
@@ -880,7 +1145,7 @@ static bool thread_pool_spawn_task_coroutine(
 		/* No coroutine took ownership; the task scope was freshly created
 		 * with refcount=1, so release it here. */
 		ZEND_ASYNC_SCOPE_RELEASE(task_scope);
-		return false;
+		goto spawn_failed;
 	}
 
 	/* Build the coroutine's fcall — same shape as ZEND_ASYNC_FCALL_DEFINE
@@ -901,12 +1166,17 @@ static bool thread_pool_spawn_task_coroutine(
 	ctx->state = state;
 	ctx->active_count = active_count;
 	ctx->slot_event = slot_event;
+	ctx->cancel = cancel;
 
 	coroutine->extended_data = ctx;
 	coroutine->extended_dispose = pool_task_dispose;
 
+	zend_hash_index_update_ptr(&cancel->inflight, (zend_ulong)(uintptr_t) state, coroutine);
+
 	/* Hand the arena to the scope, last of all: until this line the caller still
-	 * owns the snapshot and frees it on its own error paths. */
+	 * owns the snapshot and frees it on its own error paths. The guard is
+	 * registered before the cancellation below, which can tear the scope down
+	 * immediately. */
 	pool_snapshot_guard_t *guard = emalloc(sizeof(pool_snapshot_guard_t));
 	guard->base.ref_count = 1;
 	guard->base.callback = pool_snapshot_guard_fire;
@@ -915,7 +1185,23 @@ static bool thread_pool_spawn_task_coroutine(
 
 	task_scope->event.add_callback(&task_scope->event, &guard->base);
 
-	return true;
+	/* The flag may have been raised while this task held PREPARING, and the
+	 * callback passes those by. Read it once more now that the coroutine is
+	 * listed, so the request is not lost in that window. */
+	if (UNEXPECTED(async_future_shared_state_is_cancel_requested(state))) {
+		ZEND_ASYNC_CANCEL(coroutine, NULL, false);
+
+		if (UNEXPECTED(EG(exception))) {
+			zend_clear_exception();
+		}
+	}
+
+	return POOL_TASK_SPAWNED;
+
+spawn_failed:
+	pool_worker_cancel_forget(cancel, state);
+
+	return POOL_TASK_SPAWN_FAILED;
 }
 
 ///////////////////////////////////////////////////////////
@@ -1386,11 +1672,7 @@ static void thread_pool_drain_tasks(async_thread_pool_t *pool, bool reject, zend
 				if (reject_with != NULL) {
 					async_future_shared_state_reject(state, reject_with);
 				} else {
-					zend_object *exception = async_new_exception(
-						async_ce_cancellation_exception,
-						"ThreadPool task was cancelled before execution");
-					async_future_shared_state_reject(state, exception);
-					OBJ_RELEASE(exception);
+					thread_pool_reject_cancelled(state);
 				}
 			}
 

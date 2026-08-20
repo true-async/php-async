@@ -135,6 +135,16 @@ typedef struct _zend_future_shared_state_s {
 
 	/** Target future in the destination thread (emalloc, not owned) */
 	zend_future_t *target_future;
+
+	/** Set once when the consumer asks the producer to stop. Never cleared:
+	 *  a producer that reads it after the fact must still refuse the work. */
+	zend_atomic_int cancel_requested;
+
+	/** Trigger on the producer's event loop, BORROWED — the producer owns it
+	 *  and outlives this pointer. Guarded by mutex: NULL while no producer has
+	 *  the work in flight, and cleared before the producer disposes the trigger,
+	 *  which is what keeps a cross-thread fire from reaching a closed handle. */
+	zend_async_trigger_event_t *cancel_trigger;
 } zend_future_shared_state_t;
 
 /**
@@ -257,6 +267,11 @@ typedef struct _zend_future_remote_s {
 
 	/** Shared state connecting this future to the source thread */
 	zend_future_shared_state_t *state;
+
+	/** True once anything subscribed to this future. Distinguishes a dropped
+	 *  awaiter, whose work is cancelled, from a future nobody ever watched,
+	 *  which is fire-and-forget and left to run. */
+	bool observed;
 } zend_future_remote_t;
 
 /**
@@ -269,5 +284,41 @@ typedef struct _zend_future_remote_s {
  * @return Remote future, or NULL on failure.
  */
 zend_future_remote_t *async_new_remote_future(zend_future_shared_state_t *state);
+
+/**
+ * @brief Ask the producer to stop working on this state. Callable from any
+ *        thread; idempotent; a no-op once the state has completed.
+ *
+ * Raises the cancellation flag and, when a producer has bound its trigger,
+ * fires it so the producer's loop wakes and drops the work. The flag stays
+ * raised, so a producer that only reads it later refuses the work instead.
+ */
+void async_future_shared_state_request_cancel(zend_future_shared_state_t *state);
+
+/**
+ * @brief Bind the producer's cancellation trigger. Producer thread only,
+ *        before the work starts.
+ *
+ * @return false when cancellation was already requested — nothing is bound and
+ *         the work must not start. The caller settles the state itself.
+ */
+bool async_future_shared_state_bind_cancel(
+	zend_future_shared_state_t *state, zend_async_trigger_event_t *trigger);
+
+/**
+ * @brief Drop the binding. Producer thread only, safe without a preceding bind.
+ *
+ * Must run before the state is released and before the trigger is disposed:
+ * a consumer holding the mutex with a bound trigger is what proves the handle
+ * is still open.
+ */
+void async_future_shared_state_unbind_cancel(zend_future_shared_state_t *state);
+
+/** True once the consumer has asked for cancellation. Lock-free. */
+static zend_always_inline bool async_future_shared_state_is_cancel_requested(
+	zend_future_shared_state_t *state)
+{
+	return zend_atomic_int_load(&state->cancel_requested) != 0;
+}
 
 #endif /* FUTURE_H */
