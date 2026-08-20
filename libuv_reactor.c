@@ -4939,9 +4939,10 @@ static void io_pipe_write_cb(uv_write_t *write_request, int status)
 	IF_EXCEPTION_STOP_REACTOR;
 }
 
-/* Vectored fire-and-forget completion. Releases every owned zend_string ref
- * stored in the trailing slot array, then frees the request. No NOTIFY:
- * writev is fire-and-forget by design (no caller awaits this req). On
+/* Vectored write completion. Releases every owned zend_string ref stored in the
+ * trailing slot array, then either hands the request to its awaiter or frees it.
+ *
+ * Without ZEND_ASYNC_IO_WRITEV_AWAIT there is no awaiter and no NOTIFY: on a
  * write error the connection layer surfaces the failure on its next read
  * attempt and tears the conn down, just like ZEND_ASYNC_IO_WRITE_EX. */
 static void io_pipe_writev_cb(uv_write_t *write_request, int status)
@@ -4968,7 +4969,26 @@ static void io_pipe_writev_cb(uv_write_t *write_request, int status)
 			zend_string_release(slots[i]);
 		}
 		req->writev_nbufs = 0;
-	} else if (req->base.free_cb != NULL) {
+	}
+
+	/* Awaited: the request belongs to its awaiter, which reads the status and
+	 * disposes it — so neither it nor its exception is freed here. An awaiter
+	 * that left already asked for the dispose; finish it now. */
+	if (req->uv_flags & ASYNC_IO_REQ_F_AWAITED) {
+		if (UNEXPECTED(req->uv_flags & ASYNC_IO_REQ_F_DISPOSE_PENDING)) {
+			libuv_io_req_dispose(&req->base);
+		} else {
+			/* No exception on the broadcast: every listener forwards one
+			 * unconditionally and filters by result only otherwise, so it
+			 * would wake the whole handle instead of the one that asked. */
+			ZEND_ASYNC_CALLBACKS_NOTIFY(&req->io->base.event, &req->base, NULL);
+		}
+
+		IF_EXCEPTION_STOP_REACTOR;
+		return;
+	}
+
+	if (req->base.free_cb != NULL) {
 		/* IOV mode: one free_cb for the whole batch. */
 		zend_async_io_write_free_cb_t free_cb = req->base.free_cb;
 		void *user_data = req->base.buf;
@@ -6034,7 +6054,34 @@ static zend_async_io_req_t *libuv_io_writev(zend_async_io_t *io_base,
                                             void *user_data)
 {
 	async_io_t *io = (async_io_t *) io_base;
-	const bool iov_mode = (flags == ZEND_ASYNC_IO_WRITEV_IOV);
+	const bool iov_mode = (flags & ZEND_ASYNC_IO_WRITEV_MODE_MASK) == ZEND_ASYNC_IO_WRITEV_IOV;
+	const bool awaited  = (flags & ZEND_ASYNC_IO_WRITEV_AWAIT) != 0;
+
+	/* Refuse rather than assert: a caller from a newer header would otherwise
+	 * abort on a debug build and, on a release one, get whatever the unknown
+	 * bit happens to mean here — the quiet outcome being the dangerous one.
+	 * AWAIT is ZSTR-only, because the awaited completion hands the request to
+	 * its awaiter and so cannot also promise the IOV contract that free_cb
+	 * runs at completion. The release below is the CLOSED branch's. */
+	if (UNEXPECTED((flags & ~(ZEND_ASYNC_IO_WRITEV_MODE_MASK | ZEND_ASYNC_IO_WRITEV_AWAIT)) != 0)
+	    || UNEXPECTED(iov_mode && awaited)) {
+		if (nbufs > 0) {
+			if (iov_mode) {
+				if (free_cb != NULL) {
+					free_cb(user_data, io_base);
+				}
+			} else {
+				zend_string **zbufs = (zend_string **) bufs;
+
+				for (unsigned i = 0; i < nbufs; i++) {
+					zend_string_release(zbufs[i]);
+				}
+			}
+		}
+
+		async_throw_error("Unsupported writev flags 0x%x", flags);
+		return NULL;
+	}
 
 	if (UNEXPECTED(nbufs == 0)) {
 		if (iov_mode && free_cb != NULL) {
@@ -6081,6 +6128,10 @@ static zend_async_io_req_t *libuv_io_writev(zend_async_io_t *io_base,
 	} else {
 		slots = (zend_string **)((char *) req + sizeof(*req));
 		req->writev_nbufs = (uint16_t) nbufs;
+	}
+
+	if (awaited) {
+		req->uv_flags |= ASYNC_IO_REQ_F_AWAITED;
 	}
 
 	/* uv_buf_t array lives only for the duration of uv_write — libuv copies

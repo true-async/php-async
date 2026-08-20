@@ -208,6 +208,7 @@ struct _async_io_t
  * the completion callback. */
 #define ASYNC_IO_REQ_F_UV_IN_FLIGHT    (1u << 0) /* uv op submitted, callback pending */
 #define ASYNC_IO_REQ_F_DISPOSE_PENDING (1u << 1) /* dispose() arrived while in flight */
+#define ASYNC_IO_REQ_F_AWAITED         (1u << 2) /* writev: notify on completion, caller disposes */
 
 struct _async_io_req_t
 {
