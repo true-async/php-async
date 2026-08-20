@@ -4971,18 +4971,16 @@ static void io_pipe_writev_cb(uv_write_t *write_request, int status)
 		req->writev_nbufs = 0;
 	}
 
-	/* Awaited: the request belongs to its awaiter, which reads the status off
-	 * it and disposes it, so neither the exception nor the request is freed
-	 * here. An awaiter that left while the write was queued has already asked
-	 * for the dispose; finish it now that the buffers are released. */
+	/* Awaited: the request belongs to its awaiter, which reads the status and
+	 * disposes it — so neither it nor its exception is freed here. An awaiter
+	 * that left already asked for the dispose; finish it now. */
 	if (req->uv_flags & ASYNC_IO_REQ_F_AWAITED) {
 		if (UNEXPECTED(req->uv_flags & ASYNC_IO_REQ_F_DISPOSE_PENDING)) {
 			libuv_io_req_dispose(&req->base);
 		} else {
-			/* No exception on the broadcast. Every listener on this event
-			 * forwards an exception unconditionally and filters by result
-			 * otherwise, so passing one here would wake every reader and
-			 * writer on the handle instead of the one that asked. */
+			/* No exception on the broadcast: every listener forwards one
+			 * unconditionally and filters by result only otherwise, so it
+			 * would wake the whole handle instead of the one that asked. */
 			ZEND_ASYNC_CALLBACKS_NOTIFY(&req->io->base.event, &req->base, NULL);
 		}
 
