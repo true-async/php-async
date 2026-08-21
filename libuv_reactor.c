@@ -4778,6 +4778,7 @@ static void libuv_io_req_dispose(zend_async_io_req_t *base_req)
 
 	if (req->base.exception != NULL) {
 		zend_object_release(req->base.exception);
+		req->base.exception = NULL;
 	}
 
 	pefree(req, 0);
@@ -4786,6 +4787,19 @@ static void libuv_io_req_dispose(zend_async_io_req_t *base_req)
 /* }}} */
 
 /* {{{ IO pipe callbacks */
+/* Fill a read buffer. Unlike a write, an over-long one is clamped rather than
+ * refused: reading less than offered is a normal answer, and the completion
+ * reports the bytes that arrived. Windows carries a ULONG length. */
+static zend_always_inline void async_uv_read_buf_set(uv_buf_t *buf, char *base, const size_t len)
+{
+#ifdef PHP_WIN32
+	buf->len = len > ULONG_MAX ? ULONG_MAX : (ULONG) len;
+#else
+	buf->len = len;
+#endif
+	buf->base = base;
+}
+
 static void libuv_io_alloc_cb(uv_handle_t *handle, size_t suggested_size, uv_buf_t *output)
 {
 	async_io_t *io = (async_io_t *) handle->data;
@@ -4797,8 +4811,7 @@ static void libuv_io_alloc_cb(uv_handle_t *handle, size_t suggested_size, uv_buf
 		/* uv_buf_t = { ULONG len; char *base; } — copy. */
 		zend_async_buf_t b = { NULL, 0 };
 		io->base.alloc_cb(&io->base, suggested_size, &b);
-		output->base = b.base;
-		output->len  = (ULONG) b.len;
+		async_uv_read_buf_set(output, b.base, b.len);
 #else
 		_Static_assert(sizeof(zend_async_buf_t) == sizeof(uv_buf_t)
 				&& offsetof(zend_async_buf_t, base) == offsetof(uv_buf_t, base)
@@ -4816,8 +4829,7 @@ static void libuv_io_alloc_cb(uv_handle_t *handle, size_t suggested_size, uv_buf
 		output->len = 0;
 		return;
 	}
-	output->base = req->base.buf;
-	output->len = (unsigned int) req->max_size;
+	async_uv_read_buf_set(output, req->base.buf, req->max_size);
 }
 
 static void io_pipe_read_cb(uv_stream_t *pipe_stream, ssize_t bytes_read, const uv_buf_t *buffer)
@@ -4936,6 +4948,10 @@ static void io_pipe_write_cb(uv_write_t *write_request, int status)
 		OBJ_RELEASE(exc);
 	}
 
+	/* The awaiter disposes this request after a resume later than this callback,
+	 * and dispose reads req->io — which by then may be closed and freed. */
+	req->io = NULL;
+
 	IF_EXCEPTION_STOP_REACTOR;
 }
 
@@ -4949,8 +4965,6 @@ static void io_pipe_writev_cb(uv_write_t *write_request, int status)
 {
 	async_io_req_t *req = (async_io_req_t *) write_request->data;
 
-	/* Fire-and-forget: this callback always frees below, so DISPOSE_PENDING
-	 * needs no extra handling. */
 	req->uv_flags &= ~ASYNC_IO_REQ_F_UV_IN_FLIGHT;
 
 	if (status == 0) {
@@ -4982,6 +4996,8 @@ static void io_pipe_writev_cb(uv_write_t *write_request, int status)
 			 * unconditionally and filters by result only otherwise, so it
 			 * would wake the whole handle instead of the one that asked. */
 			ZEND_ASYNC_CALLBACKS_NOTIFY(&req->io->base.event, &req->base, NULL);
+
+			req->io = NULL;   /* see io_pipe_write_cb: dispose runs after the handle may be gone */
 		}
 
 		IF_EXCEPTION_STOP_REACTOR;
@@ -5762,6 +5778,31 @@ static inline bool libuv_can_use_sync_io(void)
 
 /* }}} */
 
+/* {{{ async_uv_buf_set
+ * Describe one write buffer for libuv. uv_buf_init() takes an unsigned int and
+ * narrows anything longer without a word; the fields hold what the platform
+ * describes — a size_t on POSIX, a ULONG on Windows — so false is returned on
+ * Windows alone. Not the write size limit: that is ASYNC_IO_WRITE_MAX_BYTES. */
+/* uv_write() and uv_udp_send() answer UV_EINVAL above this sum. UV__IO_MAX_BYTES
+ * in libuv's private header, so it is repeated rather than included. */
+#define ASYNC_IO_WRITE_MAX_BYTES 0x7ffff000u
+
+static zend_always_inline bool async_uv_buf_set(uv_buf_t *buf, char *base, const size_t len)
+{
+#ifdef PHP_WIN32
+	if (UNEXPECTED(len > ULONG_MAX)) {
+		return false;
+	}
+
+	buf->len = (ULONG) len;
+#else
+	buf->len = len;
+#endif
+	buf->base = base;
+	return true;
+}
+/* }}} */
+
 /* {{{ libuv_io_read */
 static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, char *buf, size_t max_size)
 {
@@ -5951,7 +5992,19 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 	req->base.buf     = (char *) buf;
 	req->base.free_cb = free_cb;
 	req->io = io;
-	req->max_size = count;
+	/* The completion reports max_size as transferred, so what is stored is what
+	 * was submitted: a longer buffer becomes a short write rather than a full
+	 * one that never happened. */
+	req->max_size = count > ASYNC_IO_WRITE_MAX_BYTES ? ASYNC_IO_WRITE_MAX_BYTES : count;
+
+	/* free_cb carries no length, so a fire-and-forget caller cannot see a short
+	 * write and would lose the tail in silence. It gets the refusal instead. */
+	if (UNEXPECTED(free_cb != NULL && count > ASYNC_IO_WRITE_MAX_BYTES)) {
+		async_throw_error("Write of %zu bytes exceeds the %u a single write carries",
+				count, (unsigned) ASYNC_IO_WRITE_MAX_BYTES);
+		libuv_io_req_dispose(&req->base);
+		return NULL;
+	}
 
 	if (ZEND_ASYNC_IO_IS_STREAM(io->base.type)) {
 #ifdef PHP_WIN32
@@ -5959,8 +6012,7 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 		 * process, so a direct blocking call is much cheaper when there is
 		 * at most one coroutine and no active reactor events. */
 		if (libuv_can_use_sync_io()) {
-			const unsigned int write_size = (count > INT_MAX) ? (unsigned int) INT_MAX : (unsigned int) count;
-			const int result = _write(io->crt_fd, buf, write_size);
+			const int result = _write(io->crt_fd, buf, (unsigned int) req->max_size);
 
 			if (result >= 0) {
 				req->base.transferred = result;
@@ -5974,7 +6026,14 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 		}
 #endif
 
-		const uv_buf_t write_buffer = uv_buf_init((char *) buf, (unsigned int) (count > INT_MAX ? INT_MAX : count));
+		uv_buf_t write_buffer;
+
+		if (UNEXPECTED(!async_uv_buf_set(&write_buffer, (char *) buf, req->max_size))) {
+			async_throw_error("Write of %zu bytes exceeds this platform's buffer limit", req->max_size);
+			libuv_io_req_dispose(&req->base);
+			return NULL;
+		}
+
 		req->write_req.data = req;
 
 		const int error = uv_write(&req->write_req, &io->handle.stream, &write_buffer, 1, io_pipe_write_cb);
@@ -5985,8 +6044,6 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 			return NULL;
 		}
 
-		/* No io pin needed for stream writes: uv_close guarantees pending
-		 * write callbacks (UV_ECANCELED) run before io_close_cb frees the io. */
 		req->uv_flags |= ASYNC_IO_REQ_F_UV_IN_FLIGHT;
 		return &req->base;
 	}
@@ -6046,6 +6103,29 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 
 /* }}} */
 
+/* {{{ libuv_writev_release
+ * Give back what the caller handed over at the call. For a refusal raised before
+ * the request exists — once it is allocated the slots and free_cb belong to it,
+ * and libuv_io_req_dispose is the only release. Never both. */
+static void libuv_writev_release(zend_async_io_t *io_base, const void *bufs, const unsigned nbufs,
+		const bool iov_mode, zend_async_io_write_free_cb_t free_cb, void *user_data)
+{
+	if (iov_mode) {
+		if (free_cb != NULL) {
+			free_cb(user_data, io_base);
+		}
+
+		return;
+	}
+
+	zend_string * const *zbufs = (zend_string * const *) bufs;
+
+	for (unsigned i = 0; i < nbufs; i++) {
+		zend_string_release(zbufs[i]);
+	}
+}
+/* }}} */
+
 /* {{{ libuv_io_writev — vectored fire-and-forget write (dual-mode) */
 static zend_async_io_req_t *libuv_io_writev(zend_async_io_t *io_base,
                                             const void *bufs, unsigned nbufs,
@@ -6062,24 +6142,19 @@ static zend_async_io_req_t *libuv_io_writev(zend_async_io_t *io_base,
 	 * bit happens to mean here — the quiet outcome being the dangerous one.
 	 * AWAIT is ZSTR-only, because the awaited completion hands the request to
 	 * its awaiter and so cannot also promise the IOV contract that free_cb
-	 * runs at completion. The release below is the CLOSED branch's. */
+	 * runs at completion. */
 	if (UNEXPECTED((flags & ~(ZEND_ASYNC_IO_WRITEV_MODE_MASK | ZEND_ASYNC_IO_WRITEV_AWAIT)) != 0)
 	    || UNEXPECTED(iov_mode && awaited)) {
-		if (nbufs > 0) {
-			if (iov_mode) {
-				if (free_cb != NULL) {
-					free_cb(user_data, io_base);
-				}
-			} else {
-				zend_string **zbufs = (zend_string **) bufs;
-
-				for (unsigned i = 0; i < nbufs; i++) {
-					zend_string_release(zbufs[i]);
-				}
-			}
-		}
-
+		libuv_writev_release(io_base, bufs, nbufs, iov_mode, free_cb, user_data);
 		async_throw_error("Unsupported writev flags 0x%x", flags);
+		return NULL;
+	}
+
+	/* writev_nbufs holds the slot count for the release loop and is 16 bits
+	 * wide, so a larger batch would wrap to a count that releases nothing. */
+	if (UNEXPECTED(!iov_mode && nbufs > UINT16_MAX)) {
+		libuv_writev_release(io_base, bufs, nbufs, iov_mode, free_cb, user_data);
+		async_throw_error("Vectored write of %u buffers exceeds the limit of %u", nbufs, (unsigned) UINT16_MAX);
 		return NULL;
 	}
 
@@ -6092,17 +6167,7 @@ static zend_async_io_req_t *libuv_io_writev(zend_async_io_t *io_base,
 
 	if (UNEXPECTED(io->base.state & ZEND_ASYNC_IO_CLOSED)
 	    || UNEXPECTED(!ZEND_ASYNC_IO_IS_STREAM(io->base.type))) {
-		/* Caller already transferred ownership; release before bailing. */
-		if (iov_mode) {
-			if (free_cb != NULL) {
-				free_cb(user_data, io_base);
-			}
-		} else {
-			zend_string * const *zbufs = (zend_string * const *) bufs;
-			for (unsigned i = 0; i < nbufs; i++) {
-				zend_string_release(zbufs[i]);
-			}
-		}
+		libuv_writev_release(io_base, bufs, nbufs, iov_mode, free_cb, user_data);
 		async_throw_error(io->base.state & ZEND_ASYNC_IO_CLOSED
 				? "Cannot write to closed IO handle"
 				: "Vectored write only valid on stream IO");
@@ -6130,8 +6195,12 @@ static zend_async_io_req_t *libuv_io_writev(zend_async_io_t *io_base,
 		req->writev_nbufs = (uint16_t) nbufs;
 	}
 
-	if (awaited) {
-		req->uv_flags |= ASYNC_IO_REQ_F_AWAITED;
+	if (!iov_mode) {
+		zend_string * const *zbufs = (zend_string * const *) bufs;
+
+		for (unsigned i = 0; i < nbufs; i++) {
+			slots[i] = zbufs[i];                         /* take ownership */
+		}
 	}
 
 	/* uv_buf_t array lives only for the duration of uv_write — libuv copies
@@ -6139,24 +6208,32 @@ static zend_async_io_req_t *libuv_io_writev(zend_async_io_t *io_base,
 	ALLOCA_FLAG(tmp_heap)
 	uv_buf_t *tmp = do_alloca((size_t) nbufs * sizeof(uv_buf_t), tmp_heap);
 	size_t total = 0;
+	bool fits = true;
 
-	if (iov_mode) {
-		const zend_async_buf_t *iov = (const zend_async_buf_t *) bufs;
-		for (unsigned i = 0; i < nbufs; i++) {
-			const size_t len = iov[i].len;
-			tmp[i] = uv_buf_init(iov[i].base,
-					(unsigned int)(len > UINT_MAX ? UINT_MAX : len));
-			total += len;
+	for (unsigned i = 0; i < nbufs && fits; i++) {
+		char   *base;
+		size_t  len;
+
+		if (iov_mode) {
+			const zend_async_buf_t *iov = (const zend_async_buf_t *) bufs;
+			base = iov[i].base;
+			len  = iov[i].len;
+		} else {
+			base = ZSTR_VAL(slots[i]);
+			len  = ZSTR_LEN(slots[i]);
 		}
-	} else {
-		zend_string * const *zbufs = (zend_string * const *) bufs;
-		for (unsigned i = 0; i < nbufs; i++) {
-			slots[i] = zbufs[i];                         /* take ownership */
-			const size_t len = ZSTR_LEN(zbufs[i]);
-			tmp[i] = uv_buf_init(ZSTR_VAL(zbufs[i]),
-					(unsigned int)(len > UINT_MAX ? UINT_MAX : len));
-			total += len;
-		}
+
+		fits = async_uv_buf_set(&tmp[i], base, len);
+		total += len;
+	}
+
+	/* The batch is a frame whose earlier slots announce its length, so a prefix
+	 * on the wire is worse than nothing on it. Windows only. */
+	if (UNEXPECTED(!fits)) {
+		free_alloca(tmp, tmp_heap);
+		async_throw_error("Vectored write buffer exceeds this platform's limit");
+		libuv_io_req_dispose(&req->base);
+		return NULL;
 	}
 
 	req->max_size = total;
@@ -6175,6 +6252,11 @@ static zend_async_io_req_t *libuv_io_writev(zend_async_io_t *io_base,
 	}
 
 	req->uv_flags |= ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+
+	if (awaited) {
+		req->uv_flags |= ASYNC_IO_REQ_F_AWAITED;
+	}
+
 	return &req->base;
 }
 
@@ -6212,15 +6294,19 @@ static bool libuv_io_close(zend_async_io_t *io_base)
 		 *     recv_req on teardown.
 		 * Freeing here would double-free. */
 		if (io->active_req != NULL) {
+			/* The back-pointer goes too: the request outlives this handle until
+			 * its owner disposes it, and both dispose paths read req->io. */
 			if (io->base.type == ZEND_ASYNC_IO_TYPE_UDP) {
 				async_udp_req_t *ureq = (async_udp_req_t *) io->active_req;
 				ureq->base.io_closed   = true;
 				ureq->base.completed   = true;
 				ureq->base.transferred = 0;
+				ureq->io               = NULL;
 			} else {
 				io->active_req->base.io_closed   = true;
 				io->active_req->base.completed   = true;
 				io->active_req->base.transferred = 0;
+				io->active_req->io               = NULL;
 			}
 			io->active_req = NULL;
 		}
@@ -6867,8 +6953,7 @@ static void udp_recv_alloc_cb(uv_handle_t *udp_handle, size_t suggested_size, uv
 		return;
 	}
 
-	output->base = req->base.buf;
-	output->len = (unsigned int) req->max_size;
+	async_uv_read_buf_set(output, req->base.buf, req->max_size);
 }
 
 static void
@@ -6980,12 +7065,21 @@ static zend_async_udp_req_t *libuv_udp_sendto(
 	req->base.addr_len = addr_len;
 
 	/* Prepare buffer */
-	uv_buf_t uv_buf = uv_buf_init((char *) buf, (unsigned int) count);
+	uv_buf_t uv_buf;
+
+	if (UNEXPECTED(!async_uv_buf_set(&uv_buf, (char *) buf, count))) {
+		async_throw_error("Datagram of %zu bytes exceeds this platform's buffer limit", count);
+		udp_req_dispose(&req->base);
+		return NULL;
+	}
 
 	req->send_req.data = req;
 	const int error = uv_udp_send(&req->send_req, &io->handle.udp, &uv_buf, 1, addr, udp_send_cb);
 
 	if (UNEXPECTED(error < 0)) {
+		/* No callback will run, so clear the discriminator udp_req_dispose defers
+		 * on — otherwise the request waits for it and is never freed. */
+		req->send_req.data = NULL;
 		async_throw_error("Failed to start UDP send: %s", uv_strerror(error));
 		udp_req_dispose(&req->base);
 		return NULL;
@@ -7015,7 +7109,12 @@ static ssize_t libuv_udp_try_send(
 		return -ENOTSOCK;
 	}
 
-	uv_buf_t uv_buf = uv_buf_init((char *) buf, (unsigned int) count);
+	uv_buf_t uv_buf;
+
+	if (UNEXPECTED(!async_uv_buf_set(&uv_buf, (char *) buf, count))) {
+		return -EMSGSIZE;
+	}
+
 	int rv = uv_udp_try_send(&io->handle.udp, &uv_buf, 1, addr);
 	if (rv >= 0) {
 		return (ssize_t) rv;
