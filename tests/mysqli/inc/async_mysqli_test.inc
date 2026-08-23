@@ -69,9 +69,19 @@ class AsyncMySQLiTest {
     }
     
     /**
+     * Fixture table name, unique to this process — same rule and same reason as
+     * AsyncPDOMySQLTest::testTableName() in tests/pdo_mysql/inc.
+     */
+    static function testTableName() {
+        return 'async_test_' . getmypid();
+    }
+
+    /**
      * Create a test table for async tests
      */
-    static function createTestTable($mysqli, $tableName = 'async_test', $engine = null) {
+    static function createTestTable($mysqli, $tableName = null, $engine = null) {
+        $tableName = $tableName ?? self::testTableName();
+
         if (!$engine) {
             $engine = MYSQL_TEST_ENGINE;
         }
@@ -109,7 +119,8 @@ class AsyncMySQLiTest {
     /**
      * Clean up test tables
      */
-    static function cleanupTestTable($mysqli, $tableName = 'async_test') {
+    static function cleanupTestTable($mysqli, $tableName = null) {
+        $tableName = $tableName ?? self::testTableName();
         $mysqli->query("DROP TABLE IF EXISTS `{$tableName}`");
     }
     
@@ -208,7 +219,8 @@ class AsyncMySQLiTest {
     /**
      * Run async test with proper setup and cleanup
      */
-    static function runAsyncTest($testCallback, $tableName = 'async_test', $setupCallback = null, $cleanupCallback = null) {
+    static function runAsyncTest($testCallback, $tableName = null, $setupCallback = null, $cleanupCallback = null) {
+        $tableName = $tableName ?? self::testTableName();
         $mysqli = self::initDatabase();
         
         try {
