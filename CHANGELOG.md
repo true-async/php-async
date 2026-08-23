@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A write submitted without an awaiter reports its failure on the handle.** `io_pipe_write_cb` and `io_pipe_writev_cb` know the libuv status, but on that path the request is freed here and its `free_cb` takes no status, so the error object was built and released without anyone seeing it — a consumer could only infer the failure from the read side, where a peer that shut its write half down looks exactly like one that is gone. Both callbacks now set `ZEND_ASYNC_IO_WRITE_FAILED` on the io handle, which the reactor never clears. Needs php-src carrying that flag (TrueAsync ABI 0.26.0); against an older one the report is compiled out.
+
 ### Fixed
 
 - **Four MySQL tests shared one fixture table and dropped it under each other whenever the suite ran in parallel.** `createTestTable`, `cleanupTestTable` and `runAsyncTest` defaulted to `async_test` in both the pdo_mysql and the mysqli helper, and every caller took the default, so `002`, `004`, `011` and `012` raced on one name in one database: the `DROP TABLE IF EXISTS` of whichever started second removed the table the first had just created, and its `INSERT` came back as `Table 'test.async_test' doesn't exist`. The default is now `async_test_<pid>`, unique because run-tests gives each test a process. Measured over the four tests at `-j4`: 10 failing runs out of 10 before, 0 out of 10 after. The suite has been reaching MySQL on CI only intermittently, which is why the collision surfaced now. Test only.
