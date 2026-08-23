@@ -1824,6 +1824,10 @@ PHP_MINFO_FUNCTION(async)
 	php_info_print_table_row(2, "Version", PHP_ASYNC_VERSION);
 	php_info_print_table_row(2, "Support", "Enabled");
 	php_info_print_table_row(2, "LibUv Reactor", "Enabled");
+#ifdef ZEND_ASYNC_FUZZ
+	/* Tests that arm a chaos hook read this row to decide whether to skip. */
+	php_info_print_table_row(2, "Chaos hooks", "Enabled");
+#endif
 	php_info_print_table_end();
 
 	DISPLAY_INI_ENTRIES();

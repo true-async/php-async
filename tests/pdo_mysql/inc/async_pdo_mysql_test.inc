@@ -125,13 +125,25 @@ class AsyncPDOMySQLTest {
     }
     
     /**
+     * Fixture table name, unique to this process.
+     *
+     * run-tests works several tests at once against one database, so a shared
+     * name lets the DROP of one test remove the table of another.
+     */
+    static function testTableName() {
+        return 'async_test_' . getmypid();
+    }
+
+    /**
      * Create a test table for async tests
      */
-    static function createTestTable($pdo, $tableName = 'async_test', $engine = null) {
+    static function createTestTable($pdo, $tableName = null, $engine = null) {
+        $tableName = $tableName ?? self::testTableName();
+
         if (!$engine) {
             $engine = MYSQL_TEST_ENGINE;
         }
-        
+
         $pdo->exec("DROP TABLE IF EXISTS `{$tableName}`");
         $pdo->exec("CREATE TABLE `{$tableName}` (
             id INT PRIMARY KEY AUTO_INCREMENT,
@@ -155,7 +167,8 @@ class AsyncPDOMySQLTest {
     /**
      * Clean up test tables
      */
-    static function cleanupTestTable($pdo, $tableName = 'async_test') {
+    static function cleanupTestTable($pdo, $tableName = null) {
+        $tableName = $tableName ?? self::testTableName();
         $pdo->exec("DROP TABLE IF EXISTS `{$tableName}`");
     }
     
@@ -236,7 +249,8 @@ class AsyncPDOMySQLTest {
     /**
      * Run async test with proper setup and cleanup
      */
-    static function runAsyncTest($testCallback, $tableName = 'async_test', $setupCallback = null, $cleanupCallback = null) {
+    static function runAsyncTest($testCallback, $tableName = null, $setupCallback = null, $cleanupCallback = null) {
+        $tableName = $tableName ?? self::testTableName();
         $pdo = self::initDatabase();
         
         try {
