@@ -4926,13 +4926,10 @@ static void io_pipe_write_cb(uv_write_t *write_request, int status)
 				async_new_exception(async_ce_input_output_exception, "Pipe write error: %s", uv_strerror(status));
 
 		/* The handle carries the verdict because the request may not: a
-		 * fire-and-forget write is freed here, and its free_cb takes no status.
-		 * Guarded because php-src carries the flag only from ABI 0.26.0. */
-#ifdef ZEND_ASYNC_IO_WRITE_FAILED
+		 * fire-and-forget write is freed here, and its free_cb takes no status. */
 		if (io != NULL) {
 			io->base.state |= ZEND_ASYNC_IO_WRITE_FAILED;
 		}
-#endif
 	}
 
 	req->base.completed = true;
@@ -5005,11 +5002,9 @@ static void io_pipe_writev_cb(uv_write_t *write_request, int status)
 
 		/* See io_pipe_write_cb: the handle keeps the verdict for a caller whose
 		 * completion carries none. */
-#ifdef ZEND_ASYNC_IO_WRITE_FAILED
 		if (req->io != NULL) {
 			req->io->base.state |= ZEND_ASYNC_IO_WRITE_FAILED;
 		}
-#endif
 	}
 	req->base.completed = true;
 
