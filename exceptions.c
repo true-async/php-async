@@ -84,6 +84,13 @@ PHP_ASYNC_API zend_object *async_new_exception(zend_class_entry *exception_ce, c
 {
 	zval exception, message_val;
 
+	/* shutdown_executor() frees the object store and clears EG(active) before
+	 * zend_deactivate() stops the reactor, so object_init_ex would write into a
+	 * NULL bucket table. */
+	if (UNEXPECTED(!EG(active))) {
+		return NULL;
+	}
+
 	if (!exception_ce) {
 		exception_ce = zend_ce_exception;
 	}

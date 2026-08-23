@@ -444,6 +444,10 @@ void libuv_after_fork_child(void)
 }
 /* }}} */
 
+#if defined(ZEND_ASYNC_FUZZ) && !defined(PHP_WIN32)
+static void libuv_fuzz_queue_cancelled_write(void);
+#endif
+
 /* {{{ libuv_reactor_shutdown */
 bool libuv_reactor_shutdown(void)
 {
@@ -452,6 +456,10 @@ bool libuv_reactor_shutdown(void)
 		libuv_cleanup_signal_handlers();
 		libuv_cleanup_signal_events();
 		libuv_cleanup_process_events();
+
+#if defined(ZEND_ASYNC_FUZZ) && !defined(PHP_WIN32)
+		libuv_fuzz_queue_cancelled_write();
+#endif
 
 		/* Sync drain: pick up ready callbacks. */
 		for (int i = 0; i < 100 && uv_loop_alive(UVLOOP); i++) {
@@ -2204,7 +2212,11 @@ static bool libuv_process_event_start(zend_async_event_t *event)
 		zend_object *exception = async_new_exception(
 				async_ce_async_exception, "Failed to monitor process %d: %s", (int) pid, strerror(errno));
 		ZEND_ASYNC_CALLBACKS_NOTIFY(&process->event.base, NULL, exception);
-		OBJ_RELEASE(exception);
+
+		if (exception != NULL) {
+			OBJ_RELEASE(exception);
+		}
+
 		return EG(exception) == NULL;
 	}
 }
@@ -2870,7 +2882,11 @@ static void on_filesystem_event(uv_fs_event_t *handle, const char *filename, int
 		zend_object *exception = async_new_exception(
 				async_ce_input_output_exception, "Filesystem monitoring error: %s", uv_strerror(status));
 		ZEND_ASYNC_CALLBACKS_NOTIFY(&fs_event->event.base, NULL, exception);
-		zend_object_release(exception);
+
+		if (exception != NULL) {
+			zend_object_release(exception);
+		}
+
 		return;
 	}
 
@@ -3126,7 +3142,11 @@ static void async_fs_watch_dir_cb(uv_fs_event_t *handle, const char *filename, i
 		zend_object *exception = async_new_exception(
 				async_ce_input_output_exception, "Filesystem monitoring error: %s", uv_strerror(status));
 		ZEND_ASYNC_CALLBACKS_NOTIFY(&fs_event->event.base, NULL, exception);
-		zend_object_release(exception);
+
+		if (exception != NULL) {
+			zend_object_release(exception);
+		}
+
 		return;
 	}
 
@@ -5021,6 +5041,91 @@ static void io_pipe_writev_cb(uv_write_t *write_request, int status)
 	IF_EXCEPTION_STOP_REACTOR;
 }
 
+#if defined(ZEND_ASYNC_FUZZ) && !defined(PHP_WIN32)
+
+static void fuzz_cancelled_write_free_cb(void *user_data, zend_async_io_t *io)
+{
+	pefree(user_data, 0);
+}
+
+static void fuzz_cancelled_write_close_cb(uv_handle_t *handle)
+{
+	pefree(handle, 0);
+}
+
+/* Queues a write on a closing stream handle, which libuv_reactor_shutdown's
+ * drain then cancels with UV_ECANCELED — the shape of #264. No .phpt reaches it
+ * on its own: ZEND_ASYNC_IO_WRITEV_EX has no caller inside php-src, and the file
+ * writes that do reach the drain are waited out rather than cancelled.
+ *
+ * The request is filled in by hand instead of going through libuv_io_writev: an
+ * async_io_t created here would have to outlive active_io_handles, which
+ * libuv_reactor_shutdown destroys once the drain is over. */
+static void libuv_fuzz_queue_cancelled_write(void)
+{
+	const char *arm = getenv("ASYNC_FUZZ_CANCELLED_WRITE");
+
+	if (arm == NULL || *arm != '1') {
+		return;
+	}
+
+	/* run-tests gives a test's ENV section to its SKIPIF process too, and a
+	 * putenv() there is undone before the reactor stops. */
+	if (getenv("TEST_PHP_EVALUATING_SKIPIF") != NULL) {
+		return;
+	}
+
+	uv_os_sock_t pair[2];
+
+	if (uv_socketpair(SOCK_STREAM, 0, pair, UV_NONBLOCK_PIPE, UV_NONBLOCK_PIPE) != 0) {
+		return;
+	}
+
+	/* A send buffer smaller than the payload leaves the tail queued behind a
+	 * reader that never runs, which is what uv_close then cancels. */
+	const int send_buffer_size = 4096;
+	const size_t payload_size = 1024 * 1024;
+
+	setsockopt(pair[0], SOL_SOCKET, SO_SNDBUF, &send_buffer_size, sizeof(send_buffer_size));
+
+	uv_tcp_t *handle = pecalloc(1, sizeof(uv_tcp_t), 0);
+
+	if (uv_tcp_init(UVLOOP, handle) != 0 || uv_tcp_open(handle, pair[0]) != 0) {
+		pefree(handle, 0);
+		close(pair[0]);
+		close(pair[1]);
+		return;
+	}
+
+	char *payload = pemalloc(payload_size, 0);
+	memset(payload, 'x', payload_size);
+
+	/* io_pipe_writev_cb owns and frees this request; its IOV branch reads
+	 * neither req->io nor a dispose. */
+	async_io_req_t *req = pecalloc(1, sizeof(*req), 0);
+	req->base.free_cb   = fuzz_cancelled_write_free_cb;
+	req->base.buf       = payload;
+	req->max_size       = payload_size;
+	req->write_req.data = req;
+
+	uv_buf_t buffer = uv_buf_init(payload, (unsigned) payload_size);
+
+	if (uv_write(&req->write_req, (uv_stream_t *) handle, &buffer, 1, io_pipe_writev_cb) == 0) {
+		req->uv_flags |= ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+	} else {
+		pefree(payload, 0);
+		pefree(req, 0);
+	}
+
+	uv_close((uv_handle_t *) handle, fuzz_cancelled_write_close_cb);
+
+	/* Held until here so uv_write, which tries the socket once before queueing
+	 * the tail, sees a live peer instead of EPIPE. */
+	close(pair[1]);
+}
+
+#endif /* ZEND_ASYNC_FUZZ && !PHP_WIN32 */
+
 static void io_close_cb(uv_handle_t *pipe_handle)
 {
 	async_io_t *io = (async_io_t *) pipe_handle->data;
@@ -6312,7 +6417,10 @@ static bool libuv_io_close(zend_async_io_t *io_base)
 		}
 		io->base.state |= ZEND_ASYNC_IO_EOF;
 		ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, NULL, exc);
-		OBJ_RELEASE(exc);
+
+		if (exc != NULL) {
+			OBJ_RELEASE(exc);
+		}
 	}
 
 	if (ZEND_ASYNC_IO_IS_STREAM(io->base.type)) {

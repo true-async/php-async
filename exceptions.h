@@ -35,6 +35,11 @@ PHP_ASYNC_API extern zend_class_entry *async_ce_composite_exception;
 PHP_ASYNC_API extern zend_class_entry *async_ce_service_unavailable_exception;
 
 void async_register_exceptions_ce(void);
+
+/* Builds an exception of `exception_ce` (Exception when NULL) carrying the
+ * formatted message, with one reference for the caller to release. Returns NULL
+ * while EG(active) is 0: the reactor outlives shutdown_executor(), and no object
+ * can be built past it. A caller reached from a reactor callback takes that NULL. */
 PHP_ASYNC_API ZEND_COLD zend_object *async_new_exception(zend_class_entry *exception_ce, const char *format, ...);
 PHP_ASYNC_API ZEND_COLD zend_object *async_throw_error(const char *format, ...);
 PHP_ASYNC_API ZEND_COLD zend_object *async_throw_cancellation(const char *format, ...);
