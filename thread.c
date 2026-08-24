@@ -2274,11 +2274,13 @@ void async_thread_request_shutdown(void)
 #endif
 }
 
-/* Closure struct layout — defined in zend_closures.c, not exported */
+/* Closure struct layout — defined in zend_closures.c, not exported. Every field
+ * must match that declaration: a type that differs shifts the fields behind it,
+ * and the compiler says nothing about it. */
 typedef struct {
 	zend_object       std;
 	zend_function     func;
-	zval              this_ptr;
+	zend_object      *this_ptr;
 	zend_class_entry *called_scope;
 	zif_handler       orig_internal_handler;
 } async_zend_closure_t;
@@ -2860,9 +2862,9 @@ void async_thread_create_closure_ex(
 	ZEND_MAP_PTR_INIT(func.op_array.run_time_cache, NULL);
 	func.op_array.fn_flags &= ~ZEND_ACC_HEAP_RT_CACHE;
 
-	zval *this_arg = NULL;
+	zend_object *this_arg = NULL;
 	if (Z_TYPE(loaded_this) == IS_OBJECT) {
-		this_arg = &loaded_this;
+		this_arg = Z_OBJ(loaded_this);
 	}
 
 	/* Kill the source thread's stale CE pointer before handing to the engine. */
@@ -2930,9 +2932,9 @@ static bool thread_call_closure(
 		 * With zend_execute_ex we get the exception cleanly in EG(exception). */
 		uint32_t call_info = ZEND_CALL_TOP_FUNCTION;
 		void *object_or_scope = NULL;
-		if (Z_TYPE(closure->this_ptr) == IS_OBJECT) {
+		if (closure->this_ptr != NULL) {
 			call_info |= ZEND_CALL_HAS_THIS;
-			object_or_scope = Z_OBJ(closure->this_ptr);
+			object_or_scope = closure->this_ptr;
 		} else if (closure->called_scope != NULL) {
 			/* Scoped static call: the frame carries called_scope, no $this. */
 			object_or_scope = closure->called_scope;
@@ -3643,9 +3645,9 @@ static zend_object *closure_transfer_obj(
 		 * $this on first use. */
 		zval closure_zv;
 		ZVAL_OBJ(&closure_zv, object);
-		zval *bound_this = zend_get_closure_this_ptr(&closure_zv);
-		if (bound_this != NULL && Z_TYPE_P(bound_this) == IS_OBJECT) {
-			fcall.fci_cache.object = Z_OBJ_P(bound_this);
+		zend_object *bound_this = zend_get_closure_this_ptr(&closure_zv);
+		if (bound_this != NULL) {
+			fcall.fci_cache.object = bound_this;
 		}
 
 		/* Share our ctx: the captured vars may point back at an object this
