@@ -63,7 +63,7 @@ rem A build that silently dropped ext/async still runs the suite: every
 rem case skips on the missing module and the job reports success. Fail here
 rem instead, before the suite can turn an empty run into a green one.
 echo Verifying the true_async module is present in the binary...
-%PHP_BUILD_DIR%\php.exe -n -m | findstr /r /c:"^true_async$" >nul
+%PHP_BUILD_DIR%\php.exe -n -m | findstr /b /l /c:"true_async" >nul
 if %errorlevel% neq 0 (
     echo ERROR: the true_async module is not built into php.exe!
     %PHP_BUILD_DIR%\php.exe -n -m
