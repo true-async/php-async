@@ -59,6 +59,18 @@ if %errorlevel% neq 0 (
 )
 
 echo.
+rem A build that silently dropped ext/async still runs the suite: every
+rem case skips on the missing module and the job reports success. Fail here
+rem instead, before the suite can turn an empty run into a green one.
+echo Verifying the async module is present in the binary...
+%PHP_BUILD_DIR%\php.exe -n -m | findstr /r /c:"^async$" >nul
+if %errorlevel% neq 0 (
+    echo ERROR: the async module is not built into php.exe!
+    %PHP_BUILD_DIR%\php.exe -n -m
+    exit /b 1
+)
+echo FOUND: async module
+echo.
 echo Running async extension tests...
 %PHP_BUILD_DIR%\php.exe run-tests.php --show-diff ext\async\tests
 

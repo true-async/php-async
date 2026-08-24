@@ -74,6 +74,18 @@ jobs:
         run: |
           xcopy /E /I /H /Y async\.github .github
 
+      - name: Drop the staging checkout from the php-src root
+        shell: cmd
+        run: |
+          rem buildconf's find_config_w32(".") scans every directory in the
+          rem php-src root for a config.w32, so the staging copy registers as
+          rem a second module next to ext/async. When the two directory names
+          rem differ, ARG_ENABLE('async', ..., 'no') is registered twice and
+          rem the duplicate -- never matched on the command line -- resets
+          rem PHP_ASYNC back to its 'no' default after --enable-async was
+          rem accepted, and the extension is silently left out of the build.
+          rmdir /s /q async
+
       - name: Setup LibUV
         shell: powershell
         run: |
