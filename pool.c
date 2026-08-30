@@ -1121,10 +1121,16 @@ void zend_async_pool_close(async_pool_t *pool)
 	/* Stop healthcheck timer */
 	pool_stop_healthcheck_timer(pool);
 
-	/* Wake all waiters with exception */
+	/* async_new_exception() answers NULL once EG(active) is cleared, and a pool the engine
+	 * frees itself is closed after that point. A clean shutdown leaves no waiter to reject:
+	 * the scheduler destroys every coroutine before the request ends. A bailout can leave
+	 * one, and its coroutine is already unwound, so the rejection has nobody to reach. */
 	zend_object *ex = async_new_exception(async_ce_pool_exception, "Pool is closed");
-	pool_wake_all_with_exception(pool, ex);
-	OBJ_RELEASE(ex);
+
+	if (EXPECTED(ex != NULL)) {
+		pool_wake_all_with_exception(pool, ex);
+		OBJ_RELEASE(ex);
+	}
 
 	/* Destroy all idle resources — must destroy all even if destructor throws */
 	zval resource;
