@@ -1121,10 +1121,15 @@ void zend_async_pool_close(async_pool_t *pool)
 	/* Stop healthcheck timer */
 	pool_stop_healthcheck_timer(pool);
 
-	/* Wake all waiters with exception */
+	/* async_new_exception() answers NULL where an object can no longer be created, which is
+	 * the phase the engine frees the object store in — and a pool reached by that free is
+	 * closed from there. No coroutine survives into it, so there is no waiter to reject. */
 	zend_object *ex = async_new_exception(async_ce_pool_exception, "Pool is closed");
-	pool_wake_all_with_exception(pool, ex);
-	OBJ_RELEASE(ex);
+
+	if (EXPECTED(ex != NULL)) {
+		pool_wake_all_with_exception(pool, ex);
+		OBJ_RELEASE(ex);
+	}
 
 	/* Destroy all idle resources — must destroy all even if destructor throws */
 	zval resource;

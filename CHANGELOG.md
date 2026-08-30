@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A pool still alive when the object store is freed ended the process with SIGSEGV.** `zend_async_pool_close()` builds a `PoolException` for the waiters it wakes, and `async_new_exception()` answers NULL once `EG(active)` is gone — which is exactly the phase `zend_objects_store_free_object_storage()` runs in, so a pool reached by the engine's own free rather than by a destructor released a NULL. Nothing waits in that phase, the coroutines that could wait having been destroyed before it, so the wake is now skipped along with the exception. The shape that reaches it from PHP is a pool held in a reference cycle, and phpredis reaches it from `redis_pool_destroy()`: a suite that leaves one pooled client behind reported every test as passed and then exited 139. Evidence: `tests/pool/030-pool_freed_at_shutdown.phpt`.
+
 ### Added
 
 - **A write submitted without an awaiter reports its failure on the handle.** `io_pipe_write_cb` and `io_pipe_writev_cb` know the libuv status, but on that path the request is freed here and its `free_cb` takes no status, so the error object was built and released without anyone seeing it — a consumer could only infer the failure from the read side, where a peer that shut its write half down looks exactly like one that is gone. Both callbacks now set `ZEND_ASYNC_IO_WRITE_FAILED` on the io handle, which the reactor never clears. Needs php-src carrying that flag (TrueAsync ABI 0.26.0).
