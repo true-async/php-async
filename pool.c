@@ -1121,9 +1121,10 @@ void zend_async_pool_close(async_pool_t *pool)
 	/* Stop healthcheck timer */
 	pool_stop_healthcheck_timer(pool);
 
-	/* async_new_exception() answers NULL where an object can no longer be created, which is
-	 * the phase the engine frees the object store in — and a pool reached by that free is
-	 * closed from there. No coroutine survives into it, so there is no waiter to reject. */
+	/* async_new_exception() answers NULL once EG(active) is cleared, and a pool the engine
+	 * frees itself is closed after that point. A clean shutdown leaves no waiter to reject:
+	 * the scheduler destroys every coroutine before the request ends. A bailout can leave
+	 * one, and its coroutine is already unwound, so the rejection has nobody to reach. */
 	zend_object *ex = async_new_exception(async_ce_pool_exception, "Pool is closed");
 
 	if (EXPECTED(ex != NULL)) {
