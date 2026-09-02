@@ -85,7 +85,9 @@ async_pool_t *zend_async_pool_create(zend_fcall_t *factory,
 									 uint32_t max_size,
 									 uint32_t healthcheck_interval_ms);
 
-/* Create a new pool with internal C handlers */
+/* Create a new pool with internal C handlers.
+ * Slot values are opaque to PHP: the Async\Pool wrapper refuses acquire() and release()
+ * on such a pool, so a factory here may store a raw pointer with ZVAL_PTR. */
 async_pool_t *zend_async_pool_create_internal(zend_async_pool_factory_fn factory,
 											  zend_async_pool_destructor_fn destructor,
 											  zend_async_pool_healthcheck_fn healthcheck,
