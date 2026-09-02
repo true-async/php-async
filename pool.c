@@ -39,9 +39,26 @@
 #define THIS_POOL_OBJ ASYNC_POOL_OBJ_FROM_OBJ(Z_OBJ_P(ZEND_THIS))
 #define THIS_POOL (THIS_POOL_OBJ->base)
 
+#define THROW_IF_NO_POOL(obj) \
+	if (UNEXPECTED((obj)->pool == NULL)) { \
+		zend_throw_exception(async_ce_pool_exception, "Pool is not initialized", 0); \
+		RETURN_THROWS(); \
+	}
+
 #define THROW_IF_CLOSED(pool) \
 	if (UNEXPECTED(ZEND_ASYNC_POOL_IS_CLOSED(&(pool)->base))) { \
 		zend_throw_exception(async_ce_pool_exception, "Pool is closed", 0); \
+		RETURN_THROWS(); \
+	}
+
+/* Slots of a pool the engine builds hold what C put there rather than a zval: PDO's connection
+ * pool keeps a raw pdo_dbh_t * in each one, and phpredis keeps a socket. Such a value cannot be
+ * handed to PHP, and no PHP value can stand in for one on the way back — the C before_release
+ * handler dereferences whatever it is given. */
+#define THROW_IF_INTERNAL_RESOURCES(pool) \
+	if (UNEXPECTED((pool)->base.handler_flags & ZEND_ASYNC_POOL_F_FACTORY_INTERNAL)) { \
+		zend_throw_exception(async_ce_pool_exception, \
+				"Pool resources are owned by the engine and cannot cross into PHP", 0); \
 		RETURN_THROWS(); \
 	}
 
@@ -1434,10 +1451,9 @@ METHOD(acquire)
 
 	async_pool_obj_t *obj = THIS_POOL_OBJ;
 
-	if (obj->pool == NULL) {
-		zend_throw_exception(async_ce_pool_exception, "Pool is not initialized", 0);
-		RETURN_THROWS();
-	}
+	THROW_IF_NO_POOL(obj)
+
+	THROW_IF_INTERNAL_RESOURCES(obj->pool)
 
 	if (!zend_async_pool_acquire(obj->pool, return_value, timeout)) {
 		RETURN_THROWS();
@@ -1454,6 +1470,8 @@ METHOD(tryAcquire)
 		RETURN_NULL();
 	}
 
+	THROW_IF_INTERNAL_RESOURCES(obj->pool)
+
 	if (!zend_async_pool_try_acquire(obj->pool, return_value)) {
 		RETURN_NULL();
 	}
@@ -1469,10 +1487,9 @@ METHOD(release)
 
 	async_pool_obj_t *obj = THIS_POOL_OBJ;
 
-	if (obj->pool == NULL) {
-		zend_throw_exception(async_ce_pool_exception, "Pool is not initialized", 0);
-		RETURN_THROWS();
-	}
+	THROW_IF_NO_POOL(obj)
+
+	THROW_IF_INTERNAL_RESOURCES(obj->pool)
 
 	zend_async_pool_release(obj->pool, resource);
 }
@@ -1553,6 +1570,9 @@ METHOD(setCircuitBreakerStrategy)
 	ZEND_PARSE_PARAMETERS_END();
 
 	async_pool_obj_t *obj = THIS_POOL_OBJ;
+
+	THROW_IF_NO_POOL(obj)
+
 	zend_async_pool_t *base = &obj->pool->base;
 
 	/* Release old strategy if any */
@@ -1573,6 +1593,9 @@ METHOD(getState)
 	ZEND_PARSE_PARAMETERS_NONE();
 
 	async_pool_obj_t *obj = THIS_POOL_OBJ;
+
+	THROW_IF_NO_POOL(obj)
+
 	zend_async_pool_t *base = &obj->pool->base;
 
 	zend_object *case_obj = NULL;
@@ -1600,6 +1623,9 @@ METHOD(activate)
 	ZEND_PARSE_PARAMETERS_NONE();
 
 	async_pool_obj_t *obj = THIS_POOL_OBJ;
+
+	THROW_IF_NO_POOL(obj)
+
 	obj->pool->base.circuit_state = ZEND_ASYNC_CIRCUIT_STATE_ACTIVE;
 }
 
@@ -1608,6 +1634,9 @@ METHOD(deactivate)
 	ZEND_PARSE_PARAMETERS_NONE();
 
 	async_pool_obj_t *obj = THIS_POOL_OBJ;
+
+	THROW_IF_NO_POOL(obj)
+
 	obj->pool->base.circuit_state = ZEND_ASYNC_CIRCUIT_STATE_INACTIVE;
 }
 
@@ -1616,6 +1645,9 @@ METHOD(recover)
 	ZEND_PARSE_PARAMETERS_NONE();
 
 	async_pool_obj_t *obj = THIS_POOL_OBJ;
+
+	THROW_IF_NO_POOL(obj)
+
 	obj->pool->base.circuit_state = ZEND_ASYNC_CIRCUIT_STATE_RECOVERING;
 }
 

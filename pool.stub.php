@@ -53,7 +53,8 @@ final class Pool implements \Countable, CircuitBreaker
      *
      * @param int $timeout Max wait time in ms (0 = infinite)
      * @return mixed The acquired resource
-     * @throws PoolException If the pool is closed or was never initialised
+     * @throws PoolException If the pool is closed, was never initialised, or is owned by the
+     *                        engine, whose resources PHP cannot take (PDO's connection pool)
      * @throws TimeoutException If no resource became available within $timeout
      */
     public function acquire(int $timeout = 0): mixed {}
@@ -64,6 +65,7 @@ final class Pool implements \Countable, CircuitBreaker
      * Returns immediately, even if no resource available.
      *
      * @return mixed|null Resource or null if none available
+     * @throws PoolException If the pool is owned by the engine, whose resources PHP cannot take
      */
     public function tryAcquire(): mixed {}
 
@@ -74,7 +76,9 @@ final class Pool implements \Countable, CircuitBreaker
      * If beforeRelease returns false, resource is destroyed instead of returned to pool.
      * IMPORTANT: Always release resources when done!
      *
-     * @param mixed $resource The resource to release
+     * @param mixed $resource The resource to release, as acquire() returned it
+     * @throws PoolException If the pool is closed, was never initialised, or is owned by the
+     *                       engine, whose resources no PHP value can stand in for
      */
     public function release(mixed $resource): void {}
 
