@@ -1363,6 +1363,14 @@ METHOD(__construct)
 	Z_PARAM_LONG(healthcheck_interval)
 	ZEND_PARSE_PARAMETERS_END();
 
+	/* An object carries one pool for its life. Nothing releases a replaced pool, so the first
+	 * one is left with its resources and no owner, and PDO::getPool() caches this wrapper, so
+	 * the handle's own object would describe a pool it never opened. */
+	if (UNEXPECTED(THIS_POOL_OBJ->pool != NULL)) {
+		zend_throw_exception(async_ce_pool_exception, "Pool is already initialized", 0);
+		RETURN_THROWS();
+	}
+
 	if (min < 0) {
 		zend_argument_value_error(6, "must be >= 0");
 		RETURN_THROWS();
