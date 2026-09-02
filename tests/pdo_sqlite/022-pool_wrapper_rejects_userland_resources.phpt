@@ -53,6 +53,14 @@ await(spawn(function () use ($pool) {
     }
 }));
 
+/* PDO caches this wrapper, so it has to keep the pool the handle opened. */
+try {
+    $pool->__construct(fn() => new stdClass());
+    echo "__construct: returned\n";
+} catch (Async\PoolException $e) {
+    echo "__construct: ", $e->getMessage(), "\n";
+}
+
 /* A refused acquire must not have taken a connection with it. */
 echo counters($pool), "\n";
 var_dump($pdo->query('SELECT 1 AS a')->fetch()['a']);
@@ -67,5 +75,6 @@ release: refused
 release: refused
 release: refused
 acquire in coroutine: refused
+__construct: Pool is already initialized
 idle=2 active=0
 int(1)
