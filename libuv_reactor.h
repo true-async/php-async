@@ -187,6 +187,11 @@ struct _async_io_t
 	async_io_req_t *write_q_tail;
 	bool file_write_in_flight;
 
+	/* Thread-pool requests in flight: read, write, flush, stat, sendfile
+	 * source. Non-zero means a worker still names crt_fd and the caller's
+	 * buffer, and the close waits. */
+	unsigned fs_in_flight;
+
 	union
 	{
 		uv_stream_t stream;
