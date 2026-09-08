@@ -5148,9 +5148,8 @@ static void io_close_cb(uv_handle_t *pipe_handle)
 
 /* {{{ IO file callbacks */
 
-/* Close a descriptor the reactor owns once no worker names it any more.
- * Closing it earlier returns the number to the process, and the next open()
- * gets it back while the worker still reads or writes through it. */
+/* Close crt_fd when the reactor owns it and no worker names it. An earlier
+ * close hands the number back to the process, and the next open() takes it. */
 static void io_file_release_fd(async_io_t *io)
 {
 	if (io->base.type != ZEND_ASYNC_IO_TYPE_FILE || io->crt_fd < 0 || io->fs_in_flight > 0
@@ -5262,8 +5261,7 @@ static void io_file_write_cb(uv_fs_t *fs_request)
 		io->file_write_in_flight = false;
 	}
 
-	/* After the drain: a write dispatched from the queue raises the count
-	 * again, and the descriptor it was given must stay open. */
+	/* After the drain: a dispatched write raises the count again. */
 	io_file_release_fd(io);
 
 	/* Awaiter gone mid-write → finish the deferred dispose, else NOTIFY. */
@@ -6430,9 +6428,8 @@ static bool libuv_io_close(zend_async_io_t *io_base)
 	io->base.state |= ZEND_ASYNC_IO_CLOSED;
 
 	/* If the reactor is already shut down (e.g. bailout during memory
-	 * exhaustion followed by executor_globals_dtor), skip libuv calls. No
-	 * request can be in flight without a loop to complete it, so a descriptor
-	 * the reactor owns is closed here rather than leaked. */
+	 * exhaustion followed by executor_globals_dtor), skip libuv calls.
+	 * Nothing is in flight without a loop, so an owned fd closes here. */
 	if (UNEXPECTED(!ASYNC_G(reactor_started))) {
 		if (io->base.type == ZEND_ASYNC_IO_TYPE_FILE && io->crt_fd >= 0
 				&& (io->base.state & ZEND_ASYNC_IO_OWNS_FD)) {
@@ -6450,10 +6447,8 @@ static bool libuv_io_close(zend_async_io_t *io_base)
 	 * state. Mark active_req io_closed so consumers skip stream-side access
 	 * after resume. See #144. */
 	if (io->base.event.callbacks.length > 0) {
-		/* A thread-pool worker still reads into, or writes out of, a buffer the
-		 * parked coroutine owns, and the wake would let it free that buffer
-		 * under the worker. The waiters are notified without an error, so they
-		 * park again and leave on the completion that follows. */
+		/* An error here would let a waiter free the buffer its worker still
+		 * reads. Without one it parks again and leaves on the completion. */
 		zend_object *exc = io->fs_in_flight > 0
 				? NULL
 				: async_new_exception(async_ce_input_output_exception, "Stream was closed");
@@ -6500,14 +6495,13 @@ static bool libuv_io_close(zend_async_io_t *io_base)
 		ZEND_ASYNC_EVENT_ADD_REF(&io->base.event);
 		uv_close((uv_handle_t *) &io->handle.udp, io_close_cb);
 	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_FILE) {
-		/* FILE type has no uv_handle_t to uv_close, and only crt_fd is left.
-		 * io_file_release_fd() holds the whole rule: the reactor closes the
-		 * descriptor when it owns it (libuv_fs_open opened it, or a stream
-		 * done with it handed it over) and no thread-pool request names it
-		 * any more. For io_create the fd belongs to the caller (e.g.
-		 * plain_wrapper's data->fd), which has its own close path — closing
-		 * here would yank the fd out from under it (breaks proc_open's
-		 * PHP_STREAM_CAST_RELEASE extract-and-dup path). */
+		/* FILE type has no uv_handle_t to uv_close. Only close crt_fd
+		 * when the reactor owns it (set by libuv_fs_open, or handed over
+		 * by a stream that is done with it). For io_create the fd belongs
+		 * to the caller (e.g. plain_wrapper's data->fd), which has its own
+		 * close path — closing here would yank the fd out from under it
+		 * (breaks proc_open's PHP_STREAM_CAST_RELEASE extract-and-dup
+		 * path). */
 		io_file_release_fd(io);
 	}
 
