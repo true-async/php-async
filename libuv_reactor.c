@@ -5149,7 +5149,10 @@ static void io_close_cb(uv_handle_t *pipe_handle)
 /* {{{ IO file callbacks */
 
 /* Close crt_fd when the reactor owns it and no worker names it. An earlier
- * close hands the number back to the process, and the next open() takes it. */
+ * close hands the number back to the process, and the next open() takes it.
+ * close(2) on a regular file is a no-I/O syscall, so the synchronous uv_fs_close
+ * (NULL cb) costs nothing on the loop thread and lets libuv translate the
+ * HANDLE-vs-fd quirk on Windows. */
 static void io_file_release_fd(async_io_t *io)
 {
 	if (io->base.type != ZEND_ASYNC_IO_TYPE_FILE || io->crt_fd < 0 || io->fs_in_flight > 0
@@ -5406,6 +5409,10 @@ static void sendfile_complete(async_sendfile_req_t *req,
 	req->base.base.completed = true;
 	ZEND_ASSERT(src_io->fs_in_flight > 0);
 	src_io->fs_in_flight--;
+	ZEND_ASSERT(dst_io->fs_in_flight > 0);
+	dst_io->fs_in_flight--;
+	io_file_release_fd(src_io);
+	io_file_release_fd(dst_io);
 	ZEND_ASYNC_DECREASE_EVENT_COUNT(&src_io->base.event);
 
 	if (UNEXPECTED(req->base.uv_flags & ASYNC_IO_REQ_F_DISPOSE_PENDING)) {
@@ -5664,6 +5671,7 @@ libuv_io_sendfile(zend_async_io_t *out_io_base, zend_async_io_t *in_io_base,
 		/* Pin both ios for the op; released in sendfile_complete. */
 		req->base.uv_flags |= ASYNC_IO_REQ_F_UV_IN_FLIGHT;
 		in_io->fs_in_flight++;
+		out_io->fs_in_flight++;
 		ZEND_ASYNC_EVENT_ADD_REF(&in_io->base.event);
 		ZEND_ASYNC_EVENT_ADD_REF(&out_io->base.event);
 		ZEND_ASYNC_INCREASE_EVENT_COUNT(&in_io->base.event);
@@ -5685,6 +5693,7 @@ libuv_io_sendfile(zend_async_io_t *out_io_base, zend_async_io_t *in_io_base,
 	/* See the TransmitFile branch: ios pinned until sendfile_complete. */
 	req->base.uv_flags |= ASYNC_IO_REQ_F_UV_IN_FLIGHT;
 	in_io->fs_in_flight++;
+	out_io->fs_in_flight++;
 	ZEND_ASYNC_EVENT_ADD_REF(&in_io->base.event);
 	ZEND_ASYNC_EVENT_ADD_REF(&out_io->base.event);
 	ZEND_ASYNC_INCREASE_EVENT_COUNT(&in_io->base.event);
@@ -6428,10 +6437,13 @@ static bool libuv_io_close(zend_async_io_t *io_base)
 	io->base.state |= ZEND_ASYNC_IO_CLOSED;
 
 	/* If the reactor is already shut down (e.g. bailout during memory
-	 * exhaustion followed by executor_globals_dtor), skip libuv calls.
-	 * Nothing is in flight without a loop, so an owned fd closes here. */
+	 * exhaustion followed by executor_globals_dtor), skip libuv calls. An
+	 * owned fd closes here, unless a worker outlived the loop — that is the
+	 * case libuv_reactor_shutdown leaves open, and a leak beats a number the
+	 * next open() gets while the worker writes through it. */
 	if (UNEXPECTED(!ASYNC_G(reactor_started))) {
 		if (io->base.type == ZEND_ASYNC_IO_TYPE_FILE && io->crt_fd >= 0
+				&& io->fs_in_flight == 0
 				&& (io->base.state & ZEND_ASYNC_IO_OWNS_FD)) {
 #ifdef PHP_WIN32
 			_close(io->crt_fd);
