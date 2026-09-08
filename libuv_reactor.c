@@ -5147,12 +5147,31 @@ static void io_close_cb(uv_handle_t *pipe_handle)
 /* }}} */
 
 /* {{{ IO file callbacks */
+
+/* Close a descriptor the reactor owns once no worker names it any more.
+ * Closing it earlier returns the number to the process, and the next open()
+ * gets it back while the worker still reads or writes through it. */
+static void io_file_release_fd(async_io_t *io)
+{
+	if (io->base.type != ZEND_ASYNC_IO_TYPE_FILE || io->crt_fd < 0 || io->fs_in_flight > 0
+			|| !(io->base.state & ZEND_ASYNC_IO_CLOSED) || !(io->base.state & ZEND_ASYNC_IO_OWNS_FD)) {
+		return;
+	}
+
+	uv_fs_t close_req;
+	uv_fs_close(NULL, &close_req, io->crt_fd, NULL);
+	uv_fs_req_cleanup(&close_req);
+	io->crt_fd = -1;
+}
+
 static void io_file_read_cb(uv_fs_t *fs_request)
 {
 	async_io_req_t *req = (async_io_req_t *) fs_request->data;
 	async_io_t *io = req->io;
 
 	req->uv_flags &= ~ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+	ZEND_ASSERT(io->fs_in_flight > 0);
+	io->fs_in_flight--;
 
 	if (fs_request->result >= 0) {
 		req->base.transferred = (ssize_t) fs_request->result;
@@ -5175,6 +5194,8 @@ static void io_file_read_cb(uv_fs_t *fs_request)
 	uv_fs_req_cleanup(fs_request);
 	ZEND_ASYNC_DECREASE_EVENT_COUNT(&io->base.event);
 
+	io_file_release_fd(io);
+
 	/* Awaiter gone mid-read → finish the deferred dispose, else NOTIFY. */
 	if (UNEXPECTED(req->uv_flags & ASYNC_IO_REQ_F_DISPOSE_PENDING)) {
 		libuv_io_req_dispose(&req->base);
@@ -5192,6 +5213,8 @@ static void io_file_write_cb(uv_fs_t *fs_request)
 	async_io_t *io = req->io;
 
 	req->uv_flags &= ~ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+	ZEND_ASSERT(io->fs_in_flight > 0);
+	io->fs_in_flight--;
 
 	if (fs_request->result >= 0) {
 		req->base.transferred = (ssize_t) fs_request->result;
@@ -5239,6 +5262,10 @@ static void io_file_write_cb(uv_fs_t *fs_request)
 		io->file_write_in_flight = false;
 	}
 
+	/* After the drain: a write dispatched from the queue raises the count
+	 * again, and the descriptor it was given must stay open. */
+	io_file_release_fd(io);
+
 	/* Awaiter gone mid-write → finish the deferred dispose, else NOTIFY. */
 	if (UNEXPECTED(req->uv_flags & ASYNC_IO_REQ_F_DISPOSE_PENDING)) {
 		libuv_io_req_dispose(&req->base);
@@ -5256,6 +5283,9 @@ static void io_file_flush_cb(uv_fs_t *fs_request)
 	async_io_t *io = req->io;
 
 	req->uv_flags &= ~ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+	ZEND_ASSERT(io->fs_in_flight > 0);
+	io->fs_in_flight--;
+	io_file_release_fd(io);
 
 	if (fs_request->result == 0) {
 		req->base.result = 0;
@@ -5286,6 +5316,9 @@ static void io_file_stat_cb(uv_fs_t *fs_request)
 	async_io_t *io = req->io;
 
 	req->uv_flags &= ~ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+	ZEND_ASSERT(io->fs_in_flight > 0);
+	io->fs_in_flight--;
+	io_file_release_fd(io);
 
 	/* Abandoned: base.buf points into the gone awaiter's frame — don't write. */
 	const bool abandoned = (req->uv_flags & ASYNC_IO_REQ_F_DISPOSE_PENDING) != 0;
@@ -5373,6 +5406,8 @@ static void sendfile_complete(async_sendfile_req_t *req,
 	}
 
 	req->base.base.completed = true;
+	ZEND_ASSERT(src_io->fs_in_flight > 0);
+	src_io->fs_in_flight--;
 	ZEND_ASYNC_DECREASE_EVENT_COUNT(&src_io->base.event);
 
 	if (UNEXPECTED(req->base.uv_flags & ASYNC_IO_REQ_F_DISPOSE_PENDING)) {
@@ -5630,6 +5665,7 @@ libuv_io_sendfile(zend_async_io_t *out_io_base, zend_async_io_t *in_io_base,
 
 		/* Pin both ios for the op; released in sendfile_complete. */
 		req->base.uv_flags |= ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+		in_io->fs_in_flight++;
 		ZEND_ASYNC_EVENT_ADD_REF(&in_io->base.event);
 		ZEND_ASYNC_EVENT_ADD_REF(&out_io->base.event);
 		ZEND_ASYNC_INCREASE_EVENT_COUNT(&in_io->base.event);
@@ -5650,6 +5686,7 @@ libuv_io_sendfile(zend_async_io_t *out_io_base, zend_async_io_t *in_io_base,
 
 	/* See the TransmitFile branch: ios pinned until sendfile_complete. */
 	req->base.uv_flags |= ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+	in_io->fs_in_flight++;
 	ZEND_ASYNC_EVENT_ADD_REF(&in_io->base.event);
 	ZEND_ASYNC_EVENT_ADD_REF(&out_io->base.event);
 	ZEND_ASYNC_INCREASE_EVENT_COUNT(&in_io->base.event);
@@ -6037,6 +6074,7 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, char *buf, s
 	 * dispose could free the io while this callback still uses it. Released in
 	 * the cb. */
 	req->uv_flags |= ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+	io->fs_in_flight++;
 	ZEND_ASYNC_EVENT_ADD_REF(&io->base.event);
 	ZEND_ASYNC_INCREASE_EVENT_COUNT(&io->base.event);
 	return &req->base;
@@ -6087,6 +6125,7 @@ static bool io_file_write_dispatch(async_io_t *io, async_io_req_t *req)
 
 	/* Pin the io for the duration of the fs op (see libuv_io_read). */
 	req->uv_flags |= ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+	io->fs_in_flight++;
 	ZEND_ASYNC_EVENT_ADD_REF(&io->base.event);
 	ZEND_ASYNC_INCREASE_EVENT_COUNT(&io->base.event);
 	return true;
@@ -6391,8 +6430,19 @@ static bool libuv_io_close(zend_async_io_t *io_base)
 	io->base.state |= ZEND_ASYNC_IO_CLOSED;
 
 	/* If the reactor is already shut down (e.g. bailout during memory
-	 * exhaustion followed by executor_globals_dtor), skip libuv calls. */
+	 * exhaustion followed by executor_globals_dtor), skip libuv calls. No
+	 * request can be in flight without a loop to complete it, so a descriptor
+	 * the reactor owns is closed here rather than leaked. */
 	if (UNEXPECTED(!ASYNC_G(reactor_started))) {
+		if (io->base.type == ZEND_ASYNC_IO_TYPE_FILE && io->crt_fd >= 0
+				&& (io->base.state & ZEND_ASYNC_IO_OWNS_FD)) {
+#ifdef PHP_WIN32
+			_close(io->crt_fd);
+#else
+			close(io->crt_fd);
+#endif
+			io->crt_fd = -1;
+		}
 		goto close_orig_fd;
 	}
 
@@ -6400,8 +6450,13 @@ static bool libuv_io_close(zend_async_io_t *io_base)
 	 * state. Mark active_req io_closed so consumers skip stream-side access
 	 * after resume. See #144. */
 	if (io->base.event.callbacks.length > 0) {
-		zend_object *exc = async_new_exception(
-			async_ce_input_output_exception, "Stream was closed");
+		/* A thread-pool worker still reads into, or writes out of, a buffer the
+		 * parked coroutine owns, and the wake would let it free that buffer
+		 * under the worker. The waiters are notified without an error, so they
+		 * park again and leave on the completion that follows. */
+		zend_object *exc = io->fs_in_flight > 0
+				? NULL
+				: async_new_exception(async_ce_input_output_exception, "Stream was closed");
 		/* Detach + mark the in-flight req, but do NOT free it here — its
 		 * memory is owned elsewhere:
 		 *   - awaited one-shot read/recv: the parked coroutine frees it after
@@ -6444,22 +6499,16 @@ static bool libuv_io_close(zend_async_io_t *io_base)
 		io->handle.udp.data = io;
 		ZEND_ASYNC_EVENT_ADD_REF(&io->base.event);
 		uv_close((uv_handle_t *) &io->handle.udp, io_close_cb);
-	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_FILE && io->crt_fd >= 0
-			&& (io->base.state & ZEND_ASYNC_IO_OWNS_FD)) {
-		/* FILE type has no uv_handle_t to uv_close. Only close crt_fd
-		 * when the reactor owns it (set by libuv_fs_open). For io_create
-		 * the fd belongs to the caller (e.g. plain_wrapper's data->fd),
-		 * which has its own close path — closing here would yank the fd
-		 * out from under it (breaks proc_open's PHP_STREAM_CAST_RELEASE
-		 * extract-and-dup path).
-		 *
-		 * close(2) on a regular file is a no-I/O syscall. uv_fs_close
-		 * with sync mode (NULL cb) goes through the same path on POSIX
-		 * and lets libuv translate any HANDLE-vs-fd quirk on Windows. */
-		uv_fs_t close_req;
-		uv_fs_close(NULL, &close_req, io->crt_fd, NULL);
-		uv_fs_req_cleanup(&close_req);
-		io->crt_fd = -1;
+	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_FILE) {
+		/* FILE type has no uv_handle_t to uv_close, and only crt_fd is left.
+		 * io_file_release_fd() holds the whole rule: the reactor closes the
+		 * descriptor when it owns it (libuv_fs_open opened it, or a stream
+		 * done with it handed it over) and no thread-pool request names it
+		 * any more. For io_create the fd belongs to the caller (e.g.
+		 * plain_wrapper's data->fd), which has its own close path — closing
+		 * here would yank the fd out from under it (breaks proc_open's
+		 * PHP_STREAM_CAST_RELEASE extract-and-dup path). */
+		io_file_release_fd(io);
 	}
 
 close_orig_fd:
@@ -6530,6 +6579,7 @@ static zend_async_io_req_t *libuv_io_flush(zend_async_io_t *io_base)
 
 	/* Pin the io for the duration of the fs op (see libuv_io_read). */
 	req->uv_flags |= ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+	io->fs_in_flight++;
 	ZEND_ASYNC_EVENT_ADD_REF(&io->base.event);
 	ZEND_ASYNC_INCREASE_EVENT_COUNT(&io->base.event);
 	return &req->base;
@@ -6630,6 +6680,7 @@ static zend_async_io_req_t *libuv_io_stat(zend_async_io_t *io_base, zend_stat_t 
 
 	/* Pin the io for the duration of the fs op (see libuv_io_read). */
 	req->uv_flags |= ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+	io->fs_in_flight++;
 	ZEND_ASYNC_EVENT_ADD_REF(&io->base.event);
 	ZEND_ASYNC_INCREASE_EVENT_COUNT(&io->base.event);
 	return &req->base;

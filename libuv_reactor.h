@@ -187,6 +187,13 @@ struct _async_io_t
 	async_io_req_t *write_q_tail;
 	bool file_write_in_flight;
 
+	/* Requests handed to the thread pool and not yet completed: read, write,
+	 * flush, stat, and the source side of a sendfile. A worker names the
+	 * descriptor and the caller's buffer for as long as its request runs, so a
+	 * close arriving meanwhile neither closes crt_fd nor wakes the parked
+	 * coroutine: both wait for the count to reach zero. */
+	unsigned fs_in_flight;
+
 	union
 	{
 		uv_stream_t stream;
