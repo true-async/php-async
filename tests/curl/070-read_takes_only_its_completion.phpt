@@ -7,6 +7,7 @@ curl
 
 use function Async\spawn;
 use function Async\await_all;
+use function Async\suspend;
 
 include __DIR__ . '/../../../../ext/curl/tests/server.inc';
 $host = curl_cli_server_start();
@@ -33,13 +34,32 @@ curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 curl_setopt($ch, CURLOPT_READDATA, $handle);
 curl_setopt($ch, CURLOPT_HTTPHEADER, ['Expect:', 'Content-Length: 200000']);
 
+/* The writes have to fall inside the upload, and nothing else orders the two:
+ * the writer waits until curl reports bytes on the wire. */
+$uploading = false;
+curl_setopt($ch, CURLOPT_NOPROGRESS, false);
+curl_setopt($ch, CURLOPT_PROGRESSFUNCTION,
+    function ($resource, $downloadSize, $downloaded, $uploadSize, $uploaded) use (&$uploading) {
+        if ($uploaded > 0) {
+            $uploading = true;
+        }
+
+        return 0;
+    });
+
 [$results, $errors] = await_all([
     spawn(function () use ($ch) {
         $response = curl_exec($ch);
 
         return 'response: ' . (is_string($response) ? $response : 'error #' . curl_errno($ch));
     }),
-    spawn(function () use ($handle) {
+    spawn(function () use ($handle, &$uploading) {
+        /* Bounded, so that a build whose progress callback never reports still
+         * runs the writes rather than hanging here. */
+        for ($wait = 0; !$uploading && $wait < 10000; $wait++) {
+            suspend();
+        }
+
         $chunk = str_repeat('w', 8192);
         for ($i = 0; $i < 100; $i++) {
             @fwrite($handle, $chunk);
