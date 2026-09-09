@@ -54,10 +54,17 @@ curl_setopt($ch, CURLOPT_PROGRESSFUNCTION,
         return 'response: ' . (is_string($response) ? $response : 'error #' . curl_errno($ch));
     }),
     spawn(function () use ($handle, &$uploading) {
-        /* Bounded, so that a build whose progress callback never reports still
-         * runs the writes rather than hanging here. */
-        for ($wait = 0; !$uploading && $wait < 10000; $wait++) {
+        /* Waits by the clock rather than by a count of turns: an empty
+         * scheduler spins through thousands of them while curl is still
+         * connecting. The deadline is there so that a build whose progress
+         * callback never reports runs the writes instead of hanging. */
+        $deadline = microtime(true) + 5.0;
+        while (!$uploading && microtime(true) < $deadline) {
             suspend();
+        }
+
+        if (!$uploading) {
+            echo "the upload never reported a byte\n";
         }
 
         $chunk = str_repeat('w', 8192);

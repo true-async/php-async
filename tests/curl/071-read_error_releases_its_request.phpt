@@ -2,6 +2,12 @@
 Async curl: a failed upload read releases the request it was given
 --EXTENSIONS--
 curl
+--SKIPIF--
+<?php
+/* The evidence is the leak report, which only a debug build prints. */
+if (!ZEND_DEBUG_BUILD) die('skip debug build required');
+if (PHP_OS_FAMILY === 'Windows') die('skip a file read is served synchronously there');
+?>
 --INI--
 report_memory_leaks=1
 --FILE--
