@@ -5280,8 +5280,13 @@ static void io_file_write_cb(uv_fs_t *fs_request)
 	/* After the drain: a dispatched write raises the count again. */
 	io_file_release_fd(io);
 
-	/* Awaiter gone mid-write → finish the deferred dispose, else NOTIFY. */
-	if (UNEXPECTED(req->uv_flags & ASYNC_IO_REQ_F_DISPOSE_PENDING)) {
+	/* Fire-and-forget: nobody is parked on this write, so the buffer goes back
+	 * through free_cb and the request is disposed here — the same contract
+	 * io_pipe_write_cb keeps for a stream. */
+	if (req->base.free_cb != NULL) {
+		libuv_io_req_dispose(&req->base);
+	} else if (UNEXPECTED(req->uv_flags & ASYNC_IO_REQ_F_DISPOSE_PENDING)) {
+		/* Awaiter gone mid-write → finish the deferred dispose. */
 		libuv_io_req_dispose(&req->base);
 	} else {
 		ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
@@ -5392,6 +5397,13 @@ static void libuv_sendfile_req_dispose(zend_async_io_req_t *base_req)
 			(void) uv_cancel((uv_req_t *) &req->fs_req);
 		}
 		return;
+	}
+
+	/* The struct is shared with the io requests, and a sendfile takes no worker
+	 * buffer today; releasing it here keeps that true if one ever does. */
+	if (req->fs_buf != NULL) {
+		pefree(req->fs_buf, 1);
+		req->fs_buf = NULL;
 	}
 
 	if (base_req->exception != NULL) {
@@ -6008,6 +6020,8 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, char *buf, s
 		req->base.buf = buf;
 		req->buf_owned = false;
 	} else {
+		/* This one replaces the caller's buffer rather than doubling it, so it
+		 * belongs in the request allocator, unlike fs_buf below. */
 		req->base.buf = pemalloc(max_size, 0);
 		req->buf_owned = true;
 	}
@@ -6264,9 +6278,11 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 	 * a read's does (#286): a cancelled writer returns and its buffer — a
 	 * filter bucket, a zend_string — is freed while the worker still reads it,
 	 * which shows up as EFAULT or as another block's bytes in the file. The
-	 * payload is copied here, before the queue, so that no allocation happens
-	 * inside a completion callback, and the copy goes with the request. A
-	 * fire-and-forget write already gave the reactor its buffer to keep. */
+	 * payload is copied here, before the queue: a write dispatched later, from
+	 * the completion of the one ahead of it, would copy from a buffer its own
+	 * coroutine had already unwound — the same defect, one dispatch on. The
+	 * copy goes with the request. A fire-and-forget write already gave the
+	 * reactor its buffer to keep. */
 	if (req->base.free_cb == NULL && req->base.buf != NULL) {
 		req->fs_buf = pemalloc(req->max_size, 1);
 		memcpy(req->fs_buf, req->base.buf, req->max_size);
