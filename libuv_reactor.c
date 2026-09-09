@@ -4796,6 +4796,11 @@ static void libuv_io_req_dispose(zend_async_io_req_t *base_req)
 		pefree(req->base.buf, 0);
 	}
 
+	if (req->fs_buf != NULL) {
+		pefree(req->fs_buf, 1);
+		req->fs_buf = NULL;
+	}
+
 	if (req->base.exception != NULL) {
 		zend_object_release(req->base.exception);
 		req->base.exception = NULL;
@@ -4849,6 +4854,7 @@ static void libuv_io_alloc_cb(uv_handle_t *handle, size_t suggested_size, uv_buf
 		output->len = 0;
 		return;
 	}
+
 	async_uv_read_buf_set(output, req->base.buf, req->max_size);
 }
 
@@ -5148,9 +5154,11 @@ static void io_close_cb(uv_handle_t *pipe_handle)
 
 /* {{{ IO file callbacks */
 
-/* Close a descriptor the reactor owns once no worker names it any more.
- * Closing it earlier returns the number to the process, and the next open()
- * gets it back while the worker still reads or writes through it. */
+/* Close crt_fd when the reactor owns it and no worker names it. An earlier
+ * close hands the number back to the process, and the next open() takes it.
+ * close(2) on a regular file is a no-I/O syscall, so the synchronous uv_fs_close
+ * (NULL cb) costs nothing on the loop thread and lets libuv translate the
+ * HANDLE-vs-fd quirk on Windows. */
 static void io_file_release_fd(async_io_t *io)
 {
 	if (io->base.type != ZEND_ASYNC_IO_TYPE_FILE || io->crt_fd < 0 || io->fs_in_flight > 0
@@ -5176,6 +5184,13 @@ static void io_file_read_cb(uv_fs_t *fs_request)
 	if (fs_request->result >= 0) {
 		req->base.transferred = (ssize_t) fs_request->result;
 		if (fs_request->result > 0) {
+			/* An abandoned request has no reader left, and base.buf may already
+			 * be freed — see the same guard in io_file_stat_cb. */
+			if (req->fs_buf != NULL && req->base.buf != NULL
+					&& !(req->uv_flags & ASYNC_IO_REQ_F_DISPOSE_PENDING)) {
+				memcpy(req->base.buf, req->fs_buf, (size_t) fs_request->result);
+			}
+
 			/* Update tracked offset from kernel position. */
 			const zend_off_t pos = zend_lseek(io->crt_fd, 0, SEEK_CUR);
 			if (pos >= 0) {
@@ -5262,12 +5277,16 @@ static void io_file_write_cb(uv_fs_t *fs_request)
 		io->file_write_in_flight = false;
 	}
 
-	/* After the drain: a write dispatched from the queue raises the count
-	 * again, and the descriptor it was given must stay open. */
+	/* After the drain: a dispatched write raises the count again. */
 	io_file_release_fd(io);
 
-	/* Awaiter gone mid-write → finish the deferred dispose, else NOTIFY. */
-	if (UNEXPECTED(req->uv_flags & ASYNC_IO_REQ_F_DISPOSE_PENDING)) {
+	/* Fire-and-forget: nobody is parked on this write, so the buffer goes back
+	 * through free_cb and the request is disposed here — the same contract
+	 * io_pipe_write_cb keeps for a stream. */
+	if (req->base.free_cb != NULL) {
+		libuv_io_req_dispose(&req->base);
+	} else if (UNEXPECTED(req->uv_flags & ASYNC_IO_REQ_F_DISPOSE_PENDING)) {
+		/* Awaiter gone mid-write → finish the deferred dispose. */
 		libuv_io_req_dispose(&req->base);
 	} else {
 		ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, req->base.exception);
@@ -5380,6 +5399,13 @@ static void libuv_sendfile_req_dispose(zend_async_io_req_t *base_req)
 		return;
 	}
 
+	/* The struct is shared with the io requests, and a sendfile takes no worker
+	 * buffer today; releasing it here keeps that true if one ever does. */
+	if (req->fs_buf != NULL) {
+		pefree(req->fs_buf, 1);
+		req->fs_buf = NULL;
+	}
+
 	if (base_req->exception != NULL) {
 		zend_object_release(base_req->exception);
 		base_req->exception = NULL;
@@ -5408,6 +5434,10 @@ static void sendfile_complete(async_sendfile_req_t *req,
 	req->base.base.completed = true;
 	ZEND_ASSERT(src_io->fs_in_flight > 0);
 	src_io->fs_in_flight--;
+	ZEND_ASSERT(dst_io->fs_in_flight > 0);
+	dst_io->fs_in_flight--;
+	io_file_release_fd(src_io);
+	io_file_release_fd(dst_io);
 	ZEND_ASYNC_DECREASE_EVENT_COUNT(&src_io->base.event);
 
 	if (UNEXPECTED(req->base.uv_flags & ASYNC_IO_REQ_F_DISPOSE_PENDING)) {
@@ -5666,6 +5696,7 @@ libuv_io_sendfile(zend_async_io_t *out_io_base, zend_async_io_t *in_io_base,
 		/* Pin both ios for the op; released in sendfile_complete. */
 		req->base.uv_flags |= ASYNC_IO_REQ_F_UV_IN_FLIGHT;
 		in_io->fs_in_flight++;
+		out_io->fs_in_flight++;
 		ZEND_ASYNC_EVENT_ADD_REF(&in_io->base.event);
 		ZEND_ASYNC_EVENT_ADD_REF(&out_io->base.event);
 		ZEND_ASYNC_INCREASE_EVENT_COUNT(&in_io->base.event);
@@ -5687,6 +5718,7 @@ libuv_io_sendfile(zend_async_io_t *out_io_base, zend_async_io_t *in_io_base,
 	/* See the TransmitFile branch: ios pinned until sendfile_complete. */
 	req->base.uv_flags |= ASYNC_IO_REQ_F_UV_IN_FLIGHT;
 	in_io->fs_in_flight++;
+	out_io->fs_in_flight++;
 	ZEND_ASYNC_EVENT_ADD_REF(&in_io->base.event);
 	ZEND_ASYNC_EVENT_ADD_REF(&out_io->base.event);
 	ZEND_ASYNC_INCREASE_EVENT_COUNT(&in_io->base.event);
@@ -5988,6 +6020,8 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, char *buf, s
 		req->base.buf = buf;
 		req->buf_owned = false;
 	} else {
+		/* This one replaces the caller's buffer rather than doubling it, so it
+		 * belongs in the request allocator, unlike fs_buf below. */
 		req->base.buf = pemalloc(max_size, 0);
 		req->buf_owned = true;
 	}
@@ -6056,7 +6090,17 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, char *buf, s
 	}
 #endif
 
-	const uv_buf_t read_buffer = uv_buf_init(req->base.buf, (unsigned int) max_size);
+	/* The worker outlives the coroutine that asked for the read: uv_cancel does
+	 * not stop one that has started, and the caller's buffer is freed with its
+	 * stream. It reads into a buffer of the request's own, which the completion
+	 * copies across and the dispose frees (#286). A buffer the request already
+	 * owns needs no second one. */
+	if (!req->buf_owned) {
+		req->fs_buf = pemalloc(max_size, 1);
+	}
+
+	const uv_buf_t read_buffer =
+			uv_buf_init(req->fs_buf != NULL ? req->fs_buf : req->base.buf, (unsigned int) max_size);
 	req->fs_req.data = req;
 
 	/* Use offset=-1 so libuv calls read() instead of pread().
@@ -6092,7 +6136,8 @@ static bool io_file_write_dispatch(async_io_t *io, async_io_req_t *req)
 {
 	const size_t count = req->max_size;
 	const uv_buf_t write_buffer =
-			uv_buf_init((char *) req->base.buf, (unsigned int) (count > INT_MAX ? INT_MAX : count));
+			uv_buf_init(req->fs_buf != NULL ? req->fs_buf : (char *) req->base.buf,
+					(unsigned int) (count > INT_MAX ? INT_MAX : count));
 	req->fs_req.data = req;
 
 	/* offset=-1 tells libuv to use write() instead of pwrite(), which
@@ -6228,6 +6273,20 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 		return &req->base;
 	}
 #endif
+
+	/* The worker outlives the coroutine that asked for the write, the same way
+	 * a read's does (#286): a cancelled writer returns and its buffer — a
+	 * filter bucket, a zend_string — is freed while the worker still reads it,
+	 * which shows up as EFAULT or as another block's bytes in the file. The
+	 * payload is copied here, before the queue: a write dispatched later, from
+	 * the completion of the one ahead of it, would copy from a buffer its own
+	 * coroutine had already unwound — the same defect, one dispatch on. The
+	 * copy goes with the request. A fire-and-forget write already gave the
+	 * reactor its buffer to keep. */
+	if (req->base.free_cb == NULL && req->base.buf != NULL) {
+		req->fs_buf = pemalloc(req->max_size, 1);
+		memcpy(req->fs_buf, req->base.buf, req->max_size);
+	}
 
 	/* Serialize file writes: only one uv_fs_write may be in flight per
 	 * handle. Several concurrent thread-pool writes with offset=-1 race
@@ -6430,11 +6489,13 @@ static bool libuv_io_close(zend_async_io_t *io_base)
 	io->base.state |= ZEND_ASYNC_IO_CLOSED;
 
 	/* If the reactor is already shut down (e.g. bailout during memory
-	 * exhaustion followed by executor_globals_dtor), skip libuv calls. No
-	 * request can be in flight without a loop to complete it, so a descriptor
-	 * the reactor owns is closed here rather than leaked. */
+	 * exhaustion followed by executor_globals_dtor), skip libuv calls. An
+	 * owned fd closes here, unless a worker outlived the loop — that is the
+	 * case libuv_reactor_shutdown leaves open, and a leak beats a number the
+	 * next open() gets while the worker writes through it. */
 	if (UNEXPECTED(!ASYNC_G(reactor_started))) {
 		if (io->base.type == ZEND_ASYNC_IO_TYPE_FILE && io->crt_fd >= 0
+				&& io->fs_in_flight == 0
 				&& (io->base.state & ZEND_ASYNC_IO_OWNS_FD)) {
 #ifdef PHP_WIN32
 			_close(io->crt_fd);
@@ -6450,10 +6511,8 @@ static bool libuv_io_close(zend_async_io_t *io_base)
 	 * state. Mark active_req io_closed so consumers skip stream-side access
 	 * after resume. See #144. */
 	if (io->base.event.callbacks.length > 0) {
-		/* A thread-pool worker still reads into, or writes out of, a buffer the
-		 * parked coroutine owns, and the wake would let it free that buffer
-		 * under the worker. The waiters are notified without an error, so they
-		 * park again and leave on the completion that follows. */
+		/* An error here would let a waiter free the buffer its worker still
+		 * reads. Without one it parks again and leaves on the completion. */
 		zend_object *exc = io->fs_in_flight > 0
 				? NULL
 				: async_new_exception(async_ce_input_output_exception, "Stream was closed");
@@ -6500,14 +6559,13 @@ static bool libuv_io_close(zend_async_io_t *io_base)
 		ZEND_ASYNC_EVENT_ADD_REF(&io->base.event);
 		uv_close((uv_handle_t *) &io->handle.udp, io_close_cb);
 	} else if (io->base.type == ZEND_ASYNC_IO_TYPE_FILE) {
-		/* FILE type has no uv_handle_t to uv_close, and only crt_fd is left.
-		 * io_file_release_fd() holds the whole rule: the reactor closes the
-		 * descriptor when it owns it (libuv_fs_open opened it, or a stream
-		 * done with it handed it over) and no thread-pool request names it
-		 * any more. For io_create the fd belongs to the caller (e.g.
-		 * plain_wrapper's data->fd), which has its own close path — closing
-		 * here would yank the fd out from under it (breaks proc_open's
-		 * PHP_STREAM_CAST_RELEASE extract-and-dup path). */
+		/* FILE type has no uv_handle_t to uv_close. Only close crt_fd
+		 * when the reactor owns it (set by libuv_fs_open, or handed over
+		 * by a stream that is done with it). For io_create the fd belongs
+		 * to the caller (e.g. plain_wrapper's data->fd), which has its own
+		 * close path — closing here would yank the fd out from under it
+		 * (breaks proc_open's PHP_STREAM_CAST_RELEASE extract-and-dup
+		 * path). */
 		io_file_release_fd(io);
 	}
 

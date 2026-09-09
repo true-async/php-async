@@ -187,11 +187,9 @@ struct _async_io_t
 	async_io_req_t *write_q_tail;
 	bool file_write_in_flight;
 
-	/* Requests handed to the thread pool and not yet completed: read, write,
-	 * flush, stat, and the source side of a sendfile. A worker names the
-	 * descriptor and the caller's buffer for as long as its request runs, so a
-	 * close arriving meanwhile neither closes crt_fd nor wakes the parked
-	 * coroutine: both wait for the count to reach zero. */
+	/* Thread-pool requests in flight: read, write, flush, stat, and both sides
+	 * of a sendfile. Non-zero means a worker still names crt_fd and the
+	 * caller's buffer, and the close waits. */
 	unsigned fs_in_flight;
 
 	union
@@ -222,6 +220,13 @@ struct _async_io_req_t
 	zend_async_io_req_t base;
 	async_io_t *io;
 	size_t max_size;
+
+	/* The buffer the thread pool reads into or writes out of. The caller's
+	 * buffer dies with the coroutine that asked for the operation, this one
+	 * with the request, which outlives a worker uv_cancel could not stop
+	 * (#286). NULL when the operation names base.buf directly. */
+	char *fs_buf;
+
 	bool buf_owned;
 	uint8_t uv_flags; /* ASYNC_IO_REQ_F_* — reactor-private */
 
