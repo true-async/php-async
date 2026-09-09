@@ -4796,6 +4796,11 @@ static void libuv_io_req_dispose(zend_async_io_req_t *base_req)
 		pefree(req->base.buf, 0);
 	}
 
+	if (req->fs_buf != NULL) {
+		pefree(req->fs_buf, 1);
+		req->fs_buf = NULL;
+	}
+
 	if (req->base.exception != NULL) {
 		zend_object_release(req->base.exception);
 		req->base.exception = NULL;
@@ -4849,6 +4854,7 @@ static void libuv_io_alloc_cb(uv_handle_t *handle, size_t suggested_size, uv_buf
 		output->len = 0;
 		return;
 	}
+
 	async_uv_read_buf_set(output, req->base.buf, req->max_size);
 }
 
@@ -5178,6 +5184,13 @@ static void io_file_read_cb(uv_fs_t *fs_request)
 	if (fs_request->result >= 0) {
 		req->base.transferred = (ssize_t) fs_request->result;
 		if (fs_request->result > 0) {
+			/* An abandoned request has no reader left, and base.buf may already
+			 * be freed — see the same guard in io_file_stat_cb. */
+			if (req->fs_buf != NULL && req->base.buf != NULL
+					&& !(req->uv_flags & ASYNC_IO_REQ_F_DISPOSE_PENDING)) {
+				memcpy(req->base.buf, req->fs_buf, (size_t) fs_request->result);
+			}
+
 			/* Update tracked offset from kernel position. */
 			const zend_off_t pos = zend_lseek(io->crt_fd, 0, SEEK_CUR);
 			if (pos >= 0) {
@@ -6063,7 +6076,17 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, char *buf, s
 	}
 #endif
 
-	const uv_buf_t read_buffer = uv_buf_init(req->base.buf, (unsigned int) max_size);
+	/* The worker outlives the coroutine that asked for the read: uv_cancel does
+	 * not stop one that has started, and the caller's buffer is freed with its
+	 * stream. It reads into a buffer of the request's own, which the completion
+	 * copies across and the dispose frees (#286). A buffer the request already
+	 * owns needs no second one. */
+	if (!req->buf_owned) {
+		req->fs_buf = pemalloc(max_size, 1);
+	}
+
+	const uv_buf_t read_buffer =
+			uv_buf_init(req->fs_buf != NULL ? req->fs_buf : req->base.buf, (unsigned int) max_size);
 	req->fs_req.data = req;
 
 	/* Use offset=-1 so libuv calls read() instead of pread().
@@ -6099,7 +6122,8 @@ static bool io_file_write_dispatch(async_io_t *io, async_io_req_t *req)
 {
 	const size_t count = req->max_size;
 	const uv_buf_t write_buffer =
-			uv_buf_init((char *) req->base.buf, (unsigned int) (count > INT_MAX ? INT_MAX : count));
+			uv_buf_init(req->fs_buf != NULL ? req->fs_buf : (char *) req->base.buf,
+					(unsigned int) (count > INT_MAX ? INT_MAX : count));
 	req->fs_req.data = req;
 
 	/* offset=-1 tells libuv to use write() instead of pwrite(), which
@@ -6235,6 +6259,18 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 		return &req->base;
 	}
 #endif
+
+	/* The worker outlives the coroutine that asked for the write, the same way
+	 * a read's does (#286): a cancelled writer returns and its buffer — a
+	 * filter bucket, a zend_string — is freed while the worker still reads it,
+	 * which shows up as EFAULT or as another block's bytes in the file. The
+	 * payload is copied here, before the queue, so that no allocation happens
+	 * inside a completion callback, and the copy goes with the request. A
+	 * fire-and-forget write already gave the reactor its buffer to keep. */
+	if (req->base.free_cb == NULL && req->base.buf != NULL) {
+		req->fs_buf = pemalloc(req->max_size, 1);
+		memcpy(req->fs_buf, req->base.buf, req->max_size);
+	}
 
 	/* Serialize file writes: only one uv_fs_write may be in flight per
 	 * handle. Several concurrent thread-pool writes with offset=-1 race
