@@ -187,6 +187,13 @@ struct _async_io_t
 	async_io_req_t *write_q_tail;
 	bool file_write_in_flight;
 
+	/* File-read serialization, for the same shared offset: a read abandoned
+	 * mid-flight has to put the offset back before the next read starts, or the
+	 * bytes it took go to nobody (#288). Extra reads wait in this FIFO. */
+	async_io_req_t *read_q_head;
+	async_io_req_t *read_q_tail;
+	bool file_read_in_flight;
+
 	/* Thread-pool requests in flight: read, write, flush, stat, and both sides
 	 * of a sendfile. Non-zero means a worker still names crt_fd and the
 	 * caller's buffer, and the close waits. */
@@ -236,8 +243,9 @@ struct _async_io_req_t
 	 * Completion / dispose paths release each ref. Zero means non-writev. */
 	uint16_t writev_nbufs;
 
-	/* Link in async_io_t::write_q_* while this file write waits its turn. */
-	async_io_req_t *write_q_next;
+	/* Link in async_io_t::write_q_* or ::read_q_* while this file operation
+	 * waits its turn. A request is one or the other, never both. */
+	async_io_req_t *q_next;
 
 	union
 	{
