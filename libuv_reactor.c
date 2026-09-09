@@ -4591,6 +4591,7 @@ zend_async_trigger_event_t *libuv_new_trigger_event(size_t extra_size)
 static bool libuv_io_close(zend_async_io_t *io_base);
 static void io_close_cb(uv_handle_t *pipe_handle);
 static bool io_file_write_dispatch(async_io_t *io, async_io_req_t *req);
+static bool io_file_read_dispatch(async_io_t *io, async_io_req_t *req);
 
 /* {{{ IO event methods */
 static bool libuv_io_event_start(zend_async_event_t *event)
@@ -4686,14 +4687,29 @@ static bool libuv_io_event_dispose(zend_async_event_t *event)
 		}
 	}
 
+	/* Dispose any file-read requests still queued behind the reader. */
+	if (io->read_q_head != NULL) {
+		async_io_req_t *qreq = io->read_q_head;
+		io->read_q_head = NULL;
+		io->read_q_tail = NULL;
+		while (qreq != NULL) {
+			async_io_req_t *qnext = qreq->q_next;
+			qreq->q_next = NULL;
+			if (qreq->base.dispose != NULL) {
+				qreq->base.dispose(&qreq->base);
+			}
+			qreq = qnext;
+		}
+	}
+
 	/* Dispose any file-write requests still queued behind the writer. */
 	if (io->write_q_head != NULL) {
 		async_io_req_t *qreq = io->write_q_head;
 		io->write_q_head = NULL;
 		io->write_q_tail = NULL;
 		while (qreq != NULL) {
-			async_io_req_t *qnext = qreq->write_q_next;
-			qreq->write_q_next = NULL;
+			async_io_req_t *qnext = qreq->q_next;
+			qreq->q_next = NULL;
 			if (qreq->base.dispose != NULL) {
 				qreq->base.dispose(&qreq->base);
 			}
@@ -4714,6 +4730,37 @@ static bool libuv_io_event_dispose(zend_async_event_t *event)
 }
 
 /* }}} */
+
+/* Take a request out of one of the handle's FIFOs. Answers whether it stood
+ * there, so the caller stops looking: q_next is cleared here, and clearing it
+ * for a request that stands in the other queue would cut the list in two. */
+static bool io_file_queue_unlink(async_io_req_t **head, async_io_req_t **tail, async_io_req_t *req)
+{
+	if (*head == req) {
+		*head = req->q_next;
+		if (*head == NULL) {
+			*tail = NULL;
+		}
+		req->q_next = NULL;
+		return true;
+	}
+
+	async_io_req_t *prev = *head;
+	while (prev != NULL && prev->q_next != req) {
+		prev = prev->q_next;
+	}
+
+	if (prev == NULL) {
+		return false;
+	}
+
+	prev->q_next = req->q_next;
+	if (*tail == req) {
+		*tail = prev;
+	}
+	req->q_next = NULL;
+	return true;
+}
 
 /* {{{ IO request dispose */
 static void libuv_io_req_dispose(zend_async_io_req_t *base_req)
@@ -4744,29 +4791,15 @@ static void libuv_io_req_dispose(zend_async_io_req_t *base_req)
 		io->active_req = NULL;
 	}
 
-	/* A file-write request still waiting its turn in the handle's pending
-	 * queue (its coroutine was cancelled before the write was dispatched)
-	 * — unlink it so the queue never dereferences this freed request. */
-	if (req->io != NULL && req->io->write_q_head != NULL) {
-		async_io_t *io = req->io;
-		if (io->write_q_head == req) {
-			io->write_q_head = req->write_q_next;
-			if (io->write_q_head == NULL) {
-				io->write_q_tail = NULL;
-			}
+	/* A file request still waiting its turn in one of the handle's queues (its
+	 * coroutine was cancelled before the operation was dispatched) — unlink it
+	 * so the queue never dereferences this freed request. */
+	if (req->io != NULL) {
+		if (io_file_queue_unlink(&req->io->read_q_head, &req->io->read_q_tail, req)) {
+			/* nothing else: a request stands in one queue at a time */
 		} else {
-			async_io_req_t *p = io->write_q_head;
-			while (p != NULL && p->write_q_next != req) {
-				p = p->write_q_next;
-			}
-			if (p != NULL) {
-				p->write_q_next = req->write_q_next;
-				if (io->write_q_tail == req) {
-					io->write_q_tail = p;
-				}
-			}
+			io_file_queue_unlink(&req->io->write_q_head, &req->io->write_q_tail, req);
 		}
-		req->write_q_next = NULL;
 	}
 
 	/* Vectored fire-and-forget early-teardown path: writev request that never
@@ -5184,18 +5217,28 @@ static void io_file_read_cb(uv_fs_t *fs_request)
 	if (fs_request->result >= 0) {
 		req->base.transferred = (ssize_t) fs_request->result;
 		if (fs_request->result > 0) {
-			/* An abandoned request has no reader left, and base.buf may already
-			 * be freed — see the same guard in io_file_stat_cb. */
-			if (req->fs_buf != NULL && req->base.buf != NULL
-					&& !(req->uv_flags & ASYNC_IO_REQ_F_DISPOSE_PENDING)) {
-				memcpy(req->base.buf, req->fs_buf, (size_t) fs_request->result);
+			const bool abandoned = (req->uv_flags & ASYNC_IO_REQ_F_DISPOSE_PENDING) != 0;
+
+			if (!abandoned) {
+				/* base.buf may already be freed for an abandoned request — see
+				 * the same guard in io_file_stat_cb. */
+				if (req->fs_buf != NULL && req->base.buf != NULL) {
+					memcpy(req->base.buf, req->fs_buf, (size_t) fs_request->result);
+				}
+			} else if (io->fs_in_flight == 0 && io->crt_fd >= 0) {
+				/* Nobody took these bytes, and the read moved the descriptor
+				 * offset the next reader counts from: put it back (#288). The
+				 * queue keeps the next read out of the way, but a write, an
+				 * fsync or a sendfile on the same handle moves that offset too,
+				 * so the rewind waits for the pool to be empty. */
+				zend_lseek(io->crt_fd, -(zend_off_t) fs_request->result, SEEK_CUR);
 			}
 
 			/* Update tracked offset from kernel position. */
-			const zend_off_t pos = zend_lseek(io->crt_fd, 0, SEEK_CUR);
+			const zend_off_t pos = io->crt_fd >= 0 ? zend_lseek(io->crt_fd, 0, SEEK_CUR) : -1;
 			if (pos >= 0) {
 				io->handle.file.offset = pos;
-			} else {
+			} else if (!abandoned) {
 				io->handle.file.offset += fs_request->result;
 			}
 		}
@@ -5208,6 +5251,27 @@ static void io_file_read_cb(uv_fs_t *fs_request)
 	req->base.completed = true;
 	uv_fs_req_cleanup(fs_request);
 	ZEND_ASYNC_DECREASE_EVENT_COUNT(&io->base.event);
+
+	/* Hand off to the next queued read, now that the offset is settled. A read
+	 * that fails to submit is completed with its own exception and notified
+	 * here; draining continues past it. */
+	bool dispatched = false;
+	while (io->read_q_head != NULL) {
+		async_io_req_t *next = io->read_q_head;
+		io->read_q_head = next->q_next;
+		if (io->read_q_head == NULL) {
+			io->read_q_tail = NULL;
+		}
+		next->q_next = NULL;
+		if (io_file_read_dispatch(io, next)) {
+			dispatched = true;
+			break;
+		}
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &next->base, next->base.exception);
+	}
+	if (!dispatched) {
+		io->file_read_in_flight = false;
+	}
 
 	io_file_release_fd(io);
 
@@ -5262,11 +5326,11 @@ static void io_file_write_cb(uv_fs_t *fs_request)
 	bool dispatched = false;
 	while (io->write_q_head != NULL) {
 		async_io_req_t *next = io->write_q_head;
-		io->write_q_head = next->write_q_next;
+		io->write_q_head = next->q_next;
 		if (io->write_q_head == NULL) {
 			io->write_q_tail = NULL;
 		}
-		next->write_q_next = NULL;
+		next->q_next = NULL;
 		if (io_file_write_dispatch(io, next)) {
 			dispatched = true;
 			break;
@@ -6099,8 +6163,42 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, char *buf, s
 		req->fs_buf = pemalloc(max_size, 1);
 	}
 
-	const uv_buf_t read_buffer =
-			uv_buf_init(req->fs_buf != NULL ? req->fs_buf : req->base.buf, (unsigned int) max_size);
+	/* One read at a time per handle: they share the descriptor offset, so a
+	 * second read submitted while the first is in flight starts past bytes the
+	 * first may still have to give back (#288). */
+	if (io->file_read_in_flight) {
+		req->q_next = NULL;
+		if (io->read_q_tail != NULL) {
+			io->read_q_tail->q_next = req;
+		} else {
+			io->read_q_head = req;
+		}
+		io->read_q_tail = req;
+		return &req->base;
+	}
+
+	io->file_read_in_flight = true;
+	if (UNEXPECTED(!io_file_read_dispatch(io, req))) {
+		/* Submit failed: req is completed with its exception, and nothing else
+		 * is queued — clear the in-flight flag. The caller observes the error
+		 * through req->base.exception. */
+		io->file_read_in_flight = false;
+	}
+
+	return &req->base;
+}
+
+/* }}} */
+
+/* {{{ io_file_read_dispatch
+ * Submit one pending file read to libuv. Exactly one is in flight per handle
+ * (io->file_read_in_flight), so the reads never race the shared kernel offset
+ * and an abandoned one can put it back. Returns true when submitted; false on
+ * a submit error, the request carrying the exception for its waiter. */
+static bool io_file_read_dispatch(async_io_t *io, async_io_req_t *req)
+{
+	const uv_buf_t read_buffer = uv_buf_init(req->fs_buf != NULL ? req->fs_buf : req->base.buf,
+			(unsigned int) req->max_size);
 	req->fs_req.data = req;
 
 	/* Use offset=-1 so libuv calls read() instead of pread().
@@ -6109,9 +6207,11 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, char *buf, s
 			uv_fs_read(UVLOOP, &req->fs_req, io->crt_fd, &read_buffer, 1, -1, io_file_read_cb);
 
 	if (UNEXPECTED(error < 0)) {
-		async_throw_error("Failed to start file read: %s", uv_strerror(error));
-		libuv_io_req_dispose(&req->base);
-		return NULL;
+		req->base.transferred = -1;
+		req->base.completed   = true;
+		req->base.exception   = async_new_exception(
+				async_ce_input_output_exception, "Failed to start file read: %s", uv_strerror(error));
+		return false;
 	}
 
 	/* Pin the io for the op: FILE ios have no uv_close rendezvous, so an owner
@@ -6121,9 +6221,8 @@ static zend_async_io_req_t *libuv_io_read(zend_async_io_t *io_base, char *buf, s
 	io->fs_in_flight++;
 	ZEND_ASYNC_EVENT_ADD_REF(&io->base.event);
 	ZEND_ASYNC_INCREASE_EVENT_COUNT(&io->base.event);
-	return &req->base;
+	return true;
 }
-
 /* }}} */
 
 /* {{{ io_file_write_dispatch
@@ -6295,9 +6394,9 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 	 * arrives while another is in flight waits in the FIFO and is
 	 * dispatched by io_file_write_cb when the current one completes. */
 	if (io->file_write_in_flight) {
-		req->write_q_next = NULL;
+		req->q_next = NULL;
 		if (io->write_q_tail != NULL) {
-			io->write_q_tail->write_q_next = req;
+			io->write_q_tail->q_next = req;
 		} else {
 			io->write_q_head = req;
 		}
