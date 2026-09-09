@@ -72,18 +72,22 @@ $read = await(spawn(function () use ($source) {
 printf("read %d bytes, %s\n", strlen($read), $read === file_get_contents($source) ? 'same' : 'DIFFERENT');
 
 /* The write copy needs the same check: a wrong length or offset there would
- * leave the file short or shifted, and the cancelled rounds never look. */
+ * leave the file short or shifted, and the cancelled rounds never look. A file
+ * of its own, because a worker from the last cancelled round may still be
+ * writing into $target. */
+$checked = tempnam(sys_get_temp_dir(), 'async_io_test_');
 $payload = str_repeat('0123456789abcdef', 65536);
-await(spawn(function () use ($target, $payload) {
-    $handle = fopen($target, 'w');
+await(spawn(function () use ($checked, $payload) {
+    $handle = fopen($checked, 'w');
     fwrite($handle, $payload);
     fclose($handle);
 }));
 
-printf("wrote %d bytes, %s\n", filesize($target), file_get_contents($target) === $payload ? 'same' : 'DIFFERENT');
+printf("wrote %d bytes, %s\n", filesize($checked), file_get_contents($checked) === $payload ? 'same' : 'DIFFERENT');
 
 unlink($source);
 unlink($target);
+unlink($checked);
 echo "End\n";
 
 ?>
