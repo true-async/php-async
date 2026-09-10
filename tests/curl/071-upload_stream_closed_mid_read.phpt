@@ -40,7 +40,13 @@ curl_setopt($ch, CURLOPT_WRITEFUNCTION, static fn ($resource, $data) => strlen($
 /* The throttle spreads the upload over several seconds, so the close below falls
  * between two of curl's reads. With no read in flight the reactor holds no pin of
  * its own on the stream's IO, which is the state the subscription has to survive
- * on its own. */
+ * on its own.
+ *
+ * How far the upload gets before the close is not asserted: a runner whose socket
+ * buffer swallows the whole body reports the transfer done before the closing
+ * coroutine has a turn, which happens on macOS and FreeBSD. What the test holds to
+ * is that the process survives the close and both coroutines return -- before the
+ * php-src change this is a heap-use-after-free under ASAN. */
 curl_setopt($ch, CURLOPT_MAX_SEND_SPEED_LARGE, 65536);
 
 $uploading = false;
@@ -94,8 +100,6 @@ echo "End\n";
 ?>
 --EXPECTF--
 Start
-
-Warning: fclose(): CURLOPT_INFILE resource has gone away, resetting to default in %s on line %d
-transfer: aborted
+%Atransfer: %s
 stream closed
 End
