@@ -2,6 +2,16 @@
 Async curl: closing the upload stream under a parked read leaves the IO alive
 --EXTENSIONS--
 curl
+--SKIPIF--
+<?php
+/* Below libcurl 8.11.1 the upload read is synchronous: curl_exec pushes the whole
+ * body before the closing coroutine gets a turn, so there is no parked read to
+ * close under. The subscription this test covers is not built there either -- it
+ * lives behind the same version guard in ext/curl/curl_async.c. */
+if (curl_version()['version_number'] < 0x080B01) {
+    die('skip libcurl 8.11.1 or later is needed for a parked upload read');
+}
+?>
 --FILE--
 <?php
 
