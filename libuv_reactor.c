@@ -4724,6 +4724,15 @@ static bool libuv_io_event_dispose(zend_async_event_t *event)
 
 	zend_async_callbacks_free(event);
 
+#ifdef PHP_WIN32
+	/* The close callback runs after the worker, so the buffer is free to go.
+	 * With the reactor down that callback never ran: leak it, as #282 leaks
+	 * the descriptor. */
+	if (io->tty_read_buf != NULL && EXPECTED(ASYNC_G(reactor_started))) {
+		pefree(io->tty_read_buf, 1);
+	}
+#endif
+
 	pefree(io, 0);
 
 	return true;
@@ -4858,6 +4867,12 @@ static zend_always_inline void async_uv_read_buf_set(uv_buf_t *buf, char *base, 
 	buf->base = base;
 }
 
+#ifdef PHP_WIN32
+/* MAX_INPUT_BUFFER_LENGTH: a console never answers with more, and
+ * uv_utf16_to_wtf8's trailing NUL stays inside the block. */
+#define ASYNC_IO_TTY_READ_BUF_SIZE 8192
+#endif
+
 static void libuv_io_alloc_cb(uv_handle_t *handle, size_t suggested_size, uv_buf_t *output)
 {
 	async_io_t *io = (async_io_t *) handle->data;
@@ -4888,6 +4903,22 @@ static void libuv_io_alloc_cb(uv_handle_t *handle, size_t suggested_size, uv_buf
 		return;
 	}
 
+#ifdef PHP_WIN32
+	/* A console worker outlives the request, so it gets the handle's buffer
+	 * and the completion copies out of it (#286). */
+	if (io->base.type == ZEND_ASYNC_IO_TYPE_TTY) {
+		if (io->tty_read_buf == NULL) {
+			io->tty_read_buf = pemalloc(ASYNC_IO_TTY_READ_BUF_SIZE, 1);
+		}
+
+		const size_t length =
+				req->max_size < ASYNC_IO_TTY_READ_BUF_SIZE ? req->max_size : ASYNC_IO_TTY_READ_BUF_SIZE;
+
+		async_uv_read_buf_set(output, io->tty_read_buf, length);
+		return;
+	}
+#endif
+
 	async_uv_read_buf_set(output, req->base.buf, req->max_size);
 }
 
@@ -4915,8 +4946,24 @@ static void io_pipe_read_cb(uv_stream_t *pipe_stream, ssize_t bytes_read, const 
 		return;
 	}
 
+	ssize_t delivered = bytes_read;
+
+#ifdef PHP_WIN32
+	/* Bytes in the handle's buffer belong to whichever request is current, up
+	 * to what it asked for; a request with no buffer takes none. */
+	if (bytes_read > 0 && io->tty_read_buf != NULL && buffer->base == io->tty_read_buf) {
+		delivered = EXPECTED(req->base.buf != NULL)
+				? (ssize_t) ((size_t) bytes_read < req->max_size ? (size_t) bytes_read : req->max_size)
+				: 0;
+
+		if (delivered > 0) {
+			memcpy(req->base.buf, io->tty_read_buf, (size_t) delivered);
+		}
+	}
+#endif
+
 	if (bytes_read > 0) {
-		req->base.transferred = bytes_read;
+		req->base.transferred = delivered;
 	} else if (bytes_read == UV_EOF) {
 		req->base.transferred = 0;
 		io->base.state |= ZEND_ASYNC_IO_EOF;
