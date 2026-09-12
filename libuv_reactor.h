@@ -199,6 +199,14 @@ struct _async_io_t
 	 * caller's buffer, and the close waits. */
 	unsigned fs_in_flight;
 
+#ifdef PHP_WIN32
+	/* Read buffer of a console handle, freed only by its close callback: the
+	 * ReadConsoleW worker keeps writing after the read is stopped, so it cannot
+	 * be the caller's (#286, docs/286-windows-console-read-cancel.md). Fixed
+	 * size, one per handle — libuv serialises the reads of a handle. */
+	char *tty_read_buf;
+#endif
+
 	union
 	{
 		uv_stream_t stream;
