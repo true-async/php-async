@@ -956,7 +956,7 @@ PHP_FUNCTION(Async_graceful_shutdown)
 	THROW_IF_ASYNC_OFF;
 	THROW_IF_SCHEDULER_CONTEXT;
 
-	ZEND_ASYNC_SHUTDOWN();
+	start_graceful_shutdown_with(cancellation);
 }
 
 PHP_FUNCTION(Async_iterate)

@@ -887,7 +887,8 @@ static bool resolve_deadlocks(void)
 ///////////////////////////////////////////////////////////
 /// SHUTDOWN AND CLEANUP
 ///////////////////////////////////////////////////////////
-static void cancel_queued_coroutines(void)
+/* cancellation: the exception handed to every coroutine, or NULL for the default one. */
+static void cancel_queued_coroutines(zend_object *cancellation)
 {
 	zend_object **exception = &EG(exception);
 	zend_object *prev_exception_storage = NULL;
@@ -898,7 +899,13 @@ static void cancel_queued_coroutines(void)
 	// 1. Walk through all coroutines and cancel them if they are suspended.
 	zval *current;
 
-	zend_object *cancellation_exception = async_new_exception(async_ce_cancellation_exception, "Graceful shutdown");
+	zend_object *cancellation_exception = cancellation;
+
+	if (cancellation_exception != NULL) {
+		GC_ADDREF(cancellation_exception);
+	} else {
+		cancellation_exception = async_new_exception(async_ce_cancellation_exception, "Graceful shutdown");
+	}
 
 	ZEND_ASYNC_SCHEDULER_CONTEXT = true;
 
@@ -992,6 +999,11 @@ void bailout_all_coroutines(void)
 
 bool start_graceful_shutdown(void)
 {
+	return start_graceful_shutdown_with(NULL);
+}
+
+bool start_graceful_shutdown_with(zend_object *cancellation)
+{
 	if (ZEND_ASYNC_GRACEFUL_SHUTDOWN) {
 		return true;
 	}
@@ -1009,7 +1021,7 @@ bool start_graceful_shutdown(void)
 		zend_clear_exception();
 	}
 
-	cancel_queued_coroutines();
+	cancel_queued_coroutines(cancellation);
 
 	if (UNEXPECTED(EG(exception) != NULL)) {
 		zend_exception_set_previous(EG(exception), ZEND_ASYNC_EXIT_EXCEPTION);
@@ -1031,7 +1043,7 @@ static void finally_shutdown(void)
 		zend_clear_exception();
 	}
 
-	cancel_queued_coroutines();
+	cancel_queued_coroutines(NULL);
 	execute_queued_coroutines();
 
 	ZEND_ASYNC_SCHEDULER_CONTEXT = true;
