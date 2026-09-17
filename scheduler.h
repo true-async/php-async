@@ -28,6 +28,16 @@ void async_scheduler_shutdown(void);
 
 bool start_graceful_shutdown(void);
 
+/**
+ * Start the graceful shutdown with a caller-supplied cancellation.
+ *
+ * Every running coroutine is cancelled with `cancellation`, an instance of
+ * Async\AsyncCancellation owned by the caller; NULL selects the default
+ * "Graceful shutdown" exception. A shutdown already in progress keeps its
+ * own cancellation and the argument is ignored.
+ */
+bool start_graceful_shutdown_with(zend_object *cancellation);
+
 bool async_scheduler_launch(void);
 /**
  * A function that is called when control needs to be transferred from a coroutine to the Scheduler.

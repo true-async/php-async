@@ -264,6 +264,10 @@ function spawn_thread(\Closure $task, bool $inherit = true, ?\Closure $bootloade
 
 /**
  * Start the graceful shutdown of the Scheduler.
+ *
+ * Every running coroutine is cancelled with $cancellationError; null selects
+ * the default "Graceful shutdown" cancellation. A shutdown already in progress
+ * keeps its own cancellation and the argument is ignored.
  */
 function graceful_shutdown(?AsyncCancellation $cancellationError = null): void {}
 
