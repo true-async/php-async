@@ -199,6 +199,12 @@ struct _async_io_t
 	 * caller's buffer, and the close waits. */
 	unsigned fs_in_flight;
 
+#ifndef PHP_WIN32
+	/* The sendfile to this io waiting out an EAGAIN, if any: the close ends
+	 * the wait, whose dup() would otherwise keep the socket open. */
+	struct _async_sendfile_req_s *sendfile_waiting;
+#endif
+
 #ifdef PHP_WIN32
 	/* Read buffer of a console handle, freed only by its close callback: the
 	 * ReadConsoleW worker keeps writing after the read is stopped, so it cannot
