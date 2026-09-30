@@ -39,6 +39,7 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include <unistd.h>
+#include <fcntl.h> /* F_DUPFD_CLOEXEC */
 #include <errno.h>
 #include <dirent.h>
 #include <sys/stat.h>
@@ -5488,13 +5489,25 @@ static void io_file_stat_cb(uv_fs_t *fs_request)
 /* Per-request state for zend_async_io_sendfile. Wraps async_io_req_t
  * with the destination io plus the offset / remaining bookkeeping
  * needed to loop uv_fs_sendfile on partial sends. */
-typedef struct {
+typedef struct sendfile_wait_s sendfile_wait_t;
+
+typedef struct _async_sendfile_req_s {
 	async_io_req_t base;
 	async_io_t    *dst_io;
 	zend_off_t     offset;        /* -1 = read from current position */
 	size_t         remaining;
 	size_t         transferred;
+#ifndef PHP_WIN32
+	sendfile_wait_t *wait;        /* non-NULL while an EAGAIN waits for the socket */
+#endif
 } async_sendfile_req_t;
+
+static void sendfile_complete(async_sendfile_req_t *req,
+                              const int error_code, const char *err_kind);
+
+#ifndef PHP_WIN32
+static void sendfile_wait_stop(async_sendfile_req_t *req);
+#endif
 
 static void libuv_sendfile_req_dispose(zend_async_io_req_t *base_req)
 {
@@ -5504,6 +5517,18 @@ static void libuv_sendfile_req_dispose(zend_async_io_req_t *base_req)
 	 * sendfile_complete; see the same rendezvous in libuv_io_req_dispose. */
 	if (UNEXPECTED(req->uv_flags & ASYNC_IO_REQ_F_UV_IN_FLIGHT)) {
 		req->uv_flags |= ASYNC_IO_REQ_F_DISPOSE_PENDING;
+#ifndef PHP_WIN32
+		/* Waiting for the socket, not in a worker: nothing to cancel there,
+		 * so the wait ends here and the completion frees the request. */
+		async_sendfile_req_t *sf = (async_sendfile_req_t *) req;
+
+		if (sf->wait != NULL) {
+			sendfile_wait_stop(sf);
+			req->uv_flags &= ~ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+			sendfile_complete(sf, UV_ECANCELED, NULL);
+			return;
+		}
+#endif
 		if (EXPECTED(ASYNC_G(reactor_started))) {
 			(void) uv_cancel((uv_req_t *) &req->fs_req);
 		}
@@ -5564,6 +5589,117 @@ static void sendfile_complete(async_sendfile_req_t *req,
 	IF_EXCEPTION_STOP_REACTOR;
 }
 
+static void io_sendfile_zc_cb(uv_fs_t *fs_request);
+
+/* Submit the rest of the slice. A failure completes the request. */
+static void sendfile_submit_rest(async_sendfile_req_t *req)
+{
+	const int err = uv_fs_sendfile(UVLOOP, &req->base.fs_req,
+			req->dst_io->crt_fd, req->base.io->crt_fd,
+			req->offset, req->remaining, io_sendfile_zc_cb);
+	if (UNEXPECTED(err < 0)) {
+		sendfile_complete(req, err, "Sendfile resubmit");
+		return;
+	}
+	req->base.uv_flags |= ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+}
+
+#ifndef PHP_WIN32
+/* {{{ Waiting out EAGAIN
+ *
+ * On Darwin and FreeBSD libuv calls sendfile(2) on the non-blocking socket
+ * itself and reports EAGAIN when the socket buffer took nothing; Linux never
+ * gets here, its libuv falls back to a copy loop that polls. The request then
+ * waits for the socket to become writable and submits the rest. The wait polls
+ * a dup() of the socket: the stream handle already has the descriptor in the
+ * loop's poller, and libuv allows one watcher per descriptor. */
+struct sendfile_wait_s {
+	uv_poll_t             handle;  /* first: the close callback casts back */
+	async_sendfile_req_t *req;
+	int                   fd;      /* the dup(), closed after the handle */
+};
+
+static void sendfile_wait_close_cb(uv_handle_t *handle)
+{
+	sendfile_wait_t *wait = (sendfile_wait_t *) handle;
+
+	close(wait->fd);
+	pefree(wait, 0);
+}
+
+static void sendfile_wait_stop(async_sendfile_req_t *req)
+{
+	sendfile_wait_t *wait = req->wait;
+
+	req->wait = NULL;
+	req->dst_io->sendfile_waiting = NULL;
+	uv_poll_stop(&wait->handle);
+	uv_close((uv_handle_t *) &wait->handle, sendfile_wait_close_cb);
+}
+
+static void sendfile_writable_cb(uv_poll_t *handle, const int status, const int events)
+{
+	(void) events;
+	async_sendfile_req_t *req = ((sendfile_wait_t *) handle)->req;
+
+	sendfile_wait_stop(req);
+	req->base.uv_flags &= ~ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+
+	if (UNEXPECTED(status < 0)) {
+		sendfile_complete(req, status, "Sendfile");
+		return;
+	}
+
+	sendfile_submit_rest(req);
+}
+
+/* The destination closes during the wait: its descriptor number is free for
+ * the next accept, so the rest of the file must not follow. */
+static void sendfile_wait_cancel(async_sendfile_req_t *req)
+{
+	sendfile_wait_stop(req);
+	req->base.uv_flags &= ~ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+	sendfile_complete(req, UV_ECANCELED, "Sendfile");
+}
+
+/* Returns 0 once the wait is armed, a UV error code otherwise. */
+static int sendfile_wait_writable(async_sendfile_req_t *req)
+{
+	/* Close-on-exec: a child spawned during the wait must not hold the
+	 * connection open. */
+	const int fd = fcntl(req->dst_io->crt_fd, F_DUPFD_CLOEXEC, 0);
+
+	if (UNEXPECTED(fd < 0)) {
+		return uv_translate_sys_error(errno);
+	}
+
+	sendfile_wait_t *wait = pecalloc(1, sizeof(*wait), 0);
+	wait->req = req;
+	wait->fd  = fd;
+
+	int err = uv_poll_init(UVLOOP, &wait->handle, fd);
+
+	if (UNEXPECTED(err < 0)) {
+		close(fd);
+		pefree(wait, 0);
+		return err;
+	}
+
+	err = uv_poll_start(&wait->handle, UV_WRITABLE, sendfile_writable_cb);
+
+	if (UNEXPECTED(err < 0)) {
+		uv_close((uv_handle_t *) &wait->handle, sendfile_wait_close_cb);
+		return err;
+	}
+
+	req->wait = wait;
+	req->dst_io->sendfile_waiting = req;
+	req->base.uv_flags |= ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+	return 0;
+}
+/* }}} */
+#endif
+
 /* uv_fs_sendfile may flush only part of `length` in one shot; resubmit
  * until the full count lands on the wire or the kernel returns an
  * error. */
@@ -5580,6 +5716,18 @@ static void io_sendfile_zc_cb(uv_fs_t *fs_request)
 		sendfile_complete(req, UV_ECANCELED, NULL);
 		return;
 	}
+
+#ifndef PHP_WIN32
+	if (result == UV_EAGAIN) {
+		const int err = sendfile_wait_writable(req);
+
+		if (UNEXPECTED(err < 0)) {
+			sendfile_complete(req, err, "Sendfile");
+		}
+
+		return;
+	}
+#endif
 
 	if (result < 0) {
 		sendfile_complete(req, (int) result, "Sendfile");
@@ -5598,15 +5746,7 @@ static void io_sendfile_zc_cb(uv_fs_t *fs_request)
 	}
 
 	req->remaining -= (size_t) result;
-
-	const int err = uv_fs_sendfile(UVLOOP, &req->base.fs_req,
-			req->dst_io->crt_fd, req->base.io->crt_fd,
-			req->offset, req->remaining, io_sendfile_zc_cb);
-	if (UNEXPECTED(err < 0)) {
-		sendfile_complete(req, err, "Sendfile resubmit");
-		return;
-	}
-	req->base.uv_flags |= ASYNC_IO_REQ_F_UV_IN_FLIGHT;
+	sendfile_submit_rest(req);
 }
 
 #ifdef PHP_WIN32
@@ -6722,6 +6862,12 @@ static bool libuv_io_close(zend_async_io_t *io_base)
 			OBJ_RELEASE(exc);
 		}
 	}
+
+#ifndef PHP_WIN32
+	if (io->sendfile_waiting != NULL) {
+		sendfile_wait_cancel(io->sendfile_waiting);
+	}
+#endif
 
 	if (ZEND_ASYNC_IO_IS_STREAM(io->base.type)) {
 		uv_read_stop(&io->handle.stream);
