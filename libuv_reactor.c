@@ -6906,78 +6906,217 @@ typedef struct
 		uv_tcp_t  tcp;
 		uv_pipe_t pipe;
 	} uv_handle;
+	/* Delivers held connections one loop tick after start(); initialised on
+	 * first use, `deliver_ready` says whether it exists. */
+	uv_idle_t deliver;
 	bool is_unix;
+	/* uv_listen has run. libuv has no call that undoes it, so a later start()
+	 * only unpauses. */
+	bool listening;
+	/* stop() released the last reference. The connection callback then leaves
+	 * each connection to libuv, which on Unix stops watching the socket and on
+	 * Windows posts no new AcceptEx: the rest of the queue stays in the kernel
+	 * backlog until start(). The first stop() switches a Windows TCP listener
+	 * to one AcceptEx at a time, so only the first pause can hold the
+	 * requests posted in advance. */
+	bool paused;
+	/* libuv reported a connection that is not accepted yet: the one in
+	 * accepted_fd on Unix, completed AcceptEx requests on Windows. */
+	bool held;
+	bool deliver_ready;
+	/* Handles still open at dispose; the event is freed when this reaches 0. */
+	uint8_t open_handles;
 } async_listen_event_t;
 
-/* {{{ on_connection_event */
-static void on_connection_event(uv_stream_t *server, int status)
+typedef enum
 {
-	async_listen_event_t *listen_event = server->data;
+	LISTEN_ACCEPTED,
+	/* libuv had no connection ready, or none could be taken. */
+	LISTEN_EMPTY,
+	/* uv_accept failed and libuv closed the connection. */
+	LISTEN_DROPPED,
+} listen_accept_result_t;
+
+static bool listen_deliver_schedule(async_listen_event_t *listen_event);
+static void on_connection_event(uv_stream_t *server, int status);
+
+/* Accepts one queued connection and hands the socket, or the reason it could
+ * not be accepted, to the event's callbacks. */
+static listen_accept_result_t listen_accept_one(async_listen_event_t *listen_event)
+{
+	uv_stream_t *server = (uv_stream_t *) &listen_event->uv_handle;
 #ifdef PHP_WIN32
 	zend_socket_t client_socket = INVALID_SOCKET;
 #else
 	zend_socket_t client_socket = -1;
 #endif
-	zend_object *exception = NULL;
+	listen_accept_result_t outcome = LISTEN_ACCEPTED;
 
-	if (status < 0) {
-		exception = async_new_exception(
-				async_ce_input_output_exception, "Connection accept error: %s", uv_strerror(status));
-	} else {
-		/* The handle must outlive the uv_close callback that fires on a
-		 * later loop tick — a stack-allocated handle here dangles in libuv's
-		 * closing queue and crashes uv__finish_close at reactor shutdown.
-		 * uv_accept requires the client handle be the same stream type as
-		 * the server, so AF_UNIX listeners init a uv_pipe_t. */
-		const bool is_unix = listen_event->is_unix;
-		uv_handle_t *client = pemalloc(is_unix ? sizeof(uv_pipe_t) : sizeof(uv_tcp_t), 0);
-		int result = is_unix ? uv_pipe_init(UVLOOP, (uv_pipe_t *) client, 0)
-							  : uv_tcp_init(UVLOOP, (uv_tcp_t *) client);
+	/* The handle must outlive the uv_close callback that fires on a
+	 * later loop tick — a stack-allocated handle here dangles in libuv's
+	 * closing queue and crashes uv__finish_close at reactor shutdown.
+	 * uv_accept requires the client handle be the same stream type as
+	 * the server, so AF_UNIX listeners init a uv_pipe_t. */
+	const bool is_unix = listen_event->is_unix;
+	uv_handle_t *client = pemalloc(is_unix ? sizeof(uv_pipe_t) : sizeof(uv_tcp_t), 0);
+	int result = is_unix ? uv_pipe_init(UVLOOP, (uv_pipe_t *) client, 0)
+						  : uv_tcp_init(UVLOOP, (uv_tcp_t *) client);
 
-		if (result == 0) {
-			result = uv_accept(server, (uv_stream_t *) client);
-			if (result == 0) {
-				uv_os_fd_t fd;
-				result = uv_fileno(client, &fd);
-				if (result == 0) {
-					/* Dup the fd so the accepted socket survives uv_close
-					 * of the internal handle below. The consumer owns the
-					 * dup'd fd and closes it when done. */
-#ifdef PHP_WIN32
-					WSAPROTOCOL_INFOW info;
-					if (WSADuplicateSocketW((SOCKET) fd, GetCurrentProcessId(), &info) == 0) {
-						client_socket = WSASocketW(info.iAddressFamily, info.iSocketType,
-								info.iProtocol, &info, 0, WSA_FLAG_OVERLAPPED);
-					}
-					if (client_socket == INVALID_SOCKET) {
-						result = UV_EIO;
-					}
-#else
-					client_socket = (zend_socket_t) dup((int) fd);
-					if (client_socket < 0) {
-						result = UV_EIO;
-					}
-#endif
-				}
-			}
-		}
+	if (UNEXPECTED(result < 0)) {
+		/* Cannot happen with libuv's own init (AF_UNSPEC creates no socket);
+		 * if it ever does, fail loudly rather than retry every tick. */
+		pefree(client, 0);
+		async_throw_error("Failed to initialize the accepted handle: %s", uv_strerror(result));
+		return LISTEN_EMPTY;
+	}
 
-		if (result < 0) {
-			exception = async_new_exception(
-					async_ce_input_output_exception, "Failed to accept connection: %s", uv_strerror(result));
-		}
+	result = uv_accept(server, (uv_stream_t *) client);
 
-		/* Always close the uv handle; the close callback pefrees it via
-		 * handle->data. uv_close is safe on a handle that reached
-		 * uv_tcp_init / uv_pipe_init but not uv_accept. */
+	if (result == UV_EAGAIN) {
 		client->data = client;
 		uv_close(client, libuv_close_handle_cb);
+		return LISTEN_EMPTY;
+	}
+
+	if (result < 0) {
+		outcome = LISTEN_DROPPED;
+	} else {
+		uv_os_fd_t fd;
+		result = uv_fileno(client, &fd);
+		if (result == 0) {
+			/* Dup the fd so the accepted socket survives uv_close
+			 * of the internal handle below. The consumer owns the
+			 * dup'd fd and closes it when done. */
+#ifdef PHP_WIN32
+			WSAPROTOCOL_INFOW info;
+			if (WSADuplicateSocketW((SOCKET) fd, GetCurrentProcessId(), &info) == 0) {
+				client_socket = WSASocketW(info.iAddressFamily, info.iSocketType,
+						info.iProtocol, &info, 0, WSA_FLAG_OVERLAPPED);
+			}
+			if (client_socket == INVALID_SOCKET) {
+				result = UV_EIO;
+			}
+#else
+			client_socket = (zend_socket_t) dup((int) fd);
+			if (client_socket < 0) {
+				result = UV_EIO;
+			}
+#endif
+		}
+	}
+
+	/* Always close the uv handle; the close callback pefrees it via
+	 * handle->data. uv_close is safe on a handle that reached
+	 * uv_tcp_init / uv_pipe_init but not uv_accept. */
+	client->data = client;
+	uv_close(client, libuv_close_handle_cb);
+
+	zend_object *exception = NULL;
+
+	if (result < 0) {
+		exception = async_new_exception(
+				async_ce_input_output_exception, "Failed to accept connection: %s", uv_strerror(result));
 	}
 
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&listen_event->event.base, &client_socket, exception);
 
 	if (exception != NULL) {
 		zend_object_release(exception);
+	}
+
+	return outcome;
+}
+
+/* Keeps the listener alive after a failed uv_accept. On Unix libuv restarts
+ * the watcher only after a successful one, so the socket is left unwatched
+ * and uv_listen restarts it; Windows re-posts the AcceptEx by itself. */
+static void listen_recover(async_listen_event_t *listen_event)
+{
+	/* A callback of this event may have closed it. */
+	if (uv_is_closing((uv_handle_t *) &listen_event->uv_handle)) {
+		return;
+	}
+
+#ifndef PHP_WIN32
+	const int error = uv_listen(
+			(uv_stream_t *) &listen_event->uv_handle, listen_event->event.backlog, on_connection_event);
+
+	if (error < 0) {
+		async_throw_error("Failed to resume listening: %s", uv_strerror(error));
+	}
+#endif
+}
+
+/* Accepts what the listener held while paused, until libuv has nothing ready
+ * or a callback pauses or closes the listener again. */
+static void listen_deliver_cb(uv_idle_t *idle)
+{
+	async_listen_event_t *listen_event = idle->data;
+	uv_idle_stop(idle);
+
+	while (listen_event->held && !listen_event->paused
+		   && !uv_is_closing((uv_handle_t *) &listen_event->uv_handle) && EG(exception) == NULL) {
+		const listen_accept_result_t outcome = listen_accept_one(listen_event);
+
+		if (outcome == LISTEN_EMPTY) {
+			listen_event->held = false;
+		} else if (outcome == LISTEN_DROPPED) {
+			/* The rest waits for the next tick, so an error that repeats cannot
+			 * keep this loop going. */
+			listen_recover(listen_event);
+			listen_deliver_schedule(listen_event);
+			break;
+		}
+	}
+
+	IF_EXCEPTION_STOP_REACTOR;
+}
+
+static bool listen_deliver_schedule(async_listen_event_t *listen_event)
+{
+	if (!listen_event->deliver_ready) {
+		const int error = uv_idle_init(UVLOOP, &listen_event->deliver);
+
+		if (error < 0) {
+			async_throw_error("Failed to schedule held connections: %s", uv_strerror(error));
+			return false;
+		}
+
+		listen_event->deliver.data = listen_event;
+		listen_event->deliver_ready = true;
+	}
+
+	uv_idle_start(&listen_event->deliver, listen_deliver_cb);
+	return true;
+}
+
+/* {{{ on_connection_event */
+static void on_connection_event(uv_stream_t *server, int status)
+{
+	async_listen_event_t *listen_event = server->data;
+
+	if (status < 0) {
+#ifdef PHP_WIN32
+		zend_socket_t client_socket = INVALID_SOCKET;
+#else
+		zend_socket_t client_socket = -1;
+#endif
+		zend_object *exception = async_new_exception(
+				async_ce_input_output_exception, "Connection accept error: %s", uv_strerror(status));
+		ZEND_ASYNC_CALLBACKS_NOTIFY(&listen_event->event.base, &client_socket, exception);
+		zend_object_release(exception);
+		IF_EXCEPTION_STOP_REACTOR;
+		return;
+	}
+
+	if (listen_event->paused) {
+		/* Leaving the connection unaccepted is the pause; see `paused`. */
+		listen_event->held = true;
+		return;
+	}
+
+	if (listen_accept_one(listen_event) == LISTEN_DROPPED) {
+		listen_recover(listen_event);
 	}
 
 	IF_EXCEPTION_STOP_REACTOR;
@@ -6992,14 +7131,26 @@ static bool libuv_listen_start(zend_async_event_t *event)
 
 	async_listen_event_t *listen_event = (async_listen_event_t *) (event);
 
-	const int error =
-			uv_listen((uv_stream_t *) &listen_event->uv_handle, listen_event->event.backlog, on_connection_event);
+	if (!listen_event->listening) {
+		const int error = uv_listen(
+				(uv_stream_t *) &listen_event->uv_handle, listen_event->event.backlog, on_connection_event);
 
-	if (error < 0) {
-		async_throw_error("Failed to start listening: %s", uv_strerror(error));
-		return false;
+		if (error < 0) {
+			async_throw_error("Failed to start listening: %s", uv_strerror(error));
+			return false;
+		}
+
+		listen_event->listening = true;
+	} else if (listen_event->held) {
+		/* Delivered on the next tick, not from here: the caller may be inside
+		 * a callback of this event, and a pause it takes on the way out must
+		 * win over a connection handed to it from inside start(). */
+		if (!listen_deliver_schedule(listen_event)) {
+			return false;
+		}
 	}
 
+	listen_event->paused = false;
 	event->loop_ref_count++;
 	ZEND_ASYNC_INCREASE_EVENT_COUNT(event);
 	return true;
@@ -7012,13 +7163,30 @@ static bool libuv_listen_stop(zend_async_event_t *event)
 {
 	EVENT_STOP_PROLOGUE(event);
 
-	// uv_listen doesn't have a stop function, we close the handle
+	/* libuv cannot stop a uv_listen; the listener pauses instead, see `paused`. */
+	async_listen_event_t *listen_event = (async_listen_event_t *) event;
+	listen_event->paused = true;
+
+	if (!listen_event->is_unix) {
+		uv_tcp_simultaneous_accepts(&listen_event->uv_handle.tcp, 0);
+	}
+
 	event->loop_ref_count = 0;
 	ZEND_ASYNC_DECREASE_EVENT_COUNT(event);
 	return true;
 }
 
 /* }}} */
+
+/* Frees the listen event once its last handle is closed. */
+static void listen_close_cb(uv_handle_t *handle)
+{
+	async_listen_event_t *listen_event = handle->data;
+
+	if (--listen_event->open_handles == 0) {
+		pefree(listen_event, 0);
+	}
+}
 
 /* {{{ libuv_listen_dispose */
 static bool libuv_listen_dispose(zend_async_event_t *event)
@@ -7042,7 +7210,14 @@ static bool libuv_listen_dispose(zend_async_event_t *event)
 		listen_event->event.host = NULL;
 	}
 
-	uv_close((uv_handle_t *) &listen_event->uv_handle, libuv_close_handle_cb);
+	if (listen_event->deliver_ready) {
+		listen_event->open_handles = 2;
+		uv_close((uv_handle_t *) &listen_event->deliver, listen_close_cb);
+		uv_close((uv_handle_t *) &listen_event->uv_handle, listen_close_cb);
+	} else {
+		uv_close((uv_handle_t *) &listen_event->uv_handle, libuv_close_handle_cb);
+	}
+
 	return true;
 }
 
