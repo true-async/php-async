@@ -5689,6 +5689,18 @@ static void io_transmitfile_work_cb(uv_work_t *work)
 		}
 	}
 
+	/* TransmitFile stops at EOF and still reports success, so the bytes a
+	 * pass sent are read off the file pointer it advanced: a file that
+	 * shrank after its size was taken then shows as a short count, as
+	 * sendfile(2) shows it on POSIX, instead of as the full slice. */
+	const LARGE_INTEGER here = {0};
+	LARGE_INTEGER before;
+
+	if (!SetFilePointerEx(tw->file, here, &before, FILE_CURRENT)) {
+		tw->uv_err = uv_translate_sys_error(GetLastError());
+		return;
+	}
+
 	while (tw->remaining > 0) {
 		const DWORD n = (DWORD) (tw->remaining < ASYNC_TRANSMITFILE_CHUNK_MAX
 									 ? tw->remaining
@@ -5703,8 +5715,24 @@ static void io_transmitfile_work_cb(uv_work_t *work)
 			return;
 		}
 
-		tw->transferred += n;
-		tw->remaining   -= n;
+		LARGE_INTEGER after;
+
+		if (!SetFilePointerEx(tw->file, here, &after, FILE_CURRENT)) {
+			tw->uv_err = uv_translate_sys_error(GetLastError());
+			return;
+		}
+
+		const size_t sent = (size_t) (after.QuadPart - before.QuadPart);
+		tw->transferred += sent;
+		tw->remaining   -= sent;
+
+		/* EOF before the slice ended: the caller sees transferred short of
+		 * the length it asked for. */
+		if (sent < n) {
+			return;
+		}
+
+		before = after;
 	}
 }
 
