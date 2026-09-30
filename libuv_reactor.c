@@ -5817,34 +5817,50 @@ static void io_transmitfile_work_cb(uv_work_t *work)
 		return;
 	}
 
-	/* Position the file once; synchronous TransmitFile reads from and
-	 * advances the file pointer, so later loop passes continue in place. */
-	if (tw->offset >= 0) {
-		LARGE_INTEGER li;
-		li.QuadPart = (LONGLONG) tw->offset;
+	/* The slice starts at the caller's offset, or where the file stands. */
+	LARGE_INTEGER pos;
 
-		if (!SetFilePointerEx(tw->file, li, NULL, FILE_BEGIN)) {
+	if (tw->offset >= 0) {
+		pos.QuadPart = (LONGLONG) tw->offset;
+	} else {
+		const LARGE_INTEGER here = {0};
+
+		if (!SetFilePointerEx(tw->file, here, &pos, FILE_CURRENT)) {
 			tw->uv_err = uv_translate_sys_error(GetLastError());
 			return;
 		}
 	}
 
-	/* TransmitFile stops at EOF and still reports success, so the bytes a
-	 * pass sent are read off the file pointer it advanced: a file that
-	 * shrank after its size was taken then shows as a short count, as
-	 * sendfile(2) shows it on POSIX, instead of as the full slice. */
-	const LARGE_INTEGER here = {0};
-	LARGE_INTEGER before;
+	/* TransmitFile stops at EOF and still reports success, and neither its
+	 * return nor the file pointer says how much it sent. The slice is clamped
+	 * to the file's size instead, so a file that shrank after the caller took
+	 * its size shows as a short count, as sendfile(2) shows it on POSIX. A
+	 * file that shrinks during the call itself is still counted whole. */
+	LARGE_INTEGER size;
 
-	if (!SetFilePointerEx(tw->file, here, &before, FILE_CURRENT)) {
+	if (!GetFileSizeEx(tw->file, &size)) {
 		tw->uv_err = uv_translate_sys_error(GetLastError());
 		return;
+	}
+
+	const uint64_t available = size.QuadPart > pos.QuadPart
+			? (uint64_t) (size.QuadPart - pos.QuadPart) : 0;
+
+	if (available < tw->remaining) {
+		tw->remaining = (size_t) available;
 	}
 
 	while (tw->remaining > 0) {
 		const DWORD n = (DWORD) (tw->remaining < ASYNC_TRANSMITFILE_CHUNK_MAX
 									 ? tw->remaining
 									 : ASYNC_TRANSMITFILE_CHUNK_MAX);
+
+		/* Each pass positions the file itself rather than trusting
+		 * TransmitFile to leave the pointer after what it sent. */
+		if (!SetFilePointerEx(tw->file, pos, NULL, FILE_BEGIN)) {
+			tw->uv_err = uv_translate_sys_error(GetLastError());
+			return;
+		}
 
 		/* NULL OVERLAPPED on a (blocking) libuv socket → synchronous:
 		 * returns only once all n bytes are handed to the transport.
@@ -5855,24 +5871,9 @@ static void io_transmitfile_work_cb(uv_work_t *work)
 			return;
 		}
 
-		LARGE_INTEGER after;
-
-		if (!SetFilePointerEx(tw->file, here, &after, FILE_CURRENT)) {
-			tw->uv_err = uv_translate_sys_error(GetLastError());
-			return;
-		}
-
-		const size_t sent = (size_t) (after.QuadPart - before.QuadPart);
-		tw->transferred += sent;
-		tw->remaining   -= sent;
-
-		/* EOF before the slice ended: the caller sees transferred short of
-		 * the length it asked for. */
-		if (sent < n) {
-			return;
-		}
-
-		before = after;
+		tw->transferred += n;
+		tw->remaining   -= n;
+		pos.QuadPart    += n;
 	}
 }
 
