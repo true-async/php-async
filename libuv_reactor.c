@@ -5831,11 +5831,12 @@ static void io_transmitfile_work_cb(uv_work_t *work)
 		}
 	}
 
-	/* TransmitFile stops at EOF and still reports success, and neither its
-	 * return nor the file pointer says how much it sent. The slice is clamped
-	 * to the file's size instead, so a file that shrank after the caller took
-	 * its size shows as a short count, as sendfile(2) shows it on POSIX. A
-	 * file that shrinks during the call itself is still counted whole. */
+	/* A count or start past EOF fails TransmitFile with WSAEINVAL after it has
+	 * sent an unknown part of the file, and the file pointer it leaves stops
+	 * 32 KiB in on a larger file, so neither says how much it sent. The slice
+	 * is clamped to the file's size instead, so a file that shrank after the
+	 * caller took its size shows as a short count, as sendfile(2) shows it on
+	 * POSIX. A file that shrinks during the call fails it with UV_EINVAL. */
 	LARGE_INTEGER size;
 
 	if (!GetFileSizeEx(tw->file, &size)) {
@@ -5862,7 +5863,7 @@ static void io_transmitfile_work_cb(uv_work_t *work)
 			return;
 		}
 
-		/* NULL OVERLAPPED on a (blocking) libuv socket → synchronous:
+		/* NULL OVERLAPPED → synchronous, on libuv's non-blocking socket too:
 		 * returns only once all n bytes are handed to the transport.
 		 * Stream sockets preserve send order, so the head written inline
 		 * before this op stays ahead of the body on the wire. */
