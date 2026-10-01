@@ -5055,15 +5055,17 @@ static void io_pipe_write_cb(uv_write_t *write_request, int status)
 		GC_ADDREF(exc);
 	}
 
+	/* Detached before the notify, never after it: an awaiter that resumes later
+	 * disposes the request once the handle may be closed and freed, and dispose
+	 * reads req->io; a listener may dispose it inside the notify, and the next
+	 * write it submits there can be allocated at the same address. */
+	req->io = NULL;
+
 	ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, exc);
 
 	if (exc != NULL) {
 		OBJ_RELEASE(exc);
 	}
-
-	/* The awaiter disposes this request after a resume later than this callback,
-	 * and dispose reads req->io — which by then may be closed and freed. */
-	req->io = NULL;
 
 	IF_EXCEPTION_STOP_REACTOR;
 }
@@ -5114,9 +5116,10 @@ static void io_pipe_writev_cb(uv_write_t *write_request, int status)
 			/* No exception on the broadcast: every listener forwards one
 			 * unconditionally and filters by result only otherwise, so it
 			 * would wake the whole handle instead of the one that asked. */
-			ZEND_ASYNC_CALLBACKS_NOTIFY(&req->io->base.event, &req->base, NULL);
+			async_io_t *const io = req->io;
 
-			req->io = NULL;   /* see io_pipe_write_cb: dispose runs after the handle may be gone */
+			req->io = NULL;   /* before the notify, as in io_pipe_write_cb */
+			ZEND_ASYNC_CALLBACKS_NOTIFY(&io->base.event, &req->base, NULL);
 		}
 
 		IF_EXCEPTION_STOP_REACTOR;
