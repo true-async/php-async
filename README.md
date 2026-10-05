@@ -1,6 +1,7 @@
 # <img src="true-async-logo.png" alt="PHP TRUE ASYNC Logo" height="48" style="vertical-align: middle; margin-right: 12px;" /> PHP TRUE ASYNC
 
 [![codecov](https://codecov.io/gh/true-async/php-async/branch/main/graph/badge.svg)](https://codecov.io/gh/true-async/php-async)
+[![Donate](https://img.shields.io/badge/Donate-Giveth-8B5CF6?style=flat-square)](https://giveth.io/project/trueasync-php)
 
 **PHP TRUE ASYNC** is an experimental `PHP` extension providing true asynchronous execution,
 tightly integrated at the core level. Write concurrent code using familiar PHP syntax —
@@ -14,6 +15,7 @@ no callbacks, no promises, no framework required.
 - [Installation](#installation)
 - [Documentation](#documentation)
 - [Contributing](#contributing)
+- [Support the project](#support-the-project)
 - [License](#license)
 - [Links](#links)
 
@@ -155,6 +157,14 @@ PhpStorm stubs for autocompletion and inline docs are available in [`ide-stubs/`
 Pull requests and suggestions are welcome!
 Please read [CONTRIBUTING.md](CONTRIBUTING.md) before starting.
 Also see: [Contributing](https://true-async.github.io/en/contributing.html)
+
+---
+
+## Support the project
+
+If you find TrueAsync useful, you can support its development:
+
+[Donate via Giveth](https://giveth.io/project/trueasync-php)
 
 ---
 
