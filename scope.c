@@ -1448,25 +1448,10 @@ static HashTable *scope_object_gc(zend_object *object, zval **table, int *num)
 		ZEND_HASH_FOREACH_END();
 	}
 
-	/* Add context ZVALs if present */
+	/* The scope owns the Context object, which exposes its values and keys to GC. */
 	if (scope->scope.context) {
-		/* Cast to actual context implementation to access HashTables */
 		async_context_t *context = (async_context_t *) scope->scope.context;
-
-		/* Add all values from context->values HashTable */
-		zval *val;
-		ZEND_HASH_FOREACH_VAL(&context->values, val)
-		{
-			zend_get_gc_buffer_add_zval(buf, val);
-		}
-		ZEND_HASH_FOREACH_END();
-
-		/* Add all object keys from context->keys HashTable */
-		ZEND_HASH_FOREACH_VAL(&context->keys, val)
-		{
-			zend_get_gc_buffer_add_zval(buf, val);
-		}
-		ZEND_HASH_FOREACH_END();
+		zend_get_gc_buffer_add_obj(buf, &context->std);
 	}
 
 	zend_get_gc_buffer_use(buf, table, num);
