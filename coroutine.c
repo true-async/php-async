@@ -329,25 +329,10 @@ static HashTable *async_coroutine_object_gc(zend_object *object, zval **table, i
 		}
 	}
 
-	/* Add context ZVALs if present */
+	/* The coroutine owns the Context object, which exposes its values and keys to GC. */
 	if (coroutine->coroutine.context) {
-		/* Cast to actual context implementation to access HashTables */
 		async_context_t *context = (async_context_t *) coroutine->coroutine.context;
-
-		/* Add all values from context->values HashTable */
-		zval *val;
-		ZEND_HASH_FOREACH_VAL(&context->values, val)
-		{
-			zend_get_gc_buffer_add_zval(buf, val);
-		}
-		ZEND_HASH_FOREACH_END();
-
-		/* Add all object keys from context->keys HashTable */
-		ZEND_HASH_FOREACH_VAL(&context->keys, val)
-		{
-			zend_get_gc_buffer_add_zval(buf, val);
-		}
-		ZEND_HASH_FOREACH_END();
+		zend_get_gc_buffer_add_obj(buf, &context->std);
 	}
 
 	async_fiber_context_t *fiber_context = coroutine->fiber_context;

@@ -365,18 +365,30 @@ static zend_object *context_object_create(zend_class_entry *class_entry)
 	return &context->std;
 }
 
-static void context_object_destroy(zend_object *object)
+static void context_free(zend_object *object)
 {
 	async_context_t *context = ZEND_OBJECT_TO_CONTEXT(object);
 
-	// Destroy hash tables
 	zend_hash_destroy(&context->values);
 	zend_hash_destroy(&context->keys);
+	zend_object_std_dtor(object);
 }
 
-static void context_free(zend_object *object)
+static HashTable *context_get_gc(zend_object *object, zval **table, int *num)
 {
-	zend_object_std_dtor(object);
+	async_context_t *context = ZEND_OBJECT_TO_CONTEXT(object);
+	zend_get_gc_buffer *buf = zend_get_gc_buffer_create();
+	zval *value;
+
+	ZEND_HASH_FOREACH_VAL(&context->values, value) {
+		zend_get_gc_buffer_add_zval(buf, value);
+	} ZEND_HASH_FOREACH_END();
+
+	ZEND_HASH_FOREACH_VAL(&context->keys, value) {
+		zend_get_gc_buffer_add_zval(buf, value);
+	} ZEND_HASH_FOREACH_END();
+	zend_get_gc_buffer_use(buf, table, num);
+	return NULL;
 }
 
 void async_register_context_ce(void)
@@ -391,8 +403,8 @@ void async_register_context_ce(void)
 	context_handlers = std_object_handlers;
 	context_handlers.offset = offsetof(async_context_t, std);
 	context_handlers.clone_obj = NULL;
-	context_handlers.dtor_obj = context_object_destroy;
 	context_handlers.free_obj = context_free;
+	context_handlers.get_gc = context_get_gc;
 
 	async_ce_context->default_object_handlers = &context_handlers;
 }
