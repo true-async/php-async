@@ -6257,6 +6257,17 @@ static inline bool libuv_can_use_sync_io(void)
  * in libuv's private header, so it is repeated rather than included. */
 #define ASYNC_IO_WRITE_MAX_BYTES 0x7ffff000u
 
+/* {{{ libuv_io_refuse_write
+ * Record on the handle that a write was refused at submit. Called before the
+ * caller's buffer is handed back: a refused fire-and-forget write reaches its
+ * free_cb from inside the submit call, and the flag is the only verdict that
+ * callback can read. */
+static zend_always_inline void libuv_io_refuse_write(zend_async_io_t *io_base)
+{
+	io_base->state |= ZEND_ASYNC_IO_WRITE_FAILED;
+}
+/* }}} */
+
 static zend_always_inline bool async_uv_buf_set(uv_buf_t *buf, char *base, const size_t len)
 {
 #ifdef PHP_WIN32
@@ -6502,8 +6513,16 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 {
 	async_io_t *io = (async_io_t *) io_base;
 
+	/* A fire-and-forget caller gave the buffer away at the call, so it gets it
+	 * back here as on every other refusal; writev does the same. */
 	if (UNEXPECTED(io->base.state & ZEND_ASYNC_IO_CLOSED)) {
+		libuv_io_refuse_write(io_base);
 		async_throw_error("Cannot write to closed IO handle");
+
+		if (free_cb != NULL) {
+			free_cb((void *) buf, io_base);
+		}
+
 		return NULL;
 	}
 
@@ -6522,6 +6541,7 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 	if (UNEXPECTED(free_cb != NULL && count > ASYNC_IO_WRITE_MAX_BYTES)) {
 		async_throw_error("Write of %zu bytes exceeds the %u a single write carries",
 				count, (unsigned) ASYNC_IO_WRITE_MAX_BYTES);
+		libuv_io_refuse_write(io_base);
 		libuv_io_req_dispose(&req->base);
 		return NULL;
 	}
@@ -6550,6 +6570,7 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 
 		if (UNEXPECTED(!async_uv_buf_set(&write_buffer, (char *) buf, req->max_size))) {
 			async_throw_error("Write of %zu bytes exceeds this platform's buffer limit", req->max_size);
+			libuv_io_refuse_write(io_base);
 			libuv_io_req_dispose(&req->base);
 			return NULL;
 		}
@@ -6560,6 +6581,7 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 
 		if (UNEXPECTED(error < 0)) {
 			async_throw_error("Failed to start stream write: %s", uv_strerror(error));
+			libuv_io_refuse_write(io_base);
 			libuv_io_req_dispose(&req->base);
 			return NULL;
 		}
@@ -6644,6 +6666,8 @@ static zend_async_io_req_t *libuv_io_write(zend_async_io_t *io_base, const char 
 static void libuv_writev_release(zend_async_io_t *io_base, const void *bufs, const unsigned nbufs,
 		const bool iov_mode, zend_async_io_write_free_cb_t free_cb, void *user_data)
 {
+	libuv_io_refuse_write(io_base);
+
 	if (iov_mode) {
 		if (free_cb != NULL) {
 			free_cb(user_data, io_base);
@@ -6766,6 +6790,7 @@ static zend_async_io_req_t *libuv_io_writev(zend_async_io_t *io_base,
 	if (UNEXPECTED(!fits)) {
 		free_alloca(tmp, tmp_heap);
 		async_throw_error("Vectored write buffer exceeds this platform's limit");
+		libuv_io_refuse_write(io_base);
 		libuv_io_req_dispose(&req->base);
 		return NULL;
 	}
@@ -6779,6 +6804,7 @@ static zend_async_io_req_t *libuv_io_writev(zend_async_io_t *io_base,
 
 	if (UNEXPECTED(error < 0)) {
 		async_throw_error("Failed to start vectored write: %s", uv_strerror(error));
+		libuv_io_refuse_write(io_base);
 		/* dispose handles both modes uniformly (writev_nbufs branch for ZSTR,
 		 * free_cb branch for IOV). */
 		libuv_io_req_dispose(&req->base);
