@@ -1,5 +1,5 @@
 /* This is a generated file, edit exceptions.stub.php instead.
- * Stub hash: f74a2005b4886f0327c16e1a536d1a4e84a04855 */
+ * Stub hash: 8a2b336d0b7bdc7bf879cd0d97e6c5677ff0b8a9 */
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_CompositeException_addException, 0, 1, IS_VOID, 0)
 	ZEND_ARG_OBJ_INFO(0, exception, Throwable, 0)

@@ -1,5 +1,7 @@
 /* This is a generated file, edit async.stub.php instead.
- * Stub hash: f55fed172505a7cb1745b8080b2597e5cb3ec825 */
+ * Stub hash: 78d8ad6bd782a5a8c973dabea2dc11dd55fcf481 */
+
+#include "zend_enum.h"
 
 ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_Async_spawn, 0, 1, Async\\Coroutine, 0)
 	ZEND_ARG_TYPE_INFO(0, task, IS_CALLABLE, 0)

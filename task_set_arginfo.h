@@ -1,40 +1,90 @@
 /* This is a generated file, edit task_set.stub.php instead.
- * Stub hash: task_set_arginfo */
+ * Stub hash: 623f8b136d9d68cfd41da637b929315a740651f5 */
 
-/* Reuse arginfo definitions from TaskGroup — identical signatures */
-#define arginfo_class_Async_TaskSet___construct     arginfo_class_Async_TaskGroup___construct
-#define arginfo_class_Async_TaskSet_spawn           arginfo_class_Async_TaskGroup_spawn
-#define arginfo_class_Async_TaskSet_spawnWithKey    arginfo_class_Async_TaskGroup_spawnWithKey
-#define arginfo_class_Async_TaskSet_joinNext        arginfo_class_Async_TaskGroup_race
-#define arginfo_class_Async_TaskSet_joinAny         arginfo_class_Async_TaskGroup_any
-#define arginfo_class_Async_TaskSet_joinAll         arginfo_class_Async_TaskGroup_all
-#define arginfo_class_Async_TaskSet_cancel          arginfo_class_Async_TaskGroup_cancel
-#define arginfo_class_Async_TaskSet_close           arginfo_class_Async_TaskGroup_close
-#define arginfo_class_Async_TaskSet_dispose         arginfo_class_Async_TaskGroup_dispose
-#define arginfo_class_Async_TaskSet_isFinished      arginfo_class_Async_TaskGroup_isFinished
-#define arginfo_class_Async_TaskSet_isClosed        arginfo_class_Async_TaskGroup_isClosed
-#define arginfo_class_Async_TaskSet_count           arginfo_class_Async_TaskGroup_count
-#define arginfo_class_Async_TaskSet_awaitCompletion arginfo_class_Async_TaskGroup_awaitCompletion
-#define arginfo_class_Async_TaskSet_finally         arginfo_class_Async_TaskGroup_finally
-#define arginfo_class_Async_TaskSet_getIterator     arginfo_class_Async_TaskGroup_getIterator
+ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Async_TaskSet___construct, 0, 0, 0)
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, concurrency, IS_LONG, 1, "null")
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, queueLimit, IS_LONG, 1, "null")
+	ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, scope, Async\\Scope, 1, "null")
+ZEND_END_ARG_INFO()
 
-/* Map TaskSet methods to TaskGroup implementations via ZEND_MALIAS */
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_TaskSet_spawn, 0, 1, IS_VOID, 0)
+	ZEND_ARG_TYPE_INFO(0, task, IS_CALLABLE, 0)
+	ZEND_ARG_VARIADIC_TYPE_INFO(0, args, IS_MIXED, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_TaskSet_spawnWithKey, 0, 2, IS_VOID, 0)
+	ZEND_ARG_TYPE_MASK(0, key, MAY_BE_STRING|MAY_BE_LONG, NULL)
+	ZEND_ARG_TYPE_INFO(0, task, IS_CALLABLE, 0)
+	ZEND_ARG_VARIADIC_TYPE_INFO(0, args, IS_MIXED, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_class_Async_TaskSet_joinNext, 0, 0, Async\\Future, 0)
+ZEND_END_ARG_INFO()
+
+#define arginfo_class_Async_TaskSet_joinAny arginfo_class_Async_TaskSet_joinNext
+
+ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_class_Async_TaskSet_joinAll, 0, 0, Async\\Future, 0)
+	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, ignoreErrors, _IS_BOOL, 0, "false")
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_TaskSet_cancel, 0, 0, IS_VOID, 0)
+	ZEND_ARG_OBJ_INFO_WITH_DEFAULT_VALUE(0, cancellation, Async\\AsyncCancellation, 1, "null")
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_TaskSet_close, 0, 0, IS_VOID, 0)
+ZEND_END_ARG_INFO()
+
+#define arginfo_class_Async_TaskSet_dispose arginfo_class_Async_TaskSet_close
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_TaskSet_isFinished, 0, 0, _IS_BOOL, 0)
+ZEND_END_ARG_INFO()
+
+#define arginfo_class_Async_TaskSet_isClosed arginfo_class_Async_TaskSet_isFinished
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_TaskSet_count, 0, 0, IS_LONG, 0)
+ZEND_END_ARG_INFO()
+
+#define arginfo_class_Async_TaskSet_awaitCompletion arginfo_class_Async_TaskSet_close
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_TaskSet_finally, 0, 1, IS_VOID, 0)
+	ZEND_ARG_OBJ_INFO(0, callback, Closure, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_class_Async_TaskSet_getIterator, 0, 0, Iterator, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_METHOD(Async_TaskGroup, __construct);
+ZEND_METHOD(Async_TaskGroup, spawn);
+ZEND_METHOD(Async_TaskGroup, spawnWithKey);
+ZEND_METHOD(Async_TaskGroup, race);
+ZEND_METHOD(Async_TaskGroup, any);
+ZEND_METHOD(Async_TaskGroup, all);
+ZEND_METHOD(Async_TaskGroup, cancel);
+ZEND_METHOD(Async_TaskGroup, close);
+ZEND_METHOD(Async_TaskGroup, dispose);
+ZEND_METHOD(Async_TaskGroup, isFinished);
+ZEND_METHOD(Async_TaskGroup, isClosed);
+ZEND_METHOD(Async_TaskGroup, count);
+ZEND_METHOD(Async_TaskGroup, awaitCompletion);
+ZEND_METHOD(Async_TaskGroup, finally);
+ZEND_METHOD(Async_TaskGroup, getIterator);
+
 static const zend_function_entry class_Async_TaskSet_methods[] = {
-	ZEND_MALIAS(Async_TaskGroup, __construct, __construct, arginfo_class_Async_TaskSet___construct, ZEND_ACC_PUBLIC)
-	ZEND_MALIAS(Async_TaskGroup, spawn, spawn, arginfo_class_Async_TaskSet_spawn, ZEND_ACC_PUBLIC)
-	ZEND_MALIAS(Async_TaskGroup, spawnWithKey, spawnWithKey, arginfo_class_Async_TaskSet_spawnWithKey, ZEND_ACC_PUBLIC)
-	ZEND_MALIAS(Async_TaskGroup, joinNext, race, arginfo_class_Async_TaskSet_joinNext, ZEND_ACC_PUBLIC)
-	ZEND_MALIAS(Async_TaskGroup, joinAny, any, arginfo_class_Async_TaskSet_joinAny, ZEND_ACC_PUBLIC)
-	ZEND_MALIAS(Async_TaskGroup, joinAll, all, arginfo_class_Async_TaskSet_joinAll, ZEND_ACC_PUBLIC)
-	ZEND_MALIAS(Async_TaskGroup, cancel, cancel, arginfo_class_Async_TaskSet_cancel, ZEND_ACC_PUBLIC)
-	ZEND_MALIAS(Async_TaskGroup, close, close, arginfo_class_Async_TaskSet_close, ZEND_ACC_PUBLIC)
-	ZEND_MALIAS(Async_TaskGroup, dispose, dispose, arginfo_class_Async_TaskSet_dispose, ZEND_ACC_PUBLIC)
-	ZEND_MALIAS(Async_TaskGroup, isFinished, isFinished, arginfo_class_Async_TaskSet_isFinished, ZEND_ACC_PUBLIC)
-	ZEND_MALIAS(Async_TaskGroup, isClosed, isClosed, arginfo_class_Async_TaskSet_isClosed, ZEND_ACC_PUBLIC)
-	ZEND_MALIAS(Async_TaskGroup, count, count, arginfo_class_Async_TaskSet_count, ZEND_ACC_PUBLIC)
-	ZEND_MALIAS(Async_TaskGroup, awaitCompletion, awaitCompletion, arginfo_class_Async_TaskSet_awaitCompletion, ZEND_ACC_PUBLIC)
-	ZEND_MALIAS(Async_TaskGroup, finally, finally, arginfo_class_Async_TaskSet_finally, ZEND_ACC_PUBLIC)
-	ZEND_MALIAS(Async_TaskGroup, getIterator, getIterator, arginfo_class_Async_TaskSet_getIterator, ZEND_ACC_PUBLIC)
+	ZEND_RAW_FENTRY("__construct", zim_Async_TaskGroup___construct, arginfo_class_Async_TaskSet___construct, ZEND_ACC_PUBLIC, NULL, NULL)
+	ZEND_RAW_FENTRY("spawn", zim_Async_TaskGroup_spawn, arginfo_class_Async_TaskSet_spawn, ZEND_ACC_PUBLIC, NULL, NULL)
+	ZEND_RAW_FENTRY("spawnWithKey", zim_Async_TaskGroup_spawnWithKey, arginfo_class_Async_TaskSet_spawnWithKey, ZEND_ACC_PUBLIC, NULL, NULL)
+	ZEND_RAW_FENTRY("joinNext", zim_Async_TaskGroup_race, arginfo_class_Async_TaskSet_joinNext, ZEND_ACC_PUBLIC, NULL, NULL)
+	ZEND_RAW_FENTRY("joinAny", zim_Async_TaskGroup_any, arginfo_class_Async_TaskSet_joinAny, ZEND_ACC_PUBLIC, NULL, NULL)
+	ZEND_RAW_FENTRY("joinAll", zim_Async_TaskGroup_all, arginfo_class_Async_TaskSet_joinAll, ZEND_ACC_PUBLIC, NULL, NULL)
+	ZEND_RAW_FENTRY("cancel", zim_Async_TaskGroup_cancel, arginfo_class_Async_TaskSet_cancel, ZEND_ACC_PUBLIC, NULL, NULL)
+	ZEND_RAW_FENTRY("close", zim_Async_TaskGroup_close, arginfo_class_Async_TaskSet_close, ZEND_ACC_PUBLIC, NULL, NULL)
+	ZEND_RAW_FENTRY("dispose", zim_Async_TaskGroup_dispose, arginfo_class_Async_TaskSet_dispose, ZEND_ACC_PUBLIC, NULL, NULL)
+	ZEND_RAW_FENTRY("isFinished", zim_Async_TaskGroup_isFinished, arginfo_class_Async_TaskSet_isFinished, ZEND_ACC_PUBLIC, NULL, NULL)
+	ZEND_RAW_FENTRY("isClosed", zim_Async_TaskGroup_isClosed, arginfo_class_Async_TaskSet_isClosed, ZEND_ACC_PUBLIC, NULL, NULL)
+	ZEND_RAW_FENTRY("count", zim_Async_TaskGroup_count, arginfo_class_Async_TaskSet_count, ZEND_ACC_PUBLIC, NULL, NULL)
+	ZEND_RAW_FENTRY("awaitCompletion", zim_Async_TaskGroup_awaitCompletion, arginfo_class_Async_TaskSet_awaitCompletion, ZEND_ACC_PUBLIC, NULL, NULL)
+	ZEND_RAW_FENTRY("finally", zim_Async_TaskGroup_finally, arginfo_class_Async_TaskSet_finally, ZEND_ACC_PUBLIC, NULL, NULL)
+	ZEND_RAW_FENTRY("getIterator", zim_Async_TaskGroup_getIterator, arginfo_class_Async_TaskSet_getIterator, ZEND_ACC_PUBLIC, NULL, NULL)
 	ZEND_FE_END
 };
 

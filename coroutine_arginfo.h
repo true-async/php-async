@@ -1,5 +1,5 @@
-/* This is a generated file, edit the .stub.php file instead.
- * Stub hash: d26edac05e9b063fe57498ce5d19ff8efc2c272f */
+/* This is a generated file, edit coroutine.stub.php instead.
+ * Stub hash: 5c0445f38fb574383af21c740188bdeddc48079b */
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_Async_Coroutine_getId, 0, 0, IS_LONG, 0)
 ZEND_END_ARG_INFO()
