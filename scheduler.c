@@ -1775,11 +1775,13 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 
 	transfer->context = NULL;
 
-	/* Determine the current error_reporting ini setting. */
-	zend_long error_reporting = zend_ini_long_literal("error_reporting");
-	if (!error_reporting && !zend_ini_str_literal("error_reporting")) {
-		error_reporting = E_ALL;
-	}
+	/* The INI value, not EG(error_reporting), which the @ operator lowers. A
+	 * directive that was never set has no value and means E_ALL, as in
+	 * OnUpdateErrorReporting(); zend_ini_str() would report it as "". */
+	const zend_string *error_reporting_ini = zend_ini_str_ex("error_reporting", sizeof("error_reporting") - 1, false, NULL);
+	const zend_long error_reporting = error_reporting_ini != NULL
+		? ZEND_STRTOL(ZSTR_VAL(error_reporting_ini), NULL, 10)
+		: E_ALL;
 
 	EG(vm_stack) = NULL;
 
