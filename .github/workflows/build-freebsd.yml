@@ -35,7 +35,7 @@ jobs:
       - name: FreeBSD Build and Test
         uses: vmactions/freebsd-vm@v1
         with:
-          release: '13.3'
+          release: '14.4'
           usesh: true
           copyback: false
           prepare: |
