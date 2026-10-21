@@ -553,6 +553,16 @@ ZEND_STACK_ALIGNED void async_coroutine_execute(async_coroutine_t *coroutine)
 		ZEND_ASYNC_CURRENT_COROUTINE = NULL;
 	}
 
+	/* A memory-limit error is not a bailout: the engine reports it, unwinds
+	 * the coroutine with an exit (EG(delayed_oom), zend_handle_delayed_oom)
+	 * and the error state lasts until request shutdown. Function calls fail
+	 * silently in that state, so the request ends here, as for a fatal error,
+	 * rather than leaving the other coroutines running with no effect. */
+	if (UNEXPECTED(ZEND_HAS_OOM())) {
+		should_start_graceful_shutdown = true;
+		is_bailout = true;
+	}
+
 exit:
 
 	if (UNEXPECTED(should_start_graceful_shutdown)) {
