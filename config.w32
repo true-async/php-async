@@ -35,7 +35,9 @@ if (PHP_ASYNC == "yes") {
         // Note: libuv >= 1.45.0 is required for UV_RUN_ONCE busy loop fix
         // For Windows builds, manually verify libuv version meets requirements
 
-        ADD_FLAG("LIBS", "libuv.lib Dbghelp.lib Userenv.lib");
+        // libuv is linked statically, so the system libraries it uses are ours to
+        // name: Synchronization.lib for WaitOnAddress, used since libuv 1.53.
+        ADD_FLAG("LIBS", "libuv.lib Dbghelp.lib Userenv.lib Synchronization.lib");
     } else {
         ERROR("Libuv components are not found. The search was performed in the directory: '" + PHP_PHP_BUILD +
               "'.\nTo compile PHP TRUE ASYNC with LibUV:\n" +
