@@ -1672,6 +1672,11 @@ static void libuv_handle_process_events(void)
 
 			ZEND_ASYNC_CALLBACKS_NOTIFY(event, NULL, NULL);
 			// Process event will be removed when stopped
+
+			// Nobody waits for a detached event: the reference is ours.
+			if (event->flags & ZEND_ASYNC_PROCESS_F_DETACHED) {
+				ZEND_ASYNC_EVENT_RELEASE(event);
+			}
 		}
 		// ECHILD is not settled here: a notified event outlives this sweep, so a
 		// second sweep would overwrite its exit code with a made-up one.
@@ -1758,6 +1763,21 @@ static void libuv_release_process_watch(void)
 
 /* }}} */
 
+/* {{{ libuv_process_events_del
+ * Removes the event's entry. The table is keyed by pid, and an event for the
+ * same pid can replace this one while it is still referenced (a detached event
+ * after a cancelled wait); the entry is removed only if it is this event. */
+static void libuv_process_events_del(zend_async_event_t *event)
+{
+	const zend_ulong pid_key = (zend_ulong) (uintptr_t) ((zend_async_process_event_t *) event)->process;
+
+	if (zend_hash_index_find_ptr(ASYNC_G(process_events), pid_key) == event) {
+		zend_hash_index_del(ASYNC_G(process_events), pid_key);
+	}
+}
+
+/* }}} */
+
 /* {{{ libuv_remove_process_event */
 static void libuv_remove_process_event(zend_async_event_t *event)
 {
@@ -1765,11 +1785,7 @@ static void libuv_remove_process_event(zend_async_event_t *event)
 		return;
 	}
 
-	// Get process handle from event to use as key
-	async_process_event_t *process_event = (async_process_event_t *) event;
-
-	zend_hash_index_del(ASYNC_G(process_events), (uintptr_t) process_event->event.process);
-
+	libuv_process_events_del(event);
 	libuv_release_process_watch();
 }
 
@@ -1827,6 +1843,34 @@ static void libuv_cleanup_signal_events(void)
 /* {{{ libuv_cleanup_process_events */
 static void libuv_cleanup_process_events(void)
 {
+#ifndef PHP_WIN32
+	/* A detached event holds the only reference. Reap a child that has exited
+	 * and release the event; one still running is no longer watched. */
+	if (ASYNC_G(process_events) != NULL) {
+		const uint32_t num_events = zend_hash_num_elements(ASYNC_G(process_events));
+		zend_async_event_t **detached = num_events > 0 ? safe_emalloc(num_events, sizeof(zend_async_event_t *), 0) : NULL;
+		uint32_t count = 0;
+		zend_async_event_t *event;
+
+		ZEND_HASH_FOREACH_PTR(ASYNC_G(process_events), event)
+		{
+			if (event->flags & ZEND_ASYNC_PROCESS_F_DETACHED) {
+				detached[count++] = event;
+			}
+		}
+		ZEND_HASH_FOREACH_END();
+
+		for (uint32_t i = 0; i < count; i++) {
+			waitpid((pid_t) ((zend_async_process_event_t *) detached[i])->process, NULL, WNOHANG);
+			ZEND_ASYNC_EVENT_RELEASE(detached[i]);
+		}
+
+		if (detached != NULL) {
+			efree(detached);
+		}
+	}
+#endif
+
 	if (ASYNC_G(process_events) != NULL) {
 		zend_array_destroy(ASYNC_G(process_events));
 		ASYNC_G(process_events) = NULL;
@@ -2254,7 +2298,7 @@ static bool libuv_process_event_dispose(zend_async_event_t *event)
 	// Remove from process_events hash before freeing to prevent UAF via stale hash pointer
 	const zend_process_t proc_handle = ((zend_async_process_event_t *) event)->process;
 	if ((uintptr_t) proc_handle != 0 && ASYNC_G(process_events) != NULL) {
-		zend_hash_index_del(ASYNC_G(process_events), (zend_ulong) (uintptr_t) proc_handle);
+		libuv_process_events_del(event);
 		libuv_release_process_watch();
 	}
 
