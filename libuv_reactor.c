@@ -4455,7 +4455,15 @@ static int libuv_exec(zend_async_exec_mode exec_mode,
 	zval_ptr_dtor(&tmp_return_value);
 	zval_ptr_dtor(&tmp_return_buffer);
 
-	const int exit_code = (int) exec_event->exit_code;
+	int exit_code = (int) exec_event->exit_code;
+#ifndef PHP_WIN32
+	/* libuv reports exit_status 0 for a child killed by a signal. Without
+	 * TrueAsync exec() and system() return pclose()'s raw wait status, which
+	 * for such a child is the signal number; return the same. */
+	if (exec_event->term_signal != 0) {
+		exit_code = exec_event->term_signal;
+	}
+#endif
 	exec_event->base.dispose(&exec_event->base);
 
 	return exit_code;
