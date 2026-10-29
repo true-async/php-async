@@ -195,6 +195,11 @@ static void pool_destroy_resource(async_pool_t *pool, zval *resource)
 
 	/* PHP callable */
 	if (base->destructor.fcall != NULL) {
+		/* Park an in-flight exception, such as a hook's cancellation: the
+		 * destructor must still run. */
+		zend_object *parked = NULL;
+		zend_exception_save_fast(&EG(exception), &parked);
+
 		zval retval;
 		ZVAL_UNDEF(&retval);
 
@@ -211,6 +216,7 @@ static void pool_destroy_resource(async_pool_t *pool, zval *resource)
 
 		zval_ptr_dtor(&args[0]);
 		zval_ptr_dtor(&retval);
+		zend_exception_restore_fast(&EG(exception), &parked);
 	}
 
 	zval_ptr_dtor(resource);
@@ -228,6 +234,39 @@ static void pool_destroy_borrowed_resource(async_pool_t *pool, zval *resource)
 ///////////////////////////////////////////////////////////////////////////////
 // Callback helpers
 ///////////////////////////////////////////////////////////////////////////////
+
+/* A hook's exception says the resource is bad, unless it is a cancellation or
+ * exit(): those end the coroutine that called the hook and must reach it. A
+ * hook may yield, so a cancellation can arrive inside it. */
+static bool pool_exception_ends_coroutine(zend_object *exception)
+{
+	return instanceof_function(exception->ce, async_ce_cancellation_exception)
+			|| zend_is_unwind_exit(exception)
+			|| zend_is_graceful_exit(exception);
+}
+
+/* Record a resource handed out by acquire(). */
+static void pool_check_out(async_pool_t *pool, const zval *resource)
+{
+	if (Z_TYPE_P(resource) == IS_OBJECT) {
+		zend_hash_index_add_empty_element(&pool->checked_out, Z_OBJ_HANDLE_P(resource));
+	}
+}
+
+/* Take a resource back: false for one this pool does not have out, such as
+ * the same object released twice. */
+static bool pool_check_in(async_pool_t *pool, const zval *resource)
+{
+	if (pool->active_count == 0) {
+		return false;
+	}
+
+	if (Z_TYPE_P(resource) == IS_OBJECT) {
+		return zend_hash_index_del(&pool->checked_out, Z_OBJ_HANDLE_P(resource)) == SUCCESS;
+	}
+
+	return true;
+}
 
 /* Call beforeAcquire callback, returns true if resource is OK */
 static bool pool_call_before_acquire(async_pool_t *pool, zval *resource)
@@ -270,7 +309,9 @@ static bool pool_call_before_acquire(async_pool_t *pool, zval *resource)
 	bool result = true;
 	if (EG(exception)) {
 		result = false;
-		zend_clear_exception();
+		if (!pool_exception_ends_coroutine(EG(exception))) {
+			zend_clear_exception();
+		}
 	} else if (Z_TYPE(retval) == IS_FALSE) {
 		result = false;
 	}
@@ -321,7 +362,9 @@ static bool pool_call_before_release(async_pool_t *pool, zval *resource)
 	bool result = true;
 	if (EG(exception)) {
 		result = false;
-		zend_clear_exception();
+		if (!pool_exception_ends_coroutine(EG(exception))) {
+			zend_clear_exception();
+		}
 	} else if (Z_TYPE(retval) == IS_FALSE) {
 		result = false;
 	}
@@ -566,6 +609,7 @@ static bool pool_dispose(zend_async_event_t *event)
 
 	/* Free circular buffer */
 	circular_buffer_dtor(&pool->idle);
+	zend_hash_destroy(&pool->checked_out);
 
 	/* Free fcall structures (only if not internal handlers) */
 	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_FACTORY_INTERNAL) && base->factory.fcall) {
@@ -844,6 +888,7 @@ async_pool_t *zend_async_pool_create(zend_fcall_t *factory,
 	base->max_size = max_size;
 	pool->healthcheck_interval_ms = healthcheck_interval_ms;
 	pool->active_count = 0;
+	zend_hash_init(&pool->checked_out, 0, NULL, NULL, 0);
 
 	/* Init idle buffer */
 	circular_buffer_ctor(&pool->idle, min_size > 0 ? min_size : 4, sizeof(zval), &zend_std_persistent_allocator);
@@ -901,6 +946,7 @@ async_pool_t *zend_async_pool_create_internal(zend_async_pool_factory_fn factory
 	base->max_size = max_size;
 	pool->healthcheck_interval_ms = healthcheck_interval_ms;
 	pool->active_count = 0;
+	zend_hash_init(&pool->checked_out, 0, NULL, NULL, 0);
 
 	/* Init idle buffer */
 	circular_buffer_ctor(&pool->idle, min_size > 0 ? min_size : 4, sizeof(zval), &zend_std_persistent_allocator);
@@ -974,6 +1020,7 @@ retry:
 		}
 
 		ZVAL_COPY_VALUE(result, &resource);
+		pool_check_out(pool, result);
 		return true;
 	}
 
@@ -985,6 +1032,7 @@ retry:
 		has_reservation = false;
 		pool->active_count++;
 		if (pool_create_resource(pool, result)) {
+			pool_check_out(pool, result);
 			return true;
 		}
 		pool->active_count--;
@@ -1061,6 +1109,7 @@ retry:
 		}
 
 		ZVAL_COPY_VALUE(result, &resource);
+		pool_check_out(pool, result);
 		return true;
 	}
 
@@ -1069,6 +1118,7 @@ retry:
 	if (total < base->max_size && may_serve_self) {
 		pool->active_count++;
 		if (pool_create_resource(pool, result)) {
+			pool_check_out(pool, result);
 			return true;
 		}
 		pool->active_count--;
@@ -1084,6 +1134,13 @@ retry:
 
 void zend_async_pool_release(async_pool_t *pool, zval *resource)
 {
+	/* Before the hook, which may yield: a second release of the same object
+	 * while it runs is refused too. */
+	if (UNEXPECTED(!pool_check_in(pool, resource))) {
+		zend_throw_exception(async_ce_pool_exception, "Resource is not acquired from this pool", 0);
+		return;
+	}
+
 	/* beforeRelease callback (if set) */
 	/* Returns false = resource is broken, destroy it */
 	const bool reusable = pool_call_before_release(pool, resource);
@@ -1092,8 +1149,11 @@ void zend_async_pool_release(async_pool_t *pool, zval *resource)
 	pool->active_count--;
 
 	if (!reusable) {
-		/* Report failure to strategy */
-		pool_strategy_report_failure(pool, NULL);
+		/* A cancelled hook says nothing about the backend. */
+		if (EXPECTED(EG(exception) == NULL || !pool_exception_ends_coroutine(EG(exception)))) {
+			pool_strategy_report_failure(pool, NULL);
+		}
+
 		pool_destroy_borrowed_resource(pool, resource);
 		/* Slot is now free (total dropped) but no idle resource was returned.
 		 * Wake one waiter so it can try to create a fresh resource instead of
@@ -1195,6 +1255,7 @@ void zend_async_pool_destroy(async_pool_t *pool)
 
 	/* Free circular buffer */
 	circular_buffer_dtor(&pool->idle);
+	zend_hash_destroy(&pool->checked_out);
 
 	/* Free fcall structures (only if not internal handlers) */
 	if (!(base->handler_flags & ZEND_ASYNC_POOL_F_FACTORY_INTERNAL) && base->factory.fcall) {
