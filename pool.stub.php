@@ -26,6 +26,9 @@ final class Pool implements \Countable, CircuitBreaker
      * @param callable|null $healthcheck Background check if resource is alive: fn(mixed $resource): bool
      * @param callable|null $beforeAcquire Check before each acquire: fn(mixed $resource): bool (false = destroy and get next)
      * @param callable|null $beforeRelease Called when resource is returned: fn(mixed $resource): bool (false = destroy, don't return to pool)
+     *
+     * An exception thrown by beforeAcquire or beforeRelease counts as false and is discarded, except a
+     * cancellation or exit(): those destroy the resource and reach the calling coroutine.
      * @param int $min Minimum idle resources (pre-created on startup)
      * @param int $max Maximum total resources (idle + active)
      * @param int $healthcheckInterval Background healthcheck interval (ms, 0 = disabled)
@@ -78,7 +81,9 @@ final class Pool implements \Countable, CircuitBreaker
      *
      * @param mixed $resource The resource to release, as acquire() returned it
      * @throws PoolException If the pool is closed, was never initialised, or is owned by the
-     *                       engine, whose resources no PHP value can stand in for
+     *                       engine, whose resources no PHP value can stand in for; or if the
+     *                       resource is not out of this pool: an object released twice or
+     *                       never acquired from it, or any resource when none is out
      */
     public function release(mixed $resource): void {}
 

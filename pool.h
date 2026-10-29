@@ -47,6 +47,11 @@ typedef struct _async_pool_s
 	/* Storage */
 	circular_buffer_t idle; /* idle resources (zval) */
 	uint32_t active_count;  /* resources currently in use */
+	/* Handles of the object resources acquire() handed out and release() has not
+	 * taken back. Values are never kept: a dropped object leaves its handle here
+	 * until a new object reuses it. Scalars cannot be told apart, so only
+	 * active_count guards their release. */
+	HashTable checked_out;
 	/* Waiters holding a reservation that have not run yet. No other coroutine
 	 * may take their places until they do. */
 	uint32_t reserved_count;

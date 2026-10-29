@@ -1,5 +1,5 @@
 /* This is a generated file, edit pool.stub.php instead.
- * Stub hash: a8295d0b4f9624fdca1d54b5aff17675222b8110 */
+ * Stub hash: 41c6ccc8a82491ca911f0617cc3b7653d7f93920 */
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_class_Async_Pool___construct, 0, 0, 1)
 	ZEND_ARG_TYPE_INFO(0, factory, IS_CALLABLE, 0)
