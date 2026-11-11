@@ -1034,6 +1034,29 @@ bool start_graceful_shutdown_with(zend_object *cancellation)
 	return true;
 }
 
+/**
+ * Graceful shutdown entered by a bailout. bailout_all_coroutines() unwinds
+ * every coroutine that has not finished, so none is cancelled here: when the
+ * main coroutine unwinds from inside bailout_all_coroutines(), a coroutine
+ * cancelled now would be queued, unwound by that loop directly, and leave its
+ * queue entry behind ("deferred coroutines were not executed"), pointing at a
+ * coroutine that may already be freed.
+ */
+static void start_bailout_shutdown(void)
+{
+	if (ZEND_ASYNC_GRACEFUL_SHUTDOWN) {
+		return;
+	}
+
+	ZEND_ASYNC_GRACEFUL_SHUTDOWN = true;
+
+	if (EG(exception) != NULL) {
+		ZEND_ASYNC_EXIT_EXCEPTION = EG(exception);
+		GC_ADDREF(EG(exception));
+		zend_clear_exception();
+	}
+}
+
 static void finally_shutdown(void)
 {
 	if (ZEND_ASYNC_EXIT_EXCEPTION != NULL && EG(exception) != NULL) {
@@ -1368,7 +1391,7 @@ bool async_scheduler_main_coroutine_suspend(const bool with_bailout)
 		efree(async_fiber_context);
 
 		if (UNEXPECTED(with_bailout)) {
-			start_graceful_shutdown();
+			start_bailout_shutdown();
 			switch_to_scheduler_with_bailout();
 		} else {
 			switch_to_scheduler(NULL);

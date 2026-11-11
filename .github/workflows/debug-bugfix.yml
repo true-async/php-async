@@ -93,7 +93,7 @@ jobs:
             wget https://github.com/libuv/libuv/archive/v1.45.0.tar.gz
             tar -xzf v1.45.0.tar.gz
             cd libuv-1.45.0 && mkdir build && cd build
-            cmake .. -DCMAKE_BUILD_TYPE=Release && make -j"$(nproc)" && sudo make install && sudo ldconfig
+            cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 && make -j"$(nproc)" && sudo make install && sudo ldconfig
           fi
 
       - name: Configure PHP
