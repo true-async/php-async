@@ -97,7 +97,7 @@ jobs:
             tar -xzf v1.45.0.tar.gz
             cd libuv-1.45.0
             mkdir build && cd build
-            cmake .. -DCMAKE_BUILD_TYPE=Release
+            cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
             make -j$(nproc)
             sudo make install
             sudo ldconfig
