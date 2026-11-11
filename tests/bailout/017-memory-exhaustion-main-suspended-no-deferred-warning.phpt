@@ -13,7 +13,7 @@ memory_limit=2M
 <?php
 
 /* The bailout unwinds every waiting coroutine. The main coroutine unwinds
- * into the shutdown, which must not cancel and queue coroutine A again: the
+ * into the shutdown, which must not cancel and queue coroutine A: the
  * bailout unwinds A next, and the queued entry would outlive it ("1 deferred
  * coroutines were not executed"). */
 
