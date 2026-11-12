@@ -265,6 +265,9 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 	 * returns false on the closed channel. */
 	async_thread_channel_t *channel = wc->channel;
 	int bailout = 0;
+	/* Set when this worker leaves after a task passed memory_limit: the pool
+	 * and the tasks queued for the other workers stay. */
+	volatile bool oom_exit = false;
 	/* Per-worker pool scope: child of worker's main scope. Pinned for the
 	 * worker's lifetime; each spawned task lives in its own child scope of
 	 * this one (see thread_pool_spawn_task_coroutine). Created lazily, only
@@ -376,10 +379,11 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 		while (true) {
 			/* A task past memory_limit leaves the engine in its error state
 			 * until the thread ends, and the scheduler is shutting down: a
-			 * receive here would park on a loop that is about to close. Only
-			 * this worker leaves; the pool and its queued tasks stay. */
+			 * receive here would park on a loop that is about to close. The
+			 * bailout path below is the one built for a dead engine. */
 			if (UNEXPECTED(ZEND_HAS_OOM())) {
-				goto done;
+				oom_exit = true;
+				zend_bailout();
 			}
 
 			/* Concurrency gate: when at the limit, park via wait-only
@@ -843,10 +847,14 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 		 * scheduler drain). Re-raising zend_bailout() inside the worker fiber
 		 * crashes it, so reject any still-pending tasks and exit cleanly. Done
 		 * before DELREF so the pool is still alive for the drain. */
-		zend_object *bex = thread_pool_bailout_exception();
-		thread_pool_close(pool);
-		thread_pool_drain_tasks(pool, true, bex);
-		OBJ_RELEASE(bex);
+		/* A worker leaving on memory_limit closes the pool only as its last
+		 * worker: no one else would ever take the queued tasks. */
+		if (!oom_exit || zend_atomic_int_load(&pool->live_workers) == 1) {
+			zend_object *bex = thread_pool_bailout_exception();
+			thread_pool_close(pool);
+			thread_pool_drain_tasks(pool, true, bex);
+			OBJ_RELEASE(bex);
+		}
 
 		/* Bailout longjmped past `done:` (which disposes slot_event). Its open
 		 * uv_async would block uv_loop_close — dispose it while reactor is up. */
