@@ -1584,18 +1584,32 @@ void async_register_circuit_breaker_ce(void)
 
 static zend_object_handlers async_timeout_handlers;
 
+static void async_timeout_dispose_event(async_timeout_object_t *timeout)
+{
+	if (timeout->event == NULL) {
+		return;
+	}
+
+	zend_async_timer_event_t *timer_event = timeout->event;
+	async_timeout_ext_t *timeout_ext = ASYNC_TIMEOUT_FROM_EVENT(&timer_event->base);
+	timeout_ext->std = NULL;
+	timeout->event = NULL;
+
+	timer_event->base.dispose(&timer_event->base);
+}
+
 static void async_timeout_destroy_object(zend_object *object)
 {
-	async_timeout_object_t *timeout = ASYNC_TIMEOUT_FROM_OBJ(object);
+	async_timeout_dispose_event(ASYNC_TIMEOUT_FROM_OBJ(object));
+}
 
-	if (timeout->event != NULL) {
-		zend_async_timer_event_t *timer_event = timeout->event;
-		async_timeout_ext_t *timeout_ext = ASYNC_TIMEOUT_FROM_EVENT(&timer_event->base);
-		timeout_ext->std = NULL;
-		timeout->event = NULL;
-
-		timer_event->base.dispose(&timer_event->base);
-	}
+static void async_timeout_free_object(zend_object *object)
+{
+	/* php_error_cb() marks every object as destructed before a fatal bails
+	 * out, so dtor_obj does not run for a Timeout alive at that moment. Its
+	 * timer left open fails uv_loop_close() at reactor shutdown. */
+	async_timeout_dispose_event(ASYNC_TIMEOUT_FROM_OBJ(object));
+	zend_object_std_dtor(object);
 }
 
 static bool async_timeout_event_dispose(zend_async_event_t *event)
@@ -1701,6 +1715,7 @@ void async_register_timeout_ce(void)
 
 	async_timeout_handlers.offset = offsetof(async_timeout_object_t, std);
 	async_timeout_handlers.dtor_obj = async_timeout_destroy_object;
+	async_timeout_handlers.free_obj = async_timeout_free_object;
 }
 
 static PHP_GINIT_FUNCTION(async)
