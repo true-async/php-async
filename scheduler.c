@@ -948,53 +948,60 @@ static void cancel_queued_coroutines(zend_object *cancellation)
  */
 void bailout_all_coroutines(void)
 {
-	// 1. First handle all coroutine in the queue
-	while (false == circular_buffer_is_empty(&ASYNC_G(coroutine_queue))) {
+	/* Unwinding a coroutine can run code that queues another one (a shutdown
+	 * function's cancel(), a scope disposed by the unwinding). The queue is
+	 * therefore emptied again after the pass over the remaining coroutines,
+	 * and that pass leaves a queued coroutine to it: one unwound while still
+	 * queued would later run a second time, finished. */
+	do {
+		// 1. First handle all coroutine in the queue
+		while (false == circular_buffer_is_empty(&ASYNC_G(coroutine_queue))) {
 
-		async_coroutine_t *async_coroutine = next_coroutine();
+			async_coroutine_t *async_coroutine = next_coroutine();
 
-		if (UNEXPECTED(async_coroutine == NULL)) {
-			break;
+			if (UNEXPECTED(async_coroutine == NULL)) {
+				break;
+			}
+
+			/* Coroutine is no longer in the queue — clear the QUEUED status
+			 * before we hand it off to bailout. */
+			if (EXPECTED(ZEND_ASYNC_WAKER_IN_QUEUE(async_coroutine->coroutine.waker))) {
+				async_coroutine->coroutine.waker->status = ZEND_ASYNC_WAKER_RESULT;
+			}
+
+			if (async_coroutine->fiber_context) {
+				ZEND_ASYNC_CURRENT_COROUTINE = &async_coroutine->coroutine;
+				fiber_switch_context_ex(async_coroutine, ZEND_FIBER_TRANSFER_FLAG_BAILOUT);
+			} else {
+				ZEND_COROUTINE_SET_BAILOUT(&async_coroutine->coroutine);
+				async_coroutine_finalize(async_coroutine);
+			}
 		}
 
-		/* Coroutine is no longer in the queue — clear the QUEUED status
-		 * before we hand it off to bailout. */
-		if (EXPECTED(ZEND_ASYNC_WAKER_IN_QUEUE(async_coroutine->coroutine.waker))) {
-			async_coroutine->coroutine.waker->status = ZEND_ASYNC_WAKER_RESULT;
+		// 2. Then we process all remaining coroutines
+		zval *current;
+
+		ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), current)
+		{
+			zend_coroutine_t *coroutine = Z_PTR_P(current);
+			async_coroutine_t *async_coroutine = (async_coroutine_t *) coroutine;
+
+			if (ZEND_COROUTINE_IS_FINISHED(coroutine) || ZEND_ASYNC_WAKER_IN_QUEUE(coroutine->waker)) {
+				continue;
+			}
+
+			ZEND_COROUTINE_SET_BAILOUT(coroutine);
+
+			if (async_coroutine->fiber_context) {
+				ZEND_ASYNC_CURRENT_COROUTINE = &async_coroutine->coroutine;
+				fiber_switch_context_ex(async_coroutine, ZEND_FIBER_TRANSFER_FLAG_BAILOUT);
+			} else {
+				ZEND_ASYNC_WAKER_DESTROY(coroutine);
+				async_coroutine_finalize(async_coroutine);
+			}
 		}
-
-		if (async_coroutine->fiber_context) {
-			ZEND_ASYNC_CURRENT_COROUTINE = &async_coroutine->coroutine;
-			fiber_switch_context_ex(async_coroutine, ZEND_FIBER_TRANSFER_FLAG_BAILOUT);
-		} else {
-			ZEND_COROUTINE_SET_BAILOUT(&async_coroutine->coroutine);
-			async_coroutine_finalize(async_coroutine);
-		}
-	}
-
-	// 2. Then we process all remaining coroutines
-	zval *current;
-
-	ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), current)
-	{
-		zend_coroutine_t *coroutine = Z_PTR_P(current);
-		async_coroutine_t *async_coroutine = (async_coroutine_t *) coroutine;
-
-		if (ZEND_COROUTINE_IS_FINISHED(coroutine)) {
-			continue;
-		}
-
-		ZEND_COROUTINE_SET_BAILOUT(coroutine);
-
-		if (async_coroutine->fiber_context) {
-			ZEND_ASYNC_CURRENT_COROUTINE = &async_coroutine->coroutine;
-			fiber_switch_context_ex(async_coroutine, ZEND_FIBER_TRANSFER_FLAG_BAILOUT);
-		} else {
-			ZEND_ASYNC_WAKER_DESTROY(coroutine);
-			async_coroutine_finalize(async_coroutine);
-		}
-	}
-	ZEND_HASH_FOREACH_END();
+		ZEND_HASH_FOREACH_END();
+	} while (false == circular_buffer_is_empty(&ASYNC_G(coroutine_queue)));
 }
 
 bool start_graceful_shutdown(void)
