@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A Windows TCP listener that will never be paused can accept at libuv's full rate** (`ZEND_ASYNC_LISTEN_F_NO_PAUSE`, TrueAsync ABI 0.28.0). Since #305 every Windows TCP listener posted one AcceptEx at a time, so that a paused one hands its connections over in arrival order; that made a 1000-connect burst take 578-595 ms against 156-172 ms with libuv's 32 (one worker, 7 runs each, true-async-server `dev/BENCHMARKS.md` 2026-09-30). A listener created with the flag keeps the 32; one stopped anyway switches to one at that stop, and the connections already accepted ahead reach `start()` in no stated order. The flag is ignored on an AF_UNIX listener, and elsewhere than Windows it changes nothing.
+
 ### Fixed
 
 - **A bailout ran a coroutine a second time when the unwinding itself queued it.** Unwinding a coroutine can run code that cancels another one (a shutdown function's `cancel()`, a scope the unwinding disposes); `bailout_all_coroutines()` then unwound that coroutine while it stayed queued, and the scheduler later ran it again, finished: "1 deferred coroutines were not executed", and in the TrueAsync HTTP server a handler run on a freed context (SIGSEGV). The pass over the remaining coroutines now leaves queued ones to the queue, which is emptied again after it. Evidence: `tests/bailout/019` prints the warning 3 of 3 before and passes after.

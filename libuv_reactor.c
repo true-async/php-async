@@ -7167,6 +7167,9 @@ typedef struct
 	 * first use, `deliver_ready` says whether it exists. */
 	uv_idle_t deliver;
 	bool is_unix;
+	/* A TCP listener whose creator passed ZEND_ASYNC_LISTEN_F_NO_PAUSE: on
+	 * Windows it keeps libuv's pending AcceptEx until its first stop(). */
+	bool no_pause;
 	/* uv_listen has run. libuv has no call that undoes it, so a later start()
 	 * only unpauses. */
 	bool listening;
@@ -7387,14 +7390,14 @@ static bool libuv_listen_start(zend_async_event_t *event)
 	async_listen_event_t *listen_event = (async_listen_event_t *) (event);
 
 	if (!listen_event->listening) {
-		if (!listen_event->is_unix) {
+		if (!listen_event->is_unix && !listen_event->no_pause) {
 			/* One AcceptEx at a time on Windows (a no-op elsewhere), set before
 			 * uv_listen. libuv keeps completed accepts in a LIFO stack, so a
 			 * paused listener holding several would hand the newest over first;
 			 * with one it holds at most one, and the rest wait in the kernel
-			 * backlog in arrival order. Worker threads sharing one socket also
-			 * get an even share this way. The cost is one accept per loop
-			 * iteration. */
+			 * backlog in arrival order. The cost is one accept per loop
+			 * iteration, 3.5 times the time of a 1000-connect burst, so a
+			 * listener that never pauses keeps libuv's default. */
 			const int error = uv_tcp_simultaneous_accepts(&listen_event->uv_handle.tcp, 0);
 
 			if (error < 0) {
@@ -7435,7 +7438,18 @@ static bool libuv_listen_stop(zend_async_event_t *event)
 	EVENT_STOP_PROLOGUE(event);
 
 	/* libuv cannot stop a uv_listen; the listener pauses instead, see `paused`. */
-	((async_listen_event_t *) event)->paused = true;
+	async_listen_event_t *listen_event = (async_listen_event_t *) event;
+	listen_event->paused = true;
+
+	if (listen_event->no_pause) {
+		/* Stopped although its creator said it would not be. The AcceptEx
+		 * requests already posted stay posted and may complete during this
+		 * pause; libuv posts one at a time only after those have been accepted
+		 * (src/win/tcp.c), so the order is not kept until then. */
+		listen_event->no_pause = false;
+		uv_tcp_simultaneous_accepts(&listen_event->uv_handle.tcp, 0);
+	}
+
 	event->loop_ref_count = 0;
 	ZEND_ASYNC_DECREASE_EVENT_COUNT(event);
 	return true;
@@ -7553,6 +7567,7 @@ zend_async_listen_event_t *libuv_socket_listen(const char *host, int port, int b
 	async_listen_event_t *listen_event =
 			pecalloc(1, extra_size != 0 ? sizeof(async_listen_event_t) + extra_size : sizeof(async_listen_event_t), 0);
 	listen_event->is_unix = is_unix;
+	listen_event->no_pause = !is_unix && (flags & ZEND_ASYNC_LISTEN_F_NO_PAUSE) != 0;
 
 	int error;
 
@@ -7686,6 +7701,7 @@ zend_async_listen_event_t *libuv_socket_listen_fd(zend_socket_t fd, int backlog,
 	async_listen_event_t *listen_event =
 			pecalloc(1, extra_size != 0 ? sizeof(async_listen_event_t) + extra_size : sizeof(async_listen_event_t), 0);
 	listen_event->is_unix = is_unix;
+	listen_event->no_pause = !is_unix && (flags & ZEND_ASYNC_LISTEN_F_NO_PAUSE) != 0;
 
 	int error = is_unix ? uv_pipe_init(UVLOOP, &listen_event->uv_handle.pipe, 0)
 						: uv_tcp_init(UVLOOP, &listen_event->uv_handle.tcp);
