@@ -374,6 +374,13 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 
 		zval task;
 		while (true) {
+			/* A task past memory_limit leaves the engine in its error state
+			 * until the thread ends, and the scheduler is shutting down: a
+			 * receive here would park on a loop that is about to close. */
+			if (UNEXPECTED(ZEND_HAS_OOM())) {
+				zend_bailout();
+			}
+
 			/* Concurrency gate: when at the limit, park via wait-only
 			 * receive (result=NULL) suspending on both the channel and
 			 * slot_event. Wakes on a free slot (dispose fires
