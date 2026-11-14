@@ -12,8 +12,8 @@ jobs:
         debug: [true, false]
         zts: [true, false]
         # Temporarily disabled macOS x86_64 due to Clang 17 musttail compilation bug
-        # os: ['15-intel', '14'] # macOS 15 Intel (x86_64) and 14 (ARM64)
-        os: ['14'] # macOS 14 (ARM64) only
+        # os: ['15-intel', '15'] # macOS 15 Intel (x86_64) and 15 (ARM64)
+        os: ['15'] # macOS 15 (ARM64) only
 
     name: "MACOS_${{ matrix.os == '15-intel' && 'X64' || 'ARM64' }}_${{ matrix.debug && 'DEBUG' || 'RELEASE' }}_${{ matrix.zts && 'ZTS' || 'NTS' }}"
     runs-on: macos-${{ matrix.os }}
@@ -166,7 +166,7 @@ jobs:
 
       - name: Test Tracing JIT
         # Skip JIT on ARM64 + ZTS due to known issues
-        if: matrix.os != '14' || !matrix.zts
+        if: matrix.os == '15-intel' || !matrix.zts
         working-directory: php-src/ext/async
         run: |
           /usr/local/bin/php ../../run-tests.php \
@@ -196,7 +196,7 @@ jobs:
 
       - name: Test Function JIT
         # Skip JIT on ARM64 + ZTS due to known issues
-        if: matrix.os != '14' || !matrix.zts
+        if: matrix.os == '15-intel' || !matrix.zts
         working-directory: php-src/ext/async
         run: |
           /usr/local/bin/php ../../run-tests.php \
