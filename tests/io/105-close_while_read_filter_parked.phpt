@@ -70,7 +70,9 @@ function gate(string $name, Closure $open): void
 stream_filter_register('write-gate', 'WriteGate');
 stream_filter_register('read-gate', 'ReadGate');
 
-[$handle, $peer] = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+/* Windows has no AF_UNIX socket pair. */
+$domain = PHP_OS_FAMILY === 'Windows' ? STREAM_PF_INET : STREAM_PF_UNIX;
+[$handle, $peer] = stream_socket_pair($domain, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
 fwrite($peer, str_repeat('x', 10));
 
 stream_filter_append($handle, 'write-gate', STREAM_FILTER_WRITE);
