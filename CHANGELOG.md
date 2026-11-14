@@ -7,8 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **php-src is merged with upstream PHP-8.6 at 8.6.1-dev.** The module API number is 20261112, so extensions built for 0.11.8 must be rebuilt. Needs php-src `77b94391afd`.
+
 ### Fixed
 
+- **`fclose()` freed a filter chain under a coroutine suspended in a user filter or a userspace stream** (#324). Both sides set the one `NO_FCLOSE` bit, so the side that returned first cleared it while the other side's callback was still suspended. Each side now has its own bit, and `fclose()` and `pclose()` refuse while either is set. Needs php-src `2fd2ad65d59`. Evidence: `tests/io/104`, `105` and `106` fail before and pass after.
+- **A coroutine could enter a stream while its `fclose()` was suspended in the close flush** (#324), a user filter called with `$closing` or the write of a `zlib.deflate` tail, and walk into the chain the close then freed. The buffer locks are closed before the flush, so a closing filter or `stream_close()` that calls a locked API on its own stream gets a failure. Needs php-src `03f8f621946`. Evidence: `tests/io/108` fails before and passes after; `109` fails before in some runs.
+- **Removing a stream filter from a coroutine is covered by the upstream GH-22063 fix** merged with PHP-8.6: a filter that removes itself from its own callback gets "Cannot remove filter while it is being applied", and a removal from another coroutine waits for the chain's lock. Needs php-src `77b94391afd`. Evidence: `tests/io/102`, `103` and `107`.
 - **A bailout ran a coroutine a second time when the unwinding itself queued it.** Unwinding a coroutine can run code that cancels another one (a shutdown function's `cancel()`, a scope the unwinding disposes); `bailout_all_coroutines()` then unwound that coroutine while it stayed queued, and the scheduler later ran it again, finished: "1 deferred coroutines were not executed", and in the TrueAsync HTTP server a handler run on a freed context (SIGSEGV). The pass over the remaining coroutines now leaves queued ones to the queue, which is emptied again after it. Evidence: `tests/bailout/019` prints the warning 3 of 3 before and passes after.
 - **A live `Async\Timeout` left its libuv timer open after a fatal error**, so the reactor ended with "uv_loop_close failed (EBUSY)". A fatal error marks every object destructed before it bails out, and the timer was closed only in the destructor; `free_obj` closes it too. Evidence: `tests/bailout/018` fails 3 of 3 before and passes after.
 - **A thread pool worker whose task passed `memory_limit` parked on its channel for the next task** while its scheduler shut down; a debug build failed the assertion "The event loop must be stopped". The worker now leaves through its bailout path; it closes the pool only as its last live worker, so the others keep their tasks. Evidence: the TrueAsync HTTP server's `core/128` and `core/130` (a pool that serves and reloads after one worker's memory error) fail without it.
