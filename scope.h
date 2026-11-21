@@ -89,8 +89,22 @@ void async_scope_await_after_cancellation(
 		zend_fcall_info *error_fci, zend_fcall_info_cache *error_fci_cache,
 		zend_async_event_t *cancellation);
 
-/* The C API await of a cancelled scope: without a cancellation token it terminates what
- * outlives async.shutdown_grace and returns once the scope is empty (see scope.c). */
+/* Suspends `awaiter` until no coroutine is left in the scope tree, `cancellation` fires or
+ * `timeout_ms` passes (0: no limit). Returns false when it did not wait: the scope is closed
+ * or empty, `awaiter` belongs to it (an exception is thrown), or the suspend failed.
+ * Terminates nothing. */
+bool async_scope_await_empty(
+		zend_async_scope_t *scope, zend_coroutine_t *awaiter,
+		zend_fcall_info *error_fci, zend_fcall_info_cache *error_fci_cache,
+		zend_async_event_t *cancellation, const zend_ulong timeout_ms);
+
+/* The await of a cancelled scope behind the C API (ZEND_ASYNC_SCOPE_AWAIT_AFTER_CANCELLATION).
+ * With a `cancellation` token it waits as Scope::awaitAfterCancellation() does. Without one
+ * it drains: after each async.shutdown_grace it terminates what is left with
+ * async_coroutine_terminate() (finally blocks skipped), and returns once the scope tree is
+ * empty, the scope is closed or a wait fails. A cancellation the awaiter receives meanwhile
+ * does not stop the drain and is rethrown at the end. A grace of 0 or less waits without
+ * terminating. */
 void async_scope_drain_after_cancellation(
 		zend_async_scope_t *scope, zend_coroutine_t *awaiter,
 		zend_fcall_info *error_fci, zend_fcall_info_cache *error_fci_cache,

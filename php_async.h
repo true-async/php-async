@@ -130,11 +130,12 @@ uint64_t last_reactor_tick;
 bool debug_deadlock;
 
 /* async.shutdown_grace: milliseconds a coroutine may outlive the cancellation of a
- * graceful shutdown or a scope drain before it is terminated; 0 waits without limit. */
+ * graceful shutdown or a scope drain before it is terminated; 0 or less waits without limit. */
 zend_long shutdown_grace;
 
 /* Periodic timer of the running graceful shutdown that terminates what outlives
- * the grace; NULL while no shutdown waits. Owned by scheduler.c. */
+ * the grace; NULL while no shutdown waits. Started and stopped by scheduler.c;
+ * async_coroutine_finalize() stops it when the last coroutine ends. */
 zend_async_timer_event_t *shutdown_timer;
 
 /* Soft-timer channels currently in potential-deadlock state.

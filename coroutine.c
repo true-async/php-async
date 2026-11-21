@@ -1006,6 +1006,41 @@ bool async_coroutine_cancel(zend_coroutine_t *zend_coroutine,
 	return async_scheduler_coroutine_enqueue(zend_coroutine);
 }
 
+/*
+ * Forced termination of coroutines that outlive their cancellation.
+ *
+ * A coroutine that catches the cancellation in a retry loop never ends, and a
+ * graceful shutdown or a scope drain would wait for it forever. Once
+ * async.shutdown_grace runs out, such a coroutine is resumed with the exit
+ * token (zend_create_unwind_exit): no catch block can take it, finally blocks
+ * are skipped, destructors still run. A cancellation that can be caught cannot
+ * end a coroutine that catches everything; exit() is the only unwinding PHP
+ * code cannot stop.
+ */
+void async_coroutine_terminate(zend_coroutine_t *coroutine, zend_object *exit_token)
+{
+	if (ZEND_COROUTINE_IS_FINISHED(coroutine)) {
+		return;
+	}
+
+	// It never ran, so it has nothing to catch with: an ordinary cancellation ends it.
+	if (false == ZEND_COROUTINE_IS_STARTED(coroutine)) {
+		ZEND_ASYNC_CANCEL(coroutine, NULL, false);
+		return;
+	}
+
+	if (ZEND_COROUTINE_IS_PROTECTED(coroutine)) {
+		ZEND_COROUTINE_CLR_PROTECTED(coroutine);
+	}
+
+	// The exit token leaves no result behind: an awaiter has to read the end as a cancellation.
+	if (coroutine->exception == NULL) {
+		coroutine->exception = async_new_exception(async_ce_cancellation_exception, "Coroutine terminated");
+	}
+
+	ZEND_ASYNC_CANCEL(coroutine, exit_token, false);
+}
+
 ///////////////////////////////////////////////////////////
 /// 4. Event System Interface
 ///////////////////////////////////////////////////////////

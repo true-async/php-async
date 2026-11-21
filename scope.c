@@ -21,7 +21,6 @@
 #include "php_async.h"
 #include "exceptions.h"
 #include "iterator.h"
-#include "scheduler.h"
 
 #define METHOD(name) PHP_METHOD(Async_Scope, name)
 
@@ -409,7 +408,7 @@ static void scope_terminate_coroutines(async_scope_t *scope, zend_object *exit_t
  * `timeout_ms` passes (0: no limit). Returns false when it did not wait: the scope is
  * closed or already empty, the awaiter belongs to it (an exception is thrown), or the
  * wait could not be set up. */
-static bool scope_await_empty(
+bool async_scope_await_empty(
 		zend_async_scope_t *zend_scope, zend_coroutine_t *awaiter,
 		zend_fcall_info *error_fci, zend_fcall_info_cache *error_fci_cache,
 		zend_async_event_t *cancellation, const zend_ulong timeout_ms)
@@ -440,7 +439,7 @@ static bool scope_await_empty(
 		return false;
 	}
 
-	// Resumes only when COMPLETELY_DONE; routes any child error through the handler.
+	// Resumes only when the scope tree is empty; routes any child error through the handler.
 	scope_coroutine_callback_t *scope_callback = (scope_coroutine_callback_t *) zend_async_coroutine_callback_new(
 			awaiter, callback_resolve_when_zombie_completed, sizeof(scope_coroutine_callback_t));
 	if (UNEXPECTED(scope_callback == NULL)) {
@@ -470,9 +469,10 @@ static bool scope_await_empty(
 		}
 	}
 
-	ZEND_ASYNC_SUSPEND();
+	// A suspend that fails returns at once: reporting a wait would make a drain spin.
+	const bool suspended = ZEND_ASYNC_SUSPEND();
 	zend_async_waker_clean(awaiter);
-	return true;
+	return suspended;
 }
 
 /* C core of Scope::awaitAfterCancellation. Suspends `awaiter` until no coroutine, active or
@@ -483,7 +483,7 @@ void async_scope_await_after_cancellation(
 		zend_fcall_info *error_fci, zend_fcall_info_cache *error_fci_cache,
 		zend_async_event_t *cancellation)
 {
-	scope_await_empty(zend_scope, awaiter, error_fci, error_fci_cache, cancellation, 0);
+	async_scope_await_empty(zend_scope, awaiter, error_fci, error_fci_cache, cancellation, 0);
 }
 
 /* The await of a cancelled scope behind the C API (ZEND_ASYNC_SCOPE_AWAIT_AFTER_CANCELLATION).
@@ -500,13 +500,13 @@ void async_scope_drain_after_cancellation(
 	const zend_long grace_ms = ASYNC_G(shutdown_grace);
 
 	if (cancellation != NULL || grace_ms <= 0) {
-		scope_await_empty(zend_scope, awaiter, error_fci, error_fci_cache, cancellation, 0);
+		async_scope_await_empty(zend_scope, awaiter, error_fci, error_fci_cache, cancellation, 0);
 		return;
 	}
 
 	zend_object *received = NULL;
 
-	while (scope_await_empty(zend_scope, awaiter, error_fci, error_fci_cache, NULL, (zend_ulong) grace_ms)) {
+	while (async_scope_await_empty(zend_scope, awaiter, error_fci, error_fci_cache, NULL, (zend_ulong) grace_ms)) {
 		if (UNEXPECTED(EG(exception))) {
 			if (received == NULL) {
 				received = EG(exception);
@@ -535,8 +535,6 @@ void async_scope_drain_after_cancellation(
 		}
 	}
 }
-
-
 
 METHOD(awaitAfterCancellation)
 {

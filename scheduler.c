@@ -887,41 +887,8 @@ static bool resolve_deadlocks(void)
 ///////////////////////////////////////////////////////////
 /// SHUTDOWN AND CLEANUP
 ///////////////////////////////////////////////////////////
-/*
- * Forced termination of coroutines that outlive their cancellation.
- *
- * A coroutine that catches the cancellation in a retry loop never ends, and a
- * graceful shutdown or a scope drain would wait for it forever. Once
- * async.shutdown_grace runs out, such a coroutine is resumed with the exit
- * token (zend_create_unwind_exit): no catch block can take it, finally blocks
- * are skipped, destructors still run. A cancellation that can be caught cannot
- * end a coroutine that catches everything; exit() is the only unwinding PHP
- * code cannot stop.
- */
-void async_coroutine_terminate(zend_coroutine_t *coroutine, zend_object *exit_token)
-{
-	if (ZEND_COROUTINE_IS_FINISHED(coroutine)) {
-		return;
-	}
-
-	// It never ran, so it has nothing to catch with: an ordinary cancellation ends it.
-	if (false == ZEND_COROUTINE_IS_STARTED(coroutine)) {
-		ZEND_ASYNC_CANCEL(coroutine, NULL, false);
-		return;
-	}
-
-	if (ZEND_COROUTINE_IS_PROTECTED(coroutine)) {
-		ZEND_COROUTINE_CLR_PROTECTED(coroutine);
-	}
-
-	// The exit token leaves no result behind: an awaiter has to read the end as a cancellation.
-	if (coroutine->exception == NULL) {
-		coroutine->exception = async_new_exception(async_ce_cancellation_exception, "Coroutine terminated");
-	}
-
-	ZEND_ASYNC_CANCEL(coroutine, exit_token, false);
-}
-
+/* Grace timer of a graceful shutdown: terminates what outlives async.shutdown_grace (see
+ * async_coroutine_terminate in coroutine.c). */
 typedef struct {
 	zend_async_event_callback_t base;
 	/* How many times the timer has fired: the warning goes out on the first. */
@@ -991,7 +958,14 @@ static void shutdown_timer_start(void)
 	shutdown_timer_callback_t *callback = (shutdown_timer_callback_t *) ZEND_ASYNC_EVENT_CALLBACK_EX(
 			shutdown_timer_callback, sizeof(shutdown_timer_callback_t));
 
-	if (UNEXPECTED(callback == NULL || false == timer->base.add_callback(&timer->base, &callback->base))) {
+	if (UNEXPECTED(callback == NULL)) {
+		timer->base.dispose(&timer->base);
+		zend_clear_exception();
+		return;
+	}
+
+	if (UNEXPECTED(false == timer->base.add_callback(&timer->base, &callback->base))) {
+		ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&callback->base);
 		timer->base.dispose(&timer->base);
 		zend_clear_exception();
 		return;
@@ -2198,8 +2172,11 @@ to_bailout_all_coroutines:
 	}
 	zend_end_try();
 
-	// Every coroutine has ended or the loop was left; nothing is left for the grace to wait for.
-	async_shutdown_timer_stop();
+	// The scheduler loop has ended: nothing is left for the grace to wait for. Other fibers
+	// leave this function too (one the fiber pool does not take back), while coroutines run.
+	if (is_scheduler) {
+		async_shutdown_timer_stop();
+	}
 
 	// At this point, the fiber is finishing and should properly transfer control back.
 

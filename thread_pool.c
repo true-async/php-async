@@ -37,6 +37,9 @@ static zend_object_handlers thread_pool_handlers;
 #define METHOD(name) PHP_METHOD(Async_ThreadPool, name)
 #define THIS_POOL() (ASYNC_THREAD_POOL_FROM_OBJ(Z_OBJ_P(ZEND_THIS))->pool)
 
+/* How often a retiring worker that waits for its in-flight tasks checks for cancel(), in ms. */
+#define POOL_RETIRE_CANCEL_CHECK_MS 100
+
 ///////////////////////////////////////////////////////////
 /// Pool refcount
 ///////////////////////////////////////////////////////////
@@ -795,17 +798,18 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 		 * unpinning + release lets the cascade disposal complete during
 		 * the scheduler drain instead of leaking the scope. */
 		if (pool_scope != NULL) {
-			if (false == zend_atomic_int_load(&pool->cancel_requested)) {
-				/* close() and reload() let in-flight task coroutines finish. They are
-				 * awaited here, so the graceful shutdown below meets only what is not
-				 * a task: coroutines the bootloader or a task left behind. */
-				async_scope_await_after_cancellation(pool_scope, ZEND_ASYNC_CURRENT_COROUTINE, NULL, NULL, NULL);
+			/* close() and reload() let in-flight task coroutines finish. They are
+			 * awaited here, so the graceful shutdown below meets only what is not
+			 * a task: coroutines the bootloader or a task left behind. cancel()
+			 * only sets a flag, so the wait wakes up to read it. */
+			while (false == zend_atomic_int_load(&pool->cancel_requested)
+				   && async_scope_await_empty(pool_scope, ZEND_ASYNC_CURRENT_COROUTINE, NULL, NULL, NULL,
+											  POOL_RETIRE_CANCEL_CHECK_MS)) {
 				if (UNEXPECTED(EG(exception))) {
 					zend_clear_exception();
 				}
 			}
 
-			/* Read again: cancel() may have come during the wait above. */
 			if (zend_atomic_int_load(&pool->cancel_requested)) {
 				/* is_safely=false overrides inherited DISPOSE_SAFELY —
 				 * we want in-flight task coroutines to actually die. */
@@ -821,8 +825,9 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 		 * timer) that the server-side scope drain never reaches. Its live reactor
 		 * handle would keep AFTER_MAIN — and this worker's reload exit-token —
 		 * hung forever, so force graceful shutdown to cancel it. Coroutine-mode
-		 * in-flight task coroutines were awaited above (see 077), so the
-		 * shutdown does not cut them. */
+		 * in-flight task coroutines were awaited above (see 077), or cancelled
+		 * with pool_scope on cancel(); the shutdown terminates what a task or
+		 * the bootloader left. */
 		start_graceful_shutdown();
 
 		ZEND_ASYNC_RUN_SCHEDULER_AFTER_MAIN(false);
