@@ -1,9 +1,11 @@
 --TEST--
-ThreadPool: a retiring worker ends a coroutine that catches its cancellation, so close() and reload() return
+ThreadPool: a retiring worker terminates a bootloader coroutine that catches its cancellation, so reload() and close() complete
 --SKIPIF--
 <?php
 if (!PHP_ZTS) die('skip ZTS required');
 ?>
+--INI--
+async.shutdown_grace=300
 --FILE--
 <?php
 
@@ -17,15 +19,11 @@ use function Async\delay;
 spawn(function () {
     $boot = static function (): void {
         spawn(static function (): void {
-            try {
-                while (true) {
-                    try {
-                        delay(100);
-                    } catch (\Throwable $e) {
-                    }
+            while (true) {
+                try {
+                    delay(100);
+                } catch (\Throwable $e) {
                 }
-            } finally {
-                echo "finally ran\n";
             }
         });
     };
@@ -37,12 +35,18 @@ spawn(function () {
     echo await($pool->submit(static fn () => 'after reload')), "\n";
 
     $pool->close();
-    echo "closed\n";
+
+    // close() does not wait for the worker thread; the worker count says when it has left.
+    for ($i = 0; $i < 50 && $pool->getWorkerCount() > 0; $i++) {
+        delay(100);
+    }
+
+    echo "workers after close: ", $pool->getWorkerCount(), "\n";
 });
 ?>
 --EXPECTF--
 task
-%Afinally ran
+%AWarning: 1 coroutine(s) did not end within async.shutdown_grace after the shutdown cancellation and are terminated in %s
 %Aafter reload
-%Afinally ran
-%Aclosed
+%AWarning: 1 coroutine(s) did not end within async.shutdown_grace after the shutdown cancellation and are terminated in %s
+%Aworkers after close: 0
