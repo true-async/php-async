@@ -1737,6 +1737,9 @@ static PHP_GINIT_FUNCTION(async)
 	/* Debug deadlock diagnostics enabled by default */
 	async_globals->debug_deadlock = true;
 
+	async_globals->shutdown_grace = 5000;
+	async_globals->shutdown_timer = NULL;
+
 #ifdef PHP_WIN32
 	async_globals->watcherThread = NULL;
 	async_globals->ioCompletionPort = NULL;
@@ -1759,6 +1762,13 @@ static PHP_GSHUTDOWN_FUNCTION(async)
 PHP_INI_BEGIN()
 STD_PHP_INI_BOOLEAN(
 		"async.debug_deadlock", "1", PHP_INI_ALL, OnUpdateBool, debug_deadlock, zend_async_globals, async_globals)
+STD_PHP_INI_ENTRY("async.shutdown_grace",
+				  "5000",
+				  PHP_INI_ALL,
+				  OnUpdateLong,
+				  shutdown_grace,
+				  zend_async_globals,
+				  async_globals)
 PHP_INI_END()
 
 /* Module registration */

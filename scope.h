@@ -89,6 +89,13 @@ void async_scope_await_after_cancellation(
 		zend_fcall_info *error_fci, zend_fcall_info_cache *error_fci_cache,
 		zend_async_event_t *cancellation);
 
+/* The C API await of a cancelled scope: without a cancellation token it terminates what
+ * outlives async.shutdown_grace and returns once the scope is empty (see scope.c). */
+void async_scope_drain_after_cancellation(
+		zend_async_scope_t *scope, zend_coroutine_t *awaiter,
+		zend_fcall_info *error_fci, zend_fcall_info_cache *error_fci_cache,
+		zend_async_event_t *cancellation);
+
 void async_scope_notify_coroutine_finished(async_coroutine_t *coroutine);
 
 /* Mark coroutine as zombie and update active count */

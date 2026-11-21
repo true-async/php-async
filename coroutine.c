@@ -761,6 +761,10 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 		}
 	}
 
+	if (zend_hash_num_elements(&ASYNC_G(coroutines)) == 0) {
+		async_shutdown_timer_stop();
+	}
+
 	coroutine->fiber_context = NULL;
 	ZEND_ASYNC_ACT_AS_END();
 
@@ -894,10 +898,14 @@ bool async_coroutine_cancel(zend_coroutine_t *zend_coroutine,
 	// for an event but has not yet switched. Canceling such a coroutine
 	// is performed in the usual way.
 	//
-	if (UNEXPECTED(
-				zend_coroutine == ZEND_ASYNC_CURRENT_COROUTINE &&
-				false ==
-						(zend_coroutine->waker != NULL && zend_coroutine->waker->status == ZEND_ASYNC_WAKER_WAITING))) {
+	// A QUEUED waker is the same case: suspend() or delay(0) has put the coroutine
+	// back into the queue and it is switching out. Marked only, it would never see
+	// the cancellation, since nothing is thrown at its next resume.
+	//
+	if (UNEXPECTED(zend_coroutine == ZEND_ASYNC_CURRENT_COROUTINE &&
+				   false == (zend_coroutine->waker != NULL &&
+							 (zend_coroutine->waker->status == ZEND_ASYNC_WAKER_WAITING ||
+							  zend_coroutine->waker->status == ZEND_ASYNC_WAKER_QUEUED)))) {
 
 		ZEND_COROUTINE_SET_CANCELLED(zend_coroutine);
 

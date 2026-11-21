@@ -21,6 +21,7 @@
 #include "php_async.h"
 #include "exceptions.h"
 #include "iterator.h"
+#include "scheduler.h"
 
 #define METHOD(name) PHP_METHOD(Async_Scope, name)
 
@@ -371,17 +372,50 @@ METHOD(awaitCompletion)
 	zend_async_waker_clean(current_coroutine);
 }
 
-/* C core of Scope::awaitAfterCancellation, also used by the thread pool via the
- * async API. Suspends `awaiter` until the scope is COMPLETELY_DONE (active and
- * zombie counts both zero — physical disposal, not just "completed"). `awaiter`
- * must not belong to `scope`. `error_fci`/`cancellation` are optional. */
-void async_scope_await_after_cancellation(
+/* No coroutine, active or zombie, is left anywhere in the scope tree. The completion
+ * predicates cannot answer this: a cancelled scope reports itself completed while its
+ * coroutines still run. */
+static bool scope_is_empty(const async_scope_t *scope)
+{
+	if (scope->coroutines.length > 0) {
+		return false;
+	}
+
+	for (uint32_t i = 0; i < scope->scope.scopes.length; i++) {
+		if (false == scope_is_empty((const async_scope_t *) scope->scope.scopes.data[i])) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+static void scope_terminate_coroutines(async_scope_t *scope, zend_object *exit_token)
+{
+	for (uint32_t i = 0; i < scope->scope.scopes.length; i++) {
+		scope_terminate_coroutines((async_scope_t *) scope->scope.scopes.data[i], exit_token);
+	}
+
+	for (uint32_t i = 0; i < scope->coroutines.length; i++) {
+		async_coroutine_terminate(&scope->coroutines.data[i]->coroutine, exit_token);
+
+		if (UNEXPECTED(EG(exception))) {
+			zend_clear_exception();
+		}
+	}
+}
+
+/* Suspends `awaiter` until the scope tree holds no coroutine, `cancellation` fires, or
+ * `timeout_ms` passes (0: no limit). Returns false when it did not wait: the scope is
+ * closed or already empty, the awaiter belongs to it (an exception is thrown), or the
+ * wait could not be set up. */
+static bool scope_await_empty(
 		zend_async_scope_t *zend_scope, zend_coroutine_t *awaiter,
 		zend_fcall_info *error_fci, zend_fcall_info_cache *error_fci_cache,
-		zend_async_event_t *cancellation)
+		zend_async_event_t *cancellation, const zend_ulong timeout_ms)
 {
 	if (UNEXPECTED(awaiter == NULL || zend_scope == NULL || ZEND_ASYNC_SCOPE_IS_CLOSED(zend_scope))) {
-		return;
+		return false;
 	}
 
 	async_scope_t *scope = (async_scope_t *) zend_scope;
@@ -390,20 +424,20 @@ void async_scope_await_after_cancellation(
 	if (async_scope_contains_coroutine(scope, awaiter, 0)) {
 		async_throw_error(
 				"Cannot await completion of scope from a coroutine that belongs to the same scope or its children");
-		return;
+		return false;
 	}
 	if (UNEXPECTED(EG(exception))) {
-		return;
+		return false;
 	}
 
-	// Already drained — no active coroutines and no child scopes.
-	if (scope->coroutines.length == 0 && scope->scope.scopes.length == 0) {
-		return;
+	if (scope_is_empty(scope)) {
+		return false;
 	}
 
-	ZEND_ASYNC_WAKER_NEW(awaiter);
+	// The timer only resumes the awaiter: running out of time is not an error here.
+	zend_async_waker_new_with_timeout(awaiter, timeout_ms, NULL);
 	if (UNEXPECTED(EG(exception))) {
-		return;
+		return false;
 	}
 
 	// Resumes only when COMPLETELY_DONE; routes any child error through the handler.
@@ -411,7 +445,7 @@ void async_scope_await_after_cancellation(
 			awaiter, callback_resolve_when_zombie_completed, sizeof(scope_coroutine_callback_t));
 	if (UNEXPECTED(scope_callback == NULL)) {
 		ZEND_ASYNC_WAKER_DESTROY(awaiter);
-		return;
+		return false;
 	}
 
 	if (error_fci != NULL && error_fci->size != 0) {
@@ -425,20 +459,84 @@ void async_scope_await_after_cancellation(
 	if (UNEXPECTED(!zend_async_resume_when(
 			awaiter, &zend_scope->event, false, NULL, &scope_callback->callback))) {
 		ZEND_ASYNC_WAKER_DESTROY(awaiter);
-		return;
+		return false;
 	}
 
 	if (cancellation != NULL) {
 		zend_async_resume_when(awaiter, cancellation, false, zend_async_waker_callback_cancel, NULL);
 		if (UNEXPECTED(EG(exception))) {
 			zend_async_waker_clean(awaiter);
-			return;
+			return false;
 		}
 	}
 
 	ZEND_ASYNC_SUSPEND();
 	zend_async_waker_clean(awaiter);
+	return true;
 }
+
+/* C core of Scope::awaitAfterCancellation. Suspends `awaiter` until no coroutine, active or
+ * zombie, is left in the scope tree. `awaiter` must not belong to `scope`.
+ * `error_fci`/`cancellation` are optional. Terminates nothing. */
+void async_scope_await_after_cancellation(
+		zend_async_scope_t *zend_scope, zend_coroutine_t *awaiter,
+		zend_fcall_info *error_fci, zend_fcall_info_cache *error_fci_cache,
+		zend_async_event_t *cancellation)
+{
+	scope_await_empty(zend_scope, awaiter, error_fci, error_fci_cache, cancellation, 0);
+}
+
+/* The await of a cancelled scope behind the C API (ZEND_ASYNC_SCOPE_AWAIT_AFTER_CANCELLATION).
+ * A caller with a cancellation token of its own waits as Scope::awaitAfterCancellation() does.
+ * A caller without one drains the scope for good, as the pool's task nursery and the server's
+ * handler scope do: whatever outlives each async.shutdown_grace is terminated, and the call
+ * returns once the scope is empty. A cancellation the awaiter receives meanwhile does not stop
+ * the drain; it is rethrown at the end. */
+void async_scope_drain_after_cancellation(
+		zend_async_scope_t *zend_scope, zend_coroutine_t *awaiter,
+		zend_fcall_info *error_fci, zend_fcall_info_cache *error_fci_cache,
+		zend_async_event_t *cancellation)
+{
+	const zend_long grace_ms = ASYNC_G(shutdown_grace);
+
+	if (cancellation != NULL || grace_ms <= 0) {
+		scope_await_empty(zend_scope, awaiter, error_fci, error_fci_cache, cancellation, 0);
+		return;
+	}
+
+	zend_object *received = NULL;
+
+	while (scope_await_empty(zend_scope, awaiter, error_fci, error_fci_cache, NULL, (zend_ulong) grace_ms)) {
+		if (UNEXPECTED(EG(exception))) {
+			if (received == NULL) {
+				received = EG(exception);
+				GC_ADDREF(received);
+			}
+
+			zend_clear_exception();
+		}
+
+		async_scope_t *scope = (async_scope_t *) zend_scope;
+
+		if (ZEND_ASYNC_SCOPE_IS_CLOSED(zend_scope) || scope_is_empty(scope)) {
+			break;
+		}
+
+		zend_object *exit_token = zend_create_unwind_exit();
+		scope_terminate_coroutines(scope, exit_token);
+		OBJ_RELEASE(exit_token);
+	}
+
+	if (received != NULL) {
+		if (EG(exception) == NULL) {
+			async_rethrow_exception(received);
+		} else {
+			OBJ_RELEASE(received);
+		}
+	}
+}
+
+
 
 METHOD(awaitAfterCancellation)
 {
@@ -858,7 +956,7 @@ static void callback_resolve_when_zombie_completed(zend_async_event_t *event,
 		zval_ptr_dtor(&retval);
 	}
 
-	if (SCOPE_IS_COMPLETELY_DONE(scope)) {
+	if (scope_is_empty(scope)) {
 		ZEND_ASYNC_RESUME(coroutine);
 	}
 }

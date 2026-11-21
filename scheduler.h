@@ -49,6 +49,20 @@ bool async_scheduler_main_coroutine_suspend(bool with_bailout);
 bool async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine);
 void bailout_all_coroutines(void);
 
+/**
+ * End `coroutine` although it catches its cancellation.
+ *
+ * A coroutine that never ran is cancelled. A started one loses its cancellation
+ * protection and is resumed with `exit_token`, an UnwindExit object the caller
+ * owns: catch blocks do not take it and finally blocks do not run; destructors
+ * do. Its awaiters see an AsyncCancellation. A finished coroutine is left alone.
+ * The coroutine ends when the scheduler next resumes it, not inside this call.
+ */
+void async_coroutine_terminate(zend_coroutine_t *coroutine, zend_object *exit_token);
+
+/* Stops the grace timer of the graceful shutdown, if one runs. */
+void async_shutdown_timer_stop(void);
+
 /* Fiber context creation */
 async_fiber_context_t *async_fiber_context_create(void);
 

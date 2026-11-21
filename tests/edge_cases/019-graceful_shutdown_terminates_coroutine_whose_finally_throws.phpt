@@ -33,6 +33,6 @@ spawn(function () {
 });
 ?>
 --EXPECTF--
+%AWarning: 1 coroutine(s) did not end within async.shutdown_grace after the shutdown cancellation and are terminated in %s
 %AFatal error: Uncaught RuntimeException: boom%A
-Warning: 1 coroutine(s) did not end within async.shutdown_grace after the shutdown cancellation and are terminated in %s
 %Aended in time: true
