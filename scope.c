@@ -802,6 +802,16 @@ static void scope_timeout_callback(zend_async_event_t *event,
 
 	event->dispose(event);
 
+	// No main scope: the script is past its graceful shutdown, which has cancelled every
+	// coroutine already. Spawning with a NULL scope would create a new main scope.
+	if (UNEXPECTED(ZEND_ASYNC_MAIN_SCOPE == NULL)) {
+		if (scope != NULL) {
+			ZEND_ASYNC_EVENT_RELEASE(&scope->scope.event);
+		}
+
+		return;
+	}
+
 	zend_coroutine_t *coroutine = ZEND_ASYNC_SPAWN_WITH(ZEND_ASYNC_MAIN_SCOPE);
 	if (UNEXPECTED(coroutine == NULL)) {
 		if (scope != NULL) {
@@ -1385,6 +1395,12 @@ static bool scope_dispose(zend_async_event_t *scope_event)
 	zend_async_callbacks_free(&scope->scope.event);
 	async_scope_free_coroutines(scope);
 	zend_async_scope_free_children(&scope->scope);
+
+	// Code that runs after the main scope is gone (a timer, a late spawn) reads this global.
+	if (ZEND_ASYNC_MAIN_SCOPE == &scope->scope) {
+		ZEND_ASYNC_MAIN_SCOPE = NULL;
+	}
+
 	efree(scope);
 
 	if (critical_exception != NULL) {
