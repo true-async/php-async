@@ -49,6 +49,9 @@ bool async_scheduler_main_coroutine_suspend(bool with_bailout);
 bool async_scheduler_coroutine_enqueue(zend_coroutine_t *coroutine);
 void bailout_all_coroutines(void);
 
+/* Stops the grace timer of the graceful shutdown, if one runs. */
+void async_shutdown_timer_stop(void);
+
 /* Fiber context creation */
 async_fiber_context_t *async_fiber_context_create(void);
 

@@ -97,6 +97,19 @@ bool async_coroutine_cancel(zend_coroutine_t *zend_coroutine,
 							zend_object *error,
 							bool transfer_error,
 							const bool is_safely);
+
+/**
+ * End `coroutine` although it catches its cancellation.
+ *
+ * A coroutine that never ran is cancelled. A started one loses its cancellation
+ * protection and is resumed with `exit_token`, an UnwindExit object the caller
+ * owns: catch blocks do not take it and finally blocks do not run; destructors
+ * do. Its awaiters see an AsyncCancellation. A finished coroutine is left alone.
+ * Nothing ends inside this call: the coroutine unwinds when the scheduler next resumes it,
+ * and a destructor that suspends keeps it alive until it is terminated again.
+ */
+void async_coroutine_terminate(zend_coroutine_t *coroutine, zend_object *exit_token);
+
 bool async_coroutine_context_set(zend_coroutine_t *z_coroutine, zval *key, zval *value);
 bool async_coroutine_context_get(zend_coroutine_t *z_coroutine, zval *key, zval *result);
 bool async_coroutine_context_has(zend_coroutine_t *z_coroutine, zval *key);
