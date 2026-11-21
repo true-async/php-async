@@ -2772,6 +2772,48 @@ static zend_class_entry *thread_resolve_scope_class(const zend_string *name)
 	return ce;
 }
 
+/* Arms the superglobals an op_array reads or writes, as compiling it would.
+ * With auto_globals_jit the compiler fills $_SERVER, $_ENV and $_REQUEST on
+ * first sight of the name. A transferred closure was compiled in the parent, so
+ * in this thread its writes land in a plain array, and the first file compiled
+ * here fills the real one over it. Nested closures are declared at run time
+ * from dynamic_func_defs without a compile, so they are armed here too. */
+static void thread_arm_auto_globals(const zend_op_array *op_array)
+{
+	const zend_op *opline = op_array->opcodes;
+	const zend_op *end = opline + op_array->last;
+
+	for (; opline < end; opline++) {
+		switch (opline->opcode) {
+			case ZEND_FETCH_R:
+			case ZEND_FETCH_W:
+			case ZEND_FETCH_RW:
+			case ZEND_FETCH_IS:
+			case ZEND_FETCH_FUNC_ARG:
+			case ZEND_FETCH_UNSET:
+			case ZEND_ISSET_ISEMPTY_VAR:
+			case ZEND_UNSET_VAR:
+				break;
+			default:
+				continue;
+		}
+
+		if (opline->op1_type != IS_CONST || !(opline->extended_value & ZEND_FETCH_GLOBAL)) {
+			continue;
+		}
+
+		const zval *name = RT_CONSTANT(opline, opline->op1);
+
+		if (Z_TYPE_P(name) == IS_STRING) {
+			zend_is_auto_global(Z_STR_P(name));
+		}
+	}
+
+	for (uint32_t i = 0; i < op_array->num_dynamic_func_defs; i++) {
+		thread_arm_auto_globals(op_array->dynamic_func_defs[i]);
+	}
+}
+
 void async_thread_create_closure_ex(
 	const async_thread_closure_copy_t *copy, zval *closure_zv,
 	thread_transfer_ctx_t *parent_ctx)
@@ -2805,6 +2847,8 @@ void async_thread_create_closure_ex(
 			}
 		}
 	}
+
+	thread_arm_auto_globals(copy->func);
 
 	zend_function func;
 	memcpy(&func, copy->func, sizeof(zend_op_array));
