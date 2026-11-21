@@ -404,10 +404,6 @@ static void scope_terminate_coroutines(async_scope_t *scope, zend_object *exit_t
 	}
 }
 
-/* Suspends `awaiter` until the scope tree holds no coroutine, `cancellation` fires, or
- * `timeout_ms` passes (0: no limit). Returns false when it did not wait: the scope is
- * closed or already empty, the awaiter belongs to it (an exception is thrown), or the
- * wait could not be set up. */
 bool async_scope_await_empty(
 		zend_async_scope_t *zend_scope, zend_coroutine_t *awaiter,
 		zend_fcall_info *error_fci, zend_fcall_info_cache *error_fci_cache,
