@@ -887,6 +887,113 @@ static bool resolve_deadlocks(void)
 ///////////////////////////////////////////////////////////
 /// SHUTDOWN AND CLEANUP
 ///////////////////////////////////////////////////////////
+/* Grace timer of a graceful shutdown: terminates what outlives async.shutdown_grace (see
+ * async_coroutine_terminate in coroutine.c). */
+typedef struct {
+	zend_async_event_callback_t base;
+	/* How many times the timer has fired: the warning goes out on the first. */
+	uint32_t fires;
+} shutdown_timer_callback_t;
+
+static void shutdown_timer_callback(zend_async_event_t *event,
+									zend_async_event_callback_t *callback,
+									void *result,
+									zend_object *exception)
+{
+	const uint32_t count = zend_hash_num_elements(&ASYNC_G(coroutines));
+
+	if (count == 0) {
+		return;
+	}
+
+	shutdown_timer_callback_t *timer_callback = (shutdown_timer_callback_t *) callback;
+
+	if (timer_callback->fires++ == 0) {
+		async_warning("%u coroutine(s) did not end within async.shutdown_grace after the shutdown cancellation "
+					  "and are terminated",
+					  count);
+	}
+
+	zend_object **exception_ptr = &EG(exception);
+	zend_object *prev_exception_storage = NULL;
+	zend_object **prev_exception = &prev_exception_storage;
+	zend_exception_save_fast(exception_ptr, prev_exception);
+
+	zend_object *exit_token = zend_create_unwind_exit();
+	const bool prev_scheduler_context = ZEND_ASYNC_SCHEDULER_CONTEXT;
+	ZEND_ASYNC_SCHEDULER_CONTEXT = true;
+
+	zval *current;
+	ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), current)
+	{
+		async_coroutine_terminate(Z_PTR_P(current), exit_token);
+
+		if (*exception_ptr) {
+			zend_exception_save_fast(exception_ptr, prev_exception);
+		}
+	}
+	ZEND_HASH_FOREACH_END();
+
+	ZEND_ASYNC_SCHEDULER_CONTEXT = prev_scheduler_context;
+	OBJ_RELEASE(exit_token);
+	zend_exception_restore_fast(exception_ptr, prev_exception);
+}
+
+/* Starts the grace of a graceful shutdown whose cancellation left coroutines alive. The timer
+ * repeats with the same period: a terminated coroutine can still suspend in a destructor. */
+static void shutdown_timer_start(void)
+{
+	if (ASYNC_G(shutdown_timer) != NULL || ASYNC_G(shutdown_grace) <= 0
+		|| zend_hash_num_elements(&ASYNC_G(coroutines)) == 0) {
+		return;
+	}
+
+	zend_async_timer_event_t *timer = ZEND_ASYNC_NEW_TIMER_EVENT((zend_ulong) ASYNC_G(shutdown_grace), true);
+
+	if (UNEXPECTED(timer == NULL)) {
+		zend_clear_exception();
+		return;
+	}
+
+	shutdown_timer_callback_t *callback = (shutdown_timer_callback_t *) ZEND_ASYNC_EVENT_CALLBACK_EX(
+			shutdown_timer_callback, sizeof(shutdown_timer_callback_t));
+
+	if (UNEXPECTED(callback == NULL)) {
+		timer->base.dispose(&timer->base);
+		zend_clear_exception();
+		return;
+	}
+
+	if (UNEXPECTED(false == timer->base.add_callback(&timer->base, &callback->base))) {
+		ZEND_ASYNC_EVENT_CALLBACK_RELEASE(&callback->base);
+		timer->base.dispose(&timer->base);
+		zend_clear_exception();
+		return;
+	}
+
+	callback->fires = 0;
+
+	if (UNEXPECTED(false == timer->base.start(&timer->base))) {
+		timer->base.dispose(&timer->base);
+		zend_clear_exception();
+		return;
+	}
+
+	ASYNC_G(shutdown_timer) = timer;
+}
+
+void async_shutdown_timer_stop(void)
+{
+	zend_async_timer_event_t *timer = ASYNC_G(shutdown_timer);
+
+	if (timer == NULL) {
+		return;
+	}
+
+	ASYNC_G(shutdown_timer) = NULL;
+	timer->base.dispose(&timer->base);
+}
+
 /* cancellation: the exception handed to every coroutine, or NULL for the default one. */
 static void cancel_queued_coroutines(zend_object *cancellation)
 {
@@ -1036,6 +1143,8 @@ bool start_graceful_shutdown_with(zend_object *cancellation)
 		GC_ADDREF(EG(exception));
 		zend_clear_exception();
 	}
+
+	shutdown_timer_start();
 
 	// After exiting this function, EG(exception) must be 100% clean.
 	return true;
@@ -2062,6 +2171,12 @@ to_bailout_all_coroutines:
 		*in_scheduler_context = false;
 	}
 	zend_end_try();
+
+	// The scheduler loop has ended: nothing is left for the grace to wait for. Other fibers
+	// leave this function too (one the fiber pool does not take back), while coroutines run.
+	if (is_scheduler) {
+		async_shutdown_timer_stop();
+	}
 
 	// At this point, the fiber is finishing and should properly transfer control back.
 
