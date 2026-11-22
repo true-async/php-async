@@ -13,8 +13,13 @@ $pool = new Pool(
         return ++$n;
     },
     destructor: function ($r) {
+        static $exited = false;
         echo "destructor #$r\n";
-        exit(3);
+        // Once: an exit() from the close at shutdown is a separate case.
+        if (!$exited) {
+            $exited = true;
+            exit(3);
+        }
     },
     healthcheck: fn ($r) => false,
     min: 2,
