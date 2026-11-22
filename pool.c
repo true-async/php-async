@@ -725,16 +725,30 @@ static bool pool_call_healthcheck(async_pool_t *pool, zval *resource)
 	return is_healthy;
 }
 
-/* A destructor's exception cannot propagate from the scheduler context: it
- * would stop the reactor. Closing a connection the healthcheck found dead is
- * expected to fail, so the exception becomes a warning. */
-static void pool_report_destructor_exception(void)
+/* exit() ends the script from any context; anything else thrown in the
+ * scheduler context would stop the reactor and take every coroutine with it. */
+static bool pool_exception_ends_script(const zend_object *exception)
+{
+	return zend_is_unwind_exit(exception) || zend_is_graceful_exit(exception);
+}
+
+/* A destructor's exception cannot propagate from the scheduler context.
+ * Closing a connection the healthcheck found dead is expected to fail, so the
+ * exception becomes a warning; an error handler's own exception is dropped for
+ * the same reason. Returns true when exit() was called: the exception stays
+ * set and the caller stops. */
+static bool pool_report_destructor_exception(void)
 {
 	if (EXPECTED(EG(exception) == NULL)) {
-		return;
+		return false;
 	}
 
 	zend_object *exception = EG(exception);
+
+	if (pool_exception_ends_script(exception)) {
+		return true;
+	}
+
 	GC_ADDREF(exception);
 	zend_clear_exception();
 
@@ -747,6 +761,16 @@ static void pool_report_destructor_exception(void)
 
 	zend_string_release(message);
 	OBJ_RELEASE(exception);
+
+	if (UNEXPECTED(EG(exception) != NULL)) {
+		if (pool_exception_ends_script(EG(exception))) {
+			return true;
+		}
+
+		zend_clear_exception();
+	}
+
+	return false;
 }
 
 static void pool_healthcheck_callback_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event)
@@ -809,7 +833,10 @@ static void pool_healthcheck_timer_callback(zend_async_event_t *timer_event,
 			 * The coroutine that asks for a resource creates it, so min_size holds
 			 * only at startup. */
 			pool_destroy_resource(pool, &resource);
-			pool_report_destructor_exception();
+
+			if (pool_report_destructor_exception()) {
+				break;
+			}
 		}
 	}
 
