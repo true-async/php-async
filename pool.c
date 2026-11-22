@@ -725,6 +725,30 @@ static bool pool_call_healthcheck(async_pool_t *pool, zval *resource)
 	return is_healthy;
 }
 
+/* A destructor's exception cannot propagate from the scheduler context: it
+ * would stop the reactor. Closing a connection the healthcheck found dead is
+ * expected to fail, so the exception becomes a warning. */
+static void pool_report_destructor_exception(void)
+{
+	if (EXPECTED(EG(exception) == NULL)) {
+		return;
+	}
+
+	zend_object *exception = EG(exception);
+	GC_ADDREF(exception);
+	zend_clear_exception();
+
+	zval rv;
+	zend_string *message = zval_get_string(
+			zend_read_property_ex(zend_get_exception_base(exception), exception, ZSTR_KNOWN(ZEND_STR_MESSAGE), true, &rv));
+
+	zend_error(E_WARNING, "Pool: resource destructor threw %s: %s",
+			ZSTR_VAL(exception->ce->name), ZSTR_VAL(message));
+
+	zend_string_release(message);
+	OBJ_RELEASE(exception);
+}
+
 static void pool_healthcheck_callback_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event)
 {
 	/* No-op: callback is embedded in async_pool_t, not heap-allocated */
@@ -772,6 +796,7 @@ static void pool_healthcheck_timer_callback(zend_async_event_t *timer_event,
 			/* Closed while we checked: close already drained idle. */
 			if (ZEND_ASYNC_POOL_IS_CLOSED(pool)) {
 				pool_destroy_resource(pool, &resource);
+				pool_report_destructor_exception();
 				break;
 			}
 
@@ -779,27 +804,12 @@ static void pool_healthcheck_timer_callback(zend_async_event_t *timer_event,
 			zval_circular_buffer_push(&pool->idle, &resource, true);
 			zval_ptr_dtor(&resource);
 		} else {
-			/* Resource is dead - destroy it */
+			/* No replacement is created here: this is the scheduler context, where
+			 * a factory cannot suspend and its exception would stop the reactor.
+			 * The coroutine that asks for a resource creates it, so min_size holds
+			 * only at startup. */
 			pool_destroy_resource(pool, &resource);
-
-			if (UNEXPECTED(EG(exception))) {
-				break;
-			}
-
-			/* Create new one to maintain min_size */
-			uint32_t total = ASYNC_POOL_TOTAL(pool);
-			if (total < base->min_size) {
-				zval new_resource;
-				if (pool_create_resource(pool, &new_resource)) {
-					zval_circular_buffer_push(&pool->idle, &new_resource, true);
-					zval_ptr_dtor(&new_resource);
-					continue;
-				}
-
-				if (UNEXPECTED(EG(exception))) {
-					break;
-				}
-			}
+			pool_report_destructor_exception();
 		}
 	}
 

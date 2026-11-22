@@ -8,7 +8,7 @@ use function Async\delay;
 
 // Covers pool.c:527-670 — pool_call_healthcheck() PHP-fcall branch and
 // pool_healthcheck_timer_callback() timer dispatcher that iterates idle
-// resources and destroys/recreates the unhealthy ones.
+// resources and destroys the unhealthy ones.
 
 $nextId = 0;
 $seen = [];
