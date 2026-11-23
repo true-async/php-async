@@ -707,6 +707,10 @@ static void dump_deadlock_info(const zend_long real_coroutines)
 		const async_coroutine_t *coroutine = (async_coroutine_t *) Z_PTR_P(value);
 		const zend_async_event_t *event = &coroutine->coroutine.event;
 
+		if (coroutine->background) {
+			continue;
+		}
+
 		/* Print coroutine info */
 		if (event->info != NULL) {
 			zend_string *info = event->info((zend_async_event_t *) event);
@@ -746,6 +750,60 @@ static void dump_deadlock_info(const zend_long real_coroutines)
 	php_printf("=== DEADLOCK REPORT END   ===\n\n");
 }
 
+/* Coroutines the scheduler waits for: background ones are left out. */
+static zend_always_inline uint32_t live_coroutines(void)
+{
+	return zend_hash_num_elements(&ASYNC_G(coroutines)) - ASYNC_G(background_coroutines);
+}
+
+/* Ends every background coroutine: they are work no other coroutine waits for, so once only they
+ * are left the script is over. A coroutine not cancelled yet gets the graceful exit, which no catch
+ * block takes; protection is cleared, since a protected coroutine only defers a cancellation. One
+ * cancelled already that is idle again (its code caught an earlier cancellation and went back to
+ * waiting) is terminated, when `idle` says nothing else is queued to run. Returns true if an
+ * exception is left. */
+static bool end_background_coroutines(const bool idle)
+{
+	zval *value;
+	bool has_exception = false;
+	zend_object *exit_token = NULL;
+
+	ZEND_ASYNC_SCHEDULER_CONTEXT = true;
+	ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), value)
+	{
+		async_coroutine_t *coroutine = (async_coroutine_t *) Z_PTR_P(value);
+
+		if (false == coroutine->background || ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine)) {
+			continue;
+		}
+
+		if (false == ZEND_COROUTINE_IS_CANCELLED(&coroutine->coroutine)) {
+			ZEND_COROUTINE_CLR_PROTECTED(&coroutine->coroutine);
+			ZEND_ASYNC_CANCEL(&coroutine->coroutine, zend_create_graceful_exit(), true);
+		} else if (idle) {
+			if (exit_token == NULL) {
+				exit_token = zend_create_unwind_exit();
+			}
+
+			async_coroutine_terminate(&coroutine->coroutine, exit_token);
+		}
+
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			has_exception = true;
+			break;
+		}
+	}
+	ZEND_HASH_FOREACH_END();
+
+	if (exit_token != NULL) {
+		OBJ_RELEASE(exit_token);
+	}
+
+	process_resumed_coroutines();
+	ZEND_ASYNC_SCHEDULER_CONTEXT = false;
+	return has_exception;
+}
+
 static bool resolve_deadlocks(void)
 {
 	/* Channel-level resolution: close soft-timer channels in potential-deadlock
@@ -759,12 +817,14 @@ static bool resolve_deadlocks(void)
 	zval *value;
 
 	const zend_long active_coroutines = ZEND_ASYNC_ACTIVE_COROUTINE_COUNT;
-	const zend_long real_coroutines = zend_hash_num_elements(&ASYNC_G(coroutines));
+	const zend_long all_coroutines = zend_hash_num_elements(&ASYNC_G(coroutines));
+	/* Background coroutines are not reported: nobody waits for them. */
+	const zend_long real_coroutines = live_coroutines();
 
-	if (active_coroutines > real_coroutines) {
+	if (active_coroutines > all_coroutines) {
 		async_warning("The active coroutine counter contains an incorrect value: %u, real counter: %u.",
 					  active_coroutines,
-					  real_coroutines);
+					  all_coroutines);
 	}
 
 	if (real_coroutines == 0) {
@@ -813,7 +873,7 @@ static bool resolve_deadlocks(void)
 		ZEND_HASH_FOREACH_END();
 		process_resumed_coroutines();
 		ZEND_ASYNC_SCHEDULER_CONTEXT = false;
-		return false;
+		return end_background_coroutines(false);
 	}
 
 	/* Last-chance reactor drain: even when active_event_count==0, libuv may
@@ -1238,6 +1298,7 @@ static void async_scheduler_dtor(void)
 	ZEND_HASH_FOREACH_END();
 
 	zend_hash_clean(&ASYNC_G(coroutines));
+	ASYNC_G(background_coroutines) = 0;
 	zend_hash_destroy(&ASYNC_G(coroutines));
 	zend_hash_init(&ASYNC_G(coroutines), 0, NULL, NULL, 0);
 
@@ -1714,6 +1775,19 @@ static zend_always_inline bool scheduler_next_tick(void)
 		process_resumed_coroutines();
 	}
 
+	/* A background coroutine alone can live in this fast path, the hidden timer resuming it each
+	 * tick, without ever reaching the scheduler loop's check: end it here as there. */
+	if (UNEXPECTED(ASYNC_G(background_coroutines) > 0 && live_coroutines() == 0
+				   && ZEND_ASYNC_ACTIVE_EVENT_COUNT == 0 && circular_buffer_is_empty(&ASYNC_G(microtasks)))) {
+		if (UNEXPECTED(end_background_coroutines(false))) {
+			if (UNEXPECTED(switch_to_scheduler(transfer))) {
+				return true;
+			}
+
+			return false;
+		}
+	}
+
 	// Fast return path without context switching...
 	const zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
@@ -1724,9 +1798,8 @@ static zend_always_inline bool scheduler_next_tick(void)
 
 	const bool is_next_coroutine = circular_buffer_is_not_empty(&ASYNC_G(coroutine_queue));
 
-	if (UNEXPECTED(false == has_handles && false == is_next_coroutine &&
-				   zend_hash_num_elements(&ASYNC_G(coroutines)) > 0 && circular_buffer_is_empty(&ASYNC_G(microtasks)) &&
-				   resolve_deadlocks())) {
+	if (UNEXPECTED(false == has_handles && false == is_next_coroutine && live_coroutines() > 0 &&
+				   circular_buffer_is_empty(&ASYNC_G(microtasks)) && resolve_deadlocks())) {
 		if (UNEXPECTED(switch_to_scheduler(transfer))) {
 			return true;
 		}
@@ -2120,8 +2193,18 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 
 			TRY_HANDLE_EXCEPTION();
 
-			if (UNEXPECTED(false == has_handles && false == was_executed &&
-						   zend_hash_num_elements(&ASYNC_G(coroutines)) > 0 &&
+			/* Only background coroutines are left and no counted event can wake one: the script is
+			 * over. Decided on the event count alone: a hidden timer keeps firing while a handle the
+			 * reactor does not count keeps libuv alive, so the queue may never be empty here. */
+			if (UNEXPECTED(ASYNC_G(background_coroutines) > 0 && live_coroutines() == 0
+						   && ZEND_ASYNC_ACTIVE_EVENT_COUNT == 0 && circular_buffer_is_empty(&ASYNC_G(microtasks)))) {
+				if (UNEXPECTED(end_background_coroutines(
+							false == was_executed && circular_buffer_is_empty(coroutine_queue)))) {
+					break;
+				}
+			}
+
+			if (UNEXPECTED(false == has_handles && false == was_executed && live_coroutines() > 0 &&
 						   circular_buffer_is_empty(coroutine_queue) &&
 						   circular_buffer_is_empty(&ASYNC_G(microtasks)) && resolve_deadlocks())) {
 				break;

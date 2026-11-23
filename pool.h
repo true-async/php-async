@@ -59,9 +59,14 @@ typedef struct _async_pool_s
 	/* Waiters queue - like waiting_receivers in channel */
 	zend_async_callbacks_vector_t waiters;
 
-	/* Healthcheck timer */
+	/* Healthcheck timer, and the coroutine it wakes to check the idle resources. The coroutine holds
+	 * the pool only during a check; each side clears the other's pointer when it goes. */
 	zend_async_timer_event_t *healthcheck_timer;
-	zend_async_event_callback_t healthcheck_callback;
+	zend_coroutine_t *healthcheck_coroutine;
+	/* The pass holds a pool reference, and healthcheck_resource is the resource inside the hook
+	 * (UNDEF between hooks): the coroutine's dispose releases both if a bailout cut the pass. */
+	bool healthcheck_in_pass;
+	zval healthcheck_resource;
 	uint32_t healthcheck_interval_ms;
 } async_pool_t;
 

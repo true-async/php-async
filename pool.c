@@ -679,64 +679,63 @@ static void pool_event_init(async_pool_t *pool)
 // Healthcheck timer
 ///////////////////////////////////////////////////////////////////////////////
 
-/* Call healthcheck, returns true if resource is healthy */
+/* Call healthcheck, returns true if resource is healthy. A cancellation or exit() thrown by the hook
+ * stays set: it ends the healthcheck coroutine. Any other exception means the resource is bad. */
 static bool pool_call_healthcheck(async_pool_t *pool, zval *resource)
 {
 	zend_async_pool_t *base = &pool->base;
+	bool is_healthy = true;
 
 	/* Internal C handler */
 	if (base->handler_flags & ZEND_ASYNC_POOL_F_HEALTHCHECK_INTERNAL) {
 		if (base->healthcheck.internal == NULL) {
 			return true;
 		}
-		return base->healthcheck.internal(base, resource);
+
+		is_healthy = base->healthcheck.internal(base, resource);
+	} else {
+		/* PHP callable */
+		if (base->healthcheck.fcall == NULL) {
+			return true;
+		}
+
+		zval retval;
+		ZVAL_UNDEF(&retval);
+
+		zval args[1];
+		ZVAL_COPY(&args[0], resource);
+
+		/* Use local copy of fci to avoid corrupting the stored structure */
+		zend_fcall_info fci = base->healthcheck.fcall->fci;
+		fci.retval = &retval;
+		fci.param_count = 1;
+		fci.params = args;
+
+		zend_call_function(&fci, &base->healthcheck.fcall->fci_cache);
+
+		zval_ptr_dtor(&args[0]);
+
+		if (Z_TYPE(retval) == IS_FALSE) {
+			is_healthy = false;
+		}
+
+		zval_ptr_dtor(&retval);
 	}
 
-	/* PHP callable */
-	if (base->healthcheck.fcall == NULL) {
-		return true;
-	}
-
-	zval retval;
-	ZVAL_UNDEF(&retval);
-
-	zval args[1];
-	ZVAL_COPY(&args[0], resource);
-
-	/* Use local copy of fci to avoid corrupting the stored structure */
-	zend_fcall_info fci = base->healthcheck.fcall->fci;
-	fci.retval = &retval;
-	fci.param_count = 1;
-	fci.params = args;
-
-	zend_call_function(&fci, &base->healthcheck.fcall->fci_cache);
-
-	zval_ptr_dtor(&args[0]);
-
-	bool is_healthy = true;
-	if (EG(exception)) {
+	if (UNEXPECTED(EG(exception) != NULL)) {
 		is_healthy = false;
-		zend_clear_exception();
-	} else if (Z_TYPE(retval) == IS_FALSE) {
-		is_healthy = false;
+
+		if (false == pool_exception_ends_coroutine(EG(exception))) {
+			zend_clear_exception();
+		}
 	}
 
-	zval_ptr_dtor(&retval);
 	return is_healthy;
 }
 
-/* exit() ends the script from any context; anything else thrown in the
- * scheduler context would stop the reactor and take every coroutine with it. */
-static bool pool_exception_ends_script(const zend_object *exception)
-{
-	return zend_is_unwind_exit(exception) || zend_is_graceful_exit(exception);
-}
-
-/* A destructor's exception cannot propagate from the scheduler context.
- * Closing a connection the healthcheck found dead is expected to fail, so the
- * exception becomes a warning; an error handler's own exception is dropped for
- * the same reason. Returns true when exit() was called: the exception stays
- * set and the caller stops. */
+/* Closing a connection the healthcheck found dead is expected to fail, so a destructor's exception
+ * becomes a warning; an error handler's own exception is dropped for the same reason. Returns true
+ * when a cancellation or exit() is set: the exception stays and the healthcheck coroutine stops. */
 static bool pool_report_destructor_exception(void)
 {
 	if (EXPECTED(EG(exception) == NULL)) {
@@ -745,7 +744,7 @@ static bool pool_report_destructor_exception(void)
 
 	zend_object *exception = EG(exception);
 
-	if (pool_exception_ends_script(exception)) {
+	if (pool_exception_ends_coroutine(exception)) {
 		return true;
 	}
 
@@ -763,7 +762,7 @@ static bool pool_report_destructor_exception(void)
 	OBJ_RELEASE(exception);
 
 	if (UNEXPECTED(EG(exception) != NULL)) {
-		if (pool_exception_ends_script(EG(exception))) {
+		if (pool_exception_ends_coroutine(EG(exception))) {
 			return true;
 		}
 
@@ -773,76 +772,177 @@ static bool pool_report_destructor_exception(void)
 	return false;
 }
 
-static void pool_healthcheck_callback_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event)
+/* Checks each idle resource once, dropping the dead ones. Runs in the healthcheck coroutine, so a
+ * hook may suspend while other coroutines acquire and release. Stops on a cancellation or exit(),
+ * which stays set. No replacement is created: the coroutine that asks for a resource creates it. */
+static void pool_healthcheck_pass(async_pool_t *pool)
 {
-	/* No-op: callback is embedded in async_pool_t, not heap-allocated */
-}
+	/* A checked resource goes back to the tail, behind the ones not checked yet. */
+	size_t unchecked = circular_buffer_count(&pool->idle);
 
-static void pool_healthcheck_timer_callback(zend_async_event_t *timer_event,
-											zend_async_event_callback_t *callback,
-											void *result,
-											zend_object *exception)
-{
-	async_pool_t *pool = (async_pool_t *) ((char *) callback - offsetof(async_pool_t, healthcheck_callback));
-	zend_async_pool_t *base = &pool->base;
+	const zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
-	if (ZEND_ASYNC_POOL_IS_CLOSED(pool)) {
-		return;
-	}
+	/* A hook may catch the cancellation: the pass checks for it after each one. */
+	while (unchecked > 0 && false == ZEND_ASYNC_POOL_IS_CLOSED(pool)
+		   && false == ZEND_COROUTINE_IS_CANCELLED(coroutine) && false == ZEND_ASYNC_GRACEFUL_SHUTDOWN) {
+		/* Others may have taken idle resources while a hook suspended. */
+		unchecked = MIN(unchecked, circular_buffer_count(&pool->idle));
 
-	/* Check if healthcheck is set */
-	bool has_healthcheck = (base->handler_flags & ZEND_ASYNC_POOL_F_HEALTHCHECK_INTERNAL)
-			? (base->healthcheck.internal != NULL)
-			: (base->healthcheck.fcall != NULL);
-
-	if (!has_healthcheck) {
-		return;
-	}
-
-	/* Process all idle resources */
-	size_t count = circular_buffer_count(&pool->idle);
-
-	for (size_t i = 0; i < count; i++) {
-		zval resource;
-		if (zval_circular_buffer_pop(&pool->idle, &resource) != SUCCESS) {
+		/* An idle resource reserved for a waiter that has not run yet is the waiter's. */
+		if (unchecked == 0 || ASYNC_POOL_UNRESERVED(pool) == 0) {
 			break;
 		}
 
-		/* During the hook the resource is neither idle nor active, and the hook is
-		 * PHP code that may inspect the pool: count it as active. */
+		if (zval_circular_buffer_pop(&pool->idle, &pool->healthcheck_resource) != SUCCESS) {
+			ZVAL_UNDEF(&pool->healthcheck_resource);
+			break;
+		}
+
+		unchecked--;
+
+		/* During the hook the resource is neither idle nor active: count it as active, so that
+		 * acquire() cannot create past max_size. */
 		pool->active_count++;
-
-		bool is_healthy = pool_call_healthcheck(pool, &resource);
-
+		const bool is_healthy = pool_call_healthcheck(pool, &pool->healthcheck_resource);
 		pool->active_count--;
 
-		if (is_healthy) {
-			/* Closed while we checked: close already drained idle. */
-			if (ZEND_ASYNC_POOL_IS_CLOSED(pool)) {
-				pool_destroy_resource(pool, &resource);
-				pool_report_destructor_exception();
-				break;
-			}
+		zval resource;
+		ZVAL_COPY_VALUE(&resource, &pool->healthcheck_resource);
+		ZVAL_UNDEF(&pool->healthcheck_resource);
 
-			/* Resource is healthy - return to buffer */
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			/* Cancelled or exit() inside the hook: the connection may be left mid-protocol. */
+			pool_destroy_resource(pool, &resource);
+			pool_wake_waiter(pool);
+			return;
+		}
+
+		if (is_healthy && false == ZEND_ASYNC_POOL_IS_CLOSED(pool)) {
 			zval_circular_buffer_push(&pool->idle, &resource, true);
 			zval_ptr_dtor(&resource);
-		} else {
-			/* No replacement is created here: this is the scheduler context, where
-			 * a factory cannot suspend and its exception would stop the reactor.
-			 * The coroutine that asks for a resource creates it, so min_size holds
-			 * only at startup. */
-			pool_destroy_resource(pool, &resource);
+			pool_wake_waiter(pool);
+			continue;
+		}
 
-			if (pool_report_destructor_exception()) {
-				break;
-			}
+		/* Dead, or the pool closed while the hook ran: close already drained idle. */
+		pool_destroy_resource(pool, &resource);
+		pool_wake_waiter(pool);
+
+		if (pool_report_destructor_exception()) {
+			return;
 		}
 	}
+}
 
-	/* Destroying a resource frees capacity and no release follows to report it.
-	 * Placed after the loop to cover the exits a throwing hook takes. */
-	pool_wake_waiter(pool);
+/* Ends the pass's hold on the pool. The last reference frees the pool here, and closing it runs the
+ * idle destructors: their exception would be uncaught in this coroutine, so it becomes a warning.
+ * Returns false when the pool is gone. */
+static bool pool_healthcheck_release(zend_coroutine_t *coroutine, async_pool_t *pool)
+{
+	pool->healthcheck_in_pass = false;
+
+	if (ZEND_ASYNC_EVENT_REFCOUNT(&pool->base.event) > 1) {
+		ZEND_ASYNC_EVENT_RELEASE(&pool->base.event);
+		return true;
+	}
+
+	/* close() must not cancel the coroutine that frees the pool. */
+	coroutine->extended_data = NULL;
+	pool->healthcheck_coroutine = NULL;
+
+	zend_object *parked = NULL;
+	zend_exception_save_fast(&EG(exception), &parked);
+
+	ZEND_ASYNC_EVENT_RELEASE(&pool->base.event);
+	pool_report_destructor_exception();
+
+	zend_exception_restore_fast(&EG(exception), &parked);
+	return false;
+}
+
+/* The pool's healthcheck coroutine: waits for each tick of the healthcheck timer and checks the idle
+ * resources. It holds the pool only during a check, so dropping the last reference to the pool still
+ * frees it. close() and the end of the script cancel it. */
+static void pool_healthcheck_coroutine_entry(void)
+{
+	zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	while (true) {
+		async_pool_t *pool = coroutine->extended_data;
+
+		if (pool == NULL || ZEND_ASYNC_POOL_IS_CLOSED(pool) || pool->healthcheck_timer == NULL) {
+			return;
+		}
+
+		ZEND_ASYNC_WAKER_NEW(coroutine);
+
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			return;
+		}
+
+		zend_async_resume_when(
+				coroutine, &pool->healthcheck_timer->base, false, zend_async_waker_callback_resolve, NULL);
+
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			zend_async_waker_clean(coroutine);
+			return;
+		}
+
+		const bool resumed = ZEND_ASYNC_SUSPEND();
+		zend_async_waker_clean(coroutine);
+
+		if (UNEXPECTED(false == resumed || EG(exception) != NULL)) {
+			return;
+		}
+
+		/* close() clears it while the coroutine waits. */
+		pool = coroutine->extended_data;
+
+		if (pool == NULL || ZEND_ASYNC_POOL_IS_CLOSED(pool)) {
+			return;
+		}
+
+		ZEND_ASYNC_EVENT_ADD_REF(&pool->base.event);
+		pool->healthcheck_in_pass = true;
+		pool_healthcheck_pass(pool);
+
+		if (false == pool_healthcheck_release(coroutine, pool) || UNEXPECTED(EG(exception) != NULL)) {
+			return;
+		}
+
+		/* A hook that caught the cancellation leaves the coroutine running: it must not wait again. */
+		if (UNEXPECTED(ZEND_COROUTINE_IS_CANCELLED(coroutine) || ZEND_ASYNC_GRACEFUL_SHUTDOWN)) {
+			return;
+		}
+	}
+}
+
+/* Also runs when a bailout unwound the coroutine mid-pass: the pass's resource and pool reference
+ * are released here, without the destructor callback, as the engine frees what a fatal error left. */
+static void pool_healthcheck_coroutine_dispose(zend_coroutine_t *coroutine)
+{
+	async_pool_t *pool = coroutine->extended_data;
+
+	if (pool == NULL) {
+		return;
+	}
+
+	coroutine->extended_data = NULL;
+	pool->healthcheck_coroutine = NULL;
+
+	if (EXPECTED(false == pool->healthcheck_in_pass)) {
+		return;
+	}
+
+	pool->healthcheck_in_pass = false;
+
+	if (Z_TYPE(pool->healthcheck_resource) != IS_UNDEF) {
+		pool->active_count--;
+		zval_ptr_dtor(&pool->healthcheck_resource);
+		ZVAL_UNDEF(&pool->healthcheck_resource);
+	}
+
+	ZEND_ASYNC_EVENT_RELEASE(&pool->base.event);
 }
 
 static void pool_start_healthcheck_timer(async_pool_t *pool)
@@ -862,29 +962,62 @@ static void pool_start_healthcheck_timer(async_pool_t *pool)
 		return;
 	}
 
-	pool->healthcheck_timer = ZEND_ASYNC_NEW_TIMER_EVENT(pool->healthcheck_interval_ms, true);
-
-	if (pool->healthcheck_timer == NULL) {
+	/* Past the request's async shutdown nothing can run it: the pool works without a healthcheck. */
+	if (UNEXPECTED(ZEND_ASYNC_IS_OFF)) {
 		return;
 	}
 
-	/* The healthcheck timer is a background heartbeat, not application work.
-	 * Mark it HIDDEN so it does not count toward active_event_count — otherwise
-	 * an idle pool keeps the reactor loop alive and blocks a graceful worker
-	 * shutdown (e.g. on hot-reload), tripping the scheduler's loop-alive assert. */
+	/* Its own root scope: the caller's scope does not wait for it and its cancellation does not end it. */
+	zend_async_scope_t *scope = ZEND_ASYNC_NEW_SCOPE(NULL);
+
+	if (UNEXPECTED(scope == NULL)) {
+		zend_clear_exception();
+		return;
+	}
+
+	zend_coroutine_t *coroutine = ZEND_ASYNC_SPAWN_WITH(scope);
+
+	if (UNEXPECTED(coroutine == NULL)) {
+		ZEND_ASYNC_SCOPE_RELEASE(scope);
+		zend_clear_exception();
+		return;
+	}
+
+	pool->healthcheck_timer = ZEND_ASYNC_NEW_TIMER_EVENT(pool->healthcheck_interval_ms, true);
+
+	if (UNEXPECTED(pool->healthcheck_timer == NULL)) {
+		ZEND_ASYNC_CANCEL(coroutine, zend_create_graceful_exit(), true);
+		return;
+	}
+
+	/* The healthcheck timer is a background heartbeat, not application work: HIDDEN keeps an idle pool
+	 * from holding the event loop alive. The pool runs it, so the period does not restart with each
+	 * check. */
 	ZEND_ASYNC_EVENT_SET_HIDDEN(&pool->healthcheck_timer->base);
-
-	/* Use inline callback embedded in pool structure */
-	pool->healthcheck_callback.ref_count = 1;
-	pool->healthcheck_callback.callback = pool_healthcheck_timer_callback;
-	pool->healthcheck_callback.dispose = pool_healthcheck_callback_dispose;
-
-	pool->healthcheck_timer->base.add_callback(&pool->healthcheck_timer->base, &pool->healthcheck_callback);
 	pool->healthcheck_timer->base.start(&pool->healthcheck_timer->base);
+
+	coroutine->internal_entry = pool_healthcheck_coroutine_entry;
+	coroutine->extended_data = pool;
+	coroutine->extended_dispose = pool_healthcheck_coroutine_dispose;
+	async_coroutine_set_background((async_coroutine_t *) coroutine);
+	pool->healthcheck_coroutine = coroutine;
 }
 
+/* Stops the timer and cancels the healthcheck coroutine. A coroutine that closes the pool from inside
+ * its own check is not cancelled: it sees the pool closed and returns. */
 static void pool_stop_healthcheck_timer(async_pool_t *pool)
 {
+	zend_coroutine_t *coroutine = pool->healthcheck_coroutine;
+
+	if (coroutine != NULL) {
+		pool->healthcheck_coroutine = NULL;
+		coroutine->extended_data = NULL;
+
+		if (coroutine != ZEND_ASYNC_CURRENT_COROUTINE && ZEND_ASYNC_IS_ACTIVE) {
+			ZEND_ASYNC_CANCEL(coroutine, zend_create_graceful_exit(), true);
+		}
+	}
+
 	if (pool->healthcheck_timer != NULL) {
 		pool->healthcheck_timer->base.stop(&pool->healthcheck_timer->base);
 		ZEND_ASYNC_EVENT_RELEASE(&pool->healthcheck_timer->base);

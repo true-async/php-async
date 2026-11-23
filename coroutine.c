@@ -588,6 +588,18 @@ exit:
 	}
 }
 
+/* Marks a spawned coroutine as background work. Called right after the spawn, while the coroutine
+ * is in ASYNC_G(coroutines): finalize removes it from there and from the background count. */
+void async_coroutine_set_background(async_coroutine_t *coroutine)
+{
+	if (coroutine->background) {
+		return;
+	}
+
+	coroutine->background = true;
+	ASYNC_G(background_coroutines)++;
+}
+
 void async_coroutine_finalize(async_coroutine_t *coroutine)
 {
 	// Before finalizing the coroutine
@@ -766,6 +778,11 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 		// Decrease the active coroutine count if the coroutine is not a zombie.
 		if (false == ZEND_COROUTINE_IS_ZOMBIE(&coroutine->coroutine)) {
 			ZEND_ASYNC_DECREASE_COROUTINE_COUNT
+		}
+
+		if (UNEXPECTED(coroutine->background)) {
+			coroutine->background = false;
+			ASYNC_G(background_coroutines)--;
 		}
 	}
 
