@@ -61,6 +61,10 @@ struct _async_coroutine_s
 	/* Finally handlers array (zval callables) - lazy initialization */
 	HashTable *finally_handlers;
 
+	/* Background work set by C code (async_coroutine_set_background()): the script does not
+	 * wait for it, and it is cancelled once no other coroutine is left. */
+	bool background;
+
 	/* Resumed with the exit token by async_coroutine_terminate(): its unwind is not an exit(). */
 	bool terminated;
 
@@ -93,6 +97,7 @@ void async_register_coroutine_ce(void);
 zend_coroutine_t *async_new_coroutine(zend_async_scope_t *scope);
 void async_coroutine_cleanup(zend_fiber_context *context);
 void async_coroutine_finalize(async_coroutine_t *coroutine);
+void async_coroutine_set_background(async_coroutine_t *coroutine);
 void async_coroutine_finalize_from_scheduler(async_coroutine_t *coroutine);
 bool async_coroutine_suspend(const bool from_main, const bool is_bailout);
 bool async_coroutine_resume(zend_coroutine_t *coroutine, zend_object *error, const bool transfer_error);
