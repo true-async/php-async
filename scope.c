@@ -801,7 +801,6 @@ static void scope_timeout_callback(zend_async_event_t *event,
 
 	/* A pending timer means a live scope: it stops the timer when freed. */
 	scope->dispose_timer = NULL;
-	scope->dispose_deadline = 0;
 	event->dispose(event);
 
 	// No main scope: the script is past its graceful shutdown, which has cancelled every
@@ -884,8 +883,6 @@ METHOD(disposeAfterTimeout)
 		return;
 	}
 
-	/* The last call sets the deadline. */
-	scope->dispose_deadline = zend_hrtime() + (zend_hrtime_t) timeout * 1000000;
 	scope_start_dispose_timer(scope, timeout);
 }
 
@@ -1033,17 +1030,6 @@ static bool scope_before_coroutine_enqueue(zend_coroutine_t *coroutine, zend_asy
 	async_scope_t *scope = (async_scope_t *) zend_scope;
 
 	async_scope_add_coroutine(scope, (async_coroutine_t *) coroutine);
-
-	/* A timer stops when its scope runs empty, child scopes included; the
-	 * deadline still holds for what is spawned into it later. */
-	for (async_scope_t *owner = scope; owner != NULL; owner = (async_scope_t *) owner->scope.parent_scope) {
-		if (UNEXPECTED(owner->dispose_deadline != 0 && owner->dispose_timer == NULL)) {
-			const zend_hrtime_t now = zend_hrtime();
-			const zend_hrtime_t left = owner->dispose_deadline > now ? owner->dispose_deadline - now : 0;
-			scope_start_dispose_timer(owner, (zend_long) (left / 1000000));
-		}
-	}
-
 	return true;
 }
 
@@ -1369,7 +1355,6 @@ static bool scope_dispose(zend_async_event_t *scope_event)
 
 	// The timer holds no reference: it must not fire into a freed scope.
 	scope_stop_dispose_timer(scope);
-	scope->dispose_deadline = 0;
 
 	if (scope->scope.parent_scope) {
 		zend_async_scope_remove_child(scope->scope.parent_scope, &scope->scope);
