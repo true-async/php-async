@@ -743,11 +743,6 @@ typedef struct
 	async_scope_t *scope;
 } scope_timeout_callback_t;
 
-/* Custom dispose: release the scope ref added by disposeAfterTimeout() when
- * the callback is freed without having transferred ownership to a cancellation
- * coroutine (e.g. timer cancelled before firing). If scope was cleared by
- * scope_timeout_callback() — ownership was already transferred and there is
- * nothing to release here. */
 static void scope_timeout_callback_dispose(zend_async_event_callback_t *callback, zend_async_event_t *event)
 {
 	if (callback->ref_count > 1) {
@@ -755,14 +750,22 @@ static void scope_timeout_callback_dispose(zend_async_event_callback_t *callback
 		return;
 	}
 
-	scope_timeout_callback_t *scope_callback = (scope_timeout_callback_t *) callback;
-	if (scope_callback->scope != NULL) {
-		ZEND_ASYNC_EVENT_RELEASE(&scope_callback->scope->scope.event);
-		scope_callback->scope = NULL;
-	}
-
 	callback->ref_count = 0;
 	efree(callback);
+}
+
+/* Stops and frees the scope's disposeAfterTimeout() timer, if one is pending. */
+static void scope_stop_dispose_timer(async_scope_t *scope)
+{
+	zend_async_event_t *const timer = scope->dispose_timer;
+
+	if (timer == NULL) {
+		return;
+	}
+
+	scope->dispose_timer = NULL;
+	timer->stop(timer);
+	timer->dispose(timer);
 }
 
 static void scope_timeout_coroutine_entry(void)
@@ -796,30 +799,23 @@ static void scope_timeout_callback(zend_async_event_t *event,
 	scope_timeout_callback_t *scope_callback = (scope_timeout_callback_t *) callback;
 	async_scope_t *scope = scope_callback->scope;
 
-	/* Take ownership of the scope ref out of the callback so our dispose
-	 * handler does not release it when the timer event frees its callbacks. */
-	scope_callback->scope = NULL;
-
+	/* A pending timer means a live scope: it stops the timer when freed. */
+	scope->dispose_timer = NULL;
 	event->dispose(event);
 
 	// No main scope: the script is past its graceful shutdown, which has cancelled every
 	// coroutine already. Spawning with a NULL scope would create a new main scope.
 	if (UNEXPECTED(ZEND_ASYNC_MAIN_SCOPE == NULL)) {
-		if (scope != NULL) {
-			ZEND_ASYNC_EVENT_RELEASE(&scope->scope.event);
-		}
-
 		return;
 	}
 
 	zend_coroutine_t *coroutine = ZEND_ASYNC_SPAWN_WITH(ZEND_ASYNC_MAIN_SCOPE);
 	if (UNEXPECTED(coroutine == NULL)) {
-		if (scope != NULL) {
-			ZEND_ASYNC_EVENT_RELEASE(&scope->scope.event);
-		}
 		return;
 	}
 
+	/* Released by scope_timeout_coroutine_entry(), which uses the scope. */
+	ZEND_ASYNC_EVENT_ADD_REF(&scope->scope.event);
 	coroutine->internal_entry = scope_timeout_coroutine_entry;
 	coroutine->extended_data = scope;
 }
@@ -864,25 +860,22 @@ METHOD(disposeAfterTimeout)
 
 	callback->callback.dispose = scope_timeout_callback_dispose;
 	callback->scope = scope_object->scope;
-	ZEND_ASYNC_EVENT_ADD_REF(&callback->scope->scope.event);
 
 	if (!timer_event->base.add_callback(&timer_event->base, &callback->callback)) {
-		/* add_callback failed — the callback was not taken by the event, so our
-		 * custom dispose won't run. Release the scope ref and free the callback
-		 * by hand. */
-		ZEND_ASYNC_EVENT_RELEASE(&callback->scope->scope.event);
-		callback->scope = NULL;
+		/* Not taken by the event, so its dispose won't free the callback. */
 		efree(callback);
 		timer_event->base.dispose(&timer_event->base);
 		return;
 	}
 
 	if (!timer_event->base.start(&timer_event->base)) {
-		/* Timer's dispose will free callbacks (including ours), which triggers
-		 * scope_timeout_callback_dispose and releases the scope ref. */
 		timer_event->base.dispose(&timer_event->base);
 		return;
 	}
+
+	/* The last call sets the deadline. */
+	scope_stop_dispose_timer(scope_object->scope);
+	scope_object->scope->dispose_timer = &timer_event->base;
 }
 
 METHOD(getChildScopes)
@@ -1310,6 +1303,9 @@ static bool scope_dispose(zend_async_event_t *scope_event)
 
 	ZEND_ASSERT(scope->coroutines.length == 0 && "Scope should be empty before disposal");
 
+	// The timer holds no reference: it must not fire into a freed scope.
+	scope_stop_dispose_timer(scope);
+
 	// Dispose all child scopes
 	for (uint32_t i = 0; i < scope->scope.scopes.length; ++i) {
 		async_scope_t *child_scope = (async_scope_t *) scope->scope.scopes.data[i];
@@ -1673,6 +1669,12 @@ static void scope_check_completion_and_notify(async_scope_t *scope, bool with_zo
 
 	// Check if current scope is completed
 	if (scope->scope.can_be_disposed(&scope->scope, with_zombies, false)) {
+		// A closed or cancelled scope counts as completed with coroutines still
+		// running: those are what a disposeAfterTimeout() is for.
+		if (scope_is_empty(scope)) {
+			scope_stop_dispose_timer(scope);
+		}
+
 		// Notify waiting callbacks for this scope
 		ZEND_ASYNC_CALLBACKS_NOTIFY(&scope->scope.event, NULL, NULL);
 
