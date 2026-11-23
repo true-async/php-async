@@ -1371,6 +1371,12 @@ static void async_pool_free_object(zend_object *object)
 	async_pool_obj_t *obj = ASYNC_POOL_OBJ_FROM_OBJ(object);
 
 	if (obj->pool != NULL) {
+		/* The pool can outlive this object: a C owner such as PDO holds its
+		 * own reference, and the strategy callbacks pass base.wrapper on. */
+		if (obj->pool->base.wrapper == object) {
+			obj->pool->base.wrapper = NULL;
+		}
+
 		ZEND_ASYNC_EVENT_RELEASE(&obj->pool->base.event);
 		obj->pool = NULL;
 	}
