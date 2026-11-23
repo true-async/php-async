@@ -6,6 +6,8 @@ Pool: close() while the healthcheck runs destroys the checked resource once
 use Async\Pool;
 use function Async\delay;
 
+$checking = false;
+
 $pool = new Pool(
     factory: function () {
         static $n = 0;
@@ -14,7 +16,8 @@ $pool = new Pool(
     destructor: function ($r) {
         echo "destroyed #$r\n";
     },
-    healthcheck: function ($r) {
+    healthcheck: function ($r) use (&$checking) {
+        $checking = true;
         echo "check #$r\n";
         delay(30);
         echo "check #$r returns\n";
@@ -25,7 +28,11 @@ $pool = new Pool(
     healthcheckInterval: 10,
 );
 
-delay(20);
+// Wait until the healthcheck is inside its hook.
+while (!$checking) {
+    delay(1);
+}
+
 $pool->close();
 echo "closed\n";
 delay(60);
