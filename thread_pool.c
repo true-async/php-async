@@ -347,7 +347,13 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			zval_ptr_dtor(&boot_retval);
 			zval_ptr_dtor(&boot_callable);
 
-			if (boot_bailed
+			/* The bootloader runs on the worker's main coroutine, whose finalize does not see its
+			 * exit(); an exit() in a coroutine it spawned reaches it as the shutdown's cancellation. */
+			if (EG(exception) != NULL && zend_is_unwind_exit(EG(exception)) && false == ZEND_HAS_OOM()) {
+				ASYNC_G(exit_called) = true;
+			}
+
+			if (boot_bailed || ASYNC_G(exit_called)
 				|| (EG(exception) != NULL
 					&& (zend_is_unwind_exit(EG(exception))
 						|| zend_is_graceful_exit(EG(exception))))) {
@@ -875,9 +881,16 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 	/* Restore execute_data */
 	EG(current_execute_data) = fake_frame.prev_execute_data;
 
+	/* Out of the count before the token, not after: reload() sizes its next
+	 * cohort from this number, and a worker that has already answered with a
+	 * token would otherwise be counted into a cohort it cannot answer for
+	 * again, leaving that rotation waiting forever. Before the drains below as
+	 * well: of two workers leaving at once, exactly one sees itself as the last. */
+	const bool last_worker = zend_atomic_int_dec(&pool->live_workers) == 1;
+
 	/* The last worker closed by exit() closes the pool: no worker is left to take the queued
 	 * tasks, and they would wait forever. */
-	if (UNEXPECTED(false == bailout && ASYNC_G(exit_called) && zend_atomic_int_load(&pool->live_workers) == 1)) {
+	if (UNEXPECTED(false == bailout && ASYNC_G(exit_called) && last_worker)) {
 		zend_object *exit_ex = thread_pool_bailout_exception();
 		thread_pool_close(pool);
 		thread_pool_drain_tasks(pool, true, exit_ex);
@@ -898,7 +911,7 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 		 * before DELREF so the pool is still alive for the drain. */
 		/* A worker leaving on memory_limit closes the pool only as its last
 		 * worker: no one else would ever take the queued tasks. */
-		if (!oom_exit || zend_atomic_int_load(&pool->live_workers) == 1) {
+		if (!oom_exit || last_worker) {
 			zend_object *bex = thread_pool_bailout_exception();
 			thread_pool_close(pool);
 			thread_pool_drain_tasks(pool, true, bex);
@@ -912,12 +925,6 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 			slot_event = NULL;
 		}
 	}
-
-	/* Out of the count before the token, not after: reload() sizes its next
-	 * cohort from this number, and a worker that has already answered with a
-	 * token would otherwise be counted into a cohort it cannot answer for
-	 * again, leaving that rotation waiting forever. */
-	zend_atomic_int_dec(&pool->live_workers);
 
 	/* Rolling reload: post one exit token iff OUR cohort channel is the one the
 	 * active rotation retired (identity check before any notify dereference —
