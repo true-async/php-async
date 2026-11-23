@@ -780,7 +780,11 @@ static void pool_healthcheck_pass(async_pool_t *pool)
 	/* A checked resource goes back to the tail, behind the ones not checked yet. */
 	size_t unchecked = circular_buffer_count(&pool->idle);
 
-	while (unchecked > 0 && false == ZEND_ASYNC_POOL_IS_CLOSED(pool)) {
+	const zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
+
+	/* A hook may catch the cancellation: the pass checks for it after each one. */
+	while (unchecked > 0 && false == ZEND_ASYNC_POOL_IS_CLOSED(pool)
+		   && false == ZEND_COROUTINE_IS_CANCELLED(coroutine) && false == ZEND_ASYNC_GRACEFUL_SHUTDOWN) {
 		/* Others may have taken idle resources while a hook suspended. */
 		unchecked = MIN(unchecked, circular_buffer_count(&pool->idle));
 
@@ -789,8 +793,8 @@ static void pool_healthcheck_pass(async_pool_t *pool)
 			break;
 		}
 
-		zval resource;
-		if (zval_circular_buffer_pop(&pool->idle, &resource) != SUCCESS) {
+		if (zval_circular_buffer_pop(&pool->idle, &pool->healthcheck_resource) != SUCCESS) {
+			ZVAL_UNDEF(&pool->healthcheck_resource);
 			break;
 		}
 
@@ -799,8 +803,12 @@ static void pool_healthcheck_pass(async_pool_t *pool)
 		/* During the hook the resource is neither idle nor active: count it as active, so that
 		 * acquire() cannot create past max_size. */
 		pool->active_count++;
-		const bool is_healthy = pool_call_healthcheck(pool, &resource);
+		const bool is_healthy = pool_call_healthcheck(pool, &pool->healthcheck_resource);
 		pool->active_count--;
+
+		zval resource;
+		ZVAL_COPY_VALUE(&resource, &pool->healthcheck_resource);
+		ZVAL_UNDEF(&pool->healthcheck_resource);
 
 		if (UNEXPECTED(EG(exception) != NULL)) {
 			/* Cancelled or exit() inside the hook: the connection may be left mid-protocol. */
@@ -831,6 +839,8 @@ static void pool_healthcheck_pass(async_pool_t *pool)
  * Returns false when the pool is gone. */
 static bool pool_healthcheck_release(zend_coroutine_t *coroutine, async_pool_t *pool)
 {
+	pool->healthcheck_in_pass = false;
+
 	if (ZEND_ASYNC_EVENT_REFCOUNT(&pool->base.event) > 1) {
 		ZEND_ASYNC_EVENT_RELEASE(&pool->base.event);
 		return true;
@@ -893,22 +903,46 @@ static void pool_healthcheck_coroutine_entry(void)
 		}
 
 		ZEND_ASYNC_EVENT_ADD_REF(&pool->base.event);
+		pool->healthcheck_in_pass = true;
 		pool_healthcheck_pass(pool);
 
 		if (false == pool_healthcheck_release(coroutine, pool) || UNEXPECTED(EG(exception) != NULL)) {
 			return;
 		}
+
+		/* A hook that caught the cancellation leaves the coroutine running: it must not wait again. */
+		if (UNEXPECTED(ZEND_COROUTINE_IS_CANCELLED(coroutine) || ZEND_ASYNC_GRACEFUL_SHUTDOWN)) {
+			return;
+		}
 	}
 }
 
+/* Also runs when a bailout unwound the coroutine mid-pass: the pass's resource and pool reference
+ * are released here, without the destructor callback, as the engine frees what a fatal error left. */
 static void pool_healthcheck_coroutine_dispose(zend_coroutine_t *coroutine)
 {
 	async_pool_t *pool = coroutine->extended_data;
 
-	if (pool != NULL) {
-		coroutine->extended_data = NULL;
-		pool->healthcheck_coroutine = NULL;
+	if (pool == NULL) {
+		return;
 	}
+
+	coroutine->extended_data = NULL;
+	pool->healthcheck_coroutine = NULL;
+
+	if (EXPECTED(false == pool->healthcheck_in_pass)) {
+		return;
+	}
+
+	pool->healthcheck_in_pass = false;
+
+	if (Z_TYPE(pool->healthcheck_resource) != IS_UNDEF) {
+		pool->active_count--;
+		zval_ptr_dtor(&pool->healthcheck_resource);
+		ZVAL_UNDEF(&pool->healthcheck_resource);
+	}
+
+	ZEND_ASYNC_EVENT_RELEASE(&pool->base.event);
 }
 
 static void pool_start_healthcheck_timer(async_pool_t *pool)
@@ -928,16 +962,24 @@ static void pool_start_healthcheck_timer(async_pool_t *pool)
 		return;
 	}
 
+	/* Past the request's async shutdown nothing can run it: the pool works without a healthcheck. */
+	if (UNEXPECTED(ZEND_ASYNC_IS_OFF)) {
+		return;
+	}
+
 	/* Its own root scope: the caller's scope does not wait for it and its cancellation does not end it. */
 	zend_async_scope_t *scope = ZEND_ASYNC_NEW_SCOPE(NULL);
 
 	if (UNEXPECTED(scope == NULL)) {
+		zend_clear_exception();
 		return;
 	}
 
 	zend_coroutine_t *coroutine = ZEND_ASYNC_SPAWN_WITH(scope);
 
 	if (UNEXPECTED(coroutine == NULL)) {
+		ZEND_ASYNC_SCOPE_RELEASE(scope);
+		zend_clear_exception();
 		return;
 	}
 

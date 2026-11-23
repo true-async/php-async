@@ -756,25 +756,37 @@ static zend_always_inline uint32_t live_coroutines(void)
 	return zend_hash_num_elements(&ASYNC_G(coroutines)) - ASYNC_G(background_coroutines);
 }
 
-/* Cancels every background coroutine: they are work no other coroutine waits for, so once only
- * they are left the script is over. Protection is cleared, since a protected coroutine only
- * defers a cancellation. Returns true if the cancellation left an exception. */
-static bool cancel_background_coroutines(void)
+/* Ends every background coroutine: they are work no other coroutine waits for, so once only they
+ * are left the script is over. A coroutine not cancelled yet gets the graceful exit, which no catch
+ * block takes; protection is cleared, since a protected coroutine only defers a cancellation. One
+ * cancelled already that is idle again (its code caught an earlier cancellation and went back to
+ * waiting) is terminated, when `idle` says nothing else is queued to run. Returns true if an
+ * exception is left. */
+static bool end_background_coroutines(const bool idle)
 {
 	zval *value;
 	bool has_exception = false;
+	zend_object *exit_token = NULL;
 
 	ZEND_ASYNC_SCHEDULER_CONTEXT = true;
 	ZEND_HASH_FOREACH_VAL(&ASYNC_G(coroutines), value)
 	{
 		async_coroutine_t *coroutine = (async_coroutine_t *) Z_PTR_P(value);
 
-		if (false == coroutine->background || ZEND_COROUTINE_IS_CANCELLED(&coroutine->coroutine)) {
+		if (false == coroutine->background || ZEND_COROUTINE_IS_FINISHED(&coroutine->coroutine)) {
 			continue;
 		}
 
-		ZEND_COROUTINE_CLR_PROTECTED(&coroutine->coroutine);
-		ZEND_ASYNC_CANCEL(&coroutine->coroutine, zend_create_graceful_exit(), true);
+		if (false == ZEND_COROUTINE_IS_CANCELLED(&coroutine->coroutine)) {
+			ZEND_COROUTINE_CLR_PROTECTED(&coroutine->coroutine);
+			ZEND_ASYNC_CANCEL(&coroutine->coroutine, zend_create_graceful_exit(), true);
+		} else if (idle) {
+			if (exit_token == NULL) {
+				exit_token = zend_create_unwind_exit();
+			}
+
+			async_coroutine_terminate(&coroutine->coroutine, exit_token);
+		}
 
 		if (UNEXPECTED(EG(exception) != NULL)) {
 			has_exception = true;
@@ -782,6 +794,10 @@ static bool cancel_background_coroutines(void)
 		}
 	}
 	ZEND_HASH_FOREACH_END();
+
+	if (exit_token != NULL) {
+		OBJ_RELEASE(exit_token);
+	}
 
 	process_resumed_coroutines();
 	ZEND_ASYNC_SCHEDULER_CONTEXT = false;
@@ -857,7 +873,7 @@ static bool resolve_deadlocks(void)
 		ZEND_HASH_FOREACH_END();
 		process_resumed_coroutines();
 		ZEND_ASYNC_SCHEDULER_CONTEXT = false;
-		return cancel_background_coroutines();
+		return end_background_coroutines(false);
 	}
 
 	/* Last-chance reactor drain: even when active_event_count==0, libuv may
@@ -1282,6 +1298,7 @@ static void async_scheduler_dtor(void)
 	ZEND_HASH_FOREACH_END();
 
 	zend_hash_clean(&ASYNC_G(coroutines));
+	ASYNC_G(background_coroutines) = 0;
 	zend_hash_destroy(&ASYNC_G(coroutines));
 	zend_hash_init(&ASYNC_G(coroutines), 0, NULL, NULL, 0);
 
@@ -1758,6 +1775,19 @@ static zend_always_inline bool scheduler_next_tick(void)
 		process_resumed_coroutines();
 	}
 
+	/* A background coroutine alone can live in this fast path, the hidden timer resuming it each
+	 * tick, without ever reaching the scheduler loop's check: end it here as there. */
+	if (UNEXPECTED(ASYNC_G(background_coroutines) > 0 && live_coroutines() == 0
+				   && ZEND_ASYNC_ACTIVE_EVENT_COUNT == 0 && circular_buffer_is_empty(&ASYNC_G(microtasks)))) {
+		if (UNEXPECTED(end_background_coroutines(false))) {
+			if (UNEXPECTED(switch_to_scheduler(transfer))) {
+				return true;
+			}
+
+			return false;
+		}
+	}
+
 	// Fast return path without context switching...
 	const zend_coroutine_t *coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 
@@ -2163,13 +2193,13 @@ ZEND_STACK_ALIGNED void fiber_entry(zend_fiber_transfer *transfer)
 
 			TRY_HANDLE_EXCEPTION();
 
-			/* Only background coroutines are left and no event can wake one: the script is over. A
-			 * hidden timer may still fire while a handle the reactor does not count keeps libuv alive,
-			 * so this cannot wait for the deadlock check. */
-			if (UNEXPECTED(false == has_handles && false == was_executed && ASYNC_G(background_coroutines) > 0 &&
-						   live_coroutines() == 0 && circular_buffer_is_empty(coroutine_queue) &&
-						   circular_buffer_is_empty(&ASYNC_G(microtasks)))) {
-				if (UNEXPECTED(cancel_background_coroutines())) {
+			/* Only background coroutines are left and no counted event can wake one: the script is
+			 * over. Decided on the event count alone: a hidden timer keeps firing while a handle the
+			 * reactor does not count keeps libuv alive, so the queue may never be empty here. */
+			if (UNEXPECTED(ASYNC_G(background_coroutines) > 0 && live_coroutines() == 0
+						   && ZEND_ASYNC_ACTIVE_EVENT_COUNT == 0 && circular_buffer_is_empty(&ASYNC_G(microtasks)))) {
+				if (UNEXPECTED(end_background_coroutines(
+							false == was_executed && circular_buffer_is_empty(coroutine_queue)))) {
 					break;
 				}
 			}
