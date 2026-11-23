@@ -21,9 +21,10 @@ final class ThreadPool
      * @param \Closure|null $bootloader Optional closure executed once per worker
      *                                  thread on startup, before any task runs.
      *                                  Typical use: require an autoloader.
-     *                                  If it throws, the pool is failed: the task
-     *                                  channel is closed and all pending submissions
-     *                                  are rejected with CancellationException.
+     *                                  If it throws, the pool is failed: pending
+     *                                  tasks are rejected with the bootloader's
+     *                                  exception, and a later submit() throws
+     *                                  ThreadTransferException with its message.
      * @param bool $coroutine When true, each submitted task runs inside a coroutine
      *                        in the worker's scheduler instead of being called
      *                        synchronously. Enables `await`, channels, and IO inside
