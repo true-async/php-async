@@ -1366,6 +1366,22 @@ zend_object *async_pool_create_object_for_pool(async_pool_t *pool)
 	return obj;
 }
 
+/* Closing destroys the idle resources, which runs user code. That belongs
+ * here, not in free_obj: at shutdown free_obj runs in the engine's object
+ * free, where an exit() bails out and leaves the pool unfreed. Only a pool
+ * this object holds alone is closed: a C owner such as PDO keeps using its
+ * pool after the object is gone. */
+static void async_pool_dtor_object(zend_object *object)
+{
+	async_pool_obj_t *obj = ASYNC_POOL_OBJ_FROM_OBJ(object);
+
+	zend_objects_destroy_object(object);
+
+	if (obj->pool != NULL && ZEND_ASYNC_EVENT_REFCOUNT(&obj->pool->base.event) == 1) {
+		zend_async_pool_close(obj->pool);
+	}
+}
+
 static void async_pool_free_object(zend_object *object)
 {
 	async_pool_obj_t *obj = ASYNC_POOL_OBJ_FROM_OBJ(object);
@@ -1771,6 +1787,7 @@ void async_register_pool_ce(void)
 	memcpy(&async_pool_handlers, &std_object_handlers, sizeof(zend_object_handlers));
 	async_pool_handlers.offset = offsetof(async_pool_obj_t, std);
 	async_pool_handlers.get_gc = async_pool_get_gc;
+	async_pool_handlers.dtor_obj = async_pool_dtor_object;
 	async_pool_handlers.free_obj = async_pool_free_object;
 	async_pool_handlers.clone_obj = NULL;
 }
