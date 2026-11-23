@@ -24,6 +24,11 @@ spawn(function() {
     }
 
     var_dump(await($pool->submit(fn() => 6 * 7)));
+
+    // The worker that called exit() rejects its task before it leaves the count.
+    for ($i = 0; $i < 200 && $pool->getWorkerCount() > 1; $i++) {
+        Async\delay(10);
+    }
     var_dump($pool->getWorkerCount());
 
     $pool->close();
