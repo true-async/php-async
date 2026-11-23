@@ -635,8 +635,8 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 			zend_clear_exception();
 
 			if (zend_is_graceful_exit(exception) || zend_is_unwind_exit(exception)) {
-				/* A memory-limit error unwinds with an exit too; it has its own path. */
-				exit_called = zend_is_unwind_exit(exception) && false == ZEND_HAS_OOM();
+				/* A memory-limit error and a forced termination unwind with the exit token too. */
+				exit_called = zend_is_unwind_exit(exception) && false == ZEND_HAS_OOM() && false == coroutine->terminated;
 				ASYNC_G(exit_called) = ASYNC_G(exit_called) || exit_called;
 				OBJ_RELEASE(exception);
 				exception = NULL;
@@ -751,7 +751,8 @@ void async_coroutine_finalize(async_coroutine_t *coroutine)
 	zend_end_try();
 
 	if (UNEXPECTED(*exception_ptr && (zend_is_graceful_exit(*exception_ptr) || zend_is_unwind_exit(*exception_ptr)))) {
-		exit_called = exit_called || (zend_is_unwind_exit(*exception_ptr) && false == ZEND_HAS_OOM());
+		exit_called = exit_called
+				|| (zend_is_unwind_exit(*exception_ptr) && false == ZEND_HAS_OOM() && false == coroutine->terminated);
 		ASYNC_G(exit_called) = ASYNC_G(exit_called) || exit_called;
 		zend_clear_exception();
 	}
@@ -1045,6 +1046,8 @@ void async_coroutine_terminate(zend_coroutine_t *coroutine, zend_object *exit_to
 	if (ZEND_COROUTINE_IS_PROTECTED(coroutine)) {
 		ZEND_COROUTINE_CLR_PROTECTED(coroutine);
 	}
+
+	((async_coroutine_t *) coroutine)->terminated = true;
 
 	// The exit token leaves no result behind: an awaiter has to read the end as a cancellation.
 	if (coroutine->exception == NULL) {

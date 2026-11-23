@@ -6,7 +6,11 @@ exit() in the main script starts the graceful shutdown: other coroutines are can
 use function Async\spawn;
 use function Async\delay;
 
-spawn(function () {
+$started = false;
+
+spawn(function () use (&$started) {
+    $started = true;
+
     try {
         delay(200);
         echo "other coroutine finished\n";
@@ -15,7 +19,11 @@ spawn(function () {
     }
 });
 
-delay(10);
+// A coroutine cancelled before it starts runs no finally block.
+while (!$started) {
+    delay(1);
+}
+
 echo "exit\n";
 exit(3);
 ?>

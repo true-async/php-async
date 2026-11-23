@@ -395,6 +395,12 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 				zend_bailout();
 			}
 
+			/* exit() in a task closes this worker: the graceful shutdown it started is unwinding
+			 * this thread's scheduler. */
+			if (UNEXPECTED(ASYNC_G(exit_called))) {
+				break;
+			}
+
 			/* Concurrency gate: when at the limit, park via wait-only
 			 * receive (result=NULL) suspending on both the channel and
 			 * slot_event. Wakes on a free slot (dispose fires
@@ -803,7 +809,11 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 		}
 
 		if (EG(exception)) {
-			if (!instanceof_function(EG(exception)->ce, async_ce_thread_channel_exception)) {
+			/* A graceful shutdown, such as the one exit() in a task starts, cancels the receive. */
+			const bool shutdown_cancelled = ZEND_ASYNC_GRACEFUL_SHUTDOWN
+					&& instanceof_function(EG(exception)->ce, async_ce_cancellation_exception);
+
+			if (!shutdown_cancelled && !instanceof_function(EG(exception)->ce, async_ce_thread_channel_exception)) {
 				zend_exception_error(EG(exception), E_WARNING);
 			}
 			zend_clear_exception();
@@ -864,6 +874,15 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 
 	/* Restore execute_data */
 	EG(current_execute_data) = fake_frame.prev_execute_data;
+
+	/* The last worker closed by exit() closes the pool: no worker is left to take the queued
+	 * tasks, and they would wait forever. */
+	if (UNEXPECTED(false == bailout && ASYNC_G(exit_called) && zend_atomic_int_load(&pool->live_workers) == 1)) {
+		zend_object *exit_ex = thread_pool_bailout_exception();
+		thread_pool_close(pool);
+		thread_pool_drain_tasks(pool, true, exit_ex);
+		OBJ_RELEASE(exit_ex);
+	}
 
 	if (bailout) {
 		/* Before anything that can bail out again — thread_pool_drain_tasks
