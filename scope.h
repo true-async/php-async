@@ -16,6 +16,7 @@
 #ifndef SCOPE_H
 #define SCOPE_H
 
+#include <Zend/zend_hrtime.h>
 #include "php_async.h"
 
 PHP_ASYNC_API extern zend_class_entry *async_ce_scope;
@@ -53,10 +54,14 @@ struct _async_scope_s
 	/* Finally handlers array (zval callables) - lazy initialization */
 	HashTable *finally_handlers;
 
-	/* Timer of the last disposeAfterTimeout(), NULL when none is pending. It
-	 * holds no reference to the scope: the scope stops it when it completes
-	 * or is freed, so a finished scope does not keep the event loop alive. */
+	/* Timer of the last disposeAfterTimeout(), NULL while none runs. It holds
+	 * no reference to the scope: the scope stops it when it runs empty or is
+	 * freed, so a finished scope does not keep the event loop alive. */
 	zend_async_event_t *dispose_timer;
+	/* That call's deadline in zend_hrtime() nanoseconds, 0 for none. Kept
+	 * while the scope is empty: a coroutine spawned into it later restarts
+	 * the timer for what is left. */
+	zend_hrtime_t dispose_deadline;
 };
 
 typedef struct _async_scope_object_s

@@ -801,6 +801,7 @@ static void scope_timeout_callback(zend_async_event_t *event,
 
 	/* A pending timer means a live scope: it stops the timer when freed. */
 	scope->dispose_timer = NULL;
+	scope->dispose_deadline = 0;
 	event->dispose(event);
 
 	// No main scope: the script is past its graceful shutdown, which has cancelled every
@@ -818,6 +819,41 @@ static void scope_timeout_callback(zend_async_event_t *event,
 	ZEND_ASYNC_EVENT_ADD_REF(&scope->scope.event);
 	coroutine->internal_entry = scope_timeout_coroutine_entry;
 	coroutine->extended_data = scope;
+}
+
+/* Starts the scope's dispose timer for timeout_ms, replacing a running one.
+ * Throws only if the timer cannot be created. */
+static void scope_start_dispose_timer(async_scope_t *scope, zend_long timeout_ms)
+{
+	zend_async_timer_event_t *timer_event = ZEND_ASYNC_NEW_TIMER_EVENT(timeout_ms, false);
+	if (UNEXPECTED(timer_event == NULL)) {
+		return;
+	}
+
+	scope_timeout_callback_t *callback = (scope_timeout_callback_t *) zend_async_event_callback_new(
+			scope_timeout_callback, sizeof(scope_timeout_callback_t));
+	if (UNEXPECTED(callback == NULL)) {
+		timer_event->base.dispose(&timer_event->base);
+		return;
+	}
+
+	callback->callback.dispose = scope_timeout_callback_dispose;
+	callback->scope = scope;
+
+	if (!timer_event->base.add_callback(&timer_event->base, &callback->callback)) {
+		/* Not taken by the event, so its dispose won't free the callback. */
+		efree(callback);
+		timer_event->base.dispose(&timer_event->base);
+		return;
+	}
+
+	if (!timer_event->base.start(&timer_event->base)) {
+		timer_event->base.dispose(&timer_event->base);
+		return;
+	}
+
+	scope_stop_dispose_timer(scope);
+	scope->dispose_timer = &timer_event->base;
 }
 
 METHOD(disposeAfterTimeout)
@@ -842,40 +878,15 @@ METHOD(disposeAfterTimeout)
 		return;
 	}
 
-	if (scope_object->scope->coroutines.length == 0 && scope_object->scope->scope.scopes.length == 0) {
-		return;
-	}
+	async_scope_t *const scope = scope_object->scope;
 
-	zend_async_timer_event_t *timer_event = ZEND_ASYNC_NEW_TIMER_EVENT(timeout, false);
-	if (UNEXPECTED(timer_event == NULL)) {
-		RETURN_THROWS();
-	}
-
-	scope_timeout_callback_t *callback = (scope_timeout_callback_t *) zend_async_event_callback_new(
-			scope_timeout_callback, sizeof(scope_timeout_callback_t));
-	if (UNEXPECTED(callback == NULL)) {
-		timer_event->base.dispose(&timer_event->base);
-		RETURN_THROWS();
-	}
-
-	callback->callback.dispose = scope_timeout_callback_dispose;
-	callback->scope = scope_object->scope;
-
-	if (!timer_event->base.add_callback(&timer_event->base, &callback->callback)) {
-		/* Not taken by the event, so its dispose won't free the callback. */
-		efree(callback);
-		timer_event->base.dispose(&timer_event->base);
-		return;
-	}
-
-	if (!timer_event->base.start(&timer_event->base)) {
-		timer_event->base.dispose(&timer_event->base);
+	if (scope_is_empty(scope)) {
 		return;
 	}
 
 	/* The last call sets the deadline. */
-	scope_stop_dispose_timer(scope_object->scope);
-	scope_object->scope->dispose_timer = &timer_event->base;
+	scope->dispose_deadline = zend_hrtime() + (zend_hrtime_t) timeout * 1000000;
+	scope_start_dispose_timer(scope, timeout);
 }
 
 METHOD(getChildScopes)
@@ -1022,6 +1033,17 @@ static bool scope_before_coroutine_enqueue(zend_coroutine_t *coroutine, zend_asy
 	async_scope_t *scope = (async_scope_t *) zend_scope;
 
 	async_scope_add_coroutine(scope, (async_coroutine_t *) coroutine);
+
+	/* A timer stops when its scope runs empty, child scopes included; the
+	 * deadline still holds for what is spawned into it later. */
+	for (async_scope_t *owner = scope; owner != NULL; owner = (async_scope_t *) owner->scope.parent_scope) {
+		if (UNEXPECTED(owner->dispose_deadline != 0 && owner->dispose_timer == NULL)) {
+			const zend_hrtime_t now = zend_hrtime();
+			const zend_hrtime_t left = owner->dispose_deadline > now ? owner->dispose_deadline - now : 0;
+			scope_start_dispose_timer(owner, (zend_long) (left / 1000000));
+		}
+	}
+
 	return true;
 }
 
@@ -1303,9 +1325,6 @@ static bool scope_dispose(zend_async_event_t *scope_event)
 
 	ZEND_ASSERT(scope->coroutines.length == 0 && "Scope should be empty before disposal");
 
-	// The timer holds no reference: it must not fire into a freed scope.
-	scope_stop_dispose_timer(scope);
-
 	// Dispose all child scopes
 	for (uint32_t i = 0; i < scope->scope.scopes.length; ++i) {
 		async_scope_t *child_scope = (async_scope_t *) scope->scope.scopes.data[i];
@@ -1347,6 +1366,10 @@ static bool scope_dispose(zend_async_event_t *scope_event)
 		ZEND_ASYNC_SCOPE_CLR_DISPOSING(&scope->scope);
 		return true;
 	}
+
+	// The timer holds no reference: it must not fire into a freed scope.
+	scope_stop_dispose_timer(scope);
+	scope->dispose_deadline = 0;
 
 	if (scope->scope.parent_scope) {
 		zend_async_scope_remove_child(scope->scope.parent_scope, &scope->scope);
