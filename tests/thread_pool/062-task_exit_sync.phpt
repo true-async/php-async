@@ -1,5 +1,5 @@
 --TEST--
-ThreadPool: exit()/die() in a task resolves its future to null and the worker keeps serving (no crash)
+ThreadPool: exit()/die() in a task rejects its future, the worker ends and the pool keeps serving
 --SKIPIF--
 <?php
 if (!PHP_ZTS) die('skip ZTS required');
@@ -13,16 +13,19 @@ use function Async\spawn;
 use function Async\await;
 
 spawn(function() {
-    // Single worker: exit() must NOT crash and must NOT kill the worker —
-    // the worker's request survives, so the next task still runs.
+    // Single worker: exit() ends the worker; the pool replaces it, so the next task still runs.
     $pool = new ThreadPool(1);
     $a = $pool->submit(function() { exit(5); });
     $b = $pool->submit(function() { return 42; });
-    var_dump(await($a));
+    try {
+        await($a);
+    } catch (Async\ThreadTransferException $e) {
+        echo get_class($e), ": ", $e->getMessage(), "\n";
+    }
     var_dump(await($b));
     $pool->close();
 });
 ?>
 --EXPECT--
-NULL
+Async\ThreadTransferException: ThreadPool worker terminated via exit()
 int(42)

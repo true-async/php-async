@@ -112,6 +112,11 @@ static zend_function worker_root_function = { ZEND_INTERNAL_FUNCTION };
  * fiber, which can't transfer a non-throwable exit token. */
 static zend_object *thread_pool_bailout_exception(void)
 {
+	/* The last error message belongs to some earlier error, not to an exit(). */
+	if (ASYNC_G(exit_called)) {
+		return async_new_exception(async_ce_thread_transfer_exception, "ThreadPool worker terminated via exit()");
+	}
+
 	const zend_string *msg = PG(last_error_message);
 	return async_new_exception(async_ce_thread_transfer_exception, "%s",
 		msg != NULL ? ZSTR_VAL(msg)
@@ -735,6 +740,17 @@ static void thread_pool_worker_handler(zend_async_thread_event_t *event, void *c
 				body_error = EG(exception);
 				GC_ADDREF(body_error);
 				zend_clear_exception();
+			}
+
+			/* exit() in the body: the shutdown it starts cancels this worker while it waits, and the
+			 * task gets that cancellation. It ended without a result, as a bailout does. */
+			if (UNEXPECTED(ASYNC_G(exit_called) && worker_coro->waker != NULL
+					&& Z_TYPE(worker_coro->waker->result) == IS_UNDEF)) {
+				if (body_error != NULL) {
+					OBJ_RELEASE(body_error);
+				}
+
+				body_error = thread_pool_bailout_exception();
 			}
 
 			if (body_error != NULL) {

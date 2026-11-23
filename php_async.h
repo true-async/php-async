@@ -89,6 +89,8 @@ circular_buffer_t coroutine_queue;
 circular_buffer_t resumed_coroutines;
 /* List of coroutines  */
 HashTable coroutines;
+/* exit() was called in this thread: the graceful shutdown that follows is its doing. */
+bool exit_called;
 /* The transfer structure is used to return to the main execution context. */
 zend_fiber_transfer *main_transfer;
 /* The main flow stack */

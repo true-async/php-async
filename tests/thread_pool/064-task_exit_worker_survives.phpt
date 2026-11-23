@@ -1,5 +1,5 @@
 --TEST--
-ThreadPool: a worker survives exit()/throw mixed with normal tasks (single worker, ordered)
+ThreadPool: exit()/throw mixed with normal tasks: an exit() rejects its task and the pool keeps serving (single worker, ordered)
 --SKIPIF--
 <?php
 if (!PHP_ZTS) die('skip ZTS required');
@@ -21,22 +21,30 @@ spawn(function() {
     $t4 = $pool->submit(function() { exit(2); });
     $t5 = $pool->submit(function() { return 7 * 7; });
 
-    var_dump(await($t1));
+    $exited = function ($future) {
+        try {
+            await($future);
+        } catch (Async\ThreadTransferException $e) {
+            echo get_class($e), ": ", $e->getMessage(), "\n";
+        }
+    };
+
+    $exited($t1);
     var_dump(await($t2));
     try {
         await($t3);
     } catch (\RuntimeException $e) {
         echo "t3: ", $e->getMessage(), "\n";
     }
-    var_dump(await($t4));
+    $exited($t4);
     var_dump(await($t5));
 
     $pool->close();
 });
 ?>
 --EXPECT--
-NULL
+Async\ThreadTransferException: ThreadPool worker terminated via exit()
 string(8) "normal-1"
 t3: boom
-NULL
+Async\ThreadTransferException: ThreadPool worker terminated via exit()
 int(49)
