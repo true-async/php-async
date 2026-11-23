@@ -283,17 +283,6 @@ jobs:
           # the regular ext/async/tests/ tree.
           PHP_BIN=/usr/local/bin/php bash fuzzy-tests/regen.sh
 
-      - name: "TEMPORARY: stress scope/060 (drop before merge)"
-        if: matrix.debug == true && matrix.asan != true
-        working-directory: php-src/ext/async
-        run: |
-          mkdir -p "$RUNNER_TEMP/stress060"
-          for i in $(seq 1 300); do
-            cp tests/scope/060-*.phpt "$RUNNER_TEMP/stress060/060_$i.phpt"
-          done
-          /usr/local/bin/php ../../run-tests.php -P -q -j$(nproc) --no-progress --offline \
-            --show-diff "$RUNNER_TEMP/stress060"
-
       - name: Run basic tests
         working-directory: php-src/ext/async
         continue-on-error: ${{ matrix.asan == true }}
