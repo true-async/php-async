@@ -52,6 +52,11 @@ struct _async_scope_s
 
 	/* Finally handlers array (zval callables) - lazy initialization */
 	HashTable *finally_handlers;
+
+	/* Timer of the last disposeAfterTimeout(), NULL while none runs. It holds
+	 * no reference to the scope: the scope stops it when it runs empty or is
+	 * freed, so a finished scope does not keep the event loop alive. */
+	zend_async_event_t *dispose_timer;
 };
 
 typedef struct _async_scope_object_s
