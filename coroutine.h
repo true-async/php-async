@@ -61,6 +61,9 @@ struct _async_coroutine_s
 	/* Finally handlers array (zval callables) - lazy initialization */
 	HashTable *finally_handlers;
 
+	/* Resumed with the exit token by async_coroutine_terminate(): its unwind is not an exit(). */
+	bool terminated;
+
 	/* PHP object handle. */
 	zend_object std;
 };
