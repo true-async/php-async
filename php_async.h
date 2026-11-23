@@ -92,6 +92,8 @@ HashTable coroutines;
 /* Coroutines of `coroutines` that are background work (async_coroutine_t.background):
  * the scheduler does not wait for them, and cancels them once only they are left. */
 uint32_t background_coroutines;
+/* exit() was called in this thread: the graceful shutdown that follows is its doing. */
+bool exit_called;
 /* The transfer structure is used to return to the main execution context. */
 zend_fiber_transfer *main_transfer;
 /* The main flow stack */

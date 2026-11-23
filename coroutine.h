@@ -65,6 +65,9 @@ struct _async_coroutine_s
 	 * wait for it, and it is cancelled once no other coroutine is left. */
 	bool background;
 
+	/* Resumed with the exit token by async_coroutine_terminate(): its unwind is not an exit(). */
+	bool terminated;
+
 	/* PHP object handle. */
 	zend_object std;
 };
