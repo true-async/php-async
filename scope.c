@@ -14,6 +14,7 @@
   +----------------------------------------------------------------------+
 */
 #include "scope.h"
+#include "async_API.h"
 #include "context.h"
 #include "zend_attributes.h"
 #include "scope_arginfo.h"
@@ -305,11 +306,15 @@ METHOD(awaitCompletion)
 	ZEND_PARSE_PARAMETERS_START(1, 1)
 	Z_PARAM_OBJ_OF_CLASS(cancellation_obj, async_ce_awaitable)
 	ZEND_PARSE_PARAMETERS_END();
+	cancellation_obj = async_armed_cancel_token(cancellation_obj);
 
 	// Mark cancellation token as used immediately, before any early returns
-	zend_async_event_t *cancellation_event = ZEND_ASYNC_OBJECT_TO_EVENT(cancellation_obj);
-	ZEND_ASYNC_EVENT_SET_RESULT_USED(cancellation_event);
-	ZEND_ASYNC_EVENT_SET_EXC_CAUGHT(cancellation_event);
+	zend_async_event_t *cancellation_event = NULL;
+	if (cancellation_obj != NULL) {
+		cancellation_event = ZEND_ASYNC_OBJECT_TO_EVENT(cancellation_obj);
+		ZEND_ASYNC_EVENT_SET_RESULT_USED(cancellation_event);
+		ZEND_ASYNC_EVENT_SET_EXC_CAUGHT(cancellation_event);
+	}
 
 	zend_coroutine_t *current_coroutine = ZEND_ASYNC_CURRENT_COROUTINE;
 	if (UNEXPECTED(current_coroutine == NULL)) {
@@ -357,14 +362,13 @@ METHOD(awaitCompletion)
 		RETURN_THROWS();
 	}
 
-	zend_async_resume_when(current_coroutine,
-						   cancellation_event,
-						   false,
-						   zend_async_waker_callback_cancel,
-						   NULL);
-	if (UNEXPECTED(EG(exception))) {
-		zend_async_waker_clean(current_coroutine);
-		RETURN_THROWS();
+	if (cancellation_event != NULL) {
+		zend_async_resume_when(
+				current_coroutine, cancellation_event, false, zend_async_waker_callback_cancel, NULL);
+		if (UNEXPECTED(EG(exception))) {
+			zend_async_waker_clean(current_coroutine);
+			RETURN_THROWS();
+		}
 	}
 
 	ZEND_ASYNC_SUSPEND();
@@ -543,6 +547,7 @@ METHOD(awaitAfterCancellation)
 	Z_PARAM_FUNC_OR_NULL(error_handler_fci, error_handler_fcc)
 	Z_PARAM_OBJ_OR_NULL(cancellation_obj)
 	ZEND_PARSE_PARAMETERS_END();
+	cancellation_obj = async_armed_cancel_token(cancellation_obj);
 
 	// Mark cancellation token as used immediately, before any early returns
 	zend_async_event_t *cancellation_event = NULL;

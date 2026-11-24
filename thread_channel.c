@@ -593,6 +593,7 @@ METHOD(send)
 		Z_PARAM_OPTIONAL
 		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation_token, async_ce_completable)
 	ZEND_PARSE_PARAMETERS_END();
+	cancellation_token = async_armed_cancel_token(cancellation_token);
 
 	ENSURE_COROUTINE_CONTEXT
 
@@ -615,6 +616,7 @@ METHOD(recv)
 		Z_PARAM_OPTIONAL
 		Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation_token, async_ce_completable)
 	ZEND_PARSE_PARAMETERS_END();
+	cancellation_token = async_armed_cancel_token(cancellation_token);
 
 	ENSURE_COROUTINE_CONTEXT
 

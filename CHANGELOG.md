@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A cancelled `Timeout` passed as a cancellation token crashed with SIGSEGV** (#339). `Timeout::cancel()` drops the timer event, and `await()`, `Channel` and `ThreadChannel` `send()`/`recv()`, `Future::await()`, `Scope::awaitCompletion()`, `Scope::awaitAfterCancellation()` and `signal()` dereferenced it. A cancelled Timeout is now a disarmed timer: the operation runs as without a token. `await()` on the cancelled Timeout itself throws `AsyncCancellation` "Timeout has been cancelled" instead of waiting for a timer that never fires. Evidence: `tests/await/096`, `097`, `tests/signal/016`, `tests/thread_channel/048` crash before and pass after.
 - **A persistent connection used after the reactor started corrupted the heap at exit** (pdo_mysql, mysqli `p:`, `pfsockopen`, `STREAM_CLIENT_PERSISTENT`), and under `php -S` the second request crashed the server. The openssl socket factory left reactor handles on a persistent socket, and a persistent stream's buffer lock in request memory outlived the request. Needs php-src `486fb35f11e`.
 - **A failed query on a persistent pdo_mysql handle crashed the next PDO call with "zend_mm_heap corrupted".** The statement's error message was freed with the wrong allocator. Needs php-src `b0d73eadc1b`.
 - **A pooled PDO slot whose release-time rollback failed went back to the pool**, dead (the next coroutine got 2006) or still inside the old transaction and its locks. The slot is now destroyed. Needs php-src `c02816adcdc`.
