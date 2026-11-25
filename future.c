@@ -1309,6 +1309,7 @@ FUTURE_METHOD(await)
 	Z_PARAM_OPTIONAL
 	Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_completable)
 	ZEND_PARSE_PARAMETERS_END();
+	cancellation = async_armed_cancel_token(cancellation);
 
 	SCHEDULER_LAUNCH;
 

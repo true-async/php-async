@@ -88,6 +88,13 @@ void async_pool_api_register(void);
 
 bool async_resolve_cancel_token(zend_object *token);
 
+/* A cancelled Timeout keeps its object but no event: as a token it is a disarmed
+ * timer, so callers treat it as no token at all. */
+static zend_always_inline zend_object *async_armed_cancel_token(zend_object *token)
+{
+	return token != NULL && ZEND_ASYNC_OBJECT_TO_EVENT(token) == NULL ? NULL : token;
+}
+
 void async_await_futures(zval *iterable,
 						 int count,
 						 bool ignore_errors,

@@ -303,6 +303,7 @@ PHP_FUNCTION(Async_await)
 	Z_PARAM_OPTIONAL
 	Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_completable);
 	ZEND_PARSE_PARAMETERS_END();
+	cancellation = async_armed_cancel_token(cancellation);
 
 	SCHEDULER_LAUNCH;
 
@@ -313,6 +314,13 @@ PHP_FUNCTION(Async_await)
 	}
 
 	zend_async_event_t *awaitable_event = ZEND_ASYNC_OBJECT_TO_EVENT(awaitable);
+
+	/* A cancelled Timeout never fires: waiting for it would never end. */
+	if (UNEXPECTED(awaitable_event == NULL)) {
+		async_throw_cancellation("Timeout has been cancelled");
+		RETURN_THROWS();
+	}
+
 	zend_async_event_t *cancellation_event = cancellation != NULL ? ZEND_ASYNC_OBJECT_TO_EVENT(cancellation) : NULL;
 
 	// Mark that result will be used and exception will be caught
@@ -389,6 +397,7 @@ PHP_FUNCTION(Async_await_any_or_fail)
 	Z_PARAM_OPTIONAL
 	Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
 	ZEND_PARSE_PARAMETERS_END();
+	cancellation = async_armed_cancel_token(cancellation);
 
 	SCHEDULER_LAUNCH;
 
@@ -439,6 +448,7 @@ PHP_FUNCTION(Async_await_first_success)
 	Z_PARAM_OPTIONAL
 	Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
 	ZEND_PARSE_PARAMETERS_END();
+	cancellation = async_armed_cancel_token(cancellation);
 
 	SCHEDULER_LAUNCH;
 
@@ -497,6 +507,7 @@ PHP_FUNCTION(Async_await_all_or_fail)
 	Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
 	Z_PARAM_BOOL(preserve_key_order);
 	ZEND_PARSE_PARAMETERS_END();
+	cancellation = async_armed_cancel_token(cancellation);
 
 	SCHEDULER_LAUNCH;
 
@@ -538,6 +549,7 @@ PHP_FUNCTION(Async_await_all)
 	Z_PARAM_BOOL(preserve_key_order);
 	Z_PARAM_BOOL(fill_null);
 	ZEND_PARSE_PARAMETERS_END();
+	cancellation = async_armed_cancel_token(cancellation);
 
 	SCHEDULER_LAUNCH;
 
@@ -588,6 +600,7 @@ PHP_FUNCTION(Async_await_any_of_or_fail)
 	Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_awaitable);
 	Z_PARAM_BOOL(preserve_key_order);
 	ZEND_PARSE_PARAMETERS_END();
+	cancellation = async_armed_cancel_token(cancellation);
 
 	SCHEDULER_LAUNCH;
 
@@ -633,6 +646,7 @@ PHP_FUNCTION(Async_await_any_of)
 	Z_PARAM_BOOL(preserve_key_order);
 	Z_PARAM_BOOL(fill_null);
 	ZEND_PARSE_PARAMETERS_END();
+	cancellation = async_armed_cancel_token(cancellation);
 
 	HashTable *results = zend_new_array(8);
 	HashTable *errors = zend_new_array(8);
@@ -1380,6 +1394,7 @@ PHP_FUNCTION(Async_signal)
 	Z_PARAM_OPTIONAL
 	Z_PARAM_OBJ_OF_CLASS_OR_NULL(cancellation, async_ce_completable)
 	ZEND_PARSE_PARAMETERS_END();
+	cancellation = async_armed_cancel_token(cancellation);
 
 	SCHEDULER_LAUNCH;
 
